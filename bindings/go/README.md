@@ -37,3 +37,7 @@ its saved configuration. Supply only the snapshot and its matching format.
 Every concurrent `Coordinator.Close` call waits for admitted work and worker
 cleanup to finish; shutdown remains idempotent. Call coordinator shutdown
 outside its own `Manager.Do` callbacks, since it waits for those callbacks.
+
+Arbitrary lexemes use the explicit `StringBytes`, `SymbolBytes`, and `InstanceName` types (each backed by a Go string, which preserves arbitrary bytes). Existing `string`/`Symbol` inputs retain their checked text and NUL policy. Output returned by `GetOutputE` is an exact Go string, including NUL and invalid UTF-8. Wire values encode raw payloads as base64 `bytes` with `string_bytes`, `symbol_bytes`, or `instance_name` tags. `EvaluateResult` JSON keeps valid text in `output` and raw output in `output_bytes`, restoring both into the exact Go `Output` map.
+
+Instance-name values retain their type and bytes without creating COOL objects. Use `instance-namep` or the binding's distinct value type for classification. `type` and restricted generic dispatch on a missing instance report an action error and stop later actions. The runtime conversions accept either symbol or name values; CLIPS's additional static restriction on certain literal conversion calls is not enforced yet.

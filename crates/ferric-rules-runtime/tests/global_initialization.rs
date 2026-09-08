@@ -35,7 +35,7 @@ fn failed_initializer_preserves_earlier_globals_and_following_constructs() {
     engine.set_focus("USE").unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
     assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(engine.get_output("t"), Some("14\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("14\n"));
 }
 
 #[cfg(feature = "serde")]
@@ -49,6 +49,6 @@ fn partial_global_load_snapshots_resume_with_consistent_module_metadata() {
         restored.reset().unwrap();
         restored.set_focus("USE").unwrap();
         assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(restored.get_output("t"), Some("14\n"));
+        assert_eq!(restored.get_output("t").unwrap(), Some("14\n"));
     }
 }

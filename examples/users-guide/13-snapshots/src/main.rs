@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
     engine.assert_ordered("reading", 7_i64)?;
     engine.run(RunLimit::Unlimited)?;
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     print!("{output}");
     assert!(output.contains("saw 7"));
     assert!(output.contains("threshold=42"));

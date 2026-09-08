@@ -39,7 +39,7 @@ fn conflicting_unqualified_template_is_rejected_without_changing_existing_state(
     assert_eq!(engine.facts().unwrap().count(), 2);
     engine.set_focus("A").unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert_eq!(engine.get_output("t"), Some("7\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("7\n"));
 }
 
 #[cfg(feature = "serde")]
@@ -73,5 +73,5 @@ fn rejected_spelling_and_distinct_qualified_templates_remain_persistable() {
     assert_eq!(restored.template_slot_names("B::item"), Some(vec!["right"]));
     assert_eq!(restored.facts().unwrap().count(), 2);
     assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert_eq!(restored.get_output("t"), Some("7\n"));
+    assert_eq!(restored.get_output("t").unwrap(), Some("7\n"));
 }

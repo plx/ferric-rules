@@ -31,9 +31,9 @@ The same rendering applies inside deffunctions and methods and to Ferric's
 RHS `println`, which adds a newline.
 
 Printed STRING fields retain literal embedded quotes, backslashes, control
-characters, and UTF8 bytes. `implode$` instead uses the escaped field mode
-described below. SYMBOL fields remain
-literal, including `crlf`, `tab`, `vtab`, and `ff`. Those four symbols expand
+characters, and raw bytes. `implode$` uses the escaped STRING-field mode
+described below. SYMBOL fields remain literal, including `crlf`, `tab`,
+`vtab`, and `ff`. Those four symbols expand
 to LF, TAB, VT, and FF only as top-level output operands.
 
 FLOAT output uses up to 15 significant decimal digits, preserving `-0.0`.
@@ -43,10 +43,11 @@ FLOATs include `.0`; nonfinite spellings are `nan.0`, `inf.0`, and `-inf.0`.
 INTEGER spelling remains exact. These rules do not change `str-cat`,
 `sym-cat`, `format`, or `save-facts` formatting.
 
-Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
+STRING and SYMBOL payloads retain NUL and invalid UTF8 bytes. INSTANCE-NAME
+values print as bracketed raw name bytes, at the top level and inside
+multifields. Typed FACT-ADDRESS print forms remain a representation gap;
 INTEGERs are printed as integers and host ExternalAddress values retain an
-opaque placeholder. This output contract does not cover arbitrary invalid
-UTF8 strings or general source round-tripping.
+opaque placeholder. General source round-tripping is a separate contract.
 
 ## Multifield Text
 
@@ -57,8 +58,9 @@ scalar results from the multifield. Empty STRINGs remain fields.
 fields separated by one space, without outer parentheses. An empty multifield
 returns an empty STRING; an empty STRING field contributes `""`. Each STRING
 field is quoted, with embedded quotes and backslashes escaped by a backslash.
-Literal control characters and UTF8 bytes remain unchanged, and SYMBOLs keep
-their raw spelling, including `crlf`, `tab`, `vtab`, and `ff`.
+Literal control characters and raw bytes remain unchanged. SYMBOLs keep their
+literal spelling, including `crlf`, `tab`, `vtab`, and `ff`; INSTANCE-NAMEs
+use bracketed raw name bytes.
 
 INTEGER spelling stays exact. FLOATs share direct output's 15-significant-digit
 format, including `-0.0`, exponents, and nonfinite spellings. The operand is
@@ -66,11 +68,21 @@ evaluated once after the argument-count check; a scalar result produces a type
 error. Rendering leaves input values and the separate `str-cat`, `sym-cat`,
 `format`, and `save-facts` formatters unchanged.
 
-Quoted STRING-field round-tripping through `explode$` still depends on
-[#339](https://github.com/plx/ferric-rules/issues/339). Arbitrary generated
-SYMBOL spellings have no general source round-trip guarantee. The typed-value
-and invalid-UTF8 boundaries described for direct output apply here too;
-INTEGERs are never reinterpreted as fact addresses.
+`explode$` and `str-explode` scan STRING bytes into typed fields, including
+quoted STRINGs and INSTANCE-NAMEs. Quoted-field round-trip coverage now
+composes the scanner with `implode$`: it checks empty, numeric-looking and
+bracket-looking STRINGs, quotes and backslashes, scannable SYMBOLs and names,
+exact INTEGERs, and selected FLOATs such as `1.25` and `-0.0`. Normal and late
+rule installation and all five snapshot formats are covered. For example,
+`(explode$ (implode$ (create$ a "two words" 3)))` returns `(a "two words" 3)`.
+
+General source serialization remains a separate contract: arbitrary SYMBOL
+or INSTANCE-NAME spellings may not scan back to the same value, and the
+15-significant-digit FLOAT representation need not retain arbitrary f64 bits.
+Length-bearing host values preserve NUL and invalid UTF8 bytes in the imploded
+result, while the scanner stops at the first NUL. The typed FACT-ADDRESS and
+opaque host-address limits described for direct output also apply here;
+INTEGERs are never reinterpreted as addresses.
 
 ## Conflict Resolution
 
@@ -84,6 +96,30 @@ Depth and breadth use activation creation order and match the pinned reference c
 | MEA      | First-pattern recency, then LEX tiebreak. |
 
 Not implemented: Simplicity, Complexity, Random.
+
+## Predicate Sorting
+
+`sort` invokes its comparator and accepts scalar or multifield arguments:
+`(sort > 3 (create$ 1 2))` returns `(1 2 3)`, while `<` gives descending order.
+Only the actual symbol `FALSE` keeps the left field before the right field;
+other results, including zero and a Void predicate result, request exchange.
+Stable merge traversal preserves equal-key input order when the predicate
+returns `FALSE` for ties, and makes comparator calls in a defined order. Data expressions run once before comparisons, and
+empty or singleton inputs do not invoke the comparator.
+
+The comparator must be an unqualified symbol naming a supported visible
+builtin, deffunction or generic. Missing names and incompatible builtin or
+deffunction arity return `FALSE`, skip data and record a nonfatal diagnostic.
+Fatal expression or predicate errors stop subsequent rule actions, but may
+still carry a partial value into an enclosing assignment. Diagnostic presence
+alone does not distinguish these outcomes; inspect the run's halt reason.
+
+The value layer supports `INSTANCE-NAME` and byte lexemes, including strings
+that are not valid UTF-8. This does not require reproducing the pinned CLIPS
+process fault for Void used as a data field. The CLIPS-valid
+`(sort bind c b a)` callback remains an unsupported local-binding/special-form
+invocation; comparator metadata does not imply parity for every builtin.
+Malformed source bind targets are a separate parsed-variable restriction.
 
 ## Known Differential Gaps
 

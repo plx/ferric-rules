@@ -17,7 +17,7 @@ use ferric_rules::runtime::{Engine, EngineConfig, HaltReason, RunLimit};
 struct Fixture {
     name: &'static str,
     source: &'static str,
-    output: &'static str,
+    output: &'static [u8],
 }
 
 macro_rules! fixture {
@@ -25,7 +25,7 @@ macro_rules! fixture {
         Fixture {
             name: $name,
             source: include_str!(concat!("fixtures/stdlib/", $name, ".clp")),
-            output: include_str!(concat!("fixtures/stdlib/", $name, ".out")),
+            output: include_bytes!(concat!("fixtures/stdlib/", $name, ".out")),
         }
     };
 }
@@ -72,7 +72,7 @@ fn assert_no_refiring(engine: &mut Engine, fixture: &Fixture) {
     let result = engine.run(RunLimit::Count(10)).unwrap();
     assert_eq!(result.rules_fired, 0, "{}", fixture.name);
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
-    assert_eq!(engine.get_output("t").unwrap_or(""), fixture.output);
+    assert_eq!(engine.get_output_bytes("t").unwrap_or(b""), fixture.output);
     assert!(engine.action_diagnostics().is_empty());
 }
 
@@ -92,7 +92,7 @@ fn assert_fixture_output(engine: &mut Engine, fixture: &Fixture) {
     );
     assert_eq!(result.rules_fired, 1, "{}", fixture.name);
     assert_eq!(
-        engine.get_output("t").unwrap_or(""),
+        engine.get_output_bytes("t").unwrap_or(b""),
         fixture.output,
         "{}",
         fixture.name

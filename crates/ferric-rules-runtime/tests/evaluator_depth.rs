@@ -127,5 +127,5 @@ fn excessive_callable_bodies_reject_before_registry_changes() {
     // A failed implicit generic registration must not reserve its name.
     engine.load_str(r#"(deffunction fresh () 9) (defrule check => (printout t (keep) ":" (method) ":" (fresh)))"#).unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert_eq!(engine.get_output("t"), Some("42:7:9"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("42:7:9"));
 }

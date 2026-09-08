@@ -21,7 +21,8 @@ use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
 use crate::host::{
-    FactHandle, HostFact, HostState, HostValue, IntoHostFields, SymbolHandle, HOST_VALUE_MAX_ITEMS,
+    FactHandle, HostFact, HostState, HostValue, InstanceNameHandle, IntoHostFields, SymbolHandle,
+    HOST_VALUE_MAX_ITEMS,
 };
 use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
@@ -216,7 +217,7 @@ pub struct Engine {
     /// use the independent non-fact root. Public host queries hide this protected
     /// implementation fact, and retraction rejects its ID.
     pub(crate) initial_fact_id: Option<FactId>,
-    /// Non-fatal action diagnostics captured during execution.
+    /// Evaluation diagnostics; whether execution stopped is reported separately.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
     pub(crate) processing_predicates: bool,
@@ -351,6 +352,9 @@ impl Engine {
                 .try_assert_fact(fact, self.fact_duplication())?
             {
                 FactInsertionResult::Inserted(fact_id) => {
+                    // CLIPS starts pattern evaluation with a clear Error bit,
+                    // while retaining a failure's sticky HaltExecution state.
+                    self.globals.clear_evaluation_error();
                     propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
                     self.drain_pending_predicate_matches();
                     FactAssertionResult::Asserted(fact_id)
@@ -432,6 +436,7 @@ impl Engine {
         }
 
         self.processing_predicates = false;
+        self.drain_evaluator_diagnostics();
     }
 
     fn host_fields(
@@ -471,6 +476,8 @@ impl Engine {
         &mut self,
         result: FactAssertionResult<FactId>,
     ) -> FactAssertionResult {
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
         self.host.prune(&self.fact_base);
         match result {
             FactAssertionResult::Asserted(id) => {
@@ -796,6 +803,8 @@ impl Engine {
             .ok_or(EngineError::FactNotFound(handle))?;
         self.drain_pending_predicate_matches();
         self.host.remove(fact_id);
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
 
         Ok(())
     }
@@ -879,11 +888,19 @@ impl Engine {
     /// Returns an error if:
     /// - The string violates encoding constraints
     pub fn intern_symbol(&mut self, s: &str) -> Result<SymbolHandle, EngineError> {
+        self.intern_symbol_bytes(s.as_bytes())
+    }
+
+    /// Intern a byte-preserving symbol with this engine's ownership.
+    ///
+    /// # Errors
+    /// Returns an error if bytes violate the configured encoding constraints.
+    pub fn intern_symbol_bytes(&mut self, bytes: &[u8]) -> Result<SymbolHandle, EngineError> {
         Ok(SymbolHandle {
             owner: self.host.owner,
             symbol: self
                 .symbol_table
-                .intern_symbol(s, self.config.string_encoding)?,
+                .intern_symbol_bytes(bytes, self.config.string_encoding)?,
         })
     }
 
@@ -897,6 +914,17 @@ impl Engine {
         Ok(FerricString::new(s, self.config.string_encoding)?)
     }
 
+    /// Create a string preserving its exact bytes.
+    ///
+    /// # Errors
+    /// Returns an error if bytes violate the configured encoding constraints.
+    pub fn create_string_bytes(&self, bytes: &[u8]) -> Result<FerricString, EngineError> {
+        Ok(FerricString::from_bytes(
+            bytes,
+            self.config.string_encoding,
+        )?)
+    }
+
     /// Intern a symbol as a host value retaining this engine's ownership.
     ///
     /// # Errors
@@ -905,6 +933,53 @@ impl Engine {
     /// - The string violates encoding constraints
     pub fn symbol_value(&mut self, s: &str) -> Result<HostValue, EngineError> {
         Ok(self.intern_symbol(s)?.into())
+    }
+
+    /// Intern exact symbol bytes as an owned host value.
+    ///
+    /// # Errors
+    /// Returns an error if bytes violate the configured encoding constraints.
+    pub fn symbol_value_bytes(&mut self, bytes: &[u8]) -> Result<HostValue, EngineError> {
+        Ok(self.intern_symbol_bytes(bytes)?.into())
+    }
+
+    /// Intern a typed instance name, without creating a COOL instance.
+    ///
+    /// # Errors
+    /// Returns an error if the name violates encoding constraints.
+    pub fn intern_instance_name(&mut self, name: &str) -> Result<InstanceNameHandle, EngineError> {
+        self.intern_instance_name_bytes(name.as_bytes())
+    }
+
+    /// Intern an instance name from its unbracketed byte spelling.
+    ///
+    /// # Errors
+    /// Returns an error if bytes violate the configured encoding constraints.
+    pub fn intern_instance_name_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<InstanceNameHandle, EngineError> {
+        let symbol = self.intern_symbol_bytes(bytes)?;
+        Ok(InstanceNameHandle {
+            owner: symbol.owner,
+            name: ferric_rules_core::InstanceName::from_symbol(symbol.symbol),
+        })
+    }
+
+    /// Create a typed instance-name host value with this engine's ownership.
+    ///
+    /// # Errors
+    /// Returns an error if the name violates encoding constraints.
+    pub fn instance_name_value(&mut self, name: &str) -> Result<HostValue, EngineError> {
+        Ok(self.intern_instance_name(name)?.into())
+    }
+
+    /// Create a typed instance-name value from its exact unbracketed bytes.
+    ///
+    /// # Errors
+    /// Returns an error if bytes violate the configured encoding constraints.
+    pub fn instance_name_value_bytes(&mut self, bytes: &[u8]) -> Result<HostValue, EngineError> {
+        Ok(self.intern_instance_name_bytes(bytes)?.into())
     }
 
     /// Assert a single-field ordered fact whose value is a symbol.
@@ -944,7 +1019,8 @@ impl Engine {
 
     /// Resolve a [`Symbol`] to its string representation.
     ///
-    /// Returns `None` if the symbol is not in this engine's symbol table.
+    /// Returns `None` for unknown/foreign symbols or non-UTF-8 payloads.
+    /// Use [`Self::resolve_symbol_bytes`] to inspect arbitrary bytes.
     /// Symbol table contents are immutable once interned.
     #[must_use]
     pub fn resolve_symbol(&self, sym: SymbolHandle) -> Option<&str> {
@@ -956,9 +1032,48 @@ impl Engine {
     /// Inspect a core symbol taken from this engine's borrowed RETE/fact state.
     /// Core keys have no provenance; use `resolve_symbol` with a `SymbolHandle`
     /// in ordinary host code. Do not pass a key extracted from another engine.
+    /// Returns `None` for unknown symbols or non-UTF-8 payloads.
     #[must_use]
     pub fn resolve_core_symbol(&self, symbol: Symbol) -> Option<&str> {
         self.symbol_table.resolve_symbol_str(symbol)
+    }
+
+    /// Resolve owned symbol bytes; foreign handles return `None`.
+    #[must_use]
+    pub fn resolve_symbol_bytes(&self, symbol: SymbolHandle) -> Option<&[u8]> {
+        (symbol.owner == self.host.owner)
+            .then(|| self.symbol_table.resolve_symbol_bytes(symbol.symbol))
+            .flatten()
+    }
+
+    /// Inspect exact bytes of a core symbol borrowed from this engine's state.
+    #[must_use]
+    pub fn resolve_core_symbol_bytes(&self, symbol: Symbol) -> Option<&[u8]> {
+        self.symbol_table.resolve_symbol_bytes(symbol)
+    }
+
+    /// Resolve an owned instance name's unbracketed bytes.
+    #[must_use]
+    pub fn resolve_instance_name_bytes(&self, name: InstanceNameHandle) -> Option<&[u8]> {
+        (name.owner == self.host.owner)
+            .then(|| {
+                self.symbol_table
+                    .resolve_symbol_bytes(name.name.as_symbol())
+            })
+            .flatten()
+    }
+
+    /// Resolve an owned instance name as text, checking its byte encoding.
+    ///
+    /// # Errors
+    /// Returns the UTF-8 error when the name contains invalid text bytes.
+    pub fn resolve_instance_name(
+        &self,
+        name: InstanceNameHandle,
+    ) -> Result<Option<&str>, std::str::Utf8Error> {
+        self.resolve_instance_name_bytes(name)
+            .map(std::str::from_utf8)
+            .transpose()
     }
 
     /// Clone an engine-owned fact for checked reassertion or owned value access.
@@ -1062,7 +1177,7 @@ impl Engine {
     /// - `logically_fired` is `true` if the already-matched activation executed.
     /// - `reset_requested` is `true` if a `(reset)` action was executed in the RHS.
     /// - `clear_requested` is `true` if a `(clear)` action was executed in the RHS.
-    /// - `action_error` is `true` if evaluation produced an action diagnostic.
+    /// - `action_error` is `true` if evaluation failed and stopped the RHS.
     fn execute_activation_actions(
         &mut self,
         rule_id: RuleId,
@@ -1096,7 +1211,7 @@ impl Engine {
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
 
-        let (fired, reset_requested, clear_requested, errors) = {
+        let (fired, reset_requested, clear_requested, evaluation_halted, errors) = {
             let mut action_context = actions::ActionExecutionContext {
                 engine: self,
                 current_module,
@@ -1116,7 +1231,9 @@ impl Engine {
             diagnostics = errors.len(),
             "activation_actions_complete"
         );
-        let action_error = !errors.is_empty();
+        let predicate_halted = self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
+        let action_error = evaluation_halted || predicate_halted || !errors.is_empty();
         self.action_diagnostics.extend(errors);
         (fired, reset_requested, clear_requested, action_error)
     }
@@ -1165,6 +1282,8 @@ impl Engine {
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
         ferric_span!(info_span, "engine_step");
         self.action_diagnostics.clear();
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
         if self.module_registry.current_focus().is_none() {
             self.module_registry
                 .push_focus(self.module_registry.main_module_id());
@@ -1172,6 +1291,7 @@ impl Engine {
 
         let Some(activation) = self.pop_next_focus_activation() else {
             ferric_event!(debug, "engine_step_no_activation");
+            self.drain_evaluator_diagnostics();
             return Ok(None);
         };
 
@@ -1206,6 +1326,7 @@ impl Engine {
         // After reset or clear, the engine is in a new state.
         // step() still returns the FiredRule indicating what fired.
 
+        self.drain_evaluator_diagnostics();
         self.host.prune(&self.fact_base);
         Ok(Some(fired))
     }
@@ -1224,6 +1345,7 @@ impl Engine {
     /// The `Result` return type is retained for API compatibility.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         let result = self.run_inner(limit, true);
+        self.drain_evaluator_diagnostics();
         self.host.prune(&self.fact_base);
         Ok(result)
     }
@@ -1239,6 +1361,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn continue_run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         let result = self.run_inner(limit, false);
+        self.drain_evaluator_diagnostics();
         self.host.prune(&self.fact_base);
         Ok(result)
     }
@@ -1248,6 +1371,8 @@ impl Engine {
         if clear_execution_state {
             self.halted = false;
             self.action_diagnostics.clear();
+            self.globals.take_evaluation_halt();
+            self.globals.take_sort_return();
             if self.module_registry.current_focus().is_none() {
                 self.module_registry
                     .push_focus(self.module_registry.main_module_id());
@@ -1409,6 +1534,8 @@ impl Engine {
                 self.assert_fact_internal(fact)?;
             }
         }
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
 
         Ok(())
     }
@@ -1470,9 +1597,17 @@ impl Engine {
     /// Get captured output for a named `printout` channel.
     ///
     /// Returns `None` if nothing has been written to that channel.
-    #[must_use]
-    pub fn get_output(&self, channel: &str) -> Option<&str> {
+    ///
+    /// # Errors
+    /// Returns the UTF-8 error if captured bytes are not valid text.
+    pub fn get_output(&self, channel: &str) -> Result<Option<&str>, std::str::Utf8Error> {
         self.router.get_output(channel)
+    }
+
+    /// Get captured output without interpreting its bytes as text.
+    #[must_use]
+    pub fn get_output_bytes(&self, channel: &str) -> Option<&[u8]> {
+        self.router.get_output_bytes(channel)
     }
 
     /// Clear captured output for a named `printout` channel.
@@ -1480,10 +1615,22 @@ impl Engine {
         self.router.clear_channel(channel);
     }
 
-    /// Get non-fatal action diagnostics captured during the most recent run/step call.
+    /// Get evaluation diagnostics, including warnings that did not stop execution.
+    ///
+    /// A fresh run/step clears earlier diagnostics. Its outcome reports whether
+    /// an action failed; a nonempty diagnostic list alone does not imply failure.
     #[must_use]
     pub fn action_diagnostics(&self) -> &[ActionError] {
         &self.action_diagnostics
+    }
+
+    pub(crate) fn drain_evaluator_diagnostics(&mut self) {
+        self.action_diagnostics.extend(
+            self.globals
+                .take_diagnostics()
+                .into_iter()
+                .map(ActionError::from),
+        );
     }
 
     /// Clear accumulated action diagnostics.
@@ -1933,7 +2080,7 @@ mod tests {
 
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("fired\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("fired\n"));
     }
 
     #[test]
@@ -2033,7 +2180,7 @@ mod tests {
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
         assert_eq!(
-            engine.get_output("t"),
+            engine.get_output("t").unwrap(),
             Some("FALSE FALSE TRUE TRUE FALSE\n")
         );
         assert!(!engine.fact_duplication());
@@ -2119,7 +2266,7 @@ mod tests {
         assert_single_root_prefix_token(&engine);
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("unblocked\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("unblocked\n"));
     }
 
     #[test]
@@ -2161,7 +2308,7 @@ mod tests {
         assert_eq!(engine.agenda_len(), 1);
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("unblocked\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("unblocked\n"));
         assert_single_root_prefix_token(&engine);
     }
 
@@ -2192,12 +2339,12 @@ mod tests {
         let blocker_a = engine.assert_ordered("blocked-a", ()).unwrap();
         assert_eq!(engine.agenda_len(), 1, "rule B remains independent");
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("B\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("B\n"));
 
         engine.retract(blocker_a).unwrap();
         assert_eq!(engine.agenda_len(), 1, "rule A reactivates alone");
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("B\nA\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("B\nA\n"));
         assert_single_root_prefix_token(&engine);
     }
 
@@ -2229,7 +2376,7 @@ mod tests {
         assert_eq!(engine.agenda_len(), 1);
         assert_eq!(activation_count_for_rule(&engine, "late"), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("late\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("late\n"));
     }
 
     #[test]
@@ -2258,7 +2405,7 @@ mod tests {
         );
         assert_eq!(activation_count_for_rule(&engine, "late-join"), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
-        assert_eq!(engine.get_output("t"), Some("late old\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("late old\n"));
 
         engine.load_str("(assert (right 1 new))").unwrap();
         assert_eq!(
@@ -2267,7 +2414,10 @@ mod tests {
             "the populated parent memory's equality index must serve future facts"
         );
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("late old\nlate new\n"));
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("late old\nlate new\n")
+        );
     }
 
     #[test]
@@ -2297,12 +2447,12 @@ mod tests {
         assert_eq!(activation_count_for_rule(&engine, "late-negative"), 0);
         assert_eq!(activation_count_for_rule(&engine, "late-exists"), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("exists\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("exists\n"));
 
         engine.retract(blocker).unwrap();
         assert_eq!(activation_count_for_rule(&engine, "late-negative"), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("exists\nnegative\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("exists\nnegative\n"));
     }
 
     #[test]
@@ -2339,7 +2489,7 @@ mod tests {
 
         assert_eq!(activation_count_for_rule(&engine, "late-current"), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("current\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("current\n"));
     }
 
     #[test]
@@ -2372,7 +2522,7 @@ mod tests {
         assert_eq!(activation_count_for_rule(&engine, "late-empty"), 1);
         assert_eq!(activation_count_for_rule(&engine, "late-test-only"), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
-        let output = engine.get_output("t").unwrap_or_default();
+        let output = engine.get_output("t").unwrap().unwrap_or_default();
         assert!(output.contains("item 2\n"));
         assert!(output.contains("empty\n"));
         assert!(output.contains("test\n"));
@@ -2690,7 +2840,7 @@ mod tests {
     fn create_string() {
         let engine = Engine::new(EngineConfig::utf8());
         let s = engine.create_string("hello world").unwrap();
-        assert_eq!(s.as_str(), "hello world");
+        assert_eq!(s.as_str().unwrap(), "hello world");
     }
 
     #[test]

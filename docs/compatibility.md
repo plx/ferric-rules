@@ -280,6 +280,14 @@ An action error does not set the engine's persistent halt flag. `step()` still
 returns the processed activation and exposes the diagnostic without consuming
 the next activation.
 
+A diagnostic is not always fatal. Unavailable `sort` comparator names or
+incompatible builtin/deffunction arity produce a diagnostic and return `FALSE`
+without stopping subsequent actions. Check the run outcome rather than treating every entry in
+`action_diagnostics()` as an action failure. A fatal sort error can also return
+a partial value to its enclosing expression before the action stops; it does
+not imply that an enclosing assignment was rolled back. See
+[Predicate sorting](#predicate-sorting) for these distinctions.
+
 **Example -- modify and retract:**
 
 ```clp
@@ -753,11 +761,20 @@ identically to their CLIPS counterparts for the supported argument types.
 
 | Function | Description |
 |----------|-------------|
-| `=` | Numeric equality |
-| `!=` / `<>` | Numeric inequality |
-| `>`, `<`, `>=`, `<=` | Numeric ordering |
+| `=` | First numeric operand equals every subsequent operand |
+| `!=` / `<>` | First numeric operand differs from every subsequent operand |
+| `>`, `<`, `>=`, `<=` | Each adjacent numeric pair satisfies the ordering |
 | `eq` | Value equality (type-sensitive) |
 | `neq` | Value inequality |
+
+Numeric comparisons accept two or more operands and evaluate them from left to
+right, stopping at the first failed comparison. For example, `(< 1 2 3)` and
+`(<> 1 2 2)` return TRUE; `(< 2 1 (later-call))` returns FALSE without evaluating
+`later-call`. A reached nonnumeric operand produces a type error.
+
+INTEGER pairs compare exactly. Mixed INTEGER/FLOAT pairs use floating-point
+conversion, and FLOAT equality uses exact numeric equality without an epsilon
+tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns TRUE.
 
 ### Logical Functions
 
@@ -793,9 +810,35 @@ identically to their CLIPS counterparts for the supported argument types.
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
-| `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
-| `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
+| `string-to-field` | Read the first CLIPS field from STRING, SYMBOL, or INSTANCE-NAME bytes | `(string-to-field "42 trailing")` => `42` |
+| `explode$`, `str-explode` | Scan STRING bytes into typed CLIPS fields | `(explode$ "a \"two words\" 3")` => `(a "two words" 3)` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
+
+`string-to-field` ignores the input after its first token and preserves INTEGER,
+FLOAT, STRING, SYMBOL, and INSTANCE-NAME identity. Empty or comment-only input
+returns the symbol `EOF`; variable and punctuation tokens return their literal
+print forms as strings. Quoted fields preserve bytes and CLIPS escape behavior.
+Like a CLIPS string source, the input ends at its first NUL byte.
+
+Integer overflow saturates with a scanner warning. An unterminated quoted field
+returns its partial string with a notice, including a literal `0xff` byte when
+the final escape reaches EOF. These notices remain observable through action
+diagnostics and the `wwarning` or `werror` output channel while evaluation
+continues. Wrong argument count or type halts evaluation; an unknown scanner
+token instead returns the string `*** ERROR ***` without a diagnostic.
+
+`explode$` (also named `str-explode`) scans every field and returns a
+MULTIFIELD, preserving quoted strings, INTEGER/FLOAT distinctions, symbols,
+and instance names. Empty input returns an empty multifield. Variable and
+punctuation tokens become strings of their print forms; an unknown token
+becomes the string `<<<unprintable character>>>` and scanning continues.
+It shares the byte, escape, NUL, and nonfatal notice behavior described above,
+retaining earlier fields when a later quoted string is incomplete.
+
+Both aliases require exactly one STRING argument, evaluated once. Wrong
+argument count, wrong type, or an operand error yields an empty multifield
+and halts evaluation. SYMBOL and INSTANCE-NAME input values are not accepted
+by these aliases.
 
 ### Multifield Functions
 
@@ -812,7 +855,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `replace$` | Replace range with values | `(replace$ (create$ a b c) 2 2 x)` => `(a x c)` |
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
-| `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+| `sort` | Stable predicate sort of scalar and multifield arguments | `(sort < (create$ 3 1 2))` => `(3 2 1)` |
 
 `create$` evaluates VOID-producing operands for their effects but omits those
 scalar results from the multifield. Empty STRINGs remain fields.
@@ -822,23 +865,105 @@ returns a STRING. Fields are separated by one space without outer parentheses.
 An empty multifield returns an empty STRING; an empty STRING field contributes
 `""`. STRING fields have surrounding quotes, and embedded quotes and
 backslashes receive a preceding backslash. Literal control characters and
-UTF8 bytes remain unchanged. SYMBOL spellings, including `crlf`, `tab`,
-`vtab`, and `ff`, remain literal names. Scalar operands produce a type error;
-the argument-count check precedes operand evaluation.
+raw bytes remain unchanged. SYMBOL spellings, including `crlf`, `tab`,
+`vtab`, and `ff`, remain literal names. INSTANCE-NAME values use bracketed
+raw name bytes. Scalar operands produce a type error; the argument-count
+check precedes operand evaluation.
 
-INTEGERs retain their exact decimal spelling. FLOATs use the same
-15-significant-digit representation as direct output, including `-0.0`,
-scientific notation, and the documented nonfinite spellings below. These
-field rules apply to the supplied slice or capture and leave the input values
-unchanged. The separate `str-cat`, `sym-cat`, `format`, and `save-facts`
-formatters retain their existing behavior.
+INTEGERs retain their exact decimal spelling. FLOATs use direct output's
+15-significant-digit representation, including `-0.0`, scientific notation,
+and its nonfinite spellings. These field rules apply to the supplied slice or
+capture and leave the input values unchanged. The separate `str-cat`,
+`sym-cat`, `format`, and `save-facts` formatters retain their existing behavior.
 
-Quoted STRING-field round-tripping through `explode$` still depends on the
-tokenizer repair in [#339](https://github.com/plx/ferric-rules/issues/339).
-Arbitrary generated SYMBOL spellings are not a general source round-trip
-contract. The INSTANCE-NAME, typed FACT-ADDRESS, opaque host-address, and
-invalid-UTF8 boundaries described under direct output also apply to `implode$`;
-no INTEGER is reinterpreted as an address.
+`explode$` and `str-explode` can read the quoted STRING fields back into a
+MULTIFIELD. The reviewed round-trip cases preserve empty, numeric-looking,
+and bracket-looking STRINGs, escaped quotes and backslashes, scannable SYMBOLs
+and INSTANCE-NAMEs, exact INTEGERs, and selected FLOATs such as `1.25` and
+`-0.0`. Coverage includes actual field types and bytes, normal and late rule
+installation, and all five snapshot formats. For example,
+`(explode$ (implode$ (create$ a "two words" 3)))` returns `(a "two words" 3)`.
+
+These cases do not establish a general source serialization contract.
+Arbitrary SYMBOL spellings may scan as another type or multiple fields;
+INSTANCE-NAME payloads also need a valid scanner spelling. FLOAT formatting
+can round values beyond 15 significant digits, so arbitrary f64 bits need
+not survive. Length-bearing host values retain NUL and invalid UTF8 bytes
+in the imploded result, but scanning stops at the first NUL byte. Typed
+FACT-ADDRESS print forms and opaque host addresses retain the direct-output
+boundaries below; INTEGERs are never reinterpreted as addresses.
+
+#### Predicate sorting
+
+`(sort <predicate> <value>...)` accepts an unqualified comparator `SYMBOL`
+followed by zero or more values. Scalar values and the fields of multifield
+arguments form one sequence in argument order. The result is always a
+multifield on the normal sorting path, including empty and singleton inputs:
+
+```clp
+(sort > 3 (create$ 1 4) 2)  ; (1 2 3 4)
+(sort < (create$ 3 1 2))    ; (3 2 1)
+(sort >)                   ; ()
+```
+
+The comparator is called with the current left and right fields. Only the
+actual symbol `FALSE` keeps the left field first; every other return value
+selects the right field first. Consequently, `>` sorts numbers in ascending
+order and `<` sorts them in descending order. A user-defined predicate has
+the same direction as the equivalent builtin. `0`, `0.0`, `nil`, an empty
+string or multifield, and a Void predicate result all count as true for sort;
+this rule is specific to sorting.
+
+Sorting is stable when the predicate returns `FALSE` for equal keys. It uses
+merge traversal: split an odd-sized sequence with the larger half on the left,
+sort the left half and then the right half, compare each pair of current heads
+once, and append the unconsumed remainder. Comparator effects therefore have
+a defined order; sort does not make a second, reversed-argument call to decide
+whether two fields are equal. The selected fields retain their runtime types
+and values, including equal numeric values with different INTEGER/FLOAT types.
+
+The comparator expression is evaluated once, before the data expressions.
+Name resolution and builtin/deffunction arity checks also precede data
+execution. Supported builtins, visible deffunctions and generics can be used;
+unqualified names follow the caller's module visibility. Explicit qualified
+comparator names such as `M::compare` are rejected. Generic method applicability
+is checked against the actual pair only when comparison is needed. Thus empty
+and singleton data do not invoke the comparator, although its name must still
+resolve. Data expressions run once, from left to right, before comparisons.
+
+**Diagnostics and control.** An unavailable comparator name or an incompatible
+builtin/deffunction arity returns actual `FALSE`, skips data expressions and
+records a nonfatal `action_diagnostics()` entry. Later actions and activations
+can still run. A non-SYMBOL name, failed source expression, or predicate error
+is fatal instead. Effects already performed remain observable, and the run
+reports `HaltReason::ActionError`.
+
+A fatal error and its returned value are distinct. Once sorting has begun,
+CLIPS can finish merging with the values returned by failed or skipped calls;
+the resulting value may be stored by an enclosing assignment or assertion
+before later rule actions stop. Multifield construction can substitute an empty
+multifield while an evaluation error remains set. Error values depend on the called function: a failed user
+function returns `FALSE`, while numeric builtins may retain a numeric default
+or partial result. Reached builtin expressions may still execute; later user
+function bodies do not. Enclosing builtins also differ in whether they accept
+a value while an evaluation error remains set, so a partial result is not
+proof of successful evaluation. Using `return` as a comparator is separate:
+it can end the current rule after sort supplies its result, while other
+activations remain eligible to run.
+
+**Compatibility boundary.** These semantics apply to Ferric's supported
+runtime value representations and callable implementations. Instance-name
+values and byte lexemes are supported by the value layer; unrelated builtin
+and qualified-declaration limitations remain. The pinned
+CLIPS 6.30 process faults when Void is used as a sort data field; that case has
+no supported returned-value contract and is not a required process fault in
+Ferric. A Void *predicate result* is distinct and is supported as described
+above. Callable-local binding and special-form invocation also retain their
+existing limits: the CLIPS-valid `(sort bind c b a)` callback is currently
+unsupported because it requires local binding through comparator dispatch.
+This is separate from malformed source `bind` targets, which must retain their
+ordinary variable form. Comparator arity metadata alone does not establish
+full compatibility for every builtin or special form.
 
 ### Fact Introspection Functions
 
@@ -870,8 +995,8 @@ from deffunctions and methods. Ferric's RHS `println` uses the same rendering
 and appends a newline.
 
 Quotes and backslashes inside printed STRING fields remain literal; printing
-does not escape them. Literal control characters and UTF8 bytes also remain
-unchanged. `implode$` uses the separate escaped field mode described above;
+does not escape them. Literal control characters and raw bytes also remain
+unchanged. `implode$` uses the escaped STRING-field mode described above;
 direct printing retains raw embedded quotes and backslashes. SYMBOL fields
 retain their spelling. Only top-level SYMBOL operands `crlf`, `tab`, `vtab`, and `ff`
 expand to LF, TAB, VT, and FF; the same symbols inside a multifield remain
@@ -885,11 +1010,12 @@ and `-inf.0`. INTEGERs retain exact decimal spelling, including values above
 2^53. This output formatter leaves `str-cat`, `sym-cat`, `format`, and
 `save-facts` formatting unchanged.
 
-This contract covers Ferric's supported numeric, lexeme, and multifield values.
-Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
-ordinary INTEGERs are never interpreted as addresses while printing. Host
-ExternalAddress values retain Ferric's opaque placeholder. Arbitrary invalid
-UTF8 string bytes and general source round-tripping are outside this contract.
+STRING and SYMBOL payloads retain every byte, including NUL and invalid UTF8.
+INSTANCE-NAME values print as bracketed raw name bytes, both at the top level
+and inside multifields. General source round-tripping is a separate contract.
+Typed FACT-ADDRESS print forms remain a representation gap; ordinary INTEGERs
+are never interpreted as addresses while printing. Host ExternalAddress
+values retain Ferric's opaque placeholder.
 
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
@@ -1119,9 +1245,10 @@ global channel as a fallback or for pre-engine failures.
 
 ### Embedded-NUL String Policy
 
-Ferric's Rust strings can contain `\0`, but the legacy C ABI represents input
-strings and `FerricValue` Symbol/String payloads as NUL-terminated C strings.
-The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
+Ferric strings, symbols, and instance names can preserve arbitrary bytes.
+Legacy C text entry points still use NUL-terminated UTF-8 strings; explicit raw
+constructors and appended transport tags carry byte spans without changing the
+`FerricValue` layout:
 
 - A legacy `const char *` input ends at its first NUL by definition; bytes
   after it are not part of the C string. Bindings starting from a
@@ -1130,19 +1257,24 @@ The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
 - `ferric_value_symbol_bytes` and `ferric_value_string_bytes` accept an
   explicit UTF-8 byte span and return `FERRIC_ERROR_INVALID_ARGUMENT` if it
   contains embedded NUL. Their output remains Void on failure.
-- Fact-field, global, and named-slot queries return
-  `FERRIC_ERROR_INVALID_ARGUMENT` (with a diagnostic) instead of converting a
-  stored NUL-bearing Symbol/String to empty or truncated `FerricValue` data.
-  This rule applies recursively to multifields.
+- `ferric_value_string_raw`, `ferric_value_symbol_raw`, and
+  `ferric_value_instance_name` copy arbitrary bytes. Their transport tags are
+  `STRING_BYTES` (7), `SYMBOL_BYTES` (8), and `INSTANCE_NAME` (9).
+- Fact-field, global, and named-slot queries retain the legacy String/Symbol
+  tags for valid UTF-8 without NUL. Other strings and symbols use their byte
+  tags, recursively inside multifields. Instance names always use tag 9;
+  their payload excludes brackets. Byte tags use `string_ptr` together with
+  `multifield_len` as the byte count. Free them with `ferric_value_free`,
+  never `ferric_string_free`.
 - `ferric_engine_get_output` returns NULL and records
-  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL.
-  Use `ferric_engine_get_output_copy` for exact access.
+  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL
+  or invalid UTF-8. Use `ferric_engine_get_output_copy` for exact access.
 - Length-reporting copy APIs preserve every source byte, including embedded
   NUL. Their reported length includes one additional trailing terminator, so
   callers must use `out_len` rather than `strlen`.
 - Snapshot serialization/deserialization APIs are byte-oriented and preserve
-  their serialized bytes exactly. If a restored engine contains NUL-bearing
-  values, the same legacy-egress rejection rules apply.
+  their serialized bytes exactly, including byte lexemes and instance names.
+  Restored values use the same lossless byte-span egress.
 
 The Go binding rejects embedded NUL before every legacy `C.CString`
 conversion. Rejections return `ErrInvalidArgument` through error-bearing APIs;
@@ -1203,7 +1335,12 @@ ferric_value_free(&val);
 
 Rule-action evaluation failures are collected as action diagnostics, distinct
 from API/ABI failures. They do not invalidate the engine, but they stop the
-current activation and `run()` as described above:
+current activation and `run()` as described above.
+
+This list also includes nonfatal `sort` comparator-name and arity diagnostics.
+Such a diagnostic accompanies a `FALSE` return and allows later actions to
+continue. Inspect the run's halt reason to distinguish a warning from a fatal
+action failure; a nonempty diagnostic list alone does not make that distinction.
 
 ```c
 size_t diag_count;

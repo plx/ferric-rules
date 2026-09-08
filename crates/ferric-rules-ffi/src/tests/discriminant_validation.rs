@@ -24,7 +24,7 @@ use crate::types::{
 
 /// Discriminants that must be rejected: the first out-of-range value,
 /// arbitrary garbage, and all-ones.
-const INVALID_TAGS: [u32; 4] = [7, 42, 0xDEAD_BEEF, u32::MAX];
+const INVALID_TAGS: [u32; 4] = [10, 42, 0xDEAD_BEEF, u32::MAX];
 
 /// A `FerricValue` with an invalid discriminant and poisoned payload fields
 /// that must never be interpreted (dangling-looking pointers, huge length).
@@ -63,8 +63,8 @@ unsafe fn assert_engine_usable(engine: *mut FerricEngine, probe_value: i64) {
 
 #[test]
 fn value_type_raw_round_trip() {
-    for tag in 0..=6_u32 {
-        let vt = FerricValueType::from_raw(tag).expect("0..=6 must be valid discriminants");
+    for tag in 0..=9_u32 {
+        let vt = FerricValueType::from_raw(tag).expect("0..=9 must be valid discriminants");
         assert_eq!(vt.as_raw(), tag);
     }
     for tag in INVALID_TAGS {

@@ -1,22 +1,26 @@
 //! Text encoding mode and related errors.
 //!
-//! Controls what byte sequences are accepted when creating symbols and strings.
-//! See Section 2.4 of the implementation plan.
+//! Text constructors validate their input under the chosen mode. Explicit byte
+//! APIs preserve arbitrary data in permissive modes; strict ASCII policies also
+//! apply to stored values, including values restored from snapshots.
 
 use thiserror::Error;
 
 /// Text encoding mode for symbols and strings.
 ///
-/// Controls what byte sequences are accepted when creating symbols and strings.
+/// Text and explicit byte constructors share the strict ASCII restrictions.
+/// Permissive byte construction does not promise a valid UTF-8 stored payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StringEncoding {
-    /// ASCII only for both symbols and strings. Maximum CLIPS compatibility.
+    /// Strict ASCII strings, symbols, and instance names, including byte APIs.
     Ascii,
-    /// UTF-8 for both symbols and strings. Full internationalization.
+    /// UTF-8 text constructors; explicit byte APIs also preserve invalid UTF-8
+    /// STRING, SYMBOL, and INSTANCE-NAME payloads.
     #[default]
     Utf8,
-    /// ASCII-only symbols, UTF-8 strings. Identifiers remain ASCII, text data is modern.
+    /// Strict ASCII symbols and instance names. Text strings accept UTF-8;
+    /// explicit byte STRING construction also preserves invalid UTF-8.
     AsciiSymbolsUtf8Strings,
 }
 
@@ -29,6 +33,12 @@ pub enum EncodingError {
 
     #[error("non-ASCII string: {0:?}")]
     NonAsciiString(String),
+
+    #[error("non-ASCII symbol bytes: {0:?}")]
+    NonAsciiSymbolBytes(Vec<u8>),
+
+    #[error("non-ASCII string bytes: {0:?}")]
+    NonAsciiStringBytes(Vec<u8>),
 }
 
 #[cfg(test)]

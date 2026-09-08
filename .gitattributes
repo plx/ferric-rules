@@ -4,6 +4,16 @@
 *.bat linguist-vendored
 *.tst linguist-vendored
 
+# Preserve exact fixture output and source markers on Windows checkouts.
+crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
+crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
+# These scanner fixtures contain literal CR bytes inside quoted input.
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_whitespace_comments_and_empty.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_ascii_whitespace_controls.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_control_whitespace_edges.clp -text
+crates/ferric-rules-runtime/tests/fixtures/snapshots/*.clp text eol=lf
+crates/ferric-rules-runtime/tests/fixtures/snapshots/*.cbor -text
+
 # Keep checked-in text shipped by the Node package byte-identical on Windows.
 packages/ferric/package.json text eol=lf
 packages/ferric/README.md text eol=lf
@@ -24,9 +34,8 @@ scripts/musl_static_libgcc_linker.py text eol=lf
 # Keep native Rust target provenance byte-identical on Windows.
 crates/ferric-rules-cli/release-targets.json text eol=lf
 
-# Keep exact CLIPS conformance fixture bytes stable on Windows.
-crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
-crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
+# Preserve the literal CRLF inside this CLIPS scanner input.
+crates/ferric-rules/tests/fixtures/stdlib/explode_ordinary_and_empty_fields.clp -text
 
 # Preserve literal CR and CRLF characters inside STRING test data.
 crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.clp -text

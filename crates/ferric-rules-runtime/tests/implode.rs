@@ -27,7 +27,9 @@ fn string<'a>(engine: &'a Engine, name: &str) -> &'a str {
             engine.get_global(name)
         )
     };
-    value.as_str()
+    value
+        .as_str()
+        .expect("fixture STRING must contain valid UTF-8")
 }
 
 fn source_string(value: &str) -> String {
@@ -61,7 +63,7 @@ fn escaped_fields_preserve_input_types_and_differ_from_direct_printing() {
         r#""" "a\"b" "a\\b" 9007199254740993 -0.0 two words"#
     );
     assert_eq!(
-        engine.get_output("t"),
+        engine.get_output("t").unwrap(),
         Some(concat!(
             "(\"\" \"a\"b\" \"a\\b\" 9007199254740993 -0.0 two words)|",
             "\"\" \"a\\\"b\" \"a\\\\b\" 9007199254740993 -0.0 two words\n"
@@ -232,7 +234,7 @@ fn create_fields_omits_void_before_implode_and_preserves_its_effect() {
     );
     run(&mut engine);
     assert_eq!(string(&engine, "result"), "a \"b c\"");
-    assert_eq!(engine.get_output("t"), Some("effect\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("effect\n"));
 }
 
 fn failure(expression: &str, trace: i64) -> Engine {

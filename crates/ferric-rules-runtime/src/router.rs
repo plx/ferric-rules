@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap as HashMap;
 /// An output router that captures output by logical channel name.
 ///
 /// CLIPS uses channel names like `t` (standard output), `stdout`, and
-/// `stderr`. All output is captured in per-channel string buffers; no
+/// `stderr`. All output is captured in per-channel byte buffers; no
 /// output is written to process I/O. Tests can inspect captured output
 /// via [`OutputRouter::get_output`].
 #[derive(Clone, Debug, Default)]
@@ -21,7 +21,7 @@ pub struct OutputRouter {
         feature = "serde",
         serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")
     )]
-    buffers: HashMap<String, String>,
+    buffers: HashMap<String, Vec<u8>>,
 }
 
 impl OutputRouter {
@@ -32,18 +32,28 @@ impl OutputRouter {
     }
 
     /// Append `data` to the named channel's buffer.
-    pub fn write(&mut self, channel: &str, data: &str) {
+    pub fn write(&mut self, channel: &str, data: impl AsRef<[u8]>) {
         self.buffers
             .entry(channel.to_string())
             .or_default()
-            .push_str(data);
+            .extend_from_slice(data.as_ref());
     }
 
     /// Return the captured output for `channel`, or `None` if nothing has
     /// been written to that channel.
+    ///
+    /// # Errors
+    /// Returns a UTF-8 decoding error for non-text output.
+    pub fn get_output(&self, channel: &str) -> Result<Option<&str>, std::str::Utf8Error> {
+        self.get_output_bytes(channel)
+            .map(std::str::from_utf8)
+            .transpose()
+    }
+
+    /// Return captured output without requiring a text encoding.
     #[must_use]
-    pub fn get_output(&self, channel: &str) -> Option<&str> {
-        self.buffers.get(channel).map(String::as_str)
+    pub fn get_output_bytes(&self, channel: &str) -> Option<&[u8]> {
+        self.buffers.get(channel).map(Vec::as_slice)
     }
 
     /// Clear all captured output across all channels.
@@ -64,14 +74,14 @@ mod tests {
     #[test]
     fn new_router_has_no_output() {
         let router = OutputRouter::new();
-        assert!(router.get_output("t").is_none());
+        assert!(router.get_output("t").unwrap().is_none());
     }
 
     #[test]
     fn write_captures_output() {
         let mut router = OutputRouter::new();
         router.write("t", "hello");
-        assert_eq!(router.get_output("t"), Some("hello"));
+        assert_eq!(router.get_output("t").unwrap(), Some("hello"));
     }
 
     #[test]
@@ -79,7 +89,7 @@ mod tests {
         let mut router = OutputRouter::new();
         router.write("t", "hello");
         router.write("t", " world");
-        assert_eq!(router.get_output("t"), Some("hello world"));
+        assert_eq!(router.get_output("t").unwrap(), Some("hello world"));
     }
 
     #[test]
@@ -87,8 +97,8 @@ mod tests {
         let mut router = OutputRouter::new();
         router.write("t", "stdout");
         router.write("stderr", "error");
-        assert_eq!(router.get_output("t"), Some("stdout"));
-        assert_eq!(router.get_output("stderr"), Some("error"));
+        assert_eq!(router.get_output("t").unwrap(), Some("stdout"));
+        assert_eq!(router.get_output("stderr").unwrap(), Some("error"));
     }
 
     #[test]
@@ -96,7 +106,7 @@ mod tests {
         let mut router = OutputRouter::new();
         router.write("t", "data");
         router.clear();
-        assert!(router.get_output("t").is_none());
+        assert!(router.get_output("t").unwrap().is_none());
     }
 
     #[test]
@@ -107,8 +117,8 @@ mod tests {
 
         router.clear_channel("t");
 
-        assert!(router.get_output("t").is_none());
-        assert_eq!(router.get_output("stderr"), Some("error"));
+        assert!(router.get_output("t").unwrap().is_none());
+        assert_eq!(router.get_output("stderr").unwrap(), Some("error"));
     }
 
     // -----------------------------------------------------------------------
@@ -143,10 +153,10 @@ mod tests {
             router.write(ch, &s2);
             let expected = format!("{s1}{s2}");
             prop_assert_eq!(
-                router.get_output(ch),
+                router.get_output(ch).unwrap(),
                 Some(expected.as_str()),
                 "write did not concatenate: expected {:?}, got {:?}",
-                expected, router.get_output(ch)
+                expected, router.get_output(ch).unwrap()
             );
         }
 
@@ -164,7 +174,7 @@ mod tests {
             router.write(ch_a, &data);
             // Channel B must remain unaffected by writes to channel A.
             prop_assert!(
-                router.get_output(ch_b).is_none(),
+                router.get_output(ch_b).unwrap().is_none(),
                 "write to {:?} polluted channel {:?}",
                 ch_a, ch_b
             );
@@ -187,7 +197,7 @@ mod tests {
             // After a full clear, every channel must return None.
             for ch in CHANNELS {
                 prop_assert!(
-                    router.get_output(ch).is_none(),
+                    router.get_output(ch).unwrap().is_none(),
                     "clear() left data in channel {:?}",
                     ch
                 );
@@ -216,7 +226,7 @@ mod tests {
             router.clear_channel(target);
             // Target channel must now be empty.
             prop_assert!(
-                router.get_output(target).is_none(),
+                router.get_output(target).unwrap().is_none(),
                 "clear_channel({:?}) did not remove the channel",
                 target
             );
@@ -226,7 +236,7 @@ mod tests {
                     continue;
                 }
                 prop_assert_eq!(
-                    router.get_output(CHANNELS[*ch_idx]),
+                    router.get_output(CHANNELS[*ch_idx]).unwrap(),
                     Some(expected_data.as_str()),
                     "clear_channel({:?}) corrupted channel {:?}",
                     target, CHANNELS[*ch_idx]
@@ -239,7 +249,7 @@ mod tests {
         fn get_unwritten_returns_none(ch_idx in channel_idx_strategy()) {
             let router = OutputRouter::new();
             prop_assert!(
-                router.get_output(CHANNELS[ch_idx]).is_none(),
+                router.get_output(CHANNELS[ch_idx]).unwrap().is_none(),
                 "fresh router returned Some for unwritten channel {:?}",
                 CHANNELS[ch_idx]
             );
@@ -313,13 +323,13 @@ mod tests {
                     }
                     RouterOp::GetOutput(ch_idx) => {
                         // Exercise the getter; actual verification is below.
-                        let _ = router.get_output(CHANNELS[*ch_idx]);
+                        let _ = router.get_output(CHANNELS[*ch_idx]).unwrap();
                     }
                 }
 
                 // After every operation: verify every channel agrees with the shadow.
                 for (i, ch) in CHANNELS.iter().enumerate() {
-                    let router_val = router.get_output(ch);
+                    let router_val = router.get_output(ch).unwrap();
                     let shadow_val = shadow.get(&i).map(String::as_str);
                     prop_assert_eq!(
                         router_val,

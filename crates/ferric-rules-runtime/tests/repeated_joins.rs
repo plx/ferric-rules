@@ -10,7 +10,7 @@ fn one_fact_matches_four_repeated_patterns_once() {
     engine.assert_ordered("p", vec![Value::Integer(1)]).unwrap();
     assert_eq!(engine.agenda_len(), 1);
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert_eq!(engine.get_output("t"), Some("1111\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("1111\n"));
 }
 
 #[test]
@@ -23,11 +23,11 @@ fn two_facts_produce_the_sixteen_distinct_four_position_tuples() {
     }
     assert_eq!(engine.agenda_len(), 16);
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 16);
-    let mut tuples: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    let mut tuples: Vec<_> = engine.get_output("t").unwrap().unwrap().lines().collect();
     tuples.sort_unstable();
     tuples.dedup();
     assert_eq!(tuples.len(), 16);
-    assert_eq!(engine.get_output("t"), Some("2222\n2221\n2212\n2211\n2122\n2121\n2112\n2111\n1222\n1221\n1212\n1211\n1122\n1121\n1112\n1111\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("2222\n2221\n2212\n2211\n2122\n2121\n2112\n2111\n1222\n1221\n1212\n1211\n1122\n1121\n1112\n1111\n"));
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn indexed_repeated_join_matches_each_pair_once_across_retraction() {
         .collect();
     assert_eq!(engine.agenda_len(), 1024);
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1024);
-    let pairs: HashSet<_> = engine.get_output("t").unwrap().lines().collect();
+    let pairs: HashSet<_> = engine.get_output("t").unwrap().unwrap().lines().collect();
     assert_eq!(pairs.len(), 1024);
     engine.retract(facts[11]).unwrap();
     assert_eq!(engine.agenda_len(), 0);
@@ -55,7 +55,7 @@ fn indexed_repeated_join_matches_each_pair_once_across_retraction() {
         .assert_ordered("p", vec![Value::Integer(0), Value::Integer(11)])
         .unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 63);
-    let pairs: HashSet<_> = engine.get_output("t").unwrap().lines().collect();
+    let pairs: HashSet<_> = engine.get_output("t").unwrap().unwrap().lines().collect();
     assert_eq!(pairs.len(), 63);
     assert!(pairs
         .iter()
@@ -114,7 +114,7 @@ fn replacements_with_sparse_beta_ids_preserve_tuple_order() {
     engine.clear_output_channel("t");
     engine.assert_ordered("p", vec![Value::Integer(2)]).unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 15);
-    assert_eq!(engine.get_output("t"), Some("2222\n2221\n2212\n2211\n2122\n2121\n2112\n2111\n1222\n1221\n1212\n1211\n1122\n1121\n1112\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("2222\n2221\n2212\n2211\n2122\n2121\n2112\n2111\n1222\n1221\n1212\n1211\n1122\n1121\n1112\n"));
     #[cfg(debug_assertions)]
     engine.debug_assert_consistency();
 }

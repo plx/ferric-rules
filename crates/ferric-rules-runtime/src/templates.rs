@@ -108,6 +108,7 @@ impl RegisteredTemplate {
     pub fn validate_literal(&self, index: usize, literal: &LiteralKind) -> Result<(), String> {
         let kind = match literal {
             LiteralKind::Symbol(_) => SlotValueType::Symbol,
+            LiteralKind::InstanceName(_) => SlotValueType::InstanceName,
             LiteralKind::String(_) => SlotValueType::String,
             LiteralKind::Integer(_) => SlotValueType::Integer,
             LiteralKind::Float(_) => SlotValueType::Float,
@@ -154,6 +155,7 @@ impl RegisteredTemplate {
         for field in fields {
             let kind = match field {
                 Value::Symbol(_) => SlotValueType::Symbol,
+                Value::InstanceName(_) => SlotValueType::InstanceName,
                 Value::String(_) => SlotValueType::String,
                 Value::Integer(_) => SlotValueType::Integer,
                 Value::Float(_) => SlotValueType::Float,

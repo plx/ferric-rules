@@ -25,7 +25,10 @@ fn default_snapshot_and_repl_resume_use_cbor_and_preserve_pending_work() {
     let mut engine = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
     assert_eq!(engine.facts().unwrap().count(), 2);
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
-    assert_eq!(engine.get_output("t"), Some("selected 8\nselected 7\n"));
+    assert_eq!(
+        engine.get_output("t").expect("fixture output is UTF-8"),
+        Some("selected 8\nselected 7\n")
+    );
     assert_eq!(engine.find_facts("seen").unwrap().len(), 2);
 
     let mut repl = Command::new(env!("CARGO_BIN_EXE_ferric"))
@@ -89,4 +92,46 @@ fn explicit_experimental_codec_still_works_and_legacy_errors_are_useful() {
         "{stderr}"
     );
     assert!(stderr.contains("export application data"), "{stderr}");
+}
+
+#[test]
+fn repl_snapshot_resume_writes_exact_raw_lexeme_bytes() {
+    let consumer = tempfile::tempdir().unwrap();
+    let mut engine = Engine::with_rules(
+        "(defrule emit (payload ?text ?symbol ?name) => (printout t \"BEGIN:\" ?text \"|\" ?symbol \"|\" ?name \":END\" crlf))",
+    ).unwrap();
+    let string = engine.create_string_bytes(b"a\0\xff").unwrap();
+    let symbol = engine.symbol_value_bytes(b"s\xc3").unwrap();
+    let name = engine.instance_name_value_bytes(b"n\xff").unwrap();
+    engine
+        .assert_ordered("payload", vec![string.into(), symbol, name])
+        .unwrap();
+    let snapshot = engine.serialize(SerializationFormat::Cbor).unwrap();
+    std::fs::write(consumer.path().join("raw.ferric"), snapshot).unwrap();
+    let mut repl = Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .current_dir(consumer.path())
+        .args(["repl", "--snapshot", "raw.ferric"])
+        .env_remove("HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    repl.stdin
+        .take()
+        .unwrap()
+        .write_all(b"(run)\n(exit)\n")
+        .unwrap();
+    let output = repl.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let expected = b"BEGIN:a\0\xff|s\xc3|[n\xff]:END\n";
+    assert_eq!(
+        output
+            .stdout
+            .windows(expected.len())
+            .filter(|bytes| *bytes == expected)
+            .count(),
+        1,
+        "raw rule output must appear exactly once with every byte intact: {output:?}"
+    );
 }

@@ -32,9 +32,9 @@ fn verify(source: &str, expected: &[(&str, &str)], output: &str, trace: i64) {
         engine.get_global("after"),
         Some(Value::Integer(999))
     ));
-    assert_eq!(engine.get_output("t"), Some(output));
+    assert_eq!(engine.get_output("t").unwrap(), Some(output));
     assert_eq!(engine.run(RunLimit::Count(10)).unwrap().rules_fired, 0);
-    assert_eq!(engine.get_output("t"), Some(output));
+    assert_eq!(engine.get_output("t").unwrap(), Some(output));
 }
 
 #[test]

@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
 
     engine.run(RunLimit::Unlimited)?;
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     assert!(output.contains("Alice is an adult"));
     assert!(!output.contains("Bob is an adult"));
 

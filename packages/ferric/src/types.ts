@@ -34,6 +34,18 @@ export interface FerricSymbolInstance {
   valueOf(): string;
 }
 
+/** Typed, lossless byte lexemes. Text access is checked UTF-8. */
+export interface FerricByteLexemeInstance {
+  readonly bytes: Uint8Array;
+  readonly value: string;
+  toString(): string;
+}
+
+export interface WireByteLexemeObject {
+  __type: "FerricStringBytes" | "FerricSymbolBytes" | "FerricInstanceName";
+  bytes: Uint8Array;
+}
+
 /**
  * Union of all value types that can appear in CLIPS facts and expressions.
  *
@@ -58,6 +70,8 @@ export interface FerricSymbolInstance {
 export type ClipsValue =
   | FerricSymbolInstance
   | WireSymbolObject
+  | FerricByteLexemeInstance
+  | WireByteLexemeObject
   | string
   | number
   | bigint
@@ -214,7 +228,9 @@ export interface EvaluateResult {
    * "stdout" maps to the CLIPS "t" channel.
    * "stderr" maps to the CLIPS "stderr" channel.
    */
+  /** UTF-8 output only. Arbitrary bytes are always available in outputBytes. */
   readonly output: Readonly<Record<string, string>>;
+  readonly outputBytes: Readonly<Record<string, Uint8Array>>;
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,8 @@
 //! Every promoted source/golden pair is byte-identical to sealed CLIPS 6.30
 //! evidence; image sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929.
 //! Finite fixtures cover normal/late load and all five snapshot codecs.
+//! The two round-trip fixtures compose #339 scanning with #344 quoting; they
+//! cover selected scannable values, not arbitrary symbols, floats, or NUL data.
 //! Nonfinite rule ASTs use four codecs plus explicit JSON rejection; late
 //! installation after a finite prefix still covers all five codecs.
 //! Literal CR/CRLF fixture paths require exact file-specific Git -text rules.
@@ -13,7 +15,7 @@ use ferric_rules::runtime::{Engine, EngineConfig, HaltReason, RunLimit};
 struct Fixture {
     name: &'static str,
     source: &'static str,
-    output: &'static str,
+    output: &'static [u8],
 }
 
 macro_rules! fixture {
@@ -21,7 +23,7 @@ macro_rules! fixture {
         Fixture {
             name: $name,
             source: include_str!(concat!("fixtures/stdlib/", $name, ".clp")),
-            output: include_str!(concat!("fixtures/stdlib/", $name, ".out")),
+            output: include_bytes!(concat!("fixtures/stdlib/", $name, ".out")),
         }
     };
 }
@@ -44,6 +46,8 @@ const FIXTURES: &[Fixture] = &[
     fixture!("implode_float_rounding_cutovers"),
     fixture!("implode_empty_mf_evaluates_once"),
     fixture!("implode_multifield_print_formatter_control"),
+    fixture!("implode_quoted_round_trip"),
+    fixture!("implode_typed_round_trip"),
 ];
 
 const NONFINITE: Fixture = fixture!("implode_source_nonfinite_floats");
@@ -73,7 +77,7 @@ fn assert_no_refiring(engine: &mut Engine, fixture: &Fixture) {
     let result = engine.run(RunLimit::Count(10)).unwrap();
     assert_eq!(result.rules_fired, 0, "{}", fixture.name);
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
-    assert_eq!(engine.get_output("t").unwrap_or(""), fixture.output);
+    assert_eq!(engine.get_output_bytes("t").unwrap_or(b""), fixture.output);
     assert!(engine.action_diagnostics().is_empty());
 }
 
@@ -93,7 +97,7 @@ fn assert_fixture_output(engine: &mut Engine, fixture: &Fixture) {
     );
     assert_eq!(result.rules_fired, 1, "{}", fixture.name);
     assert_eq!(
-        engine.get_output("t").unwrap_or(""),
+        engine.get_output_bytes("t").unwrap_or(b""),
         fixture.output,
         "{}",
         fixture.name
@@ -172,6 +176,16 @@ golden_test!(
 golden_test!(
     multifield_print_formatter_control_matches_reference,
     "implode_multifield_print_formatter_control"
+);
+
+golden_test!(
+    implode_quoted_round_trip_matches_reference,
+    "implode_quoted_round_trip"
+);
+
+golden_test!(
+    implode_typed_round_trip_matches_reference,
+    "implode_typed_round_trip"
 );
 
 #[test]

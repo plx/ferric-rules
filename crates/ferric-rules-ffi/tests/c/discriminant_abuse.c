@@ -42,7 +42,7 @@ static int failures = 0;
 
 /* Discriminants that must be rejected: first invalid value, arbitrary
  * garbage, and bit patterns that would be invalid Rust enum reprs. */
-static const uint32_t INVALID_TAGS[] = {7u, 42u, 0xDEADBEEFu, 0xFFFFFFFFu};
+static const uint32_t INVALID_TAGS[] = {10u, 42u, 0xDEADBEEFu, 0xFFFFFFFFu};
 static const size_t INVALID_TAG_COUNT =
     sizeof(INVALID_TAGS) / sizeof(INVALID_TAGS[0]);
 
@@ -164,7 +164,7 @@ static void test_assert_template(FerricEngine *engine) {
     FerricValue elems[2];
     elems[0] = ferric_value_integer(1);
     elems[1] = ferric_value_void();
-    elems[1].value_type = 7u;
+    elems[1].value_type = INVALID_TAGS[0];
     elems[1].string_ptr = (char *)&elems[1];
 
     FerricValue mf = ferric_value_void();
@@ -176,7 +176,7 @@ static void test_assert_template(FerricEngine *engine) {
                                                     &mf, 1, NULL);
     CHECK(err == FERRIC_ERROR_INVALID_ARGUMENT,
           "assert_template must reject an invalid nested discriminant");
-    check_diag_names_tag(ferric_engine_last_error(engine), 7u,
+    check_diag_names_tag(ferric_engine_last_error(engine), INVALID_TAGS[0],
                          "template nested diagnostic must name the tag");
     expect_engine_usable(engine);
 }

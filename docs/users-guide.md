@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.assert_ordered_symbol("user", "Alice")?;
     engine.run(RunLimit::Unlimited)?;
 
-    assert_eq!(engine.get_output("t"), Some("Hello, Alice!\n"));
+    assert_eq!(engine.get_output("t")?, Some("Hello, Alice!\n"));
     Ok(())
 }
 ```
@@ -98,8 +98,9 @@ A few things are worth noticing:
 - `RunLimit::Unlimited` runs until the agenda drains. `RunLimit::Count(n)`
   caps the run at `n` firings — useful when you need bounded execution in
   a request handler.
-- `get_output("t")` returns whatever rules wrote to the standard output
-  channel (`t` in CLIPS). If nothing was written, it returns `None`.
+- `get_output("t")` checks the captured bytes as UTF-8 and returns
+  `Result<Option<&str>, Utf8Error>`. If nothing was written, it returns
+  `Ok(None)`. Use `get_output_bytes("t")` to retain arbitrary output bytes.
 
 ---
 

@@ -1,0 +1,4 @@
+comment-cr:TRUE:FALSE:FALSE:FALSE:[42]
+number-vtab:TRUE:FALSE:FALSE:FALSE:[42]
+symbol-vtab:FALSE:FALSE:FALSE:TRUE:[red]
+quoted-vtab:FALSE:FALSE:TRUE:FALSE:[ab]

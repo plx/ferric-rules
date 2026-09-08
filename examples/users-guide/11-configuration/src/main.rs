@@ -37,6 +37,6 @@ fn main() -> anyhow::Result<()> {
     )?;
     engine.assert_ordered("start", ())?;
     engine.run(ferric_rules::runtime::RunLimit::Unlimited)?;
-    println!("output = {:?}", engine.get_output("t").unwrap_or(""));
+    println!("output = {:?}", engine.get_output("t")?.unwrap_or(""));
     Ok(())
 }

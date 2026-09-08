@@ -27,6 +27,12 @@ func NativeToWireValue(v any) (WireValue, error) {
 		return WireValue{Kind: WireValueFloat, Float: float64(val)}, nil
 	case float64:
 		return WireValue{Kind: WireValueFloat, Float: val}, nil
+	case StringBytes:
+		return WireValue{Kind: WireValueStringBytes, Bytes: []byte(val)}, nil
+	case SymbolBytes:
+		return WireValue{Kind: WireValueSymbolBytes, Bytes: []byte(val)}, nil
+	case InstanceName:
+		return WireValue{Kind: WireValueInstanceName, Bytes: []byte(val)}, nil
 	case Symbol:
 		return WireValue{Kind: WireValueSymbol, Text: string(val)}, nil
 	case string:
@@ -65,6 +71,12 @@ func WireToNativeValue(w WireValue) (any, error) {
 		return Symbol(w.Text), nil
 	case WireValueString:
 		return w.Text, nil
+	case WireValueStringBytes:
+		return StringBytes(w.Bytes), nil
+	case WireValueSymbolBytes:
+		return SymbolBytes(w.Bytes), nil
+	case WireValueInstanceName:
+		return InstanceName(w.Bytes), nil
 	case WireValueMultifield:
 		result := make([]any, len(w.Multifield))
 		for i, elem := range w.Multifield {

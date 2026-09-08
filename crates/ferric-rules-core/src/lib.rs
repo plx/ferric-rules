@@ -79,7 +79,7 @@ pub use negative::{NegativeMemory, NegativeMemoryId};
 pub use rete::{PendingPredicateMatch, ReteCardinality, ReteNetwork};
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;
-pub use symbol::{Symbol, SymbolTable};
+pub use symbol::{InstanceName, Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};
 pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage};
 pub use value::{AtomKey, ExternalAddress, ExternalTypeId, IntoFieldValues, Multifield, Value};

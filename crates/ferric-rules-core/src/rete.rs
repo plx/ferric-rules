@@ -1870,6 +1870,7 @@ pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTes
 fn values_join_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Symbol(a), Value::Symbol(b)) => Some(a == b),
+        (Value::InstanceName(a), Value::InstanceName(b)) => Some(a == b),
         (Value::Integer(a), Value::Integer(b)) => Some(a == b),
         (Value::Float(a), Value::Float(b)) => Some(a.to_bits() == b.to_bits()),
         (Value::String(a), Value::String(b)) => Some(a == b),
@@ -4877,5 +4878,28 @@ mod tests {
             let neq_result = values_join_eq(&int_val, &float_val).is_some_and(|eq| !eq);
             prop_assert!(neq_result, "cross-type NotEqual must be true");
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_value_tests {
+    use super::*;
+    use crate::{FerricString, InstanceName, StringEncoding, SymbolTable};
+
+    #[test]
+    fn join_equality_preserves_instance_type_and_complete_byte_strings() {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let name = Value::InstanceName(InstanceName::from_symbol(symbol));
+        assert_eq!(values_join_eq(&name, &name), Some(true));
+        assert_eq!(values_join_eq(&name, &Value::Symbol(symbol)), Some(false));
+        let first =
+            Value::String(FerricString::from_bytes(b"a\0\xff", StringEncoding::Utf8).unwrap());
+        let second =
+            Value::String(FerricString::from_bytes(b"a\0\xc3", StringEncoding::Utf8).unwrap());
+        assert_eq!(values_join_eq(&first, &first), Some(true));
+        assert_eq!(values_join_eq(&first, &second), Some(false));
     }
 }

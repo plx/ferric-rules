@@ -161,7 +161,7 @@ fn parse_single_observation(output: &std::process::Output) -> Value {
 
 fn assert_identity_and_lifecycle(observation: &Value, digest: &str) {
     assert_eq!(observation["schema"], "ferric.compat-observation");
-    assert_eq!(observation["version"], 1);
+    assert_eq!(observation["version"], 2);
     assert_eq!(observation["engine"]["name"], "ferric");
     assert_eq!(observation["fixture"]["id"], FIXTURE_ID);
     assert_eq!(observation["fixture"]["nonce"], NONCE);

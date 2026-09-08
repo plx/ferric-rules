@@ -53,6 +53,9 @@ var (
 	ffiEngineGetFactRelation        = ffi.EngineGetFactRelation
 	ffiValueSymbolBytes             = ffi.ValueSymbolBytes
 	ffiValueStringBytes             = ffi.ValueStringBytes
+	ffiValueStringRaw               = ffi.ValueStringRaw
+	ffiValueSymbolRaw               = ffi.ValueSymbolRaw
+	ffiValueInstanceName            = ffi.ValueInstanceName
 	ffiValueMultifieldCopy          = ffi.ValueMultifieldCopy
 	ffiValueFree                    = ffi.ValueFree
 )
