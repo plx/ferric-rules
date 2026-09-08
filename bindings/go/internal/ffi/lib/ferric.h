@@ -441,13 +441,13 @@ typedef struct FerricConfig {
 // | Symbol | `string_ptr` |
 // | String | `string_ptr` |
 // | Multifield | `multifield_ptr`, `multifield_len` |
-// | ExternalAddress | `external_type_id`, `external_pointer` |
-// | StringBytes / SymbolBytes / InstanceName | `string_ptr`, `multifield_len` (byte count) |
+// | `ExternalAddress` | `external_type_id`, `external_pointer` |
+// | `StringBytes` / `SymbolBytes` / `InstanceName` | `string_ptr`, `multifield_len` (byte count) |
 //
 // The byte transport tags preserve the existing structure layout. Their
 // `string_ptr` is a byte span, with no trailing NUL requirement; a zero-length
 // span may have a null pointer. `multifield_ptr` is inactive for these tags.
-// StringBytes and SymbolBytes retain CLIPS STRING and SYMBOL semantics.
+// `StringBytes` and `SymbolBytes` retain CLIPS STRING and SYMBOL semantics.
 // Only `ferric_value_free` may release an owned byte span: do not pass it to
 // `ferric_string_free`, which requires a NUL-terminated allocation.
 typedef struct FerricValue {
