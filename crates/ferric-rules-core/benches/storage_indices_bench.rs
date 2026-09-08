@@ -1118,6 +1118,59 @@ fn bench_beta_membership_sizes(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_token_cascade_stack(c: &mut Criterion) {
+    fn prepare(width: usize, depth: usize) -> (TokenStore, TokenId) {
+        let mut store = TokenStore::new();
+        let root = store.insert(Token {
+            fact: None,
+            bindings: BindingSet::new(),
+            parent: None,
+            owner_node: NodeId(0),
+        });
+        for _ in 0..width {
+            let mut parent = root;
+            for _ in 0..depth {
+                parent = store.insert(Token {
+                    fact: None,
+                    bindings: BindingSet::new(),
+                    parent: Some(parent),
+                    owner_node: NodeId(1),
+                });
+            }
+        }
+        (store, root)
+    }
+    let mut group = c.benchmark_group("token_cascade_stack");
+    for (name, width, depth) in [
+        ("chain_32", 1, 32),
+        ("fanout_4", 4, 1),
+        ("fanout_32", 32, 1),
+    ] {
+        group.bench_function(name, |b| {
+            let (mut oracle, root) = prepare(width, depth);
+            let mut expected = Vec::new();
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                stack.extend(oracle.children(id));
+                expected.push(id);
+            }
+            let removed = oracle.remove_cascade(root);
+            assert_eq!(
+                removed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(removed.len(), 1 + width * depth);
+            assert!(oracle.is_empty());
+            b.iter_batched_ref(
+                || prepare(width, depth),
+                |(store, root)| black_box(store.remove_cascade(*root)),
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_symbol_table_ascii_intern,
@@ -1128,6 +1181,7 @@ criterion_group!(
     bench_fact_base_relation_symbol_index_cycle,
     bench_fact_base_template_index_cycle,
     bench_token_store_reverse_index_cycle,
+    bench_token_cascade_stack,
     bench_alpha_network_reverse_index_cycle,
     bench_alpha_node_store_cycle,
     bench_alpha_memory_indexed_slots_cycle,

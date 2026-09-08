@@ -25,6 +25,11 @@ SUITES = {
         "ferric-rules": ["engine_bench", "join_bench", "churn_bench", "cascade_bench", "manners_bench", "alpha_fanout_bench"],
         "ferric-rules-core": ["storage_indices_bench"],
     },
+    "audit-cascade": {
+        "ferric-rules": ["cascade_bench", "churn_bench", "negation_bench", "forall_bench", "engine_bench", "manners_bench"],
+        "ferric-rules-core": ["storage_indices_bench"],
+    },
+    "audit-core": {"ferric-rules-core": ["storage_indices_bench"]},
     "audit-full": {"ferric-rules": ["*"]},
     "audit-runtime": {"ferric-rules-runtime": ["*"]},
     "audit-ffi": {"ferric-rules-ffi": ["capi_bench"]},

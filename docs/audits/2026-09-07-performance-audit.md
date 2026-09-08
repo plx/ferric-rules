@@ -278,6 +278,7 @@ under exclusive engine access. Shared exports and lookups retain their mutex,
 global identities, and provenance checks. The existing bounded pruning policy
 remains in place; synchronous cleanup on every RHS removal was measured and
 rejected after repeatable small-churn regressions.
+
 Host-value validation retains its depth/item limits, ownership checks, and
 traversal/error order, but stores its first eight pending values inline instead
 of allocating a vector for each scalar input.
@@ -350,3 +351,23 @@ allocation reuse. New `beta_membership_sizes` controls measure cold construction
 traversal, and removal at 1, 2, 3, 32, and 1,024 members, with duplicate/order and
 empty-result oracles. Core storage, join, cascade, churn, alpha fanout, engine,
 and Manners workloads remain paired controls.
+
+## Rejected cascade experiment
+
+Keeping eight pending cascade tokens inline and borrowing the owner child array
+passed optimized correctness tests, but did not establish a broad performance
+win. Two paired 99-case comparisons are retained in the
+[initial record](2026-09-07-cascade-initial.json) and
+[repeat record](2026-09-07-cascade-repeat.json). Both used AMD EPYC 7763 Linux
+runners with release/LTO builds and identical benchmark source on both revisions.
+
+The four-branch microbenchmark improves 14.84% / 13.55% in the first comparison
+and 17.20% / 17.41% in the second (second repeat: 286.17 to 236.34 ns).
+The equally weighted complete suite changes +0.07% / -0.01%, then +0.85% / +0.39%.
+The second comparison also regresses two core storage controls by more than 5%
+in both rounds. The microbenchmark gain does not justify retaining this change
+without a broader win, so the production optimization is removed.
+
+The 32-token-chain and four/32-branch benchmark controls remain, including exact
+traversal and empty-result oracles. The audit runner retains its complete
+facade/runtime/core/C ABI suites so future proposals can repeat this assessment.

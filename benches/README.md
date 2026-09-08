@@ -203,3 +203,9 @@ execution after setup to catch repeated scans of the dormant agenda.
 cold beta membership construction, traversal, and removal, covering both sides
 of the inline promotion threshold and larger-set controls. Untimed oracles check
 duplicates, remove/reinsert order, and complete reclamation.
+
+### Cascade traversal stacks
+
+`storage_indices_bench` includes `token_cascade_stack/{chain_32,fanout_4,fanout_32}`.
+Setup is excluded; timed work removes the cascade. Untimed oracles compare exact
+LIFO traversal against the original vector algorithm and check complete removal.
