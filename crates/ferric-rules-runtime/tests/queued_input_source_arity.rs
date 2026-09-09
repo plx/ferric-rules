@@ -83,3 +83,39 @@ fn invalid_read_arity_does_not_replace_a_callable_or_evaluate_global_initializer
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
     assert_eq!(engine.get_output_bytes("t").unwrap_or(b""), b"7\n");
 }
+
+#[test]
+fn callable_template_slot_heads_use_registered_local_or_visible_templates() {
+    // Source acceptance only: callable assert execution is a separate boundary.
+    for declarations in [
+        "(deftemplate item (multislot read))",
+        "(defmodule M (export ?ALL))
+(deftemplate item (multislot read))
+(defmodule APP (import M ?ALL))",
+    ] {
+        let source = format!("{declarations}\n(deffunction f () (assert (item (read a b))))");
+        let mut engine = Engine::new(EngineConfig::default());
+        let loaded = engine.load_str(&source).expect(&source);
+        assert_eq!(loaded.functions.len(), 1);
+    }
+}
+
+#[test]
+fn later_templates_do_not_hide_read_arity_errors_in_callable_source() {
+    // CLIPS classifies the fact at the callable's declaration, before the
+    // later template exists. This tests source rejection, not body execution.
+    for declaration in [
+        "(deffunction f () (assert (item (read a b))))",
+        "(defmethod f () (assert (item (read a b))))",
+    ] {
+        let source = format!("{declaration}\n(deftemplate item (multislot read))");
+        let mut engine = Engine::new(EngineConfig::default());
+        let errors = engine.load_str(&source).expect_err(&source);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("read expects 0 or 1 arguments")),
+            "{source}: {errors:?}"
+        );
+    }
+}

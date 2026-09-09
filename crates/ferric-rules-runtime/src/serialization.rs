@@ -685,6 +685,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_reject_iterator_binds_even_in_unexecuted_callable_bodies() {
+        fn replace_bind_target(value: &mut serde_json::Value) -> usize {
+            if let Some(call) = value.get_mut("FunctionCall") {
+                if call["name"] == "bind" {
+                    assert_eq!(call["args"][0]["Variable"][0], "scratch");
+                    call["args"][0]["Variable"][0] = serde_json::json!("i");
+                    return 1;
+                }
+            }
+            match value {
+                serde_json::Value::Array(entries) => {
+                    entries.iter_mut().map(replace_bind_target).sum()
+                }
+                serde_json::Value::Object(entries) => {
+                    entries.values_mut().map(replace_bind_target).sum()
+                }
+                _ => 0,
+            }
+        }
+
+        for definition in ["deffunction keep", "defmethod keep 1"] {
+            for (body, diagnostic) in [
+                ("(loop-for-count (?i 2 1) (bind ?scratch 9))", "PRCDRPSR1"),
+                ("(progn$ (?i (create$)) (bind ?scratch 9))", "MULTIFUN2"),
+                ("(foreach ?i (create$) (bind ?scratch 9))", "MULTIFUN2"),
+            ] {
+                let engine = Engine::with_rules(&format!("({definition} () {body} 7)")).unwrap();
+                // These empty loops never reach the evaluator's runtime guard.
+                // A checksummed payload must still obey source-time protection.
+                let result = alter_state(&engine, |state| {
+                    assert_eq!(replace_bind_target(state), 1);
+                });
+                assert!(
+                    matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(diagnostic)),
+                    "{definition}: {body}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_rejects_nonroot_root_without_panicking() {
         let engine = Engine::with_rules("(defrule ready (ready) =>)").unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -796,6 +837,78 @@ mod tests {
             again
                 .assert_ordered("after-reset", Vec::<Value>::new())
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn public_fact_indices_preserve_wide_snapshot_chronology() {
+        let engine = Engine::with_rules(
+            "(deftemplate item (slot value))
+             (defrule index =>
+               (do-for-fact ((?f item)) TRUE (printout t (fact-index ?f) crlf)))",
+        )
+        .unwrap();
+        let maximum = u64::try_from(i64::MAX).unwrap();
+        for timestamp in [maximum - 1, maximum, maximum + 1, u64::MAX - 1] {
+            let mut wide = alter_state(&engine, |state| {
+                state["fact_base"]["next_timestamp"] = serde_json::json!(timestamp);
+            })
+            .unwrap();
+            wide.assert_template("item", &["value"], [7_i64]).unwrap();
+
+            for &format in SerializationFormat::ALL {
+                let mut restored =
+                    Engine::deserialize(&wide.serialize(format).unwrap(), format).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                if timestamp <= maximum {
+                    assert!(restored.action_diagnostics().is_empty());
+                    assert_eq!(
+                        restored.get_output("t").unwrap().unwrap(),
+                        format!("{timestamp}\n")
+                    );
+                } else {
+                    assert!(matches!(restored.action_diagnostics(),
+                        [crate::ActionError::Evaluator(crate::evaluator::EvalError::UnsupportedOperation {
+                            operation, reason, ..
+                        })] if operation == "fact-index" && reason.contains("signed 64-bit")));
+                    assert_eq!(restored.get_output("t").unwrap().unwrap_or(""), "");
+                }
+                // Introspection overflow does not corrupt or invalidate the
+                // supported u64 chronology, even at assertion exhaustion.
+                let mut again =
+                    Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+                let handle = again.facts().unwrap().next().unwrap().0;
+                again.retract(handle).unwrap();
+                again.reset().unwrap();
+                again.assert_template("item", &["value"], [8_i64]).unwrap();
+                assert_eq!(again.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                assert!(again.action_diagnostics().is_empty());
+                assert_eq!(again.get_output("t").unwrap().unwrap(), "1\n");
+            }
+        }
+    }
+
+    #[test]
+    fn exhausted_initial_fact_installation_does_not_adopt_a_user_fact() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let mut restored = alter_state(&engine, |state| {
+            state["fact_base"]["next_timestamp"] = serde_json::json!(u64::MAX);
+        })
+        .unwrap();
+        assert!(matches!(
+            restored.ensure_initial_fact(),
+            Err(crate::EngineError::FactTimestampExhausted(_))
+        ));
+        assert!(restored.initial_fact_id.is_none());
+        assert_eq!(restored.fact_count(), 1);
+        assert_eq!(restored.facts().unwrap().count(), 1);
+        for &format in SerializationFormat::ALL {
+            let again = Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+            assert!(again.initial_fact_id.is_none());
+            assert_eq!(again.fact_count(), 1);
         }
     }
 

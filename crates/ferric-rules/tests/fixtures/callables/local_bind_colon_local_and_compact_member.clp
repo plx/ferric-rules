@@ -1,0 +1,7 @@
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)))
+(deffunction colon-local (?x)
+  (bind ?f:value (+ ?x 1))
+  (bind ?found (any-factp ((?f item)) (= ?f:value 10)))
+  (create$ ?found ?f:value))
+(defrule probe => (printout t (colon-local 90) crlf))

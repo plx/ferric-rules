@@ -1,0 +1,5 @@
+(deffunction indexed (?x-index)
+  (bind ?sum 0)
+  (progn$ (?x (create$ a b)) (bind ?sum (+ ?sum ?x-index)))
+  (create$ ?sum ?x-index))
+(defrule probe => (printout t (indexed 90) crlf))

@@ -432,7 +432,7 @@ RHS action lists. They can call expression functions such as `str-cat`,
 `run`) belong in the calling rule's RHS.
 
 Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
-`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `((?x))`.
+`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`.
 
 ---
 

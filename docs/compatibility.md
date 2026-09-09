@@ -260,13 +260,57 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
-Use the host fact inspection API for queries. RHS `do-for-*` actions retain
-their existing fact iteration, but CLIPS query expressions (`any-factp`,
-`find-fact`, `find-all-facts`) in expressions or callable bodies are unsupported.
-They now report a load or execution error rather than inventing FALSE/empty
-results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
-rule LHS fact-address slot access remains available. This limitation does not
-restrict normal joins or host-side typed fact inspection.
+Query members and ordinary aliases of their fact addresses can be used by RHS
+`retract`, `modify`, and `duplicate`. The current ordinary binding determines
+the target, including query members that shadow an LHS address and inner loop
+variables that shadow query members. Repeating a retraction of the same address
+is harmless; invalid targets still stop the rule with a diagnostic.
+
+Immediate `do-for-fact` and `do-for-all-facts` queries visit live facts in
+assertion order. They skip future facts removed by a body and can visit newly
+asserted facts. In multi-member queries, the last member varies first and an
+outer member remains selected while its inner members advance.
+`delayed-do-for-all-facts` selects all matching tuples before executing any
+body, so body effects cannot change its selection. Selected query members keep
+their original compact slot values even after retraction; their addresses
+remain distinct from subsequently asserted replacements, and `fact-existp`
+continues to report live working-memory membership. Retained compact values do
+not change the existing stale-address behavior of explicit introspection calls.
+
+Action-query traversal shares the configured action-loop budget: each visited
+member costs one iteration, and delayed queries also charge each selected body.
+This bounds selection before any delayed body executes and live loops that
+keep asserting facts. The chronology index and retained query records are
+transient or derived state; snapshots omit them and reconstruct chronology on
+first use. Existing Ferric halt/reset/clear action boundaries remain unchanged.
+
+RHS `do-for-fact`, `do-for-all-facts`, and `delayed-do-for-all-facts` actions
+support compact `?fact:slot` reads in their predicates and bodies, including
+single slots and multislots. Nested query members shadow and restore outer
+members; same-named loop variables do not change which fact a compact slot
+reference reads. Explicitly rebinding a query member with `bind` is a load
+error. Slot reads follow normal expression evaluation, so skipped branches do
+not access missing slots. Ordinary rule LHS fact-address slot access remains
+available.
+
+`any-factp`, `find-fact`, and `find-all-facts` also work in RHS expressions,
+deffunctions, and methods. `any-factp` returns TRUE or FALSE; `find-fact`
+returns the first matching tuple as a multifield of fact addresses, and
+`find-all-facts` concatenates every matching tuple into one multifield.
+Both find forms return an empty multifield when nothing matches. Query
+members follow declaration order, with the first member outermost and each
+template's facts visited in assertion order. The any/first forms stop after
+the first match.
+
+Query restrictions currently require one visible, unqualified, declared
+deftemplate per member. Multiple-template restrictions, queries in global
+initializers, and `do-for-*` forms inside expressions or callable bodies
+remain unsupported. Local `bind` syntax in a predicate is a load error;
+global binds are allowed. Each
+expression-query candidate shares the configured action-loop budget with
+surrounding loops and nested queries. Empty queries do not evaluate their
+predicates. Snapshot restoration preserves query definitions and assertion
+order without changing the serialized format.
 
 ### Activation Ordering Contract
 
@@ -562,7 +606,7 @@ and following top-level constructs retain their incremental load behavior.
 ### Mutation via bind
 
 - `(bind ?*name* <value>)` updates an existing global variable.
-- `bind` does **not** create new variables -- the global must already exist.
+- A global target must already exist; global `bind` does not create a new global.
 - Globals are accessible from rule RHS actions and function bodies.
 
 ### Reset Behavior
@@ -574,6 +618,26 @@ On `(reset)`, globals are restored to their declared initial values.
 ## 16.7 Deffunctions
 
 Ferric supports user-defined functions via `deffunction`.
+
+Within a deffunction or method, `(bind ?name <value>)` creates or updates a
+local binding that remains visible for the rest of that invocation. Parameters
+can be rebound the same way. Each nested, recursive, or subsequent call has its
+own locals, and methods invoked through `call-next-method` receive the original
+call arguments.
+
+A local bind returns the value it stores. Multiple values form a multifield;
+`?name` and `$?name` access the same binding. `(bind ?name)` removes the local
+override and returns FALSE. A parameter then exposes its original argument;
+an ordinary local becomes unbound. A bind in an untaken branch does not
+initialize its target.
+
+Local updates remain visible across conditionals and iterations. Iterator
+and query references have lexical scope, so their reads use the current
+iteration or selected fact. Binding an iterator itself is rejected. A generated
+`-index` name can also name an ordinary local: writing that local leaves the
+lexical index unchanged inside the loop, and the ordinary value is visible
+afterward. Callable locals are transient invocation state and are not stored
+in engine snapshots.
 
 ```clp
 (deffunction double (?x) (* ?x 2))
@@ -780,7 +844,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `max` | Maximum | `(max 3 7)` => `7` |
 | `**` | Power | `(** 2 10)` => `1024.0` |
 | `sqrt` | Square root | `(sqrt 16)` => `4.0` |
-| `round` | Round to nearest integer | `(round 3.7)` => `4` |
+| `round` | Round to nearest integer; half ties choose the lower integer, INTEGER inputs stay exact | `(round 2.5)` => `2`; `(round -2.5)` => `-3` |
 | `ceiling` | Round up to integer | `(ceiling 3.1)` => `4` |
 | `floor` | Round down to integer | `(floor 3.9)` => `3` |
 | `pi` | Pi constant | `(pi)` => `3.14159...` |
@@ -794,6 +858,17 @@ identically to their CLIPS counterparts for the supported argument types.
 | `asinh`, `acosh`, `atanh` | Inverse hyperbolic | `(asinh 0)` => `0.0` |
 | `deg-rad`, `rad-deg` | Angle conversion | `(deg-rad 180)` => `3.14159...` |
 | `deg-grad`, `grad-deg` | Degree/gradian conversion | `(deg-grad 90)` => `100.0` |
+
+`min` and `max` return the selected operand with its original INTEGER or FLOAT
+type. Numeric ties retain the first selected operand, including the sign of a
+floating-point zero. Integer pairs compare exactly; mixed INTEGER/FLOAT pairs
+compare after floating-point conversion. Each comparison uses the current
+selected operand's type, even if an earlier discarded operand was a FLOAT.
+
+For FLOAT arguments, Ferric uses `ceil(x - 0.5)` to reproduce the observed
+CLIPS floating-point boundary behavior. For example,
+`(round -0.49999999999999994)` returns `-1`. INTEGER arguments remain unchanged
+without conversion through floating point.
 
 ### Type Conversion
 
@@ -849,9 +924,9 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 |----------|-------------|---------|
 | `str-cat` | Concatenate to string | `(str-cat "a" "b")` => `"ab"` |
 | `sym-cat` | Concatenate to symbol | `(sym-cat a b)` => `ab` |
-| `str-length` | String length in bytes | `(str-length "hello")` => `5` |
-| `sub-string` | Extract substring (1-indexed) | `(sub-string 1 3 "hello")` => `"hel"` |
-| `str-index` | Find substring position (1-indexed), FALSE if not found | `(str-index "lo" "hello")` => `4` |
+| `str-length` | Character length of a STRING or SYMBOL | `(str-length "hello")` => `5`; `(str-length abc)` => `3` |
+| `sub-string` | Extract a STRING from a STRING or SYMBOL (1-indexed, inclusive, clipped bounds) | `(sub-string 0 2 abc)` => `"ab"` |
+| `str-index` | First substring position (1-indexed), FALSE if not found; empty needle returns length + 1 | `(str-index "" "abc")` => `4` |
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
@@ -885,14 +960,22 @@ argument count, wrong type, or an operand error yields an empty multifield
 and halts evaluation. SYMBOL and INSTANCE-NAME input values are not accepted
 by these aliases.
 
+`str-index` accepts STRING, SYMBOL, or INSTANCE-NAME needle and haystack arguments. It evaluates
+and validates each argument once, from left to right, including the haystack when
+the needle is empty. Positions count Unicode scalar values when both complete operands are valid UTF8; otherwise they count bytes. An empty needle
+returns the haystack's character count plus one: `(str-index "" "abc")` returns
+`4`, and `(str-index "" "")` returns `1`. A nonempty needle returns the first
+matching position or FALSE.
+
 ### Multifield Functions
 
 | Function | Description | Example |
 |----------|-------------|---------|
 | `create$` | Create a multifield | `(create$ a b c)` |
+| `implode$` | Convert multifield fields to a STRING | `(implode$ (create$ a 3))` => `"a 3"` |
 | `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
-| `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
-| `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
+| `nth$` | Get nth element (1-indexed), `nil` if absent | `(nth$ 2 (create$ a b c))` => `b` |
+| `member$` | Find element position or contiguous subsequence range | `(member$ b (create$ a b c))` => `2` |
 | `subsetp` | Subset test | `(subsetp (create$ a) (create$ a b))` => `TRUE` |
 | `insert$` | Insert values at position | `(insert$ (create$ a c) 2 b)` => `(a b c)` |
 | `delete$` | Remove range (1-indexed, inclusive) | `(delete$ (create$ a b c) 2 2)` => `(a c)` |
@@ -900,6 +983,42 @@ by these aliases.
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
 | `sort` | Stable predicate sort of scalar and multifield arguments | `(sort < (create$ 3 1 2))` => `(3 2 1)` |
+
+`create$` evaluates VOID-producing operands for their effects but omits those
+scalar results from the multifield. Empty STRINGs remain fields.
+
+`implode$` accepts exactly one MULTIFIELD, evaluates that operand once, and
+returns a STRING. Fields are separated by one space without outer parentheses.
+An empty multifield returns an empty STRING; an empty STRING field contributes
+`""`. STRING fields have surrounding quotes, and embedded quotes and
+backslashes receive a preceding backslash. Literal control characters and
+raw bytes remain unchanged. SYMBOL spellings, including `crlf`, `tab`,
+`vtab`, and `ff`, remain literal names. INSTANCE-NAME values use bracketed
+raw name bytes. Scalar operands produce a type error; the argument-count
+check precedes operand evaluation.
+
+INTEGERs retain their exact decimal spelling. FLOATs use direct output's
+15-significant-digit representation, including `-0.0`, scientific notation,
+and its nonfinite spellings. These field rules apply to the supplied slice or
+capture and leave the input values unchanged. The separate `str-cat`,
+`sym-cat`, `format`, and `save-facts` formatters retain their existing behavior.
+
+`explode$` and `str-explode` can read the quoted STRING fields back into a
+MULTIFIELD. The reviewed round-trip cases preserve empty, numeric-looking,
+and bracket-looking STRINGs, escaped quotes and backslashes, scannable SYMBOLs
+and INSTANCE-NAMEs, exact INTEGERs, and selected FLOATs such as `1.25` and
+`-0.0`. Coverage includes actual field types and bytes, normal and late rule
+installation, and all five snapshot formats. For example,
+`(explode$ (implode$ (create$ a "two words" 3)))` returns `(a "two words" 3)`.
+
+These cases do not establish a general source serialization contract.
+Arbitrary SYMBOL spellings may scan as another type or multiple fields;
+INSTANCE-NAME payloads also need a valid scanner spelling. FLOAT formatting
+can round values beyond 15 significant digits, so arbitrary f64 bits need
+not survive. Length-bearing host values retain NUL and invalid UTF8 bytes
+in the imploded result, but scanning stops at the first NUL byte. Typed
+FACT-ADDRESS print forms and opaque host addresses retain the direct-output
+boundaries below; INTEGERs are never reinterpreted as addresses.
 
 #### Predicate sorting
 
@@ -973,12 +1092,28 @@ This is separate from malformed source `bind` targets, which must retain their
 ordinary variable form. Comparator arity metadata alone does not establish
 full compatibility for every builtin or special form.
 
+`nth$` and its `nth` alias preserve the selected field's type and return the
+lowercase symbol `nil` for zero, negative, or excessive positions, including an
+empty multifield. After validating the numeric index, they evaluate and validate
+the multifield even when the position is absent. Runtime FLOAT indices truncate
+toward zero. CLIPS separately rejects literal FLOAT indices during source
+validation; Ferric's runtime conversion does not implement that static check.
+
+`member$` and its `member` alias return the first matching position as an INTEGER
+for a scalar or single-field MULTIFIELD needle. Longer matching needles return a
+two-INTEGER MULTIFIELD containing the inclusive start and end positions; for
+example, `(member$ (create$ b c) (create$ a b c d))` returns `(2 3)`. Missing
+matches return the symbol `FALSE`. An empty needle returns `(1 0)` for a nonempty
+haystack and `FALSE` for an empty one. Both operands are evaluated before the
+search, including empty-needle cases, and the haystack must be a MULTIFIELD.
+Comparison preserves field types, exact INTEGER values, and FLOAT bits.
+
 ### Fact Introspection Functions
 
 | Function | Description | Example |
 |----------|-------------|---------|
 | `fact-existp` | Check if fact index is live | `(fact-existp 1)` => `TRUE` |
-| `fact-index` | Extract integer index from fact address | `(fact-index 1)` => `1` |
+| `fact-index` | Public assertion index (zero for the protected initial fact, -1 for a retracted address) | `(fact-index ?f)` => `1` for the first user fact |
 | `fact-relation` | Get relation name as symbol | `(fact-relation 1)` => `person` |
 | `fact-slot-value` | Get named slot value | `(fact-slot-value 1 name)` => `"Alice"` |
 | `fact-slot-names` | Get slot names as multifield | `(fact-slot-names 1)` => `(name age)` |
@@ -994,9 +1129,36 @@ full compatibility for every builtin or special form.
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
 
-**format note:** In Ferric, `format` is an evaluator-only function that
-returns a formatted string. It does not write directly to a router. Use
-`(printout t (format nil "n=%d" 42) crlf)` to produce output.
+`printout` writes a top-level STRING without surrounding quotes. A MULTIFIELD
+uses parentheses and one space between fields, with STRING fields surrounded
+by quotes: `(printout t (create$ "a" "two words") crlf)` writes
+`("a" "two words")` followed by a newline. An empty multifield writes `()`;
+an empty STRING field writes `""`. These rules apply to RHS output and output
+from deffunctions and methods. Ferric's RHS `println` uses the same rendering
+and appends a newline.
+
+Quotes and backslashes inside printed STRING fields remain literal; printing
+does not escape them. Literal control characters and raw bytes also remain
+unchanged. `implode$` uses the escaped STRING-field mode described above;
+direct printing retains raw embedded quotes and backslashes. SYMBOL fields
+retain their spelling. Only top-level SYMBOL operands `crlf`, `tab`, `vtab`, and `ff`
+expand to LF, TAB, VT, and FF; the same symbols inside a multifield remain
+literal names.
+
+Direct output renders FLOATs with up to 15 significant decimal digits, using
+fixed notation for rounded decimal exponents from -4 through 14 and scientific
+notation otherwise. Integral fixed-form FLOATs include `.0`; for example,
+`1.0`, `-0.0`, `1e-05`, and `1e+15`. Nonfinite spellings are `nan.0`, `inf.0`,
+and `-inf.0`. INTEGERs retain exact decimal spelling, including values above
+2^53. This output formatter leaves `str-cat`, `sym-cat`, `format`, and
+`save-facts` formatting unchanged.
+
+STRING and SYMBOL payloads retain every byte, including NUL and invalid UTF8.
+INSTANCE-NAME values print as bracketed raw name bytes, both at the top level
+and inside multifields. General source round-tripping is a separate contract.
+Typed FACT-ADDRESS print forms remain a representation gap; ordinary INTEGERs
+are never interpreted as addresses while printing. Host ExternalAddress
+values retain Ferric's opaque placeholder.
 
 #### Queued input
 
@@ -1031,6 +1193,83 @@ Reset preserves unread input; clear discards it. Snapshots preserve the
 remaining queue with the existing schema. Named-file input and `open` are
 unsupported; the queued-line behavior does not imply a persistent named
 stream or a raw stdin API.
+
+#### Formatting
+
+`format` returns a STRING and does not write to the requested router. Use
+`(printout t (format nil "n=%d" 42) crlf)` to produce output.
+
+The supported data conversions are lowercase `d`, `o`, `x`, `u`, `f`, `e`,
+`g`, `s`, and `c`. Canonical directives accept leading `-` and `0` flags,
+a decimal minimum width, and optional `.precision`. Width never truncates
+content. `-` selects left alignment with trailing spaces and overrides `0`;
+otherwise numeric zero padding follows any minus sign. Repeated leading
+flags are accepted.
+
+| Conversion       | Operand and rendering                                                                                                                                                                          |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `%d`             | INTEGER or FLOAT, rendered as signed decimal.                                                                                                                                                  |
+| `%o`, `%x`, `%u` | INTEGER or FLOAT, rendered as octal, lowercase hexadecimal, or unsigned decimal using the converted 64-bit integer's bit pattern.                                                              |
+| `%f`             | INTEGER or FLOAT, fixed notation; precision counts fractional digits and defaults to 6.                                                                                                        |
+| `%e`             | INTEGER or FLOAT, scientific notation; precision counts fractional digits and defaults to 6. The lowercase exponent has an explicit sign and at least two digits.                              |
+| `%g`             | INTEGER or FLOAT, significant digits; precision defaults to 6, with explicit zero treated as 1. Rounded exponent selects fixed or scientific notation; trailing fractional zeroes are removed. |
+| `%s`             | STRING, SYMBOL, or INSTANCE-NAME; names render without brackets. Precision limits bytes.                                                                                                       |
+| `%c`             | INTEGER, STRING, or SYMBOL; renders the integer's low byte or the lexeme's first byte. FLOAT and INSTANCE-NAME are not accepted. Precision is ignored.                                         |
+
+For integer conversions, finite in-range FLOAT values truncate toward zero;
+INTEGER values retain their exact digits. Integer precision is a minimum
+digit count and disables width zero padding. Zero precision with zero emits
+no digits. Floating conversions preserve negative zero. `%g` uses fixed
+notation when the rounded exponent is at least -4 and less than the
+significant precision; it does not automatically append `.0`. Infinity and
+NaN render as lowercase `inf` and `nan`, with spaces for width padding even
+when `0` is present. `%s` and `%c` also use spaces for width padding.
+
+Immediately following `%`, the no-data controls `n`, `r`, `t`, `v`, and `%`
+emit newline, carriage return, tab, vertical tab, and a literal percent sign,
+respectively. They consume no operand. An incomplete fragment such as `%12`
+is literal text. A conversion can follow at most 73 modifier bytes; 74
+modifier bytes finish a literal fragment instead.
+
+Control strings stop at their first NUL byte. `%s` also stops at its
+operand's first NUL. Width and string precision count raw bytes, so
+precision and `%c` may return a partial UTF-8 sequence without replacing it.
+An empty lexeme or an integer with a zero low byte gives `%c` a NUL: only
+padding before that NUL survives that conversion, while later format
+fragments still append. The returned bytes remain subject to the engine's
+configured string encoding policy.
+
+`format` requires a router argument and a STRING control argument. It checks
+minimum arity before evaluating arguments, then evaluates router and control
+in order. It validates the complete control prefix and exact data operand
+count before evaluating any data. Each consumed data expression then runs
+once, in order, and is checked before the next expression. Failure returns
+an empty STRING, discards partial formatting, and retains prior operand
+side effects. Invalid flags, argument counts, and control/numeric/`%s` type
+errors record a diagnostic and halt subsequent rule actions. A `%c` type
+error records a nonfatal diagnostic, returns an empty STRING, and skips
+remaining format operands; following actions can run unless an earlier
+error already requested a halt. `%c` preserves an inherited error's state;
+it does not use the numeric/`%s` gate that stops on an existing evaluation
+error.
+
+**Ferric policies.** Each call has a private 16 MiB (16,777,216 byte) ceiling
+for both the control prefix before NUL and the aggregate result. Oversized
+requests fail without constructing the oversized result. FLOAT-to-integer
+conversion follows Rust's saturating conversion: NaN becomes zero, values
+beyond the signed 64-bit range and infinities become the corresponding
+endpoint. These resource and conversion rules are engine policies, not
+claims about undefined behavior in CLIPS's C formatting implementation.
+
+The CLIPS format scanner also admits misplaced dot/minus modifiers that are
+not canonical directives. Ferric still evaluates and checks their operand,
+then emits a deterministic fragment: normalize the valid prefix, preserve
+the remaining modifier bytes, and retain CLIPS's inserted `ll` before an
+integer conversion. For example, `%..d` becomes `%.0.lld`. This algorithm
+matches five pinned reference echoes; its application to other malformed
+fragments is a portable Ferric policy, not universal C library compatibility.
+Other printf extensions, including `+`, `#`, dynamic `*` widths, positional
+arguments, length modifiers, and uppercase conversions, are unsupported.
 
 ### Agenda / Focus Functions
 
@@ -1075,8 +1314,17 @@ are equal if and only if their byte sequences are identical.
 
 ### sub-string Indexing
 
-`sub-string` uses **byte indices** (1-indexed), not Unicode codepoint indices.
-For ASCII content, byte and codepoint indices are identical.
+`sub-string` accepts INTEGER start and end positions followed by STRING or
+SYMBOL text, and always returns a STRING. Positions count Unicode scalar values,
+starting at one, and include both endpoints. Starts below one clip to one; ends
+beyond the text clip to its length. Empty text, reversed ranges, and starts past
+the text produce an empty STRING.
+
+Arguments are evaluated and validated from left to right. An end below one
+returns an empty STRING without evaluating the text argument. A positive end
+still evaluates and validates the text for reversed ranges and starts past the
+text. For example, `(sub-string 0 2 abc)` returns `"ab"`, while
+`(sub-string 3 2 abc)` returns `""`.
 
 ### Compatibility with CLIPS
 

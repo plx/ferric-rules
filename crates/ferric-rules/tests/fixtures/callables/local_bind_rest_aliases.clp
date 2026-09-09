@@ -1,0 +1,6 @@
+(deffunction aliases ($?items)
+  (bind $?items (create$ start $?items end))
+  (bind ?copy ?items)
+  (bind ?items)
+  (create$ (length$ ?copy) ?copy (length$ $?items) $?items))
+(defrule probe => (printout t (aliases a b) ":" (aliases) crlf))

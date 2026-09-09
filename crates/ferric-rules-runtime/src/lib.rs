@@ -57,9 +57,12 @@
 
 mod byte_buffer;
 mod field_scanner;
+
+mod formatting;
 mod tracing_support;
 
 pub mod actions;
+mod callable_validation;
 pub mod config;
 pub mod engine;
 pub mod evaluator;
@@ -69,6 +72,7 @@ pub mod host;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
+mod query_validation;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;
@@ -76,6 +80,7 @@ mod source_limits;
 mod template_identity;
 mod template_reload;
 pub(crate) mod templates;
+mod value_print;
 
 #[cfg(test)]
 mod integration_tests;

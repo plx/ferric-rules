@@ -42,3 +42,27 @@ crates/ferric-rules/tests/fixtures/read/*.in text eol=lf
 # Exact CRLF stdin framing and invalid UTF8 golden bytes.
 crates/ferric-rules/tests/fixtures/read/crlf-readline-state.in -text
 crates/ferric-rules/tests/fixtures/read/unterminated-terminal-backslash.out -text
+
+# Preserve literal CR and CRLF characters inside STRING test data.
+crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.out -text
+
+# Preserve literal CR and CRLF in implode$ STRING fixtures.
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.out -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.out -text
+
+# Keep format reference bytes exact in runtime and facade tests.
+crates/ferric-rules-runtime/src/formatting/fixtures/*.out text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/*.clp text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/character-empty-nul-byte-width-precision.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/ordinary-directives.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/unicode-width-and-precision.expected.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_ordinary_directives.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_unicode_width_and_precision.out -text
+# Preserve exact fixture output and source markers on Windows checkouts.
+# Preserve exact fixture output and source markers on Windows checkouts.
+# Preserve exact fixture output and source markers on Windows checkouts.
+# Preserve exact fixture output and source markers on Windows checkouts.
+# Preserve exact fixture output and source markers on Windows checkouts.

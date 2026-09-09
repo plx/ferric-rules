@@ -1,0 +1,16 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (multifieldp ?value) ":"
+  (symbolp ?value) ":[" ?value "]" crlf))
+(defglobal ?*trace* = 0)
+(deffunction mark (?digit ?value) (bind ?*trace* (+ (* ?*trace* 10) ?digit)) ?value)
+(deffunction fail (?digit) (bind ?*trace* (+ (* ?*trace* 10) ?digit)) (/ 1 0))
+(defrule probe =>
+ (show found (member$ (mark 1 (create$ b c)) (mark 2 (create$ a b c))))
+ (printout t "trace:" ?*trace* crlf)
+ (bind ?*trace* 0)
+ (show empty (member$ (mark 1 (create$)) (mark 2 (create$))))
+ (printout t "trace:" ?*trace* crlf)
+ (bind ?*trace* 0)
+ (show missing (member$ (mark 1 (create$ z)) (mark 2 (create$ a b))))
+ (printout t "trace:" ?*trace* crlf)
+)

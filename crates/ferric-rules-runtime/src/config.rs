@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ferric_rules_core::{ConflictResolutionStrategy, StringEncoding};
 
-/// Default number of `while` and `loop-for-count` iterations allowed while
-/// executing one rule activation.
+/// Default combined loop iterations and fact-query work
+/// allowed while executing one rule activation.
 pub const DEFAULT_MAX_ACTION_LOOP_ITERATIONS: usize = 1_000_000;
 
 /// Engine configuration.
@@ -22,12 +22,15 @@ pub struct EngineConfig {
     /// bound native callable frames. Expression nesting has its own limit;
     /// deeply nested bodies can reach that limit before the callable ceiling.
     pub max_call_depth: usize,
-    /// Maximum combined `while` and `loop-for-count` iterations per rule
-    /// activation.
+    /// Maximum combined loop iterations and fact-query work
+    /// per rule activation.
     ///
     /// The budget is shared by RHS loops and loops reached through
-    /// deffunctions or generic functions. Each entered loop body consumes one
-    /// iteration, including nested loop bodies.
+    /// deffunctions or generic functions. Each entered loop body and each
+    /// expression-query candidate predicate consumes one iteration. Action
+    /// queries charge each visited member while traversing their nested sets;
+    /// delayed queries also charge each selected body. Nested evaluations share
+    /// the same budget. Empty queries consume no iterations.
     #[cfg_attr(
         feature = "serde",
         serde(default = "default_max_action_loop_iterations")

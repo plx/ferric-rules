@@ -1,0 +1,7 @@
+(deffunction scopes (?i ?x)
+  (bind ?sum 0)
+  (loop-for-count (?i 1 2) (bind ?sum (+ ?sum ?i)))
+  (progn$ (?x (create$ 3 4)) (bind ?sum (+ ?sum ?x)))
+  (foreach ?x (create$ 5 6) (bind ?sum (+ ?sum ?x)))
+  (create$ ?sum ?i ?x))
+(defrule probe => (printout t (scopes 90 80) crlf))

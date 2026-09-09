@@ -146,7 +146,9 @@ fn byte_concat_format_and_case_conversion_never_replace_payloads() {
     );
     for (global, expected) in [
         ("string", b"a\0\xffzs\xffn\xff".as_slice()),
-        ("format", b"a\0\xffz|s\xff|n\xff".as_slice()),
+        // `%s` uses the CLIPS C-string prefix; byte storage and the other
+        // operations still retain the complete NUL-containing payload.
+        ("format", b"a|s\xff|n\xff".as_slice()),
         ("upper", b"A\0\xffZ".as_slice()),
     ] {
         let Some(Value::String(value)) = engine.get_global(global) else {
@@ -230,7 +232,8 @@ fn raw_formats_and_byte_position_operations_preserve_non_text_data() {
         HaltReason::AgendaEmpty
     );
     for (global, expected) in [
-        ("formatted", b"\xfe[a\0\xffz]\0".as_slice()),
+        // Both the control string and `%s` stop at their first NUL.
+        ("formatted", b"\xfe[a]".as_slice()),
         ("part", b"\0\xff".as_slice()),
     ] {
         let Some(Value::String(value)) = engine.get_global(global) else {
@@ -620,10 +623,12 @@ fn str_index_retains_empty_and_missing_results_in_both_position_modes() {
     for (needle, haystack, expected) in [
         (b"\xff".as_slice(), b"\xc3\xa9".as_slice(), None),
         (b"z".as_slice(), b"\xc3\xa9\xff".as_slice(), None),
+        (b"".as_slice(), "é".as_bytes(), Some(2)),
+        (b"".as_slice(), b"\xc3\xa9\xff".as_slice(), Some(4)),
         (b"".as_slice(), b"".as_slice(), Some(1)),
         (b"\xff".as_slice(), b"".as_slice(), None),
     ] {
-        // The empty-haystack result is shared with the separate #337 repair.
+        // #337 uses one past the end, in the complete operands' position mode.
         assert_byte_str_index(needle, haystack, expected);
     }
 }

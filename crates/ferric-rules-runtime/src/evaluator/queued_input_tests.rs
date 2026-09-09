@@ -35,6 +35,10 @@ fn with_context(config: &EngineConfig, lines: &[&str], test: impl FnOnce(&mut Ev
         input_buffer: Some(&mut input),
         fact_base: None,
         template_defs: None,
+        callable_locals: None,
+        compact_fact_bindings: None,
+        template_resolver: None,
+        initial_fact_id: None,
     });
 }
 

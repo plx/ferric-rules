@@ -1,0 +1,6 @@
+numeric:FALSE:TRUE:FALSE:[(3 4)]
+string-symbol:FALSE:TRUE:FALSE:[(3 4)]
+mixed-missing:FALSE:FALSE:TRUE:[FALSE]
+false-symbol:TRUE:FALSE:FALSE:[2]
+signed-zero:FALSE:TRUE:FALSE:[(3 4)]
+large-integer:FALSE:TRUE:FALSE:[(3 4)]

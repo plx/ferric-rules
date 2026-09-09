@@ -1,0 +1,11 @@
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defrule probe =>
+  (do-for-fact ((?f item)) (= ?f:value 10)
+    (do-for-fact ((?f item)) (= ?f:value 20)
+      (retract ?f) (printout t "inner:" ?f:value ":" (fact-existp ?f) crlf))
+    (printout t "outer:" ?f:value ":" (fact-existp ?f) crlf)
+    (bind ?saved ?f)
+    (do-for-fact ((?g item)) (= ?g:value 30) (retract ?g))
+    (retract ?saved))
+  (printout t "remaining:" (length$ (find-all-facts ((?f item)) TRUE)) crlf))

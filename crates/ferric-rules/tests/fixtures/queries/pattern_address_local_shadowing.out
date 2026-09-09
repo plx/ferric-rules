@@ -1,0 +1,7 @@
+query-local:2
+after-query-local:42
+loop-local:1
+after-loop-local:42
+progn-local:a:1
+progn-local:b:2
+after-progn-local:42:99

@@ -32,6 +32,10 @@ fn with_context(test: impl FnOnce(&mut EvalContext<'_>)) {
         input_buffer: None,
         fact_base: None,
         template_defs: None,
+        callable_locals: None,
+        compact_fact_bindings: None,
+        template_resolver: None,
+        initial_fact_id: None,
     });
 }
 

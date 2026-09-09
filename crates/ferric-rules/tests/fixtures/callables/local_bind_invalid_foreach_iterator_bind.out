@@ -1,0 +1,7 @@
+[MULTIFUN2] Cannot rebind field variable in function foreach.
+
+ERROR:
+(deffunction MAIN::f
+   ()
+   (foreach ?x (create$ a b)
+      (bind ?x c))

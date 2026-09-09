@@ -652,6 +652,44 @@ def test_sdist_accepts_a_top_level_runtime_rust_integration_test(
     assert inspection.filename == package_lib.expected_sdist_filename(contract, version)
 
 
+def test_sdist_retains_formatter_reference_bytes(tmp_path, contract, version):
+    fixture_root = REPO_ROOT / "crates/ferric-rules-runtime/src/formatting/fixtures"
+    references = {
+        str(path.relative_to(REPO_ROOT)): path.read_bytes()
+        for path in fixture_root.iterdir()
+        if path.is_file()
+    }
+    assert references
+    sdist = _write_sdist(tmp_path, contract, version, extra_files=references)
+    extracted = package_lib.safe_extract_sdist(
+        sdist, tmp_path / "extracted", contract, version
+    )
+    for relative, expected in references.items():
+        assert (extracted / relative).read_bytes() == expected
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "crates/ferric-rules-runtime/src/formatting/fixtures/unexpected.py",
+        "crates/ferric-rules-runtime/src/formatting/fixtures/unexpected.json",
+        "crates/ferric-rules-runtime/src/formatting/fixtures/nested/reference.out",
+        "crates/ferric-rules-runtime/src/formatting/provenance.json",
+        "crates/ferric-rules-core/src/formatting/fixtures/reference.out",
+    ],
+)
+def test_sdist_formatter_reference_allowance_stays_scoped(
+    tmp_path, contract, version, relative
+):
+    sdist = _write_sdist(
+        tmp_path, contract, version, extra_files={relative: b"unexpected"}
+    )
+    with pytest.raises(
+        package_lib.PackageValidationError, match="unexpected publish payload"
+    ):
+        package_lib.validate_sdist(sdist, contract, version)
+
+
 @pytest.mark.parametrize(
     ("options", "message"),
     [
