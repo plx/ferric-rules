@@ -227,3 +227,37 @@ fn an_inherited_halt_preserves_frames_and_adds_no_read_diagnostic() {
         }
     }
 }
+
+#[test]
+fn stdin_quoted_nul_reports_the_c_string_boundary_and_discards_the_frame() {
+    // CLIPS 6.30 ReadTokenFromStdin uses OpenStringSource, not the named
+    // router's direct GetToken path. Its first NUL ends the scanner input,
+    // even when the already-consumed physical line contains a closing quote.
+    let mut engine = engine(
+        EngineConfig::utf8(),
+        "(bind ?*result* (read)) (bind ?*next* (readline))",
+    );
+    let stdin = engine.symbol_value("stdin").unwrap();
+    engine.assert_ordered("channel", [stdin]).unwrap();
+    engine.push_input("\"ab\0ignored\" tail");
+    engine.push_input("second frame");
+
+    let run = engine.run(RunLimit::Count(20)).unwrap();
+    assert_eq!(run.rules_fired, 1);
+    assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
+    assert_string(&engine, "result", b"ab");
+    assert_string(&engine, "next", b"second frame");
+    assert_eq!(engine.find_facts("after").unwrap().len(), 1);
+    assert_eq!(engine.action_diagnostics().len(), 1);
+    let diagnostic = engine.action_diagnostics()[0].to_string();
+    assert!(diagnostic.contains("SCANNER1"), "{diagnostic}");
+    assert!(diagnostic.contains("read"), "{diagnostic}");
+    assert_eq!(
+        engine.get_output_bytes("werror"),
+        Some(b"\n[SCANNER1] Encountered End-Of-File while scanning a string\n".as_slice())
+    );
+    assert!(engine
+        .get_output_bytes("wwarning")
+        .unwrap_or_default()
+        .is_empty());
+}
