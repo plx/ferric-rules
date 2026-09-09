@@ -735,7 +735,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `max` | Maximum | `(max 3 7)` => `7` |
 | `**` | Power | `(** 2 10)` => `1024.0` |
 | `sqrt` | Square root | `(sqrt 16)` => `4.0` |
-| `round` | Round to nearest integer | `(round 3.7)` => `4` |
+| `round` | Round to nearest integer; half ties choose the lower integer, INTEGER inputs stay exact | `(round 2.5)` => `2`; `(round -2.5)` => `-3` |
 | `ceiling` | Round up to integer | `(ceiling 3.1)` => `4` |
 | `floor` | Round down to integer | `(floor 3.9)` => `3` |
 | `pi` | Pi constant | `(pi)` => `3.14159...` |
@@ -755,6 +755,11 @@ type. Numeric ties retain the first selected operand, including the sign of a
 floating-point zero. Integer pairs compare exactly; mixed INTEGER/FLOAT pairs
 compare after floating-point conversion. Each comparison uses the current
 selected operand's type, even if an earlier discarded operand was a FLOAT.
+
+For FLOAT arguments, Ferric uses `ceil(x - 0.5)` to reproduce the observed
+CLIPS floating-point boundary behavior. For example,
+`(round -0.49999999999999994)` returns `-1`. INTEGER arguments remain unchanged
+without conversion through floating point.
 
 ### Type Conversion
 

@@ -204,6 +204,8 @@ tests/fixtures/stdlib/009_minimum_mixed_types.clp
 tests/fixtures/stdlib/009_minimum_mixed_types.out
 tests/fixtures/stdlib/010_maximum_mixed_types.clp
 tests/fixtures/stdlib/010_maximum_mixed_types.out
+tests/fixtures/stdlib/011_round_half_boundaries.clp
+tests/fixtures/stdlib/011_round_half_boundaries.out
 tests/fixtures/stdlib/041_string_to_field_first_token.clp
 tests/fixtures/stdlib/041_string_to_field_first_token.out
 tests/fixtures/stdlib/042_explode_quoted_fields.clp
@@ -371,6 +373,16 @@ tests/fixtures/stdlib/printout_multifield_top_and_multifield_strings.clp
 tests/fixtures/stdlib/printout_multifield_top_and_multifield_strings.out
 tests/fixtures/stdlib/printout_multifield_unicode_fields.clp
 tests/fixtures/stdlib/printout_multifield_unicode_fields.out
+tests/fixtures/stdlib/round_adjacent_halves.clp
+tests/fixtures/stdlib/round_adjacent_halves.out
+tests/fixtures/stdlib/round_half_ladder.clp
+tests/fixtures/stdlib/round_half_ladder.out
+tests/fixtures/stdlib/round_integer_identity.clp
+tests/fixtures/stdlib/round_integer_identity.out
+tests/fixtures/stdlib/round_large_integral_floats.clp
+tests/fixtures/stdlib/round_large_integral_floats.out
+tests/fixtures/stdlib/round_ordinary_nonties.clp
+tests/fixtures/stdlib/round_ordinary_nonties.out
 tests/fixtures/stdlib/sort_predicate_argument_and_predicate_phases.clp
 tests/fixtures/stdlib/sort_predicate_argument_and_predicate_phases.out
 tests/fixtures/stdlib/sort_predicate_argument_evaluation_once.clp
@@ -452,6 +464,7 @@ tests/multifield_printout.rs
 tests/numeric_comparison_chains.rs
 tests/numeric_extrema.rs
 tests/read_fields.rs
+tests/rounding.rs
 tests/scaling_tests.rs
 tests/sort_predicates.rs
 tests/string_to_field.rs
