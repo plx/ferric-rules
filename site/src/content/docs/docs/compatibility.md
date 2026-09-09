@@ -21,6 +21,69 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for
 | Globals                                                     | Supported                 |
 | Core math, string, multifield, predicate, and I/O functions | Supported subset          |
 
+## Direct Output
+
+`printout` writes top-level STRING contents without quotes. Multifields use
+parentheses, one space between fields, and quotes around STRING fields:
+`(printout t (create$ "a" "two words") crlf)` writes `("a" "two words")` and
+a newline. Empty multifields print `()` and empty STRING fields print `""`.
+The same rendering applies inside deffunctions and methods and to Ferric's
+RHS `println`, which adds a newline.
+
+Printed STRING fields retain literal embedded quotes, backslashes, control
+characters, and raw bytes. `implode$` uses the escaped STRING-field mode
+described below. SYMBOL fields remain literal, including `crlf`, `tab`,
+`vtab`, and `ff`. Those four symbols expand
+to LF, TAB, VT, and FF only as top-level output operands.
+
+FLOAT output uses up to 15 significant decimal digits, preserving `-0.0`.
+Rounded decimal exponents from -4 through 14 use fixed notation; other values
+use scientific notation such as `1e-05` and `1e+15`. Integral fixed-form
+FLOATs include `.0`; nonfinite spellings are `nan.0`, `inf.0`, and `-inf.0`.
+INTEGER spelling remains exact. These rules do not change `str-cat`,
+`sym-cat`, `format`, or `save-facts` formatting.
+
+STRING and SYMBOL payloads retain NUL and invalid UTF8 bytes. INSTANCE-NAME
+values print as bracketed raw name bytes, at the top level and inside
+multifields. Typed FACT-ADDRESS print forms remain a representation gap;
+INTEGERs are printed as integers and host ExternalAddress values retain an
+opaque placeholder. General source round-tripping is a separate contract.
+
+## Multifield Text
+
+`create$` evaluates VOID-producing operands for their effects but omits those
+scalar results from the multifield. Empty STRINGs remain fields.
+
+`implode$` accepts exactly one MULTIFIELD and returns a STRING containing its
+fields separated by one space, without outer parentheses. An empty multifield
+returns an empty STRING; an empty STRING field contributes `""`. Each STRING
+field is quoted, with embedded quotes and backslashes escaped by a backslash.
+Literal control characters and raw bytes remain unchanged. SYMBOLs keep their
+literal spelling, including `crlf`, `tab`, `vtab`, and `ff`; INSTANCE-NAMEs
+use bracketed raw name bytes.
+
+INTEGER spelling stays exact. FLOATs share direct output's 15-significant-digit
+format, including `-0.0`, exponents, and nonfinite spellings. The operand is
+evaluated once after the argument-count check; a scalar result produces a type
+error. Rendering leaves input values and the separate `str-cat`, `sym-cat`,
+`format`, and `save-facts` formatters unchanged.
+
+`explode$` and `str-explode` scan STRING bytes into typed fields, including
+quoted STRINGs and INSTANCE-NAMEs. Quoted-field round-trip coverage now
+composes the scanner with `implode$`: it checks empty, numeric-looking and
+bracket-looking STRINGs, quotes and backslashes, scannable SYMBOLs and names,
+exact INTEGERs, and selected FLOATs such as `1.25` and `-0.0`. Normal and late
+rule installation and all five snapshot formats are covered. For example,
+`(explode$ (implode$ (create$ a "two words" 3)))` returns `(a "two words" 3)`.
+
+General source serialization remains a separate contract: arbitrary SYMBOL
+or INSTANCE-NAME spellings may not scan back to the same value, and the
+15-significant-digit FLOAT representation need not retain arbitrary f64 bits.
+Length-bearing host values preserve NUL and invalid UTF8 bytes in the imploded
+result, while the scanner stops at the first NUL. The typed FACT-ADDRESS and
+opaque host-address limits described for direct output also apply here;
+INTEGERs are never reinterpreted as addresses.
+
 ## Conflict Resolution
 
 Depth and breadth use activation creation order and match the pinned reference cases. The retained LEX and MEA host options are experimental Ferric strategies with the ordering gaps below.

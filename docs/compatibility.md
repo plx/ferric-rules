@@ -845,6 +845,7 @@ by these aliases.
 | Function | Description | Example |
 |----------|-------------|---------|
 | `create$` | Create a multifield | `(create$ a b c)` |
+| `implode$` | Convert multifield fields to a STRING | `(implode$ (create$ a 3))` => `"a 3"` |
 | `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
 | `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
 | `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
@@ -855,6 +856,42 @@ by these aliases.
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
 | `sort` | Stable predicate sort of scalar and multifield arguments | `(sort < (create$ 3 1 2))` => `(3 2 1)` |
+
+`create$` evaluates VOID-producing operands for their effects but omits those
+scalar results from the multifield. Empty STRINGs remain fields.
+
+`implode$` accepts exactly one MULTIFIELD, evaluates that operand once, and
+returns a STRING. Fields are separated by one space without outer parentheses.
+An empty multifield returns an empty STRING; an empty STRING field contributes
+`""`. STRING fields have surrounding quotes, and embedded quotes and
+backslashes receive a preceding backslash. Literal control characters and
+raw bytes remain unchanged. SYMBOL spellings, including `crlf`, `tab`,
+`vtab`, and `ff`, remain literal names. INSTANCE-NAME values use bracketed
+raw name bytes. Scalar operands produce a type error; the argument-count
+check precedes operand evaluation.
+
+INTEGERs retain their exact decimal spelling. FLOATs use direct output's
+15-significant-digit representation, including `-0.0`, scientific notation,
+and its nonfinite spellings. These field rules apply to the supplied slice or
+capture and leave the input values unchanged. The separate `str-cat`,
+`sym-cat`, `format`, and `save-facts` formatters retain their existing behavior.
+
+`explode$` and `str-explode` can read the quoted STRING fields back into a
+MULTIFIELD. The reviewed round-trip cases preserve empty, numeric-looking,
+and bracket-looking STRINGs, escaped quotes and backslashes, scannable SYMBOLs
+and INSTANCE-NAMEs, exact INTEGERs, and selected FLOATs such as `1.25` and
+`-0.0`. Coverage includes actual field types and bytes, normal and late rule
+installation, and all five snapshot formats. For example,
+`(explode$ (implode$ (create$ a "two words" 3)))` returns `(a "two words" 3)`.
+
+These cases do not establish a general source serialization contract.
+Arbitrary SYMBOL spellings may scan as another type or multiple fields;
+INSTANCE-NAME payloads also need a valid scanner spelling. FLOAT formatting
+can round values beyond 15 significant digits, so arbitrary f64 bits need
+not survive. Length-bearing host values retain NUL and invalid UTF8 bytes
+in the imploded result, but scanning stops at the first NUL byte. Typed
+FACT-ADDRESS print forms and opaque host addresses retain the direct-output
+boundaries below; INTEGERs are never reinterpreted as addresses.
 
 #### Predicate sorting
 
@@ -948,6 +985,37 @@ full compatibility for every builtin or special form.
 | `readline` | Return the next queued input line unchanged |
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
+
+`printout` writes a top-level STRING without surrounding quotes. A MULTIFIELD
+uses parentheses and one space between fields, with STRING fields surrounded
+by quotes: `(printout t (create$ "a" "two words") crlf)` writes
+`("a" "two words")` followed by a newline. An empty multifield writes `()`;
+an empty STRING field writes `""`. These rules apply to RHS output and output
+from deffunctions and methods. Ferric's RHS `println` uses the same rendering
+and appends a newline.
+
+Quotes and backslashes inside printed STRING fields remain literal; printing
+does not escape them. Literal control characters and raw bytes also remain
+unchanged. `implode$` uses the escaped STRING-field mode described above;
+direct printing retains raw embedded quotes and backslashes. SYMBOL fields
+retain their spelling. Only top-level SYMBOL operands `crlf`, `tab`, `vtab`, and `ff`
+expand to LF, TAB, VT, and FF; the same symbols inside a multifield remain
+literal names.
+
+Direct output renders FLOATs with up to 15 significant decimal digits, using
+fixed notation for rounded decimal exponents from -4 through 14 and scientific
+notation otherwise. Integral fixed-form FLOATs include `.0`; for example,
+`1.0`, `-0.0`, `1e-05`, and `1e+15`. Nonfinite spellings are `nan.0`, `inf.0`,
+and `-inf.0`. INTEGERs retain exact decimal spelling, including values above
+2^53. This output formatter leaves `str-cat`, `sym-cat`, `format`, and
+`save-facts` formatting unchanged.
+
+STRING and SYMBOL payloads retain every byte, including NUL and invalid UTF8.
+INSTANCE-NAME values print as bracketed raw name bytes, both at the top level
+and inside multifields. General source round-tripping is a separate contract.
+Typed FACT-ADDRESS print forms remain a representation gap; ordinary INTEGERs
+are never interpreted as addresses while printing. Host ExternalAddress
+values retain Ferric's opaque placeholder.
 
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use

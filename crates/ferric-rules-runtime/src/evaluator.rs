@@ -5268,7 +5268,7 @@ fn builtin_nth(
     Ok(mf[idx].clone())
 }
 
-/// `implode$` — convert a multifield to a space-separated string.
+/// `implode$` — return a space-separated STRING with quoted, escaped STRING fields.
 fn builtin_implode_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -5286,7 +5286,7 @@ fn builtin_implode_mf(
                 if idx > 0 {
                     result.push(' ');
                 }
-                concat_values_to_string(ctx, std::slice::from_ref(element), &mut result);
+                crate::value_print::append_implode_field(element, ctx.symbol_table, &mut result);
             }
             let fs = FerricString::from_bytes(result.as_bytes(), ctx.config.string_encoding)
                 .map_err(|e| EvalError::TypeError {
@@ -6204,57 +6204,6 @@ fn printout_channel_name(
     }
 }
 
-fn append_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut ByteBuffer) {
-    use std::fmt::Write as _;
-    match value {
-        Value::Integer(n) => {
-            let _ = write!(output, "{n}");
-        }
-        Value::Float(f) => {
-            if f.fract() == 0.0 {
-                let _ = write!(output, "{f:.1}");
-            } else {
-                let _ = write!(output, "{f}");
-            }
-        }
-        Value::Symbol(sym) => {
-            let name = symbol_table
-                .resolve_symbol_bytes(*sym)
-                .expect("validated symbol");
-            {
-                match name {
-                    b"crlf" => output.push('\n'),
-                    b"tab" => output.push('\t'),
-                    b"ff" => output.push('\x0C'),
-                    other => output.push_bytes(other),
-                }
-            }
-        }
-        Value::InstanceName(name) => {
-            output.push('[');
-            output.push_bytes(
-                symbol_table
-                    .resolve_symbol_bytes(name.as_symbol())
-                    .expect("validated instance name"),
-            );
-            output.push(']');
-        }
-        Value::String(s) => output.push_bytes(s.as_bytes()),
-        Value::Void => {}
-        Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
-        Value::Multifield(mf) => {
-            output.push('(');
-            for (index, item) in mf.iter().enumerate() {
-                if index > 0 {
-                    output.push(' ');
-                }
-                append_printout_value(item, symbol_table, output);
-            }
-            output.push(')');
-        }
-    }
-}
-
 /// `printout` — evaluator-level output command for deffunction/method bodies.
 ///
 /// Events are queued into `GlobalStore` and flushed by the action executor
@@ -6274,7 +6223,7 @@ fn builtin_printout(
         if ctx.globals.evaluation_halted() {
             break;
         }
-        append_printout_value(&value, ctx.symbol_table, &mut output);
+        crate::value_print::append_printout_value(&value, ctx.symbol_table, &mut output);
     }
 
     ctx.globals.push_printout_event(channel, output);
