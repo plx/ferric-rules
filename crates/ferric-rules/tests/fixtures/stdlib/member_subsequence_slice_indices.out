@@ -1,0 +1,4 @@
+needle-view:FALSE:TRUE:FALSE:[(2 3)]
+hay-view:FALSE:TRUE:FALSE:[(2 3)]
+both-views:FALSE:TRUE:FALSE:[(2 3)]
+sliced-singleton:TRUE:FALSE:FALSE:[3]

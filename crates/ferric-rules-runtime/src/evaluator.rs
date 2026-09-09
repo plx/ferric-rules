@@ -5296,41 +5296,17 @@ fn eval_nth(
     Ok(Value::Symbol(nil))
 }
 
-/// `member$` — test membership in a multifield.
+/// `member$` — find a scalar or contiguous subsequence in a multifield.
 ///
-/// `(member$ <value> <multifield>)` — returns the 1-based index if found,
-/// or the CLIPS FALSE symbol if not found. Comparison uses structural equality.
+/// Returns the first 1-based index for a scalar or singleton needle, an inclusive
+/// two-INTEGER range for other matching sequences, or the symbol FALSE. An empty
+/// needle matches as (1 0) only when the haystack is nonempty.
 fn builtin_member_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("member$", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    if ctx.globals.evaluation_error() {
-        return Ok(builtin_error_value(ctx, "member$"));
-    }
-    let needle = &values[0];
-    let Value::Multifield(mf) = &values[1] else {
-        return Err(EvalError::TypeError {
-            function: "member$".to_string(),
-            expected: "MULTIFIELD".to_string(),
-            actual: generic_value_type_name(&values[1]).to_string(),
-            span: span.cloned(),
-        });
-    };
-    for (i, elem) in mf.iter().enumerate() {
-        if needle.structural_eq(elem) {
-            // 1-based position; multifield indices fit comfortably in i64.
-            #[allow(clippy::cast_possible_wrap)]
-            return Ok(Value::Integer((i + 1) as i64));
-        }
-    }
-    Ok(clips_bool(
-        false,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_member(ctx, args, span, "member$")
 }
 
 /// `member` — compatibility alias for `member$`.
@@ -5339,25 +5315,57 @@ fn builtin_member(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("member", args, 2, span)?;
+    eval_member(ctx, args, span, "member")
+}
+
+fn eval_member(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    function: &str,
+) -> Result<Value, EvalError> {
+    check_arity_exact(function, args, 2, span)?;
     let values = eval_args(ctx, args)?;
     if ctx.globals.evaluation_error() {
-        return Ok(builtin_error_value(ctx, "member"));
+        return Ok(builtin_error_value(ctx, function));
     }
-    let needle = &values[0];
-    let Value::Multifield(mf) = &values[1] else {
+    let Value::Multifield(haystack) = &values[1] else {
         return Err(EvalError::TypeError {
-            function: "member".to_string(),
+            function: function.to_string(),
             expected: "MULTIFIELD".to_string(),
             actual: generic_value_type_name(&values[1]).to_string(),
             span: span.cloned(),
         });
     };
-    for (i, elem) in mf.iter().enumerate() {
-        if needle.structural_eq(elem) {
-            #[allow(clippy::cast_possible_wrap)] // multifield index fits in i64
-            return Ok(Value::Integer((i + 1) as i64));
+    let needle = match &values[0] {
+        Value::Multifield(needle) => needle.as_slice(),
+        scalar => std::slice::from_ref(scalar),
+    };
+    let offset = if haystack.is_empty() {
+        None
+    } else if needle.is_empty() {
+        // CLIPS returns (1 0) here. Guard before windows(), which rejects zero.
+        Some(0)
+    } else {
+        haystack.windows(needle.len()).position(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(element, expected)| element.structural_eq(expected))
+        })
+    };
+    if let Some(offset) = offset {
+        // Positions are bounded by the allocated multifield's length; even the
+        // empty-needle result has representable endpoints (1, 0).
+        let start = i64::try_from(offset + 1).expect("multifield index fits in INTEGER");
+        if needle.len() == 1 {
+            return Ok(Value::Integer(start));
         }
+        let end = i64::try_from(offset + needle.len()).expect("multifield index fits in INTEGER");
+        let range = [Value::Integer(start), Value::Integer(end)]
+            .into_iter()
+            .collect();
+        return Ok(Value::Multifield(Box::new(range)));
     }
     Ok(clips_bool(
         false,

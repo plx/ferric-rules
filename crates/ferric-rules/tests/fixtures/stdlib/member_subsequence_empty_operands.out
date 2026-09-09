@@ -1,0 +1,4 @@
+scalar-empty:FALSE:FALSE:TRUE:[FALSE]
+singleton-empty:FALSE:FALSE:TRUE:[FALSE]
+empty-empty:FALSE:FALSE:TRUE:[FALSE]
+empty-nonempty:FALSE:TRUE:FALSE:[(1 0)]
