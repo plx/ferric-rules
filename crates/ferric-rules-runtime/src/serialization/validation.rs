@@ -244,6 +244,8 @@ impl Engine {
                 for expr in &function.body {
                     validate_action(expr)?;
                 }
+                crate::callable_validation::validate_iterator_binds(&function.body)
+                    .map_err(|(_, message)| message)?;
             }
         }
         for (module, generics) in &self.generics.generics {
@@ -279,6 +281,8 @@ impl Engine {
                     for expr in &method.body {
                         validate_action(expr)?;
                     }
+                    crate::callable_validation::validate_iterator_binds(&method.body)
+                        .map_err(|(_, message)| message)?;
                 }
             }
         }

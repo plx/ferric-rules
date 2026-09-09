@@ -1,6 +1,7 @@
 //! Error values follow the failing CLIPS 6.30 handler's state, not one universal
 //! FALSE substitute. Expectations below follow bmathfun.c/GetNumericArgument and
-//! `FuncallFunction`; they do not change the base's successful extrema policy.
+//! `FuncallFunction`; successful extrema also retain the selected operand after
+//! composition with the numeric-extrema repair.
 
 use ferric_rules_core::Value;
 use ferric_rules_runtime::{Engine, HaltReason, RunLimit};

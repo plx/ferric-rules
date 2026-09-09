@@ -215,15 +215,57 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
-Use the host fact inspection API for queries. RHS `do-for-*` actions traverse
-each query variable's facts in assertion order, nesting multiple variables in
-declaration order. `do-for-fact` executes its body for the first matching
-combination. CLIPS query expressions (`any-factp`, `find-fact`, `find-all-facts`)
-in expressions or callable bodies are unsupported.
-They now report a load or execution error rather than inventing FALSE/empty
-results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
-rule LHS fact-address slot access remains available. This limitation does not
-restrict normal joins or host-side typed fact inspection.
+Query members and ordinary aliases of their fact addresses can be used by RHS
+`retract`, `modify`, and `duplicate`. The current ordinary binding determines
+the target, including query members that shadow an LHS address and inner loop
+variables that shadow query members. Repeating a retraction of the same address
+is harmless; invalid targets still stop the rule with a diagnostic.
+
+Immediate `do-for-fact` and `do-for-all-facts` queries visit live facts in
+assertion order. They skip future facts removed by a body and can visit newly
+asserted facts. In multi-member queries, the last member varies first and an
+outer member remains selected while its inner members advance.
+`delayed-do-for-all-facts` selects all matching tuples before executing any
+body, so body effects cannot change its selection. Selected query members keep
+their original compact slot values even after retraction; their addresses
+remain distinct from subsequently asserted replacements, and `fact-existp`
+continues to report live working-memory membership. Retained compact values do
+not change the existing stale-address behavior of explicit introspection calls.
+
+Action-query traversal shares the configured action-loop budget: each visited
+member costs one iteration, and delayed queries also charge each selected body.
+This bounds selection before any delayed body executes and live loops that
+keep asserting facts. The chronology index and retained query records are
+transient or derived state; snapshots omit them and reconstruct chronology on
+first use. Existing Ferric halt/reset/clear action boundaries remain unchanged.
+
+RHS `do-for-fact`, `do-for-all-facts`, and `delayed-do-for-all-facts` actions
+support compact `?fact:slot` reads in their predicates and bodies, including
+single slots and multislots. Nested query members shadow and restore outer
+members; same-named loop variables do not change which fact a compact slot
+reference reads. Explicitly rebinding a query member with `bind` is a load
+error. Slot reads follow normal expression evaluation, so skipped branches do
+not access missing slots. Ordinary rule LHS fact-address slot access remains
+available.
+
+`any-factp`, `find-fact`, and `find-all-facts` also work in RHS expressions,
+deffunctions, and methods. `any-factp` returns TRUE or FALSE; `find-fact`
+returns the first matching tuple as a multifield of fact addresses, and
+`find-all-facts` concatenates every matching tuple into one multifield.
+Both find forms return an empty multifield when nothing matches. Query
+members follow declaration order, with the first member outermost and each
+template's facts visited in assertion order. The any/first forms stop after
+the first match.
+
+Query restrictions currently require one visible, unqualified, declared
+deftemplate per member. Multiple-template restrictions, queries in global
+initializers, and `do-for-*` forms inside expressions or callable bodies
+remain unsupported. Local `bind` syntax in a predicate is a load error;
+global binds are allowed. Each
+expression-query candidate shares the configured action-loop budget with
+surrounding loops and nested queries. Empty queries do not evaluate their
+predicates. Snapshot restoration preserves query definitions and assertion
+order without changing the serialized format.
 
 ### Activation Ordering Contract
 
@@ -519,7 +561,7 @@ and following top-level constructs retain their incremental load behavior.
 ### Mutation via bind
 
 - `(bind ?*name* <value>)` updates an existing global variable.
-- `bind` does **not** create new variables -- the global must already exist.
+- A global target must already exist; global `bind` does not create a new global.
 - Globals are accessible from rule RHS actions and function bodies.
 
 ### Reset Behavior
@@ -531,6 +573,26 @@ On `(reset)`, globals are restored to their declared initial values.
 ## 16.7 Deffunctions
 
 Ferric supports user-defined functions via `deffunction`.
+
+Within a deffunction or method, `(bind ?name <value>)` creates or updates a
+local binding that remains visible for the rest of that invocation. Parameters
+can be rebound the same way. Each nested, recursive, or subsequent call has its
+own locals, and methods invoked through `call-next-method` receive the original
+call arguments.
+
+A local bind returns the value it stores. Multiple values form a multifield;
+`?name` and `$?name` access the same binding. `(bind ?name)` removes the local
+override and returns FALSE. A parameter then exposes its original argument;
+an ordinary local becomes unbound. A bind in an untaken branch does not
+initialize its target.
+
+Local updates remain visible across conditionals and iterations. Iterator
+and query references have lexical scope, so their reads use the current
+iteration or selected fact. Binding an iterator itself is rejected. A generated
+`-index` name can also name an ordinary local: writing that local leaves the
+lexical index unchanged inside the loop, and the ordinary value is visible
+afterward. Callable locals are transient invocation state and are not stored
+in engine snapshots.
 
 ```clp
 (deffunction double (?x) (* ?x 2))
@@ -1006,7 +1068,7 @@ Comparison preserves field types, exact INTEGER values, and FLOAT bits.
 | Function | Description | Example |
 |----------|-------------|---------|
 | `fact-existp` | Check if fact index is live | `(fact-existp 1)` => `TRUE` |
-| `fact-index` | Extract integer index from fact address | `(fact-index 1)` => `1` |
+| `fact-index` | Public assertion index (zero for the protected initial fact, -1 for a retracted address) | `(fact-index ?f)` => `1` for the first user fact |
 | `fact-relation` | Get relation name as symbol | `(fact-relation 1)` => `person` |
 | `fact-slot-value` | Get named slot value | `(fact-slot-value 1 name)` => `"Alice"` |
 | `fact-slot-names` | Get slot names as multifield | `(fact-slot-names 1)` => `(name age)` |

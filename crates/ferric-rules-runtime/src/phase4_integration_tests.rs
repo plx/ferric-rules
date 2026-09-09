@@ -3494,91 +3494,117 @@ fn do_for_fact_stops_after_first_match() {
     );
 }
 
-/// `delayed-do-for-all-facts` loads and parses correctly.
+/// Delayed query members remain usable by fact actions after selection.
 #[test]
-fn load_rule_with_delayed_do_for_all_facts() {
+fn delayed_do_for_all_facts_retracts_each_selected_fact_once() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defglobal ?*count* = 0)
+(defrule probe =>
+    (delayed-do-for-all-facts ((?f item)) TRUE
+        (retract ?f)
+        (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* ":" (any-factp ((?f item)) TRUE) crlf))
+"#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "{:?}",
+        engine.action_diagnostics()
+    );
+    assert_eq!(engine.get_output("t").unwrap(), Some("3:FALSE\n"));
+}
+
+/// `any-factp` evaluates existing template facts inside an `if` condition.
+#[test]
+fn any_factp_in_if_condition_reads_matching_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate flag (slot active))
+(deffacts trigger (go) (flag (active TRUE)))
+(defrule check (go) =>
+    (if (any-factp ((?f flag)) ?f:active)
+        then (printout t "has flags" crlf)
+        else (printout t "no flags" crlf)))
+"#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("has flags\n"));
+}
+
+/// `find-all-facts` returns every matching address in a bind value.
+#[test]
+fn find_all_facts_in_bind_returns_matching_addresses() {
     let mut engine = new_utf8_engine();
     load_ok(
         &mut engine,
         r"
-(deftemplate task (slot id))
-(defrule process
-    (go)
-    =>
-    (delayed-do-for-all-facts ((?t task)) TRUE (printout t ?t crlf)))
-(deffacts trigger (go))
+(deftemplate record (slot id))
+(deffacts trigger (go) (record (id 10)) (record (id 20)))
+(defrule gather (go) =>
+    (bind ?all (find-all-facts ((?r record)) TRUE))
+    (printout t (length$ ?all) crlf))
 ",
     );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("2\n"));
 }
 
-/// `any-factp` used as condition inside `if` rejects the unsupported expression context.
+/// `find-fact` returns the earliest matching address in a bind value.
 #[test]
-fn reject_rule_with_any_factp_in_if_condition() {
+fn find_fact_in_bind_returns_first_matching_address() {
     let mut engine = new_utf8_engine();
-    let errors = engine
-        .load_str(
-            r#"
-(deftemplate flag (slot active))
-(defrule check
-    (go)
-    =>
-    (if (any-factp ((?f flag)) TRUE)
-        then (printout t "has flags" crlf)
-        else (printout t "no flags" crlf)))
-(deffacts trigger (go))
-"#,
-        )
-        .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|error| error.to_string().contains("unsupported")));
-    assert!(engine.rules().is_empty());
-}
-
-/// `find-all-facts` used as the RHS of `bind` rejects the unsupported expression context.
-#[test]
-fn reject_rule_with_find_all_facts_in_bind() {
-    let mut engine = new_utf8_engine();
-    let errors = engine
-        .load_str(
-            r"
-(deftemplate record (slot id))
-(defrule gather
-    (go)
-    =>
-    (bind ?all (find-all-facts ((?r record)) TRUE))
-    (printout t ?all crlf))
-(deffacts trigger (go))
-",
-        )
-        .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|error| error.to_string().contains("unsupported")));
-    assert!(engine.rules().is_empty());
-}
-
-/// `find-fact` used as the RHS of `bind` rejects the unsupported expression context.
-#[test]
-fn reject_rule_with_find_fact_in_bind() {
-    let mut engine = new_utf8_engine();
-    let errors = engine
-        .load_str(
-            r"
+    load_ok(
+        &mut engine,
+        r"
 (deftemplate widget (slot id))
-(defrule get-first
-    (go)
-    =>
+(deffacts trigger (go) (widget (id 30)) (widget (id 10)))
+(defrule get-first (go) =>
     (bind ?w (find-fact ((?r widget)) TRUE))
-    (printout t ?w crlf))
-(deffacts trigger (go))
+    (printout t (fact-slot-value (nth$ 1 ?w) id) crlf))
 ",
-        )
-        .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|error| error.to_string().contains("unsupported")));
-    assert!(engine.rules().is_empty());
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("30\n"));
+}
+
+/// Discarding a result query's return value does not disable early stopping.
+#[test]
+fn standalone_result_queries_keep_predicate_evaluation_counts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defglobal ?*count* = 0)
+(defrule probe =>
+    (any-factp ((?f item)) (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* crlf)
+    (find-fact ((?f item)) (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* crlf)
+    (find-all-facts ((?f item)) (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* crlf))
+",
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("1\n2\n5\n"));
 }
 
 // ===========================================================================

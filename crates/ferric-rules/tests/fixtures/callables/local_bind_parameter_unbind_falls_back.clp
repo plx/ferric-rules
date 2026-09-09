@@ -1,0 +1,5 @@
+(deffunction original (?x)
+  (bind ?x 99)
+  (printout t ?x ":" (bind ?x) ":" ?x crlf)
+  ?x)
+(defrule probe => (printout t (original 42) crlf))

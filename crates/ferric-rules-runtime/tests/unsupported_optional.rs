@@ -1,11 +1,13 @@
 use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, RunLimit};
 
 #[test]
-fn nested_fact_queries_reject_before_replacing_a_rule() {
+fn malformed_or_unsupported_queries_reject_before_replacing_a_rule() {
     for expression in [
-        "(any-factp ((?f item)) TRUE)",
-        "(find-fact ((?f item)) TRUE)",
-        "(find-all-facts ((?f item)) TRUE)",
+        "(any-factp ((?f missing)) TRUE)",
+        "(find-fact () TRUE)",
+        "(find-all-facts ((?f item) (?f item)) TRUE)",
+        "(any-factp ((?f item)) (bind ?temporary 1))",
+        "(length$ (do-for-all-facts ((?f item)) TRUE (printout t ignored)))",
     ] {
         let mut engine =
             Engine::with_rules("(deftemplate item (slot id)) (defrule keep => (assert (kept)))")
@@ -13,10 +15,7 @@ fn nested_fact_queries_reject_before_replacing_a_rule() {
         let error = engine
             .load_str(&format!("(defrule keep => (assert (result {expression})))"))
             .unwrap_err();
-        assert!(
-            error.iter().any(|e| e.to_string().contains("unsupported")),
-            "{error:?}"
-        );
+        assert!(!error.is_empty(), "{expression}");
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert_eq!(engine.find_facts("kept").unwrap().len(), 1);
         assert!(engine.find_facts("result").unwrap().is_empty());
@@ -24,17 +23,56 @@ fn nested_fact_queries_reject_before_replacing_a_rule() {
 }
 
 #[test]
-fn callable_queries_fail_explicitly_instead_of_returning_false_or_empty() {
-    for expression in [
-        "(any-factp ((?f item)) TRUE)",
-        "(find-fact ((?f item)) TRUE)",
-        "(find-all-facts ((?f item)) TRUE)",
+fn callable_result_queries_return_matching_and_empty_results() {
+    for (expression, empty_expression, expected) in [
+        (
+            "(any-factp ((?f item)) TRUE)",
+            "(any-factp ((?f item)) FALSE)",
+            "TRUE:FALSE\n",
+        ),
+        (
+            "(length$ (find-fact ((?f item)) TRUE))",
+            "(length$ (find-fact ((?f item)) FALSE))",
+            "1:0\n",
+        ),
+        (
+            "(length$ (find-all-facts ((?f item)) TRUE))",
+            "(length$ (find-all-facts ((?f item)) FALSE))",
+            "1:0\n",
+        ),
     ] {
         let mut engine = Engine::with_rules(&format!(
             "(deftemplate item (slot id))
              (deffacts seed (item (id 7)))
              (deffunction query () {expression})
-             (defrule choose => (assert (result (query))) (assert (after-query)))"
+             (deffunction empty-query () {empty_expression})
+             (defrule choose => (printout t (query) \":\" (empty-query) crlf) (assert (after-query)))"
+        ))
+        .unwrap();
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+        assert!(
+            engine.action_diagnostics().is_empty(),
+            "{:?}",
+            engine.action_diagnostics()
+        );
+        assert_eq!(engine.get_output("t").unwrap(), Some(expected));
+        assert_eq!(engine.find_facts("after-query").unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn callable_action_queries_remain_explicitly_unsupported() {
+    for action_query in [
+        "do-for-fact",
+        "do-for-all-facts",
+        "delayed-do-for-all-facts",
+    ] {
+        let mut engine = Engine::with_rules(&format!(
+            "(deftemplate item (slot id))
+             (deffacts seed (item (id 7)))
+             (deffunction query () ({action_query} ((?f item)) TRUE (assert (wrong))))
+             (defrule choose => (query) (assert (after-query)))"
         ))
         .unwrap();
         let result = engine.run(RunLimit::Unlimited).unwrap();
@@ -43,9 +81,28 @@ fn callable_queries_fail_explicitly_instead_of_returning_false_or_empty() {
             .action_diagnostics()
             .iter()
             .any(|e| e.to_string().contains("unsupported operation")));
-        assert!(engine.find_facts("result").unwrap().is_empty());
+        assert!(engine.find_facts("wrong").unwrap().is_empty());
         assert!(engine.find_facts("after-query").unwrap().is_empty());
         assert_eq!(engine.facts().unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn invalid_result_query_declarations_are_rejected_in_callable_definitions() {
+    for expression in [
+        "(any-factp ((?f missing)) TRUE)",
+        "(find-fact () TRUE)",
+        "(find-all-facts ((?f item) (?f item)) TRUE)",
+        "(any-factp ((?f item)) (bind ?unrelated 1))",
+    ] {
+        for callable in [
+            format!("(deffunction query () {expression})"),
+            format!("(defgeneric query) (defmethod query ((?minimum INTEGER)) {expression})"),
+        ] {
+            let mut engine = Engine::new(EngineConfig::default());
+            engine.load_str("(deftemplate item (slot id))").unwrap();
+            assert!(engine.load_str(&callable).is_err(), "accepted {callable}");
+        }
     }
 }
 

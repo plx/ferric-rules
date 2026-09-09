@@ -364,6 +364,31 @@ impl Engine {
         )
     }
 
+    /// Install the protected initial fact as a distinct system assertion.
+    /// A same-named host fact remains a user fact with its original identity.
+    pub(crate) fn ensure_initial_fact(&mut self) -> Result<(), EngineError> {
+        if self.initial_fact_id.is_some() {
+            return Ok(());
+        }
+        let relation = self
+            .symbol_table
+            .intern_symbol("initial-fact", self.config.string_encoding)?;
+        let fact = Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation,
+            fields: smallvec::SmallVec::new(),
+        });
+        let FactInsertionResult::Inserted(fact_id) = self.fact_base.try_assert_fact(fact, true)?
+        else {
+            unreachable!("initial-fact insertion permits duplicates");
+        };
+        // Predicates may introspect indices during propagation. Publish the
+        // protected identity before any match-time expression can run.
+        self.initial_fact_id = Some(fact_id);
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+        self.drain_pending_predicate_matches();
+        Ok(())
+    }
+
     pub(crate) fn drain_pending_predicate_matches(&mut self) {
         if self.processing_predicates {
             return;
@@ -1516,14 +1541,7 @@ impl Engine {
 
         // Establish the built-in initial fact before any application seed.
         // Unconditional/leading-negative matches already use the non-fact root.
-        let initial_sym = self
-            .symbol_table
-            .intern_symbol("initial-fact", self.config.string_encoding)?;
-        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation: initial_sym,
-            fields: smallvec::SmallVec::new(),
-        }))?;
-        self.initial_fact_id = Some(result.fact_id());
+        self.ensure_initial_fact()?;
 
         // CLIPS traverses modules in creation order, then each module's current
         // deffacts definitions in definition order. Stable sort preserves both.
