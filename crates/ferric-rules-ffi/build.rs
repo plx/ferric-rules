@@ -665,6 +665,12 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
 ];
 
 fn main() {
+    // The environment trigger below replaces Cargo's default package scan.
+    // cbindgen must also rerun for source and configuration changes, including
+    // documentation-only edits that appear in the generated C header.
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=cbindgen.toml");
+
     // Keep cbindgen's source parser on the authored `extern "C"` signatures
     // while Rust compilation expands those same items into generated panic
     // wrappers plus non-extern implementations.

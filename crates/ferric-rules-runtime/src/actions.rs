@@ -406,11 +406,24 @@ pub enum ActionError {
     #[error("expression evaluation error: {0}")]
     EvalError(String),
     #[error("expression evaluation error: {0}")]
-    Evaluator(#[from] crate::evaluator::EvalError),
+    Evaluator(#[source] crate::evaluator::EvalError),
     /// Internal non-error signal used to unwind the current rule RHS.
     #[doc(hidden)]
     #[error("internal rule return control escaped the action sequence")]
     RuleReturn,
+}
+
+impl From<crate::evaluator::EvalError> for ActionError {
+    fn from(error: crate::evaluator::EvalError) -> Self {
+        match error {
+            // Scanner metadata is transient. Persist its unchanged public
+            // message using the existing schema-6 string diagnostic variant.
+            crate::evaluator::EvalError::ScannerNotice(notice) => {
+                Self::EvalError(notice.to_string())
+            }
+            other => Self::Evaluator(other),
+        }
+    }
 }
 
 /// Execute actions for a fired rule.

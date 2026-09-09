@@ -543,3 +543,87 @@ fn every_codec_preserves_pending_completed_and_late_byte_values() {
         }
     }
 }
+
+fn assert_byte_str_index(needle: &[u8], haystack: &[u8], expected: Option<i64>) {
+    for kind in ["STRING", "SYMBOL", "INSTANCE-NAME"] {
+        let mut engine = Engine::with_rules(
+            r"
+            (defglobal ?*result* = pending)
+            (defrule locate (input ?needle ?haystack) =>
+              (bind ?*result* (str-index ?needle ?haystack))
+              (assert (after)))
+            ",
+        )
+        .unwrap();
+        let mut fields = Vec::new();
+        for bytes in [needle, haystack] {
+            fields.push(match kind {
+                "STRING" => engine.create_string_bytes(bytes).unwrap().into(),
+                "SYMBOL" => engine.symbol_value_bytes(bytes).unwrap(),
+                "INSTANCE-NAME" => engine.instance_name_value_bytes(bytes).unwrap(),
+                _ => unreachable!("known lexeme kind"),
+            });
+        }
+        engine.assert_ordered("input", fields).unwrap();
+        let run = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(run.rules_fired, 1);
+        assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
+        assert!(engine.action_diagnostics().is_empty());
+        assert_eq!(engine.find_facts("after").unwrap().len(), 1);
+        let actual = engine.get_global("result").unwrap();
+        if let Some(position) = expected {
+            assert!(
+                matches!(actual, Value::Integer(value) if *value == position),
+                "{kind}: needle={needle:?}, haystack={haystack:?}, expected={position}, actual={actual:?}"
+            );
+        } else {
+            let Value::Symbol(symbol) = actual else {
+                panic!("missing match must be actual FALSE, got {actual:?}")
+            };
+            assert_eq!(engine.resolve_core_symbol(*symbol), Some("FALSE"));
+        }
+    }
+}
+
+#[test]
+fn str_index_preserves_character_positions_for_complete_utf8_operands() {
+    for (needle, haystack, expected) in [
+        ("z", "éz", 2),
+        ("β", "éβ", 2),
+        ("z", "ééz", 3),
+        ("\0z", "é\0z", 2),
+    ] {
+        assert_byte_str_index(needle.as_bytes(), haystack.as_bytes(), Some(expected));
+    }
+}
+
+#[test]
+fn str_index_uses_byte_positions_when_either_complete_operand_is_raw() {
+    for (needle, haystack, expected) in [
+        // A valid prefix before FF does not make the whole haystack text.
+        (b"\xff".as_slice(), b"\xc3\xa9\xff".as_slice(), 3),
+        // The invalid byte can also occur after the matched field.
+        (b"z".as_slice(), b"\xc3\xa9z\xff".as_slice(), 3),
+        // A raw needle can start on a boundary, then end mid-codepoint.
+        (b"a\xc3".as_slice(), b"\xc3\xa9a\xc3\xa9".as_slice(), 3),
+        // It can also start mid-codepoint; byte search must not slice a str.
+        (b"\xa9".as_slice(), b"\xc3\xa9".as_slice(), 2),
+        // A multibyte text needle still matches at the beginning of raw data.
+        (b"\xc3\xa9".as_slice(), b"\xc3\xa9\xff".as_slice(), 1),
+    ] {
+        assert_byte_str_index(needle, haystack, Some(expected));
+    }
+}
+
+#[test]
+fn str_index_retains_empty_and_missing_results_in_both_position_modes() {
+    for (needle, haystack, expected) in [
+        (b"\xff".as_slice(), b"\xc3\xa9".as_slice(), None),
+        (b"z".as_slice(), b"\xc3\xa9\xff".as_slice(), None),
+        (b"".as_slice(), b"".as_slice(), Some(1)),
+        (b"\xff".as_slice(), b"".as_slice(), None),
+    ] {
+        // The empty-haystack result is shared with the separate #337 repair.
+        assert_byte_str_index(needle, haystack, expected);
+    }
+}
