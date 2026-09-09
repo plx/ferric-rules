@@ -1,0 +1,6 @@
+
+[TMPLTDEF2] The single field slot value can only contain a single field value.
+
+ERROR:
+(defrule MAIN::probe
+   (item (value $?x)

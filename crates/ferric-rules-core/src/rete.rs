@@ -17,6 +17,7 @@ use crate::beta::{
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::ordered_set::OrderedSet;
+use crate::sequence::{SequenceField, SequencePattern, SequenceSegment, SequenceSource};
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -632,12 +633,24 @@ impl ReteNetwork {
     /// the candidate set during this assertion. Uses the same indexed lookup
     /// as ordinary joins, including the fallback for non-indexable keys.
     fn right_parent_candidates(&self, join_node_id: NodeId, fact: &Fact) -> SmallVec<[TokenId; 8]> {
-        let Some(BetaNode::Join { parent, tests, .. }) = self.beta.get_node(join_node_id) else {
+        let Some(BetaNode::Join {
+            parent,
+            tests,
+            sequence,
+            ..
+        }) = self.beta.get_node(join_node_id)
+        else {
             return SmallVec::new();
         };
         self.find_memory_for_node(*parent)
             .and_then(|memory| self.beta.get_memory(memory))
-            .map(|memory| collect_candidate_parent_tokens(memory, tests, fact))
+            .map(|memory| {
+                collect_candidate_parent_tokens(
+                    memory,
+                    indexable_tests(tests, sequence.as_deref()),
+                    fact,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -657,51 +670,122 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_right_activate", node = ?join_node_id);
-        let Some(join_node) = self.beta.get_node(join_node_id) else {
+        for parent_token_id in parent_tokens {
+            self.propagate_join_fact(
+                join_node_id,
+                parent_token_id,
+                fact_id,
+                fact,
+                fact_base,
+                new_activations,
+            );
+        }
+    }
+
+    /// Emit one positive token for each positional match of the same fact.
+    #[allow(clippy::too_many_arguments)]
+    fn propagate_join_fact(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        fact_id: FactId,
+        fact: &Fact,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Join {
+            tests,
+            bindings,
+            sequence,
+            ..
+        }) = self.beta.get_node(node)
+        else {
             return;
         };
-
-        let (tests, bindings, join_memory_id, children) = match join_node {
-            BetaNode::Join {
-                tests,
-                bindings,
-                memory,
-                children,
-                ..
-            } => (tests.clone(), bindings.clone(), *memory, children.clone()),
-            _ => return,
+        let Some(parent_token) = self.token_store.get(parent) else {
+            return;
         };
-
-        for parent_token_id in parent_tokens {
-            let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                continue;
-            };
-
-            if evaluate_join(fact, Some(parent_token), &tests) {
-                let mut new_bindings = parent_token.bindings.clone();
-                for &(slot, var_id) in bindings.iter() {
-                    if let Some(value) = get_slot_value(fact, slot) {
-                        new_bindings.set(var_id, ValueRef::new(value.clone()));
-                    }
-                }
-
-                let new_token = Token {
-                    fact: Some(fact_id),
-                    bindings: new_bindings,
-                    parent: Some(parent_token_id),
-                    owner_node: join_node_id,
-                };
-
-                let token_id = self.token_store.insert(new_token);
-
-                if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                    let bindings = &self.token_store.get(token_id).unwrap().bindings;
-                    memory.insert_indexed(token_id, bindings);
-                }
-
-                self.propagate_token(token_id, &children, fact_base, new_activations);
+        if sequence.is_none() {
+            // Ordinary joins reject before copying bindings and copy exactly
+            // once for a successful match, as in the scalar-only network.
+            if !evaluate_join(fact, Some(parent_token), tests) {
+                return;
             }
+            let mut extracted = parent_token.bindings.clone();
+            for &(slot, variable) in bindings.iter() {
+                if let Some(value) = get_slot_value(fact, slot) {
+                    extracted.set(variable, ValueRef::new(value.clone()));
+                }
+            }
+            self.emit_join_match(
+                node,
+                parent,
+                fact_id,
+                extracted,
+                None,
+                fact_base,
+                new_activations,
+            );
+            return;
         }
+        let (tests, bindings, sequence) = (tests.clone(), bindings.clone(), sequence.clone());
+        let parent_bindings = parent_token.bindings.clone();
+        for (bindings, lengths) in matching_bindings(
+            fact,
+            &parent_bindings,
+            &tests,
+            &bindings,
+            sequence.as_deref(),
+        ) {
+            if self.token_store.get(parent).is_none() {
+                break;
+            }
+            self.emit_join_match(
+                node,
+                parent,
+                fact_id,
+                bindings,
+                lengths,
+                fact_base,
+                new_activations,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_join_match(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        fact_id: FactId,
+        bindings: BindingSet,
+        lengths: Option<SmallVec<[usize; 2]>>,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Join {
+            memory, children, ..
+        }) = self.beta.get_node(node)
+        else {
+            return;
+        };
+        let (memory, children) = (*memory, children.clone());
+        let token = Token {
+            fact: Some(fact_id),
+            bindings,
+            parent: Some(parent),
+            owner_node: node,
+        };
+        let token_id = if let Some(lengths) = lengths {
+            self.token_store.insert_sequence_match(token, lengths)
+        } else {
+            self.token_store.insert(token)
+        };
+        if let Some(memory) = self.beta.get_memory_mut(memory) {
+            let bindings = &self.token_store.get(token_id).unwrap().bindings;
+            memory.insert_indexed(token_id, bindings);
+        }
+        self.propagate_token(token_id, &children, fact_base, new_activations);
     }
 
     /// Perform a left activation on a join node.
@@ -718,83 +802,38 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_left_activate", node = ?join_node_id);
-        // 1. Get join node info
-        let Some(join_node) = self.beta.get_node(join_node_id) else {
+        let Some(BetaNode::Join {
+            alpha_memory,
+            tests,
+            sequence,
+            ..
+        }) = self.beta.get_node(join_node_id)
+        else {
             return;
         };
-
-        let (alpha_memory_id, tests, bindings, join_memory_id, children) = match join_node {
-            BetaNode::Join {
-                alpha_memory,
-                tests,
-                bindings,
-                memory,
-                children,
-                ..
-            } => (
-                *alpha_memory,
-                tests.clone(),
-                bindings.clone(),
-                *memory,
-                children.clone(),
-            ),
-            _ => return,
-        };
-
-        // 2. Get parent token data (clone bindings before mutation)
         let Some(parent_token) = self.token_store.get(parent_token_id) else {
             return;
         };
-        let parent_bindings = parent_token.bindings.clone();
-
-        // 3. Get candidate fact IDs from alpha memory, using indexed lookup when possible
-        let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
+        let Some(alpha_memory) = self.alpha.get_memory(*alpha_memory) else {
             return;
         };
-        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
-
-        // 4. For each fact, try to join
+        let fact_ids = collect_candidate_facts(
+            alpha_memory,
+            indexable_tests(tests, sequence.as_deref()),
+            &parent_token.bindings,
+        );
         for fact_id in fact_ids {
-            let Some(fact_entry) = fact_base.get(fact_id) else {
+            let Some(entry) = fact_base.get(fact_id) else {
                 continue;
             };
-            let fact = &fact_entry.fact;
-
-            // Get fresh parent token reference for each iteration
-            let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                break;
-            };
-
-            // Evaluate join tests
-            if !evaluate_join(fact, Some(parent_token), &tests) {
-                continue;
-            }
-
-            // Tests passed: create child token
-            let mut new_bindings = parent_bindings.clone();
-            for &(slot, var_id) in bindings.iter() {
-                if let Some(value) = get_slot_value(fact, slot) {
-                    new_bindings.set(var_id, ValueRef::new(value.clone()));
-                }
-            }
-
-            let new_token = Token {
-                fact: Some(fact_id),
-                bindings: new_bindings,
-                parent: Some(parent_token_id),
-                owner_node: join_node_id,
-            };
-
-            let token_id = self.token_store.insert(new_token);
-
-            // Add to join's beta memory (with index maintenance)
-            if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                let bindings = &self.token_store.get(token_id).unwrap().bindings;
-                memory.insert_indexed(token_id, bindings);
-            }
-
-            // Propagate to children
-            self.propagate_token(token_id, &children, fact_base, new_activations);
+            self.propagate_join_fact(
+                join_node_id,
+                parent_token_id,
+                fact_id,
+                &entry.fact,
+                fact_base,
+                new_activations,
+            );
         }
     }
 
@@ -832,6 +871,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match neg_node {
+            BetaNode::Negative { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (alpha_memory_id, tests, beta_memory_id, neg_memory_id, children) = match neg_node {
             BetaNode::Negative {
                 alpha_memory,
@@ -860,7 +904,11 @@ impl ReteNetwork {
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
+        let fact_ids = collect_candidate_facts(
+            alpha_memory,
+            indexable_tests(&tests, sequence.as_deref()),
+            &parent_bindings,
+        );
 
         let mut blocking_facts = Vec::new();
         for fact_id in fact_ids {
@@ -874,7 +922,7 @@ impl ReteNetwork {
                 return;
             };
 
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if evaluate_pattern(fact, parent_token, &tests, sequence.as_deref()) {
                 blocking_facts.push(fact_id);
             }
         }
@@ -956,6 +1004,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match neg_node {
+            BetaNode::Negative { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (tests, beta_memory_id, neg_memory_id) = match neg_node {
             BetaNode::Negative {
                 tests,
@@ -980,7 +1033,7 @@ impl ReteNetwork {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
                 continue;
             };
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if evaluate_pattern(fact, parent_token, &tests, sequence.as_deref()) {
                 if let Some(neg_mem) = self.beta.get_neg_memory_mut(neg_memory_id) {
                     neg_mem.add_blocker(parent_token_id, fact_id);
                 }
@@ -995,7 +1048,7 @@ impl ReteNetwork {
                 continue;
             };
 
-            if evaluate_join(fact, Some(pt_token), &tests) {
+            if evaluate_pattern(fact, pt_token, &tests, sequence.as_deref()) {
                 to_block.push((parent_token_id, passthrough_id));
             }
         }
@@ -1450,6 +1503,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match exists_node {
+            BetaNode::Exists { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (alpha_memory_id, tests, beta_memory_id, exists_memory_id, children) = match exists_node
         {
             BetaNode::Exists {
@@ -1479,7 +1537,11 @@ impl ReteNetwork {
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
+        let fact_ids = collect_candidate_facts(
+            alpha_memory,
+            indexable_tests(&tests, sequence.as_deref()),
+            &parent_bindings,
+        );
 
         let mut supporting_facts = Vec::new();
         for fact_id in fact_ids {
@@ -1493,7 +1555,7 @@ impl ReteNetwork {
                 return;
             };
 
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if evaluate_pattern(fact, parent_token, &tests, sequence.as_deref()) {
                 supporting_facts.push(fact_id);
             }
         }
@@ -1551,6 +1613,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match exists_node {
+            BetaNode::Exists { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (parent_id, tests, beta_memory_id, exists_memory_id, children) = match exists_node {
             BetaNode::Exists {
                 parent,
@@ -1575,14 +1642,20 @@ impl ReteNetwork {
         let parent_tokens = self
             .find_memory_for_node(parent_id)
             .and_then(|mem_id| self.beta.get_memory(mem_id))
-            .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
+            .map(|mem| {
+                collect_candidate_parent_tokens(
+                    mem,
+                    indexable_tests(&tests, sequence.as_deref()),
+                    fact,
+                )
+            })
             .unwrap_or_default();
 
         for parent_token_id in parent_tokens {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
                 continue;
             };
-            let is_supported = evaluate_join(fact, Some(parent_token), &tests);
+            let is_supported = evaluate_pattern(fact, parent_token, &tests, sequence.as_deref());
 
             if is_supported {
                 // This fact supports this parent token
@@ -2530,22 +2603,6 @@ impl Default for ReteNetwork {
     }
 }
 
-/// Evaluate join tests between a fact and a token.
-///
-/// Find the first equality join test suitable for indexed alpha memory lookup.
-///
-/// Returns `(alpha_slot, beta_var)` for the first `JoinTestType::Equal` test,
-/// or `None` if no equality tests exist.
-fn find_index_test(tests: &[JoinTest]) -> Option<(SlotIndex, VarId)> {
-    tests.iter().find_map(|t| {
-        if t.test_type == JoinTestType::Equal {
-            Some((t.alpha_slot, t.beta_var))
-        } else {
-            None
-        }
-    })
-}
-
 /// Collect fact IDs from alpha memory, using an indexed lookup when possible.
 ///
 /// If the join tests include an equality test and the parent token has a bound
@@ -2557,11 +2614,11 @@ const INDEX_SCAN_THRESHOLD: usize = 16;
 
 pub(crate) fn collect_candidate_facts(
     alpha_memory: &AlphaMemory,
-    tests: &[JoinTest],
+    mut index_tests: impl Iterator<Item = (SlotIndex, VarId)>,
     parent_bindings: &BindingSet,
 ) -> SmallVec<[FactId; 8]> {
     if alpha_memory.len() >= INDEX_SCAN_THRESHOLD {
-        if let Some((alpha_slot, beta_var)) = find_index_test(tests) {
+        if let Some((alpha_slot, beta_var)) = index_tests.next() {
             if alpha_memory.is_slot_indexed(alpha_slot) {
                 if let Some(bound_value) = parent_bindings.get(beta_var) {
                     if let Some(key) = AtomKey::from_value(bound_value) {
@@ -2585,11 +2642,11 @@ pub(crate) fn collect_candidate_facts(
 /// O(1) hash lookup instead of scanning all parent tokens.
 fn collect_candidate_parent_tokens(
     parent_memory: &BetaMemory,
-    tests: &[JoinTest],
+    mut index_tests: impl Iterator<Item = (SlotIndex, VarId)>,
     fact: &Fact,
 ) -> SmallVec<[TokenId; 8]> {
     if parent_memory.len() >= INDEX_SCAN_THRESHOLD {
-        if let Some((alpha_slot, beta_var)) = find_index_test(tests) {
+        if let Some((alpha_slot, beta_var)) = index_tests.next() {
             if parent_memory.is_var_indexed(beta_var) {
                 if let Some(fact_value) = get_slot_value(fact, alpha_slot) {
                     if let Some(key) = AtomKey::from_value(fact_value) {
@@ -2609,12 +2666,16 @@ fn collect_candidate_parent_tokens(
 ///
 /// If `token` is `None`, treats this as a root-level match (no bindings to check).
 pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool {
+    evaluate_join_bindings(fact, token.map(|token| &token.bindings), tests)
+}
+
+fn evaluate_join_bindings(fact: &Fact, bindings: Option<&BindingSet>, tests: &[JoinTest]) -> bool {
     for test in tests {
         let Some(fact_value) = get_slot_value(fact, test.alpha_slot) else {
             return false;
         };
 
-        let Some(token_value) = token.and_then(|t| t.bindings.get(test.beta_var)) else {
+        let Some(token_value) = bindings.and_then(|bindings| bindings.get(test.beta_var)) else {
             return false;
         };
 
@@ -2694,6 +2755,82 @@ pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTes
     }
 
     true
+}
+
+/// Equality keys whose logical selectors also identify physical fact fields.
+/// An ordered sequence's single fields before its first capture never shift.
+/// Template projections, captures, and all later ordered fields must be
+/// evaluated against each projected match instead.
+/// Use this same selection when requesting indexes and collecting candidates.
+pub(crate) fn indexable_tests<'a>(
+    tests: &'a [JoinTest],
+    sequence: Option<&SequencePattern>,
+) -> impl Iterator<Item = (SlotIndex, VarId)> + 'a {
+    let fixed_prefix = sequence.map(|sequence| match sequence.segments.as_slice() {
+        [SequenceSegment {
+            source: SequenceSource::Ordered,
+            fields,
+        }] => fields
+            .iter()
+            .take_while(|field| **field == SequenceField::Single)
+            .count(),
+        // Even a template segment with one Single may unwrap a multislot;
+        // its logical selector is not a physical scalar index.
+        _ => 0,
+    });
+    tests.iter().filter_map(move |test| {
+        let physical = fixed_prefix.map_or(
+            true,
+            |prefix| matches!(test.alpha_slot, SlotIndex::Ordered(index) if index < prefix),
+        );
+        (test.test_type == JoinTestType::Equal && physical)
+            .then_some((test.alpha_slot, test.beta_var))
+    })
+}
+
+pub(crate) fn evaluate_pattern(
+    fact: &Fact,
+    token: &Token,
+    tests: &[JoinTest],
+    sequence: Option<&SequencePattern>,
+) -> bool {
+    if let Some(sequence) = sequence {
+        sequence
+            .matches(fact)
+            .any(|matched| evaluate_join(&matched.fact, Some(token), tests))
+    } else {
+        evaluate_join(fact, Some(token), tests)
+    }
+}
+
+fn matching_bindings<'a>(
+    fact: &'a Fact,
+    parent_bindings: &'a BindingSet,
+    tests: &'a [JoinTest],
+    bindings: &'a [(SlotIndex, VarId)],
+    sequence: Option<&'a SequencePattern>,
+) -> impl Iterator<Item = (BindingSet, Option<SmallVec<[usize; 2]>>)> + 'a {
+    std::iter::once(None)
+        .take(usize::from(sequence.is_none()))
+        .chain(
+            sequence
+                .into_iter()
+                .flat_map(move |sequence| sequence.matches(fact))
+                .map(Some),
+        )
+        .filter_map(move |matched| {
+            let projected = matched.as_ref().map_or(fact, |matched| &matched.fact);
+            if !evaluate_join_bindings(projected, Some(parent_bindings), tests) {
+                return None;
+            }
+            let mut extracted = parent_bindings.clone();
+            for &(slot, variable) in bindings {
+                if let Some(value) = get_slot_value(projected, slot) {
+                    extracted.set(variable, ValueRef::new(value.clone()));
+                }
+            }
+            Some((extracted, matched.map(|matched| matched.lengths)))
+        })
 }
 
 /// Equality for join values, including complete multifield slot values.
@@ -4672,6 +4809,7 @@ mod tests {
         let var_x = make_symbol(symbol_table, "x");
 
         let positive = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(item_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -4680,6 +4818,7 @@ mod tests {
             exists: false,
         };
         let ncc_sub_1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(block_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -4688,6 +4827,7 @@ mod tests {
             exists: false,
         };
         let ncc_sub_2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(reason_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -4815,6 +4955,7 @@ mod tests {
             .expect("var symbol");
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -5716,6 +5857,533 @@ mod tests {
             prop_assert!(neq_result, "cross-type NotEqual must be true");
         }
     }
+
+    use crate::compiler::{CompilablePattern, CompilableRule, CompileResult, ReteCompiler};
+    use crate::sequence::SequenceField;
+    use crate::value::Multifield;
+
+    struct PrefixIndexFixture {
+        symbols: SymbolTable,
+        compiler: ReteCompiler,
+        rete: ReteNetwork,
+        facts: FactBase,
+        key_relation: Symbol,
+        row_relation: Symbol,
+        variable: Symbol,
+        key_pattern: CompilablePattern,
+        row_pattern: CompilablePattern,
+    }
+
+    impl PrefixIndexFixture {
+        fn new(prefix: usize) -> Self {
+            let mut symbols = SymbolTable::new();
+            let key_relation = make_symbol(&mut symbols, "prefix-key");
+            let row_relation = make_symbol(&mut symbols, "prefix-row");
+            let variable = make_symbol(&mut symbols, "x");
+            let key_pattern = CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(key_relation),
+                constant_tests: vec![],
+                sequence: None,
+                variable_slots: vec![(SlotIndex::Ordered(0), variable)],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            };
+            let mut fields = vec![SequenceField::Single; prefix + 1];
+            fields.push(SequenceField::Multi);
+            let row_pattern = CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(row_relation),
+                constant_tests: vec![],
+                sequence: Some(SequencePattern {
+                    segments: vec![SequenceSegment {
+                        source: SequenceSource::Ordered,
+                        fields,
+                    }],
+                    tests: vec![],
+                }),
+                variable_slots: vec![(SlotIndex::Ordered(prefix), variable)],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            };
+            Self {
+                symbols,
+                compiler: ReteCompiler::new(),
+                rete: ReteNetwork::new(),
+                facts: FactBase::new(),
+                key_relation,
+                row_relation,
+                variable,
+                key_pattern,
+                row_pattern,
+            }
+        }
+
+        fn compile(&mut self, patterns: Vec<CompilablePattern>) -> CompileResult {
+            let rule = CompilableRule {
+                rule_id: self.compiler.allocate_rule_id(),
+                salience: Salience::DEFAULT,
+                patterns,
+            };
+            self.compiler
+                .compile_rule(&mut self.rete, &self.facts, &rule)
+                .unwrap()
+        }
+
+        fn compile_pair(&mut self) -> CompileResult {
+            self.compile(vec![self.key_pattern.clone(), self.row_pattern.clone()])
+        }
+
+        fn assert(&mut self, relation: Symbol, fields: Vec<Value>) -> FactId {
+            let id = self
+                .facts
+                .assert_ordered(relation, fields.into_iter().collect());
+            let fact = self.facts.get(id).unwrap().fact.clone();
+            self.rete.assert_fact(id, &fact, &self.facts);
+            id
+        }
+
+        fn retract(&mut self, id: FactId) {
+            let fact = self.facts.get(id).unwrap().fact.clone();
+            self.rete.retract_fact(id, &fact, &self.facts);
+            self.facts.retract(id).unwrap();
+        }
+
+        fn firing_count(&self, result: &CompileResult) -> usize {
+            self.rete
+                .agenda
+                .iter_activations()
+                .filter(|activation| activation.rule == result.rule_id)
+                .count()
+        }
+    }
+
+    fn prefix_join(rete: &ReteNetwork, result: &CompileResult) -> NodeId {
+        let BetaNode::Terminal { parent, .. } = rete.beta.get_node(result.terminal_node).unwrap()
+        else {
+            panic!("expected terminal")
+        };
+        *parent
+    }
+
+    fn prefix_parent_memory(rete: &ReteNetwork, join: NodeId) -> &BetaMemory {
+        let BetaNode::Join { parent, .. } = rete.beta.get_node(join).unwrap() else {
+            panic!("expected join")
+        };
+        let memory = rete.beta.memory_id_for_node(*parent).unwrap();
+        rete.beta.get_memory(memory).unwrap()
+    }
+
+    fn prefix_parent_token(rete: &ReteNetwork, join: NodeId, key: FactId) -> TokenId {
+        prefix_parent_memory(rete, join)
+            .iter()
+            .find(|id| rete.token_store.get(*id).unwrap().fact == Some(key))
+            .unwrap()
+    }
+
+    fn prefix_left_candidates(
+        rete: &ReteNetwork,
+        join: NodeId,
+        parent: TokenId,
+    ) -> SmallVec<[FactId; 8]> {
+        let BetaNode::Join {
+            alpha_memory,
+            tests,
+            sequence,
+            ..
+        } = rete.beta.get_node(join).unwrap()
+        else {
+            panic!("expected join")
+        };
+        collect_candidate_facts(
+            rete.alpha.get_memory(*alpha_memory).unwrap(),
+            indexable_tests(tests, sequence.as_deref()),
+            &rete.token_store.get(parent).unwrap().bindings,
+        )
+    }
+
+    fn prefix_assert_narrowed(
+        fixture: &PrefixIndexFixture,
+        result: &CompileResult,
+        key: FactId,
+        row: FactId,
+    ) {
+        let join = prefix_join(&fixture.rete, result);
+        let parent = prefix_parent_token(&fixture.rete, join, key);
+        assert_eq!(
+            prefix_left_candidates(&fixture.rete, join, parent).as_slice(),
+            &[row]
+        );
+        let row_fact = &fixture.facts.get(row).unwrap().fact;
+        assert_eq!(
+            fixture
+                .rete
+                .right_parent_candidates(join, row_fact)
+                .as_slice(),
+            &[parent]
+        );
+    }
+
+    fn prefix_row_fields(prefix: usize, key: Value, tail: bool) -> Vec<Value> {
+        let mut fields = vec![Value::Integer(-1); prefix];
+        fields.push(key);
+        if tail {
+            fields.extend([Value::Integer(100), Value::Integer(200)]);
+        }
+        fields
+    }
+
+    #[test]
+    fn ordered_prefix_indexes_narrow_both_arrival_directions() {
+        for prefix in [0, 1] {
+            for rows_first in [false, true] {
+                let mut fixture = PrefixIndexFixture::new(prefix);
+                let result = fixture.compile_pair();
+                let join = prefix_join(&fixture.rete, &result);
+                let variable = result.var_map.lookup(fixture.variable).unwrap();
+                assert!(fixture
+                    .rete
+                    .alpha
+                    .get_memory(result.alpha_memories[1])
+                    .unwrap()
+                    .is_slot_indexed(SlotIndex::Ordered(prefix)));
+                assert!(prefix_parent_memory(&fixture.rete, join).is_var_indexed(variable));
+
+                let mut keys = Vec::new();
+                let mut rows = Vec::new();
+                for side in [rows_first, !rows_first] {
+                    for key in 0..24 {
+                        let value = Value::Integer(key);
+                        if side {
+                            let fields = prefix_row_fields(prefix, value, key % 2 == 0);
+                            rows.push(fixture.assert(fixture.row_relation, fields));
+                        } else {
+                            keys.push(fixture.assert(fixture.key_relation, vec![value]));
+                        }
+                    }
+                }
+                assert_eq!(fixture.firing_count(&result), 24);
+                for (&key, &row) in keys.iter().zip(&rows) {
+                    prefix_assert_narrowed(&fixture, &result, key, row);
+                }
+
+                let removed_row = rows[7];
+                fixture.retract(removed_row);
+                let parent = prefix_parent_token(&fixture.rete, join, keys[7]);
+                assert!(prefix_left_candidates(&fixture.rete, join, parent).is_empty());
+                assert_eq!(fixture.firing_count(&result), 23);
+                fixture.retract(keys[7]);
+                assert!(prefix_parent_memory(&fixture.rete, join)
+                    .lookup_by_var(variable, &AtomKey::Integer(7))
+                    .map_or(true, SmallVec::is_empty));
+                let key = fixture.assert(fixture.key_relation, vec![Value::Integer(7)]);
+                let row = fixture.assert(
+                    fixture.row_relation,
+                    prefix_row_fields(prefix, Value::Integer(7), true),
+                );
+                assert_ne!(row, removed_row);
+                prefix_assert_narrowed(&fixture, &result, key, row);
+                assert_eq!(fixture.firing_count(&result), 24);
+                fixture.rete.debug_assert_consistency();
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_prefix_indexes_backfill_shared_memories() {
+        let mut fixture = PrefixIndexFixture::new(1);
+        let key_seed = fixture.compile(vec![fixture.key_pattern.clone()]);
+        let row_seed = fixture.compile(vec![fixture.row_pattern.clone()]);
+        let mut pairs = Vec::new();
+        for key in 0..24 {
+            let key_id = fixture.assert(fixture.key_relation, vec![Value::Integer(key)]);
+            let row_id = fixture.assert(
+                fixture.row_relation,
+                prefix_row_fields(1, Value::Integer(key), true),
+            );
+            pairs.push((key_id, row_id));
+        }
+        assert!(!fixture
+            .rete
+            .alpha
+            .get_memory(row_seed.alpha_memories[0])
+            .unwrap()
+            .is_slot_indexed(SlotIndex::Ordered(1)));
+        let result = fixture.compile_pair();
+        assert_eq!(result.alpha_memories[0], key_seed.alpha_memories[0]);
+        assert_eq!(result.alpha_memories[1], row_seed.alpha_memories[0]);
+        let join = prefix_join(&fixture.rete, &result);
+        let BetaNode::Join { parent, .. } = fixture.rete.beta.get_node(join).unwrap() else {
+            panic!("expected join")
+        };
+        assert_eq!(*parent, prefix_join(&fixture.rete, &key_seed));
+        assert_eq!(prefix_parent_memory(&fixture.rete, join).len(), 24);
+        let variable = result.var_map.lookup(fixture.variable).unwrap();
+        assert!(prefix_parent_memory(&fixture.rete, join).is_var_indexed(variable));
+        assert!(fixture
+            .rete
+            .alpha
+            .get_memory(result.alpha_memories[1])
+            .unwrap()
+            .is_slot_indexed(SlotIndex::Ordered(1)));
+        for (key, row) in pairs {
+            prefix_assert_narrowed(&fixture, &result, key, row);
+        }
+        assert_eq!(fixture.firing_count(&result), 24);
+        fixture.rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn ordered_prefix_index_skips_earlier_shifted_equality() {
+        let mut fixture = PrefixIndexFixture::new(0);
+        let y = make_symbol(&mut fixture.symbols, "y");
+        fixture
+            .key_pattern
+            .variable_slots
+            .push((SlotIndex::Ordered(1), y));
+        fixture.row_pattern.sequence.as_mut().unwrap().segments[0].fields = vec![
+            SequenceField::Single,
+            SequenceField::Multi,
+            SequenceField::Single,
+        ];
+        fixture.row_pattern.variable_slots = vec![
+            (SlotIndex::Ordered(2), y),
+            (SlotIndex::Ordered(0), fixture.variable),
+        ];
+        let result = fixture.compile_pair();
+        let join = prefix_join(&fixture.rete, &result);
+        let BetaNode::Join {
+            tests, sequence, ..
+        } = fixture.rete.beta.get_node(join).unwrap()
+        else {
+            panic!("expected join")
+        };
+        assert_eq!(tests[0].alpha_slot, SlotIndex::Ordered(2));
+        assert_eq!(
+            indexable_tests(tests, sequence.as_deref()).collect::<Vec<_>>(),
+            vec![(
+                SlotIndex::Ordered(0),
+                result.var_map.lookup(fixture.variable).unwrap()
+            )]
+        );
+        let memory = fixture
+            .rete
+            .alpha
+            .get_memory(result.alpha_memories[1])
+            .unwrap();
+        assert!(memory.is_slot_indexed(SlotIndex::Ordered(0)));
+        assert!(!memory.is_slot_indexed(SlotIndex::Ordered(2)));
+        let mut pairs = Vec::new();
+        for key in 0..24 {
+            let key_id = fixture.assert(
+                fixture.key_relation,
+                vec![Value::Integer(key), Value::Integer(42)],
+            );
+            // Physical slot 2 is 200; logical slot 2 is the final value 42.
+            let row_id = fixture.assert(
+                fixture.row_relation,
+                vec![
+                    Value::Integer(key),
+                    Value::Integer(100),
+                    Value::Integer(200),
+                    Value::Integer(42),
+                ],
+            );
+            pairs.push((key_id, row_id));
+        }
+        for &(key, row) in &pairs {
+            prefix_assert_narrowed(&fixture, &result, key, row);
+        }
+        assert_eq!(fixture.firing_count(&result), 24);
+        let bad = fixture.assert(
+            fixture.row_relation,
+            vec![
+                Value::Integer(7),
+                Value::Integer(100),
+                Value::Integer(200),
+                Value::Integer(43),
+            ],
+        );
+        assert_eq!(
+            fixture
+                .rete
+                .right_parent_candidates(join, &fixture.facts.get(bad).unwrap().fact)
+                .len(),
+            1
+        );
+        assert_eq!(
+            fixture.firing_count(&result),
+            24,
+            "remaining projected equality must reject"
+        );
+        fixture.rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn ordered_prefix_non_atomic_keys_keep_scan_fallback() {
+        let mut fixture = PrefixIndexFixture::new(0);
+        let result = fixture.compile_pair();
+        for key in 0..24 {
+            fixture.assert(fixture.key_relation, vec![Value::Integer(key)]);
+            fixture.assert(
+                fixture.row_relation,
+                prefix_row_fields(0, Value::Integer(key), true),
+            );
+        }
+        let value = Value::Multifield(Box::new(
+            [Value::Integer(8), Value::Integer(9)]
+                .into_iter()
+                .collect::<Multifield>(),
+        ));
+        let key = fixture.assert(fixture.key_relation, vec![value.clone()]);
+        let row = fixture.assert(fixture.row_relation, prefix_row_fields(0, value, false));
+        let join = prefix_join(&fixture.rete, &result);
+        let parent = prefix_parent_token(&fixture.rete, join, key);
+        let left = prefix_left_candidates(&fixture.rete, join, parent);
+        assert_eq!(left.len(), 25);
+        assert!(left.contains(&row));
+        let right = fixture
+            .rete
+            .right_parent_candidates(join, &fixture.facts.get(row).unwrap().fact);
+        assert_eq!(right.len(), 25);
+        assert!(right.contains(&parent));
+        assert_eq!(fixture.firing_count(&result), 25);
+        fixture.rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn ordered_prefix_index_preserves_multiple_split_tokens() {
+        let mut fixture = PrefixIndexFixture::new(0);
+        let sequence = fixture.row_pattern.sequence.as_mut().unwrap();
+        sequence.segments[0].fields = vec![
+            SequenceField::Single,
+            SequenceField::Multi,
+            SequenceField::Single,
+            SequenceField::Multi,
+        ];
+        sequence.tests.push(ConstantTest {
+            slot: SlotIndex::Ordered(2),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(99)),
+        });
+        let result = fixture.compile_pair();
+        let mut pairs = Vec::new();
+        for key in 0..24 {
+            let key_id = fixture.assert(fixture.key_relation, vec![Value::Integer(key)]);
+            let row_id = fixture.assert(
+                fixture.row_relation,
+                vec![
+                    Value::Integer(key),
+                    Value::Integer(10),
+                    Value::Integer(99),
+                    Value::Integer(20),
+                    Value::Integer(99),
+                    Value::Integer(30),
+                ],
+            );
+            pairs.push((key_id, row_id));
+        }
+        for &(key, row) in &pairs {
+            prefix_assert_narrowed(&fixture, &result, key, row);
+        }
+        assert_eq!(fixture.firing_count(&result), 48);
+        fixture.retract(pairs[7].1);
+        assert_eq!(fixture.firing_count(&result), 46);
+        fixture.rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn ordered_prefix_index_filters_capture_shifted_and_non_equality_tests() {
+        let tests = [
+            JoinTest {
+                alpha_slot: SlotIndex::Ordered(0),
+                beta_var: VarId(0),
+                test_type: JoinTestType::NotEqual,
+            },
+            JoinTest {
+                alpha_slot: SlotIndex::Ordered(1),
+                beta_var: VarId(1),
+                test_type: JoinTestType::Equal,
+            },
+            JoinTest {
+                alpha_slot: SlotIndex::Ordered(2),
+                beta_var: VarId(2),
+                test_type: JoinTestType::Equal,
+            },
+        ];
+        let sequence = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![
+                    SequenceField::Single,
+                    SequenceField::Multi,
+                    SequenceField::Single,
+                ],
+            }],
+            tests: vec![],
+        };
+        assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
+        assert_eq!(
+            indexable_tests(&tests, None).collect::<Vec<_>>(),
+            vec![
+                (SlotIndex::Ordered(1), VarId(1)),
+                (SlotIndex::Ordered(2), VarId(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn template_single_element_multislot_is_not_a_physical_index_key() {
+        let sequence = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::TemplateSlot(0),
+                fields: vec![SequenceField::Single],
+            }],
+            tests: vec![],
+        };
+        sequence.validate().unwrap();
+        let tests = [JoinTest {
+            alpha_slot: SlotIndex::Template(0),
+            beta_var: VarId(0),
+            test_type: JoinTestType::Equal,
+        }];
+
+        // The projection is one scalar; the physical slot can hold [scalar].
+        assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
+        assert_eq!(
+            indexable_tests(&tests, None).collect::<Vec<_>>(),
+            vec![(SlotIndex::Template(0), VarId(0))]
+        );
+    }
+
+    #[test]
+    fn template_written_order_prefix_is_not_a_physical_index_key() {
+        let sequence = SequencePattern {
+            segments: vec![
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(1),
+                    fields: vec![SequenceField::Single],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(2),
+                    fields: vec![SequenceField::Multi],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(0),
+                    fields: vec![SequenceField::Single],
+                },
+            ],
+            tests: vec![],
+        };
+        sequence.validate().unwrap();
+        let tests = [JoinTest {
+            alpha_slot: SlotIndex::Template(0),
+            beta_var: VarId(0),
+            test_type: JoinTestType::Equal,
+        }];
+
+        // Logical slot 0 precedes the Multi but comes from physical slot 1.
+        assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
+    }
 }
 
 #[cfg(test)]
@@ -5770,6 +6438,7 @@ mod runtime_constraint_tests {
             let a = crate::Symbol(symbols.intern_utf8("a"));
             let x = crate::Symbol(symbols.intern_utf8("x"));
             let pattern = |relation, variable, negated| CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
                 variable_slots: vec![(SlotIndex::Ordered(0), variable)],
@@ -6030,6 +6699,7 @@ mod runtime_constraint_tests {
         let a = crate::Symbol(fixture.symbols.intern_utf8("a"));
         let x = crate::Symbol(fixture.symbols.intern_utf8("x"));
         let pattern = |relation, variable, negated| CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), variable)],
@@ -6229,6 +6899,7 @@ mod runtime_constraint_tests {
         let before = fixture.rete.cardinality();
         let invalid = CompilableRuntimePattern {
             pattern: CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(fixture.data),
                 constant_tests: vec![],
                 variable_slots: vec![],
@@ -6278,6 +6949,7 @@ mod runtime_negative_index_tests {
             let key = Symbol(symbols.intern_utf8("key"));
             let value = Symbol(symbols.intern_utf8("value"));
             let pattern = |relation, slots, negated| CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
                 variable_slots: slots,
@@ -6532,5 +7204,101 @@ mod byte_value_tests {
             Value::String(FerricString::from_bytes(b"a\0\xc3", StringEncoding::Utf8).unwrap());
         assert_eq!(values_join_eq(&first, &first), Some(true));
         assert_eq!(values_join_eq(&first, &second), Some(false));
+    }
+}
+
+#[cfg(test)]
+mod sequence_runtime_union_tests {
+    use super::*;
+    use crate::{
+        AlphaEntryType, CompilableCondition, CompilablePattern, CompilableRuntimePattern,
+        ConstantTest, ConstantTestType, ReteCompiler, Salience, StringEncoding, SymbolTable,
+    };
+
+    #[test]
+    fn earlier_sequence_capture_is_the_runtime_outer_binding_after_retraction() {
+        let mut symbols = SymbolTable::new();
+        let rows = symbols.intern_symbol("rows", StringEncoding::Utf8).unwrap();
+        let data = symbols.intern_symbol("data", StringEncoding::Utf8).unwrap();
+        let captured = symbols
+            .intern_symbol("captured", StringEncoding::Utf8)
+            .unwrap();
+        let local = symbols
+            .intern_symbol("local", StringEncoding::Utf8)
+            .unwrap();
+        let conditions = [
+            CompilableCondition::Pattern(CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(rows),
+                constant_tests: Vec::new(),
+                sequence: Some(SequencePattern {
+                    segments: vec![SequenceSegment {
+                        source: SequenceSource::Ordered,
+                        fields: vec![SequenceField::Multi, SequenceField::Single],
+                    }],
+                    tests: vec![ConstantTest {
+                        slot: SlotIndex::Ordered(1),
+                        test_type: ConstantTestType::Equal(AtomKey::Integer(9)),
+                    }],
+                }),
+                variable_slots: vec![(SlotIndex::Ordered(0), captured)],
+                negated_variable_slots: Vec::new(),
+                negated: false,
+                exists: false,
+            }),
+            CompilableCondition::RuntimePattern(CompilableRuntimePattern {
+                pattern: CompilablePattern {
+                    entry_type: AlphaEntryType::OrderedRelation(data),
+                    constant_tests: Vec::new(),
+                    sequence: None,
+                    variable_slots: vec![(SlotIndex::Ordered(0), local)],
+                    negated_variable_slots: Vec::new(),
+                    negated: true,
+                    exists: false,
+                },
+                local_condition: None,
+                local_bindings: Vec::new(),
+                negative_condition: Some(0),
+                join_role: RuntimeConditionRole::NegativeJoin,
+            }),
+        ];
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut facts = FactBase::new();
+        facts.assert_ordered(
+            rows,
+            smallvec::smallvec![Value::Integer(7), Value::Integer(9)],
+        );
+        let blocker = facts.assert_ordered(data, smallvec::smallvec![Value::Integer(8)]);
+        let rule = compiler.allocate_rule_id();
+        let rule_network = compiler
+            .compile_conditions(&mut rete, &facts, rule, Salience::DEFAULT, &conditions)
+            .unwrap();
+        let captured = rule_network.var_map.lookup(captured).unwrap();
+        let local = rule_network.var_map.lookup(local).unwrap();
+        let pending = rete.pop_pending_runtime_match().unwrap();
+        assert_eq!(pending.fact, Some(blocker));
+        let bindings = rete.runtime_match_bindings(&pending, &facts).unwrap();
+        let expected = Value::Multifield(Box::new([Value::Integer(7)].into_iter().collect()));
+        assert!(bindings.get(captured).unwrap().structural_eq(&expected));
+        assert!(matches!(&**bindings.get(local).unwrap(), Value::Integer(8)));
+        rete.resolve_runtime_match(pending, true, &facts);
+        assert!(rete.pop_pending_runtime_match().is_none());
+        assert!(rete.agenda.is_empty());
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+        compiler.validate_snapshot(&rete, &symbols).unwrap();
+        let removed = facts.retract(blocker).unwrap().fact;
+        rete.retract_fact(blocker, &removed, &facts);
+        assert!(rete.pop_pending_runtime_match().is_none());
+        assert_eq!(rete.agenda.len(), 1);
+        let activation = rete.agenda.iter_activations().next().unwrap();
+        let token = rete.token_store.get(activation.token).unwrap();
+        assert!(token
+            .bindings
+            .get(captured)
+            .unwrap()
+            .structural_eq(&expected));
+        assert!(token.bindings.get(local).is_none());
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+        compiler.validate_snapshot(&rete, &symbols).unwrap();
     }
 }

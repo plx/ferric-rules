@@ -371,19 +371,6 @@ impl CompiledTestCondition {
     }
 }
 
-/// Runtime hint for trailing ordered multi-variable captures (`$?var`).
-///
-/// The rete compiler currently approximates ordered multi-variable constraints
-/// as single-slot bindings. This hint allows action-time evaluation to restore
-/// CLIPS-style trailing multifield capture semantics for RHS expressions.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct MultifieldTailBindingHint {
-    pub name: String,
-    pub fact_index: usize,
-    pub start_slot: usize,
-}
-
 /// Compiled rule metadata stored for action execution.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -407,8 +394,6 @@ pub(crate) struct CompiledRuleInfo {
     pub test_conditions: Vec<CompiledTestCondition>,
     /// Pre-translated RHS action call expressions.
     pub runtime_actions: Vec<Option<crate::evaluator::RuntimeExpr>>,
-    /// Trailing ordered multifield capture hints for action-time evaluation.
-    pub multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
 }
 
 /// Errors that can occur during action execution.
@@ -441,7 +426,7 @@ impl From<crate::evaluator::EvalError> for ActionError {
     fn from(error: crate::evaluator::EvalError) -> Self {
         match error {
             // Scanner metadata is transient. Persist its unchanged public
-            // message using the existing schema-6 string diagnostic variant.
+            // message using the existing string diagnostic variant.
             crate::evaluator::EvalError::ScannerNotice(notice) => {
                 Self::EvalError(notice.to_string())
             }
@@ -485,12 +470,6 @@ pub(crate) fn execute_actions(
     // Defensive: clear any stale deferred events that might have accumulated
     // in non-action evaluation contexts.
     let _ = context.engine.globals.take_printout_events();
-    seed_multifield_tail_bindings(
-        &context.engine.fact_base,
-        collected_facts,
-        &rule_info.multifield_tail_bindings,
-        &mut eval_env.runtime_bindings,
-    );
 
     for (index, action) in rule_info.actions.iter().enumerate() {
         let runtime_call = rule_info
@@ -573,44 +552,6 @@ pub(crate) fn execute_actions(
     )
 }
 
-/// Evaluate one rule-local predicate for an incoming partial match.
-pub(crate) fn evaluate_test_condition(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    test_condition: &CompiledTestCondition,
-    collected_facts: &[FactId],
-    context: &mut ActionExecutionContext<'_>,
-) -> Result<bool, ActionError> {
-    let mut eval_env = ActionEvalEnv {
-        runtime_bindings: RuntimeBindingEnv::new(),
-    };
-    seed_multifield_tail_bindings(
-        &context.engine.fact_base,
-        collected_facts,
-        &rule_info.multifield_tail_bindings,
-        &mut eval_env.runtime_bindings,
-    );
-
-    if eval_env.runtime_bindings.is_empty() {
-        return Ok(evaluate_runtime_condition(
-            &token.bindings,
-            &rule_info.var_map,
-            test_condition,
-            false,
-            context,
-        ));
-    }
-    let (bindings, var_map) =
-        build_runtime_eval_bindings(token, rule_info, &eval_env.runtime_bindings, context)?;
-    Ok(evaluate_runtime_condition(
-        &bindings,
-        &var_map,
-        test_condition,
-        false,
-        context,
-    ))
-}
-
 /// Evaluate a verified graph-owned condition against its isolated binding frame.
 /// Negative joins convert errors into conflicts. Exists joins do so only while
 /// replacing a selected support; an initial search rejects an erroneous support.
@@ -676,29 +617,6 @@ pub(crate) fn evaluate_runtime_condition(
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
     // Both spellings share one current value, including after an RHS bind.
     env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
-}
-
-fn seed_multifield_tail_bindings(
-    fact_base: &FactBase,
-    collected_facts: &[FactId],
-    hints: &[MultifieldTailBindingHint],
-    env: &mut RuntimeBindingEnv,
-) {
-    for hint in hints {
-        let Some(&fact_id) = collected_facts.get(hint.fact_index) else {
-            continue;
-        };
-        let Some(entry) = fact_base.get(fact_id) else {
-            continue;
-        };
-        let Fact::Ordered(ordered) = &entry.fact else {
-            continue;
-        };
-
-        let mut captured = ferric_rules_core::Multifield::new();
-        captured.extend(ordered.fields.iter().skip(hint.start_slot).cloned());
-        insert_runtime_binding(env, &hint.name, Value::Multifield(Box::new(captured)));
-    }
 }
 
 fn build_runtime_eval_bindings(
@@ -1519,7 +1437,6 @@ fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
         salience: rule_info.salience,
         test_conditions: Vec::new(),
         runtime_actions: Vec::new(),
-        multifield_tail_bindings: rule_info.multifield_tail_bindings.clone(),
     }
 }
 
@@ -3166,7 +3083,7 @@ mod tests {
         let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
         engine.assert_ordered("anchor", vec![2_i64]).unwrap();
         let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
-        assert_eq!(engine.get_output("t"), Some("CHECK:0:2\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("CHECK:0:2\n"));
         assert_eq!(engine.action_diagnostics().len(), 1);
         engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
         assert_eq!(
@@ -3178,7 +3095,7 @@ mod tests {
             engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
             0
         );
-        assert_eq!(engine.get_output("t"), Some("CHECK:0:2\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("CHECK:0:2\n"));
     }
 
     #[test]
@@ -3187,10 +3104,13 @@ mod tests {
         engine.assert_ordered("anchor", vec![2_i64]).unwrap();
         let selected = engine.assert_ordered("data", vec![9_i64]).unwrap();
         let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
-        assert_eq!(engine.get_output("t"), Some("CHECK:9:2\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("CHECK:9:2\n"));
         assert!(engine.action_diagnostics().is_empty());
         engine.retract(selected).unwrap();
-        assert_eq!(engine.get_output("t"), Some("CHECK:9:2\nCHECK:0:2\n"));
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("CHECK:9:2\nCHECK:0:2\n")
+        );
         assert_eq!(engine.action_diagnostics().len(), 1);
         // A later CE distinguishes retained support from an already fired rule.
         let later = engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
@@ -3199,7 +3119,7 @@ mod tests {
             1
         );
         assert_eq!(
-            engine.get_output("t"),
+            engine.get_output("t").unwrap(),
             Some("CHECK:9:2\nCHECK:0:2\nEXISTS\n")
         );
         engine.retract(bad).unwrap();

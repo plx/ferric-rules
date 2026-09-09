@@ -27,7 +27,7 @@ fn check(source: &str, expected: &str, late_rules: bool) {
 fn assert_output(engine: &mut Engine, expected: &str) {
     let result = engine.run(RunLimit::Count(100)).unwrap();
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
-    assert_eq!(engine.get_output("t").unwrap_or(""), expected);
+    assert_eq!(engine.get_output("t").unwrap().unwrap_or(""), expected);
     assert!(
         engine.action_diagnostics().is_empty(),
         "{:?}",

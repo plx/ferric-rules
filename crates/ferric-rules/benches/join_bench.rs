@@ -2,7 +2,7 @@ mod support;
 
 use std::fmt::Write as FmtWrite;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use ferric_rules::core::{Fact, FerricString, Multifield, StringEncoding, Value};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 
@@ -326,6 +326,63 @@ fn bench_payload_joins(c: &mut Criterion) {
     }
 }
 
+const PREFIX_RULE: &str = "
+    (defrule join-prefix
+        (key ?key)
+        (row ?key $?tail)
+        => (assert (hit ?key)))";
+
+fn assert_prefix_side(engine: &mut Engine, n_keys: usize, rows: bool) {
+    for key in 0..n_keys {
+        let key = Value::Integer(i64::try_from(key).unwrap());
+        if rows {
+            engine
+                .assert_ordered("row", vec![key, Value::Integer(7), Value::Integer(9)])
+                .unwrap();
+        } else {
+            engine.assert_ordered("key", vec![key]).unwrap();
+        }
+    }
+}
+
+fn prepare_prefix_join(n_keys: usize, rows_first: bool) -> Engine {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine.load_str(PREFIX_RULE).unwrap();
+    engine.reset().unwrap();
+    assert_prefix_side(&mut engine, n_keys, rows_first);
+    engine
+}
+
+/// Include arrival-side assertion: joins propagate before `run` is called.
+/// The two arrival orders exercise alpha-fact and parent-token indexes.
+fn bench_ordered_prefix_index(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ordered_prefix_index");
+    for (arrival, rows_first) in [("rows_arrive", false), ("keys_arrive", true)] {
+        for n_keys in [128, 512, 2_048] {
+            group.bench_with_input(BenchmarkId::new(arrival, n_keys), &n_keys, |b, &n| {
+                let mut engine = prepare_prefix_join(n, rows_first);
+                assert_prefix_side(&mut engine, n, !rows_first);
+                support::verify_run(&mut engine, n);
+                assert!(engine.action_diagnostics().is_empty());
+                assert_eq!(
+                    support::ordered_integers(&engine, "hit"),
+                    (0..i64::try_from(n).unwrap()).collect::<Vec<_>>()
+                );
+                b.iter_batched(
+                    || prepare_prefix_join(n, rows_first),
+                    |mut engine| {
+                        assert_prefix_side(&mut engine, n, !rows_first);
+                        engine.run(RunLimit::Unlimited).unwrap();
+                        engine
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_join_3,
@@ -340,5 +397,6 @@ criterion_group!(
     bench_join_21,
     bench_join_3_run_only,
     bench_payload_joins,
+    bench_ordered_prefix_index,
 );
 criterion_main!(benches);

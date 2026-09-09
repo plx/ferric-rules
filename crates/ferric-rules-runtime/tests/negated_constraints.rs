@@ -35,7 +35,7 @@ fn integer(engine: &Engine, name: &str) -> i64 {
 }
 
 fn output(engine: &Engine) -> &str {
-    engine.get_output("t").unwrap_or("")
+    engine.get_output("t").unwrap().unwrap_or("")
 }
 
 fn output_lines(engine: &Engine) -> Vec<&str> {

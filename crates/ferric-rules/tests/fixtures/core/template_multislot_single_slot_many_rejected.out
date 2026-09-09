@@ -1,0 +1,6 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for deftemplate patterns.
+
+ERROR:
+(defrule MAIN::probe
+   (item (value a b

@@ -47,6 +47,7 @@ pub mod fact;
 pub mod ncc;
 pub mod negative;
 pub mod rete;
+pub mod sequence;
 pub mod strategy;
 pub mod string;
 pub mod symbol;
@@ -79,6 +80,9 @@ pub use negative::{NegativeMemory, NegativeMemoryId};
 pub use rete::{
     PendingPredicateMatch, PendingRuntimeMatch, ReteCardinality, ReteNetwork, RuntimeCondition,
     RuntimeConditionRole, RuntimeConditionUse,
+};
+pub use sequence::{
+    SequenceField, SequenceMatch, SequencePattern, SequenceSegment, SequenceSource,
 };
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;

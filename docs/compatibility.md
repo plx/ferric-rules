@@ -55,6 +55,13 @@ Ordered facts are positional sequences of values:
 (assert (data 10 20 30))
 ```
 
+Ordered patterns consume every field: `?` and `?name` match one field, while
+`$?` and `$?name` match zero or more fields at any position. For example,
+`(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
+empty multifield from `(row head tail)`. Multiple multifield fields produce a
+separate match for each valid partition. Named captures are available to later
+patterns, test conditions, and rule actions.
+
 ### Template Facts
 
 Template facts use named slots defined by `deftemplate`:
@@ -63,6 +70,15 @@ Template facts use named slots defined by `deftemplate`:
 (deftemplate person (slot name) (slot age (default 0)))
 (assert (person (name Alice) (age 30)))
 ```
+
+Each constrained multislot matches its complete sequence using the same field
+and multifield rules as ordered patterns. `(tags ?value)` requires exactly one
+value and binds a scalar; `(tags $?values)` binds the entire multifield, and
+`(tags head $?values tail)` captures the values between the fixed fields.
+An explicit `(tags)` requires an empty multislot; omitting `tags` leaves it
+unconstrained. Ambiguous splits in multiple multislots produce every valid
+combination, in written slot-constraint order. Single-valued slots require one
+field constraint and cannot bind a named multifield capture.
 
 RHS assertions resolve declared templates in the rule's module, evaluate named
 slots, fill defaults, and propagate template matches. Multislots splice supplied
@@ -212,6 +228,9 @@ also retains two experimental Ferric orderings for existing consumers:
 | **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
 
 CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
+Their tie order also differs for multiple partitions of the same ordered fact;
+the multifield regressions characterize this separately from depth/breadth
+conformance.
 Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
 are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared

@@ -223,9 +223,10 @@ impl FactBase {
 }
 
 use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode, ConstantTestType};
-use crate::beta::{BetaNode, RuleId};
+use crate::beta::{BetaNode, JoinTest, RuleId};
 use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
+use crate::sequence::SequencePattern;
 use crate::token::NodeId;
 
 // Source compilation allows 64 total condition nodes and 64 alpha value tests,
@@ -273,6 +274,112 @@ impl Work {
             .ok_or("snapshot validation work limit exceeded")?;
         Ok(())
     }
+}
+
+fn visit_join_matches(
+    fact: &Fact,
+    token: &crate::token::Token,
+    tests: &[JoinTest],
+    sequence: Option<&SequencePattern>,
+    binding_cost: usize,
+    work: &mut Work,
+    mut visit: impl FnMut(&Fact, Option<&[usize]>) -> Result<bool, String>,
+) -> Result<(), String> {
+    let Some(sequence) = sequence else {
+        work.spend(tests.len() + binding_cost + 1)?;
+        if crate::rete::evaluate_join(fact, Some(token), tests) {
+            visit(fact, None)?;
+        }
+        return Ok(());
+    };
+    let values = match fact {
+        Fact::Ordered(fact) => fact.fields.as_slice(),
+        Fact::Template(fact) => fact.slots.as_ref(),
+    };
+    // Projection clones physical values, including string bytes and nested
+    // multifields. Counting only top-level fields would undercharge a large
+    // value repeatedly cloned across many rejected split candidates.
+    let mut value_cost = 0_usize;
+    let mut pending = vec![values];
+    while let Some(values) = pending.pop() {
+        for value in values {
+            let cost = match value {
+                Value::String(text) => text.as_bytes().len().saturating_add(1),
+                Value::Multifield(fields) => {
+                    pending.push(fields.as_slice());
+                    1
+                }
+                _ => 1,
+            };
+            work.spend(cost)?;
+            value_cost = value_cost.saturating_add(cost);
+        }
+    }
+    let test_cost =
+        sequence
+            .tests
+            .iter()
+            .fold(tests.len().saturating_mul(value_cost + 1), |cost, test| {
+                cost.saturating_add(match &test.test_type {
+                    ConstantTestType::EqualAny(values) => {
+                        values.len().saturating_mul(value_cost + 1)
+                    }
+                    _ => value_cost + 1,
+                })
+            });
+    let candidate_cost = sequence
+        .logical_width()
+        .saturating_add(sequence.segments.len())
+        .saturating_add(value_cost)
+        .saturating_add(test_cost)
+        .saturating_add(binding_cost.saturating_mul(value_cost + 1))
+        .saturating_add(1);
+    work.spend(sequence.logical_width() + sequence.segments.len() + 1)?;
+    let mut candidates = sequence.candidates(fact);
+    loop {
+        work.spend(candidate_cost)?;
+        let Some(candidate) = candidates.next() else {
+            break;
+        };
+        if sequence.accepts(&candidate.fact)
+            && crate::rete::evaluate_join(&candidate.fact, Some(token), tests)
+            && !visit(&candidate.fact, Some(&candidate.lengths))?
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn validate_sequence_plan(
+    sequence: &SequencePattern,
+    tests: &[JoinTest],
+    bindings: &[(crate::alpha::SlotIndex, crate::binding::VarId)],
+    symbols: &SymbolTable,
+    work: &mut Work,
+) -> Result<(), String> {
+    work.spend(
+        sequence.logical_width()
+            + sequence.segments.len()
+            + sequence.tests.len()
+            + tests.len()
+            + bindings.len()
+            + 1,
+    )?;
+    sequence.validate()?;
+    let valid_slot = sequence.logical_slot_validator();
+    require!(
+        tests.iter().all(|test| valid_slot(test.alpha_slot))
+            && bindings.iter().all(|(slot, _)| valid_slot(*slot)),
+        "sequence join has an invalid logical field"
+    );
+    for test in &sequence.tests {
+        if let ConstantTestType::EqualAny(values) = &test.test_type {
+            work.spend(values.len())?;
+        }
+        validate_constant(test, symbols)?;
+    }
+    Ok(())
 }
 
 fn same_members<T: Eq + std::hash::Hash>(actual: &[T], expected: &[T]) -> bool {
@@ -361,6 +468,7 @@ impl ReteNetwork {
         );
         let mut work = Work(10_000_000);
         self.validate_alpha_snapshot(facts, symbols, &mut work)?;
+        let alpha_entries = self.alpha_memory_entry_types(&mut work)?;
         // MAX is a valid exhausted sentinel; rule loading checks capacity before
         // reclaiming or installing anything. Existing graph IDs remain below it.
         let root = self.beta.root_id;
@@ -419,6 +527,48 @@ impl ReteNetwork {
                     self.beta.nodes.get(child).and_then(parent) == Some(id),
                     "beta child has wrong parent"
                 );
+            }
+            match node {
+                BetaNode::Join {
+                    sequence: Some(sequence),
+                    alpha_memory,
+                    tests,
+                    bindings,
+                    ..
+                } => {
+                    validate_sequence_plan(sequence, tests, bindings, symbols, &mut work)?;
+                    let entry = alpha_entries
+                        .get(alpha_memory)
+                        .ok_or("sequence plan has no alpha source")?;
+                    require!(
+                        sequence.is_ordered()
+                            == matches!(entry, AlphaEntryType::OrderedRelation(_)),
+                        "sequence plan and alpha source have different fact kinds"
+                    );
+                }
+                BetaNode::Negative {
+                    sequence: Some(sequence),
+                    alpha_memory,
+                    tests,
+                    ..
+                }
+                | BetaNode::Exists {
+                    sequence: Some(sequence),
+                    alpha_memory,
+                    tests,
+                    ..
+                } => {
+                    validate_sequence_plan(sequence, tests, &[], symbols, &mut work)?;
+                    let entry = alpha_entries
+                        .get(alpha_memory)
+                        .ok_or("sequence plan has no alpha source")?;
+                    require!(
+                        sequence.is_ordered()
+                            == matches!(entry, AlphaEntryType::OrderedRelation(_)),
+                        "sequence plan and alpha source have different fact kinds"
+                    );
+                }
+                _ => {}
             }
             if let Some(memory) = self.beta.memory_id_for_node(id) {
                 require!(
@@ -568,6 +718,24 @@ impl ReteNetwork {
                     "invalid alpha subscription index"
                 );
             }
+        }
+        for (id, lengths) in &self.token_store.sequence_matches {
+            work.spend(lengths.len() + 1)?;
+            let token = self
+                .token_store
+                .get(id)
+                .ok_or("dangling sequence match token")?;
+            require!(
+                token.fact.is_some()
+                    && matches!(
+                        self.beta.nodes.get(&token.owner_node),
+                        Some(BetaNode::Join {
+                            sequence: Some(_),
+                            ..
+                        })
+                    ),
+                "sequence metadata belongs to a nonsequence token"
+            );
         }
         for (fact, tokens) in &self.token_store.fact_to_tokens {
             for token in tokens {
@@ -1076,11 +1244,16 @@ impl ReteNetwork {
                 parent,
                 alpha_memory,
                 tests,
+                sequence,
                 neg_memory,
                 memory: output_id,
                 ..
             } = node
             {
+                require!(
+                    sequence.is_none(),
+                    "runtime negative constraints cannot own a sequence projection"
+                );
                 let state = self
                     .beta
                     .get_neg_memory(*neg_memory)
@@ -1196,21 +1369,37 @@ impl ReteNetwork {
                 }
                 continue;
             }
-            let (parent_id, alpha_id, tests, negative, exists) = match node {
+            let (parent_id, alpha_id, tests, sequence, negative, exists) = match node {
                 BetaNode::Negative {
                     parent,
                     alpha_memory,
                     tests,
+                    sequence,
                     neg_memory,
                     ..
-                } => (*parent, *alpha_memory, tests, Some(*neg_memory), None),
+                } => (
+                    *parent,
+                    *alpha_memory,
+                    tests,
+                    sequence,
+                    Some(*neg_memory),
+                    None,
+                ),
                 BetaNode::Exists {
                     parent,
                     alpha_memory,
                     tests,
+                    sequence,
                     exists_memory,
                     ..
-                } => (*parent, *alpha_memory, tests, None, Some(*exists_memory)),
+                } => (
+                    *parent,
+                    *alpha_memory,
+                    tests,
+                    sequence,
+                    None,
+                    Some(*exists_memory),
+                ),
                 BetaNode::Ncc {
                     parent,
                     partner,
@@ -1305,12 +1494,30 @@ impl ReteNetwork {
                     .get(parent)
                     .ok_or("missing conditional parent token")?;
                 let mut matches = rustc_hash::FxHashSet::default();
-                for fact in crate::rete::collect_candidate_facts(alpha, tests, &token.bindings) {
-                    work.spend(tests.len() + 1)?;
+                let indexed_tests = if sequence.is_some() {
+                    &[][..]
+                } else {
+                    tests.as_ref()
+                };
+                for fact in crate::rete::collect_candidate_facts(
+                    alpha,
+                    crate::rete::indexable_tests(indexed_tests, None),
+                    &token.bindings,
+                ) {
                     let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
-                    if crate::rete::evaluate_join(fact_value, Some(token), tests) {
-                        matches.insert(fact);
-                    }
+                    visit_join_matches(
+                        fact_value,
+                        token,
+                        tests,
+                        sequence.as_deref(),
+                        0,
+                        work,
+                        |_, _| {
+                            matches.insert(fact);
+                            // A supporting fact is counted once, regardless of cuts.
+                            Ok(false)
+                        },
+                    )?;
                 }
                 if let Some(id) = negative {
                     let memory = self
@@ -1430,12 +1637,13 @@ impl ReteNetwork {
                 tests,
                 bindings,
                 memory,
+                sequence,
                 ..
             } = node
             else {
                 continue;
             };
-            let mut pairs = rustc_hash::FxHashSet::default();
+            let mut matches = rustc_hash::FxHashMap::default();
             for id in self
                 .beta
                 .get_memory(*memory)
@@ -1445,22 +1653,14 @@ impl ReteNetwork {
                 let token = self.token_store.get(id).ok_or("missing join token")?;
                 let parent_id = token.parent.ok_or("join token has no parent")?;
                 let fact_id = token.fact.ok_or("join token has no fact")?;
-                require!(pairs.insert((parent_id, fact_id)), "duplicate join match");
-                let parent_token = self
-                    .token_store
-                    .get(parent_id)
-                    .ok_or("missing join parent")?;
-                let fact = &facts.get(fact_id).ok_or("missing join fact")?.fact;
-                work.spend(bindings.len() + parent_token.bindings.capacity() + 1)?;
-                let mut expected = parent_token.bindings.clone();
-                for &(slot, variable) in bindings.iter() {
-                    if let Some(value) = crate::alpha::get_slot_value(fact, slot) {
-                        expected.set(variable, crate::binding::ValueRef::new(value.clone()));
-                    }
-                }
+                let lengths = self.token_store.match_lengths(id).map(<[usize]>::to_vec);
                 require!(
-                    same_bindings(&token.bindings, &expected),
-                    "inconsistent join token bindings"
+                    sequence.is_some() == lengths.is_some(),
+                    "join token has inconsistent sequence metadata"
+                );
+                require!(
+                    matches.insert((parent_id, fact_id, lengths), id).is_none(),
+                    "duplicate join match"
                 );
             }
             let upstream = self
@@ -1472,27 +1672,132 @@ impl ReteNetwork {
                 .alpha
                 .get_memory(*alpha_memory)
                 .ok_or("missing join alpha memory")?;
+            let indexed_tests = if sequence.is_some() {
+                &[][..]
+            } else {
+                tests.as_ref()
+            };
             for parent_id in upstream.iter() {
                 let parent_token = self
                     .token_store
                     .get(parent_id)
                     .ok_or("missing upstream token")?;
-                for fact_id in
-                    crate::rete::collect_candidate_facts(alpha, tests, &parent_token.bindings)
-                {
-                    work.spend(tests.len() + 1)?;
+                for fact_id in crate::rete::collect_candidate_facts(
+                    alpha,
+                    crate::rete::indexable_tests(indexed_tests, None),
+                    &parent_token.bindings,
+                ) {
                     let fact = &facts.get(fact_id).ok_or("missing alpha fact")?.fact;
-                    if crate::rete::evaluate_join(fact, Some(parent_token), tests) {
-                        require!(
-                            pairs.remove(&(parent_id, fact_id)),
-                            "missing positive join match at {node_id:?}"
-                        );
-                    }
+                    visit_join_matches(
+                        fact,
+                        parent_token,
+                        tests,
+                        sequence.as_deref(),
+                        bindings.len() + parent_token.bindings.capacity(),
+                        work,
+                        |projected, lengths| {
+                            let key = (parent_id, fact_id, lengths.map(<[usize]>::to_vec));
+                            let id = matches.remove(&key).ok_or_else(|| {
+                                format!("missing positive join match at {node_id:?}")
+                            })?;
+                            let token = self.token_store.get(id).ok_or("missing join token")?;
+                            let mut expected = parent_token.bindings.clone();
+                            for &(slot, variable) in bindings.iter() {
+                                if let Some(value) = crate::alpha::get_slot_value(projected, slot) {
+                                    expected.set(
+                                        variable,
+                                        crate::binding::ValueRef::new(value.clone()),
+                                    );
+                                }
+                            }
+                            require!(
+                                same_bindings(&token.bindings, &expected),
+                                "inconsistent join token bindings"
+                            );
+                            Ok(true)
+                        },
+                    )?;
                 }
             }
-            require!(pairs.is_empty(), "unexpected positive join match");
+            require!(matches.is_empty(), "unexpected positive join match");
         }
         Ok(())
+    }
+
+    /// Template projections paired with their original physical template source.
+    /// Runtime validation checks physical slot bounds after core graph validation.
+    #[doc(hidden)]
+    pub fn snapshot_template_sequence_patterns(
+        &self,
+    ) -> Result<Vec<(crate::fact::TemplateId, &SequencePattern)>, String> {
+        let mut work = Work(10_000_000);
+        let entries = self.alpha_memory_entry_types(&mut work)?;
+        let mut plans = Vec::new();
+        for node in self.beta.nodes.values() {
+            work.step()?;
+            if let BetaNode::Join {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            }
+            | BetaNode::Negative {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            }
+            | BetaNode::Exists {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            } = node
+            {
+                if let Some(AlphaEntryType::Template(template)) = entries.get(alpha_memory) {
+                    plans.push((*template, sequence.as_ref()));
+                }
+            }
+        }
+        Ok(plans)
+    }
+
+    fn alpha_memory_entry_types(
+        &self,
+        work: &mut Work,
+    ) -> Result<rustc_hash::FxHashMap<AlphaMemoryId, AlphaEntryType>, String> {
+        let mut paths = vec![None; self.alpha.nodes.len()];
+        let mut memories = rustc_hash::FxHashMap::default();
+        for (index, node) in self.alpha.nodes.iter().enumerate() {
+            work.step()?;
+            let (children, memory) = match node {
+                AlphaNode::Entry {
+                    entry_type,
+                    children,
+                    memory,
+                } => {
+                    paths[index] = Some(entry_type.clone());
+                    (children, memory)
+                }
+                AlphaNode::ConstantTest {
+                    children, memory, ..
+                }
+                | AlphaNode::RuntimePredicate {
+                    children, memory, ..
+                } => (children, memory),
+            };
+            let entry = paths[index]
+                .clone()
+                .ok_or("alpha path has no entry source")?;
+            for child in children {
+                work.step()?;
+                require!(child.0 as usize > index, "cyclic alpha source path");
+                *paths
+                    .get_mut(child.0 as usize)
+                    .ok_or("dangling alpha source child")? = Some(entry.clone());
+            }
+            if let Some(memory) = memory {
+                memories.insert(*memory, entry);
+            }
+        }
+        Ok(memories)
     }
 
     #[doc(hidden)]
@@ -1725,9 +2030,12 @@ impl crate::compiler::ReteCompiler {
         );
         let mut cached_joins = rustc_hash::FxHashSet::default();
         for (key, id) in &self.join_node_cache {
+            if let Some(sequence) = &key.sequence {
+                validate_sequence_plan(sequence, &key.tests, &key.bindings, symbols, &mut work)?;
+            }
             require!(cached_joins.insert(*id), "duplicate cached join node");
             require!(
-                matches!(rete.beta.nodes.get(id), Some(BetaNode::Join { parent, alpha_memory, tests, bindings, .. }) if *parent == key.parent && *alpha_memory == key.alpha_memory && tests.as_ref() == key.tests.as_slice() && bindings.as_ref() == key.bindings.as_slice()),
+                matches!(rete.beta.nodes.get(id), Some(BetaNode::Join { parent, alpha_memory, tests, bindings, sequence, .. }) if *parent == key.parent && *alpha_memory == key.alpha_memory && tests.as_ref() == key.tests.as_slice() && bindings.as_ref() == key.bindings.as_slice() && sequence.as_deref() == key.sequence.as_ref()),
                 "cached join node mismatch"
             );
         }
@@ -1792,6 +2100,7 @@ mod byte_snapshot_tests {
                     .into_iter()
                     .map(|relation| CompilablePattern {
                         entry_type: AlphaEntryType::OrderedRelation(relation),
+                        sequence: None,
                         constant_tests: if relation == row {
                             vec![ConstantTest {
                                 slot: SlotIndex::Ordered(0),
@@ -2095,5 +2404,529 @@ mod byte_snapshot_tests {
             .unwrap();
         symbols.bytes_to_id.insert(b"\xff"[..].into(), 2);
         assert!(symbols.validate_snapshot().is_err());
+    }
+}
+
+#[cfg(test)]
+mod sequence_work_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_sequence_candidates_still_consume_snapshot_work() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("row", crate::StringEncoding::Ascii)
+            .unwrap();
+        let fact = Fact::Ordered(crate::fact::OrderedFact {
+            relation,
+            fields: smallvec::smallvec![Value::Integer(1); 4],
+        });
+        let plan = SequencePattern {
+            segments: vec![crate::sequence::SequenceSegment {
+                source: crate::sequence::SequenceSource::Ordered,
+                fields: vec![crate::sequence::SequenceField::Multi; 3],
+            }],
+            tests: vec![crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
+            }],
+        };
+        let token = crate::token::Token {
+            fact: None,
+            parent: None,
+            owner_node: NodeId(0),
+            bindings: crate::binding::BindingSet::new(),
+        };
+        let mut visited = 0;
+        let result =
+            visit_join_matches(&fact, &token, &[], Some(&plan), 0, &mut Work(50), |_, _| {
+                visited += 1;
+                Ok(true)
+            });
+        assert_eq!(visited, 0);
+        assert_eq!(
+            result.unwrap_err(),
+            "snapshot validation work limit exceeded"
+        );
+    }
+
+    #[test]
+    fn rejected_template_cartesian_candidates_consume_snapshot_work() {
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+        let mut ids: slotmap::SlotMap<crate::fact::TemplateId, ()> = slotmap::SlotMap::with_key();
+        let values = Value::Multifield(Box::new(vec![Value::Integer(1); 4].into_iter().collect()));
+        let fact = Fact::Template(crate::fact::TemplateFact {
+            template_id: ids.insert(()),
+            slots: vec![values.clone(), values].into_boxed_slice(),
+        });
+        let plan = SequencePattern {
+            segments: (0..2)
+                .map(|index| SequenceSegment {
+                    source: SequenceSource::TemplateSlot(index),
+                    fields: vec![SequenceField::Multi; 3],
+                })
+                .collect(),
+            tests: vec![crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Template(0),
+                test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
+            }],
+        };
+        let token = crate::token::Token {
+            fact: None,
+            parent: None,
+            owner_node: NodeId(0),
+            bindings: crate::binding::BindingSet::new(),
+        };
+        let result = visit_join_matches(
+            &fact,
+            &token,
+            &[],
+            Some(&plan),
+            0,
+            &mut Work(100),
+            |_, _| panic!("rejected candidate reached visitor"),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "snapshot validation work limit exceeded"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sequence_byte_union_tests {
+    use super::*;
+    use crate::alpha::{ConstantTest, SlotIndex};
+    use crate::binding::{ValueRef, VarId};
+    use crate::compiler::{CompilablePattern, CompilableRule, ReteCompiler};
+    use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+    use crate::symbol::SymbolId;
+    use crate::token::TokenId;
+    use crate::{AtomKey, FerricString, InstanceName, Salience, StringEncoding, Symbol};
+    use std::sync::Arc;
+
+    struct SequenceFixture {
+        symbols: SymbolTable,
+        facts: FactBase,
+        rete: ReteNetwork,
+        compiler: ReteCompiler,
+        join: NodeId,
+        capture: VarId,
+    }
+
+    impl SequenceFixture {
+        #[allow(clippy::too_many_lines)]
+        fn new(mut symbols: SymbolTable, value: &Value, template: bool) -> Self {
+            let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+            let capture = symbols
+                .intern_symbol("before", StringEncoding::Utf8)
+                .unwrap();
+            let mut ids = slotmap::SlotMap::<crate::fact::TemplateId, ()>::with_key();
+            let template_id = ids.insert(());
+            let slot = |index| {
+                if template {
+                    SlotIndex::Template(index)
+                } else {
+                    SlotIndex::Ordered(index)
+                }
+            };
+            let plan = SequencePattern {
+                segments: vec![SequenceSegment {
+                    source: if template {
+                        SequenceSource::TemplateSlot(0)
+                    } else {
+                        SequenceSource::Ordered
+                    },
+                    fields: vec![
+                        SequenceField::Multi,
+                        SequenceField::Single,
+                        SequenceField::Multi,
+                    ],
+                }],
+                tests: vec![ConstantTest {
+                    slot: slot(1),
+                    test_type: ConstantTestType::Equal(AtomKey::from_value(value).unwrap()),
+                }],
+            };
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            let rule = CompilableRule {
+                rule_id: compiler.allocate_rule_id(),
+                salience: Salience::DEFAULT,
+                patterns: vec![CompilablePattern {
+                    entry_type: if template {
+                        AlphaEntryType::Template(template_id)
+                    } else {
+                        AlphaEntryType::OrderedRelation(relation)
+                    },
+                    constant_tests: if template {
+                        Vec::new()
+                    } else {
+                        vec![ConstantTest {
+                            slot: SlotIndex::Ordered(0),
+                            test_type: ConstantTestType::OrderedFieldCount { min: 1, max: None },
+                        }]
+                    },
+                    sequence: Some(plan),
+                    variable_slots: vec![(slot(0), capture)],
+                    negated_variable_slots: Vec::new(),
+                    negated: false,
+                    exists: false,
+                }],
+            };
+            let installed = compiler.compile_rule(&mut rete, &facts, &rule).unwrap();
+            let capture = installed.var_map.lookup(capture).unwrap();
+            let join = rete
+                .beta
+                .nodes
+                .iter()
+                .find_map(|(&id, node)| {
+                    matches!(
+                        node,
+                        BetaNode::Join {
+                            sequence: Some(_),
+                            ..
+                        }
+                    )
+                    .then_some(id)
+                })
+                .unwrap();
+            let id = if template {
+                let fields = Value::Multifield(Box::new(
+                    [value.clone(), value.clone()].into_iter().collect(),
+                ));
+                facts.assert_template(template_id, vec![fields].into_boxed_slice())
+            } else {
+                facts.assert_ordered(relation, smallvec::smallvec![value.clone(), value.clone()])
+            };
+            rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+            assert_eq!(
+                rete.agenda.len(),
+                2,
+                "two positional matches of the same physical fact"
+            );
+            let fixture = Self {
+                symbols,
+                facts,
+                rete,
+                compiler,
+                join,
+                capture,
+            };
+            fixture.validate();
+            fixture
+        }
+
+        fn text() -> Self {
+            Self::new(
+                SymbolTable::new(),
+                &Value::String(FerricString::new("x", StringEncoding::Utf8).unwrap()),
+                false,
+            )
+        }
+
+        fn validate(&self) {
+            self.symbols.validate_snapshot().unwrap();
+            self.facts.validate_snapshot(&self.symbols).unwrap();
+            self.rete
+                .validate_snapshot(&self.facts, &self.symbols)
+                .unwrap();
+            self.compiler
+                .validate_snapshot(&self.rete, &self.symbols)
+                .unwrap();
+        }
+
+        fn graph_plan_mut(&mut self) -> &mut SequencePattern {
+            match self.rete.beta.nodes.get_mut(&self.join).unwrap() {
+                BetaNode::Join {
+                    sequence: Some(plan),
+                    ..
+                } => Arc::make_mut(plan),
+                _ => panic!("fixture sequence join"),
+            }
+        }
+
+        fn replace_cache_atom(&mut self, atom: AtomKey) {
+            let key = self
+                .compiler
+                .join_node_cache
+                .keys()
+                .find(|key| key.sequence.is_some())
+                .unwrap()
+                .clone();
+            let node = self.compiler.join_node_cache.remove(&key).unwrap();
+            let mut altered = key;
+            altered.sequence.as_mut().unwrap().tests[0].test_type = ConstantTestType::Equal(atom);
+            self.compiler.join_node_cache.insert(altered, node);
+        }
+
+        fn tokens(&self) -> Vec<TokenId> {
+            self.rete
+                .token_store
+                .sequence_matches
+                .iter()
+                .map(|(id, _)| id)
+                .collect()
+        }
+    }
+
+    fn noncanonical_key() -> AtomKey {
+        AtomKey::String(FerricString::Bytes(b"x".as_slice().into()))
+    }
+
+    #[test]
+    fn sequence_byte_union_accepts_raw_atoms_and_distinct_split_identities() {
+        for kind in ["string", "symbol", "instance-name"] {
+            let mut symbols = SymbolTable::new();
+            let name = symbols
+                .intern_symbol_bytes(b"n\xff", StringEncoding::Utf8)
+                .unwrap();
+            let value = match kind {
+                "string" => {
+                    Value::String(FerricString::from_bytes(b"s\xff", StringEncoding::Utf8).unwrap())
+                }
+                "symbol" => Value::Symbol(name),
+                _ => Value::InstanceName(InstanceName::from_symbol(name)),
+            };
+            let fixture = SequenceFixture::new(symbols, &value, false);
+            let lengths: rustc_hash::FxHashSet<_> = fixture
+                .rete
+                .token_store
+                .sequence_matches
+                .iter()
+                .map(|(_, lengths)| lengths.to_vec())
+                .collect();
+            assert_eq!(lengths, [vec![1, 0], vec![0, 1]].into_iter().collect());
+            fixture.validate();
+        }
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_noncanonical_graph_atoms_before_matching() {
+        for many in [false, true] {
+            let mut fixture = SequenceFixture::text();
+            let canonical = AtomKey::from_value(&Value::String(
+                FerricString::new("x", StringEncoding::Utf8).unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(
+                canonical,
+                noncanonical_key(),
+                "byte equality cannot validate representation"
+            );
+            fixture.graph_plan_mut().tests[0].test_type = if many {
+                ConstantTestType::EqualAny(vec![noncanonical_key()])
+            } else {
+                ConstantTestType::Equal(noncanonical_key())
+            };
+            assert_eq!(
+                fixture
+                    .rete
+                    .validate_snapshot(&fixture.facts, &fixture.symbols)
+                    .unwrap_err(),
+                "valid text in byte string variant"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_noncanonical_cached_atoms_before_equality() {
+        for corrupt_graph_too in [false, true] {
+            let mut fixture = SequenceFixture::text();
+            fixture.replace_cache_atom(noncanonical_key());
+            if corrupt_graph_too {
+                fixture.graph_plan_mut().tests[0].test_type =
+                    ConstantTestType::Equal(noncanonical_key());
+            } else {
+                fixture
+                    .rete
+                    .validate_snapshot(&fixture.facts, &fixture.symbols)
+                    .unwrap();
+            }
+            assert_eq!(
+                fixture
+                    .compiler
+                    .validate_snapshot(&fixture.rete, &fixture.symbols)
+                    .unwrap_err(),
+                "valid text in byte string variant"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_dangling_names_in_graph_and_cache() {
+        let dangling = AtomKey::InstanceName(InstanceName::from_symbol(Symbol(SymbolId::Bytes(0))));
+        let mut graph = SequenceFixture::text();
+        graph.graph_plan_mut().tests[0].test_type = ConstantTestType::Equal(dangling.clone());
+        assert_eq!(
+            graph
+                .rete
+                .validate_snapshot(&graph.facts, &graph.symbols)
+                .unwrap_err(),
+            "dangling instance name in snapshot value"
+        );
+        let mut cache = SequenceFixture::text();
+        cache.replace_cache_atom(dangling);
+        assert_eq!(
+            cache
+                .compiler
+                .validate_snapshot(&cache.rete, &cache.symbols)
+                .unwrap_err(),
+            "dangling instance name in snapshot value"
+        );
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_noncanonical_projected_capture_values() {
+        let mut fixture = SequenceFixture::text();
+        let token = fixture.tokens()[0];
+        let bad = Value::Multifield(Box::new(
+            [Value::String(FerricString::Bytes(b"x".as_slice().into()))]
+                .into_iter()
+                .collect(),
+        ));
+        fixture
+            .rete
+            .token_store
+            .tokens
+            .get_mut(token)
+            .unwrap()
+            .bindings
+            .set(fixture.capture, ValueRef::new(bad));
+        assert_eq!(
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_missing_impossible_and_duplicate_split_metadata() {
+        let mut missing = SequenceFixture::text();
+        let token = missing.tokens()[0];
+        missing.rete.token_store.sequence_matches.remove(token);
+        assert_eq!(
+            missing
+                .rete
+                .validate_snapshot(&missing.facts, &missing.symbols)
+                .unwrap_err(),
+            "join token has inconsistent sequence metadata"
+        );
+
+        let mut impossible = SequenceFixture::text();
+        let token = impossible.tokens()[0];
+        impossible
+            .rete
+            .token_store
+            .sequence_matches
+            .insert(token, smallvec::smallvec![usize::MAX, 0]);
+        assert!(impossible
+            .rete
+            .validate_snapshot(&impossible.facts, &impossible.symbols)
+            .unwrap_err()
+            .contains("missing positive join match"));
+
+        let mut duplicate = SequenceFixture::text();
+        let tokens = duplicate.tokens();
+        let lengths = duplicate.rete.token_store.sequence_matches[tokens[0]].clone();
+        duplicate
+            .rete
+            .token_store
+            .sequence_matches
+            .insert(tokens[1], lengths);
+        assert_eq!(
+            duplicate
+                .rete
+                .validate_snapshot(&duplicate.facts, &duplicate.symbols)
+                .unwrap_err(),
+            "duplicate join match"
+        );
+    }
+
+    #[test]
+    fn sequence_byte_union_keeps_template_physical_source_and_logical_selectors_distinct() {
+        let fixture = SequenceFixture::new(SymbolTable::new(), &Value::Integer(9), true);
+        let plans = fixture.rete.snapshot_template_sequence_patterns().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].1.segments[0].source,
+            SequenceSource::TemplateSlot(0)
+        );
+        assert_eq!(plans[0].1.logical_width(), 3);
+        assert_eq!(plans[0].1.tests[0].slot, SlotIndex::Template(1));
+        // There is only one physical slot, but three logical projected fields.
+        fixture.validate();
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_runtime_sequence_projection_without_live_owners() {
+        use crate::compiler::{CompilableCondition, CompilableRuntimePattern};
+        let mut symbols = SymbolTable::new();
+        let outer = symbols
+            .intern_symbol("outer", StringEncoding::Utf8)
+            .unwrap();
+        let inner = symbols
+            .intern_symbol("inner", StringEncoding::Utf8)
+            .unwrap();
+        let pattern = |relation, negated| CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: Vec::new(),
+            sequence: None,
+            variable_slots: Vec::new(),
+            negated_variable_slots: Vec::new(),
+            negated,
+            exists: false,
+        };
+        let conditions = [
+            CompilableCondition::Pattern(pattern(outer, false)),
+            CompilableCondition::RuntimePattern(CompilableRuntimePattern {
+                pattern: pattern(inner, true),
+                local_condition: None,
+                local_bindings: Vec::new(),
+                negative_condition: Some(0),
+                join_role: crate::rete::RuntimeConditionRole::NegativeJoin,
+            }),
+        ];
+        let mut rete = ReteNetwork::new();
+        let mut compiler = ReteCompiler::new();
+        let facts = FactBase::new();
+        let rule = compiler.allocate_rule_id();
+        compiler
+            .compile_conditions(&mut rete, &facts, rule, Salience::DEFAULT, &conditions)
+            .unwrap();
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+        compiler.validate_snapshot(&rete, &symbols).unwrap();
+        let (id, parent) = rete
+            .beta
+            .nodes
+            .iter()
+            .find_map(|(&id, node)| match node {
+                BetaNode::Negative {
+                    parent,
+                    runtime: Some(_),
+                    ..
+                } => Some((id, *parent)),
+                _ => None,
+            })
+            .unwrap();
+        let memory = rete.beta.memory_id_for_node(parent).unwrap();
+        assert!(rete.beta.get_memory(memory).unwrap().is_empty());
+        let BetaNode::Negative { sequence, .. } = rete.beta.nodes.get_mut(&id).unwrap() else {
+            panic!("fixture lazy negative node");
+        };
+        *sequence = Some(Arc::new(SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![SequenceField::Single],
+            }],
+            tests: Vec::new(),
+        }));
+        assert_eq!(
+            rete.validate_snapshot(&facts, &symbols).unwrap_err(),
+            "runtime negative constraints cannot own a sequence projection"
+        );
     }
 }

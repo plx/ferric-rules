@@ -36,6 +36,20 @@ historical bytes are retained and rejected as schema 2. The source scenario
 still runs through all five current codecs, checking wrong-width and valid
 future assertions, late rule compilation, and reset.
 
+`schema-3.cbor` stores ordered multifield plans and token capture lengths.
+Its source `schema-3.clp` saves after one of three splits of `(row a b)` fires.
+The original binary is rejected as version 3; all-five-codec source tests resume
+the two remaining activations, check capture widths/refraction, retract and
+replace the source fact, load a rule sharing the sequence join, and reset.
+
+`schema-4.cbor` stores independent sequence segments for a template's scalar
+slot and two multislots. Its source `schema-4.clp` saves after one of six matches
+of one fact fires. The original binary is rejected as version 4. Current-codec
+source tests check every capture-width combination, remaining activations,
+refraction, source-fact retraction, replacement facts, later rule sharing and
+reset. Malformed split identities, projections, logical selectors, physical
+template source slots and cache plans retain explicit rejection tests.
+
 `schema-5.cbor` is the PR378 runtime-constraint fixture. Its source is
 `schema-5.clp`; both historical files remain unchanged, and the binary is
 rejected as schema 5. It records retained local filter decisions and lazy
@@ -73,31 +87,57 @@ original schema-7 stored bytes remain unchanged rejection controls.
 
 ## Current local integration format
 
-The local integration uses schema 8. All prior versions 1–7 are rejected before
+The combined snapshot layout uses schema 8. All prior versions 1–7 are rejected before
 payload decoding in every codec, including header-only inputs with missing
 payloads or stale checksums. Separate sequence and template-multislot layouts
 use historical versions 3 and 4; numbering does not make parallel layouts
 interchangeable. The raw legacy fixture remains unchanged and explicitly rejected.
 
-The combined schema-8 source and stored fixture have not yet been installed or
-validated. They will be added after the complete integration layout is composed;
-no existing fixture is a substitute and no placeholder is created. The current
-maintenance test is the only fixture writer:
+`schema-8.clp` is the new combined source. The Rust builder adds a raw payload
+containing STRING `61 00 ff 7a`, SYMBOL `73 ff`, and INSTANCE-NAME `6e ff`, then
+queues the framed lines `"queued words" ignored` and `second`. The highest
+salience checkpoint rule runs once, changes the filter gate to FALSE, captures
+the three distinct lexeme values, emits their exact raw bytes, and scans an
+overflowing integer to retain a nonfatal scanner notice. The source also stores
+a typed `[seed]` literal and callable bodies.
+
+Checkpoint assertions require ten pending activations: three ordered splits,
+six template splits, and one scalar-template runtime match. Two local filter
+and two negative-join callbacks have run. Existence support, a runtime join
+using an outer multifield capture, and the scalar-template filter have each run
+one callback. Short/excess-width runtime facts do not invoke callbacks. The
+stored warning uses the existing textual diagnostic alternative and preserves
+its separate router bytes.
+
+Both freshly encoded and stored-fixture tests use all five codecs. They take a
+partial checkpoint, compare complete capture-width sets, remove the selected
+negative conflict without reconsidering rejected predecessors, replace selected
+existence support, remove a blocker whose predicate read a sequence capture,
+and consume both queued lines through a stored callable. The checkpoint preserves the scanner diagnostic; subsequent runs clear that
+history while warning-router bytes persist. Completed snapshots remain quiescent. Later rule installation reuses a restored sequence projection;
+reset and clear verify their distinct source/input lifecycles. Host handles are
+queried again after each restore. No same-salience firing order is asserted.
+
+The committed `schema-8.cbor` contains 41,441 bytes (41,389 payload bytes), with
+SHA-256 `05c1cab97837ca39040b6c68fa8c8449b6e3049308a9f0fc88392600453251cc`.
+Its schema, codec, payload length, and envelope checksum are verified. Both the
+source and stored-fixture resume protocols pass in all five codecs. To regenerate
+a deliberate fixture update, first run the source test:
 
 ```sh
+cargo test -p ferric-rules-runtime --features serde --lib \
+  serialization::tests::combined_schema_eight_source_roundtrips_and_resumes_in_all_codecs -- --exact
 cargo test -p ferric-rules-runtime --features serde --lib \
   serialization::tests::regenerate_schema_eight_fixture -- --ignored --exact
 ```
 
-It reads `schema-8.clp` at runtime, constructs the engine, runs exactly one
-activation, and writes only `schema-8.cbor`. The ordinary stored-fixture test
-also reads at runtime, so the generator can compile before the files exist;
-missing files fail the relevant test. Follow generation with the stored-fixture
-and serialization regressions, and record the new binary hash. Ordinary test
-runs never regenerate fixtures. The retired schema-6 and schema-7 writers are
-removed so they cannot overwrite historical bytes.
+The single ignored maintenance test writes only `schema-8.cbor`. The ordinary
+stored-fixture test reads that file at runtime, allowing the generator to compile
+before the binary exists; absence fails the ordinary test. Follow generation
+with the stored-fixture and serialization regressions and record the new hash.
+Ordinary tests never regenerate fixtures. All historical sources and binaries
+remain unchanged, and all retired fixture writers have been removed.
 
 The CLI `snapshot` command loads, resets, and immediately serializes; it does
 not run the one-activation checkpoint and therefore must not generate this
-fixture. Use the explicit library maintenance test above. This local checkpoint
-does not claim completed schema-8 fixture coverage or final integration gates.
+fixture. Use the explicit library maintenance test above.

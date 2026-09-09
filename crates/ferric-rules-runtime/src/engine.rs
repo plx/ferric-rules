@@ -407,55 +407,18 @@ impl Engine {
                 )));
                 continue;
             };
-            let evaluation = if pending.role
-                == ferric_rules_core::RuntimeConditionRole::PositiveJoin
-                && !info.multifield_tail_bindings.is_empty()
-            {
-                let Some(parent) = pending.parent_token else {
-                    continue;
-                };
-                let Some(token) = self.rete.token_store.get(parent).cloned() else {
-                    self.rete
-                        .resolve_runtime_match(pending, false, &self.fact_base);
-                    continue;
-                };
-                let collected_facts = self.rete.token_store.collect_all_facts(parent);
+            let passed = {
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
                 };
-                actions::evaluate_test_condition(
-                    &token,
-                    info.as_ref(),
-                    condition,
-                    &collected_facts,
-                    &mut context,
-                )
-            } else {
-                let mut context = actions::ActionExecutionContext {
-                    engine: self,
-                    current_module,
-                };
-                Ok(actions::evaluate_runtime_condition(
+                actions::evaluate_runtime_condition(
                     &bindings,
                     &info.var_map,
                     condition,
                     pending.replacing_conflict,
                     &mut context,
-                ))
-            };
-            let passed = match evaluation {
-                Ok(passed) => passed,
-                Err(error) => {
-                    ferric_event!(
-                        warn,
-                        rule = %info.name,
-                        error = %error,
-                        "match_condition_eval_error"
-                    );
-                    self.action_diagnostics.push(error);
-                    false
-                }
+                )
             };
 
             self.rete

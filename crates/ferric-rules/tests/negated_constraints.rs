@@ -58,7 +58,7 @@ fn assert_output(engine: &mut Engine, fixture: &Fixture) {
         engine.action_diagnostics()
     );
     assert_eq!(
-        engine.get_output("t").unwrap_or(""),
+        engine.get_output("t").unwrap().unwrap_or(""),
         fixture.output,
         "{}",
         fixture.name
@@ -89,7 +89,10 @@ fn pending_and_completed_negative_constraints_resume_in_every_format() {
                 let mut completed =
                     Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
                 assert_eq!(completed.run(RunLimit::Count(10)).unwrap().rules_fired, 0);
-                assert_eq!(completed.get_output("t").unwrap_or(""), fixture.output);
+                assert_eq!(
+                    completed.get_output("t").unwrap().unwrap_or(""),
+                    fixture.output
+                );
             }
         }
     }

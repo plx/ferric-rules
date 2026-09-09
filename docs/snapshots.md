@@ -25,27 +25,31 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The local integration uses schema 8 for the combined snapshot layout. It brings
-explicit ordered-pattern field-count tests and typed runtime filters together
-with byte lexeme pools, typed instance names, and byte output buffers. Physical
+Ferric uses schema 8 for the combined snapshot layout. It brings
+explicit ordered-pattern field-count tests, independent ordered/template
+sequence plans and typed runtime filters together with byte lexeme pools,
+typed instance names, and byte output buffers. Physical
 width is checked before runtime callbacks; retained filter decisions and
 selected conflict/support history survive restoration without reevaluation.
 Pattern and join Boolean evaluation remain distinct.
 
-This local build writes and accepts only version 8. Versions 1–7 are rejected
+This build writes and accepts only version 8. Versions 1–7 are rejected
 before payload decoding. Schema 2 contains ordered cardinality, schema 5 runtime
 constraints, schema 6 byte lexemes, and schema 7 the ordered-cardinality/runtime
 composition. Schemas 3 and 4 belong to separate sequence and template-multislot
-layouts. These parallel formats are not interchangeable. The complete union and
-its new stored fixture are still being assembled; a schema-8 fixture and final
-integration validation have not yet been completed.
+layouts. These parallel formats are not interchangeable. The committed schema-8
+fixture and its source scenario exercise the combined layout and resume behavior
+in all five codecs.
 
 Use the producing Ferric version to export durable application data before
 upgrading. There is no automatic RETE-state migration. Original historical
 fixtures remain unchanged rejection regressions, while their source scenarios
 exercise current-format resume behavior in all five codecs. Those regressions
-retain cardinality, future assertions, later rule compilation, byte/name
-identity, reset, and initial versus replacement existence-support errors.
+retain cardinality, ordered/template split identities, future assertions, later
+rule compilation, byte/name identity, reset, and initial versus replacement
+existence-support errors. The combined source also exercises a runtime join
+reading an earlier sequence capture, raw buffered output, queued input, and
+drained scanner notices.
 
 Builds supporting a schema must keep its meaning and pass its stored fixture
 and resume regressions. Changes to the serialized layout or runtime semantics
@@ -119,8 +123,10 @@ positive joins and their bindings; complete negative/exists support and NCC
 ownership; token reverse indexes; activation identity, chronology, recency and
 strategy keys; and compiler-cache references. It rejects unfinished predicate
 work, including unfinished local filters and negative-conflict searches.
-Runtime conditions are checked against their graph-owned roles, physical field
-selectors, and lexical binding scopes. Each alpha path admits at most one ordered
+Sequence plans are checked against their physical ordered or template sources;
+flattened logical selectors and persisted capture lengths have separate bounds.
+Runtime conditions are checked against their graph-owned roles, physical local
+field selectors, and lexical binding scopes, including outer sequence captures. Each alpha path admits at most one ordered
 field-count test, its bounds must be ordered, and retained runtime-filter facts
 must still pass their static predecessor tests. Historical predicate outcomes and local
 filter membership are retained, since re-evaluating against globals changed

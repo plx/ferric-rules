@@ -32,12 +32,14 @@ impl Engine {
             }
             Pattern::Template(template) => {
                 for slot in &template.slot_constraints {
-                    self.validate_lhs_constraint(
-                        rule_name,
-                        &Self::field_constraint(&slot.constraint),
-                        available,
-                        true,
-                    )?;
+                    for constraint in &slot.constraints {
+                        self.validate_lhs_constraint(
+                            rule_name,
+                            &Self::field_constraint(constraint),
+                            available,
+                            true,
+                        )?;
+                    }
                 }
             }
             Pattern::Assigned {

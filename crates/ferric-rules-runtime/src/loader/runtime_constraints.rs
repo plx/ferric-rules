@@ -136,7 +136,7 @@ impl Engine {
         source.clone()
     }
 
-    pub(super) fn pattern_needs_runtime_disjunction(pattern: &Pattern) -> bool {
+    pub(super) fn pattern_needs_runtime_disjunction(&self, pattern: &Pattern) -> bool {
         fn expression(constraint: &Constraint) -> bool {
             match constraint {
                 Constraint::Predicate(..) | Constraint::ReturnValue(..) => true,
@@ -155,29 +155,16 @@ impl Engine {
                 _ => false,
             }
         }
-        let fields: Vec<_> = match pattern {
-            Pattern::Ordered(pattern) => {
-                if pattern
-                    .constraints
-                    .iter()
-                    .any(Self::constraint_has_multifield)
-                {
-                    return false;
-                }
-                pattern.constraints.iter().collect()
-            }
-            Pattern::Template(pattern) => pattern
-                .slot_constraints
-                .iter()
-                .map(|slot| &slot.constraint)
-                .collect(),
-            Pattern::Assigned { pattern, .. } => {
-                return Self::pattern_needs_runtime_disjunction(pattern)
-            }
-            _ => return false,
+        if !Self::is_positive_fact_pattern(pattern) {
+            return false;
+        }
+        let Ok(fields) = self.runtime_pattern_fields(pattern) else {
+            // Sequence field alternatives must still expand into distinct
+            // positional patterns. They cannot use physical alpha callbacks.
+            return false;
         };
-        fields.iter().any(|field| expression(field))
-            && fields.iter().any(|field| disjunction(field))
+        fields.iter().any(|(_, field)| expression(field))
+            && fields.iter().any(|(_, field)| disjunction(field))
     }
 
     pub(super) fn lower_lhs_condition(
@@ -273,7 +260,7 @@ impl Engine {
             let mut residual = Vec::new();
             let mut simple =
                 self.translate_pattern(&children[0], &mut residual, &mut plan.seed, false)?;
-            if residual.is_empty() && !Self::pattern_needs_runtime_disjunction(&children[0]) {
+            if residual.is_empty() && !self.pattern_needs_runtime_disjunction(&children[0]) {
                 simple.exists = true;
                 out.push(CompilableCondition::Pattern(simple));
                 return Ok(());
@@ -421,22 +408,33 @@ impl Engine {
         pattern.negated = negated;
         if residual.is_empty()
             && trailing_tests.is_empty()
-            && !Self::pattern_needs_runtime_disjunction(source)
+            && !self.pattern_needs_runtime_disjunction(source)
         {
             out.push(CompilableCondition::Pattern(pattern));
             return Ok(());
         }
-        // Preserve the existing positive ordered-tail path until sequence
-        // matching supplies physical selectors for runtime pattern filters.
-        // Negated runtime constraints have no such supported legacy path.
-        if !negated && Self::is_ordered_multifield_pattern(source) {
-            out.push(CompilableCondition::Pattern(pattern));
-            for expression in residual {
-                let condition_index = plan.add(CompiledTestCondition::join(expression))?;
-                out.push(CompilableCondition::Predicate { condition_index });
+        let fields = match self.runtime_pattern_fields(source) {
+            Ok(fields) => fields,
+            Err(_) if pattern.sequence.is_some() && !negated => {
+                // Positive sequence predicates consume the already projected
+                // token bindings. Lazy runtime negatives have no split identity.
+                out.push(CompilableCondition::Pattern(pattern));
+                for expression in residual {
+                    let condition_index = plan.add(CompiledTestCondition::join(expression))?;
+                    out.push(CompilableCondition::Predicate { condition_index });
+                }
+                for test in trailing_tests {
+                    let expression = self.translate_lhs_expr(test)?;
+                    let condition_index = plan.add(CompiledTestCondition::join(expression))?;
+                    out.push(CompilableCondition::Predicate { condition_index });
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
+            Err(error) => return Err(error),
+        };
+        // Clearing the projection is safe only after every written field has
+        // a physical selector: one scalar field, or one whole multislot capture.
+        pattern.sequence = None;
         // Once runtime evaluation is needed, retain source order within each
         // network. Moving later constants ahead of callbacks would hide effects
         // and errors, so the complete local/join groups own those decisions.
@@ -461,7 +459,6 @@ impl Engine {
             in_disjunction: false,
             force_join: false,
         };
-        let fields = self.runtime_pattern_fields(source)?;
         for (slot, constraint) in fields {
             let name = plan.slot_name();
             let symbol = self.compile_symbol(&name)?;
@@ -562,8 +559,15 @@ impl Engine {
                         let index = registered.slot_index(&slot.slot_name).ok_or_else(|| {
                             Self::compile_error_at(&slot.span, "unknown template slot")
                         })?;
+                        let [constraint] = slot.constraints.as_slice() else {
+                            return Err(Self::unsupported_constraint(
+                                "multislot",
+                                &slot.span,
+                                "runtime constraints require one physical whole-slot field; sequence fields use projected joins",
+                            ));
+                        };
                         if registered.slot_types[index] == ferric_rules_parser::SlotType::Multi
-                            && !Self::is_whole_multislot_constraint(&slot.constraint)
+                            && !Self::is_whole_multislot_constraint(constraint)
                         {
                             return Err(Self::unsupported_constraint(
                                 "multislot",
@@ -573,7 +577,7 @@ impl Engine {
                         }
                         Ok((
                             SlotIndex::Template(index),
-                            Self::field_constraint(&slot.constraint),
+                            Self::field_constraint(constraint),
                         ))
                     })
                     .collect()
@@ -615,17 +619,6 @@ impl Engine {
                 parts.iter().any(Self::constraint_has_multifield)
             }
             Constraint::Not(inner, _) => Self::constraint_has_multifield(inner),
-            _ => false,
-        }
-    }
-
-    fn is_ordered_multifield_pattern(pattern: &Pattern) -> bool {
-        match pattern {
-            Pattern::Assigned { pattern, .. } => Self::is_ordered_multifield_pattern(pattern),
-            Pattern::Ordered(pattern) => pattern
-                .constraints
-                .iter()
-                .any(Self::constraint_has_multifield),
             _ => false,
         }
     }
@@ -750,6 +743,7 @@ impl Engine {
             LiteralKind::Float(value) => Atom::Float(*value),
             LiteralKind::String(value) => Atom::String(value.clone()),
             LiteralKind::Symbol(value) => Atom::Symbol(value.clone()),
+            LiteralKind::InstanceName(value) => Atom::InstanceName(value.clone()),
         };
         self.translate_lhs_expr(&SExpr::Atom(atom, literal.span))
     }

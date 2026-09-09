@@ -2,7 +2,7 @@
 
 use super::{Engine, SerializationError};
 use crate::evaluator::RuntimeExpr;
-use ferric_rules_core::{Fact, Value};
+use ferric_rules_core::{Fact, SequenceField, SequenceSource, Value};
 use ferric_rules_parser::{ActionExpr, SlotType};
 
 fn ensure(condition: bool, message: &str) -> Result<(), String> {
@@ -163,6 +163,28 @@ impl Engine {
                 self.template_defs.contains_key(id),
                 "alpha graph has dangling template",
             )?;
+        }
+        // Segment sources are physical template slots. Core validation checks
+        // each plan's separate flattened logical selectors and capture widths.
+        for (template_id, plan) in self.rete.snapshot_template_sequence_patterns()? {
+            let template = self
+                .template_defs
+                .get(template_id)
+                .ok_or("sequence plan has a dangling template")?;
+            for segment in &plan.segments {
+                let SequenceSource::TemplateSlot(index) = segment.source else {
+                    return Err("template sequence plan contains an ordered source".to_owned());
+                };
+                let kind = template
+                    .slot_types
+                    .get(index)
+                    .ok_or("sequence plan references an invalid physical template slot")?;
+                ensure(
+                    *kind == SlotType::Multi
+                        || segment.fields.as_slice() == [SequenceField::Single],
+                    "scalar template sequence source must consume exactly one single field",
+                )?;
+            }
         }
         for (_, entry) in self.fact_base.iter() {
             self.validate_snapshot_fact(&entry.fact)?;
@@ -448,6 +470,8 @@ impl Engine {
                 condition.role == usage.role,
                 "runtime condition role disagrees with graph owner",
             )?;
+            // These descriptors extract local physical fields only. Outer
+            // sequence captures below contribute variable IDs, not slot indexes.
             for (slot, variable) in &usage.bindings {
                 work = work
                     .checked_sub(1)
@@ -734,6 +758,19 @@ mod tests {
             ActionExpr::Variable(name.into(), span),
             Some(Box::new(variable(name))),
         )
+    }
+
+    #[test]
+    fn restored_runtime_scope_accepts_an_outer_sequence_capture() {
+        let expression = RuntimeExpr::Call {
+            name: "length$".into(),
+            args: vec![variable("$?prefix")],
+            span: None,
+        };
+        let available = rustc_hash::FxHashSet::from_iter(["prefix"]);
+        assert!(validate_condition_variables(&expression, &available, &mut 1000).is_ok());
+        let absent = rustc_hash::FxHashSet::default();
+        assert!(validate_condition_variables(&expression, &absent, &mut 1000).is_err());
     }
 
     #[test]
