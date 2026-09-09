@@ -39,7 +39,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
-import { FerricSymbol } from "./native";
+import { FerricSymbol, byteLexemeConstructors } from "./native";
 import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 import type {
   ClipsValue,
@@ -142,6 +142,7 @@ export interface EngineProxy {
   reset(): Promise<void>;
   clear(): Promise<void>;
   getOutput(channel: string): Promise<string | null>;
+  getOutputBytes(channel: string): Promise<Uint8Array | null>;
   clearOutput(channel: string): Promise<void>;
   pushInput(line: string): Promise<void>;
 }
@@ -448,7 +449,7 @@ export class EnginePool {
         if ("error" in resp) {
           entry.reject(reconstructError(resp.error));
         } else {
-          entry.resolve(fromWire(resp.result, FerricSymbol));
+          entry.resolve(fromWire(resp.result, FerricSymbol, byteLexemeConstructors));
         }
 
         EnginePool.notifyPendingDrained(slot);
@@ -1247,6 +1248,10 @@ export class EnginePool {
         withActiveLease(() => send("reset", []) as Promise<void>),
       clear: () =>
         withActiveLease(() => send("clear", []) as Promise<void>),
+      getOutputBytes: (channel) =>
+        withActiveLease(
+          () => send("getOutputBytes", [channel]) as Promise<Uint8Array | null>,
+        ),
       getOutput: (channel) =>
         withActiveLease(
           () => send("getOutput", [channel]) as Promise<string | null>,

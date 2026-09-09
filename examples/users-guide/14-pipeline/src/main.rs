@@ -35,7 +35,7 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
                             print!(" {name}");
                         }
                     }
-                    Value::String(s) => print!(" {:?}", s.as_str()),
+                    Value::String(s) => print!(" {:?}", s.as_str()?),
                     other => print!(" {other:?}"),
                 }
             }

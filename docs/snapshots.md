@@ -25,27 +25,27 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 7 combines explicit ordered-pattern field-count tests with typed runtime
-pattern filters and lazy negative/existence join constraints. Physical width is
-checked before runtime callbacks; retained filter decisions and selected
-conflict/support history survive restoration without reevaluation. Pattern and
-join Boolean evaluation remain distinct.
+The local integration uses schema 8 for the combined snapshot layout. It brings
+explicit ordered-pattern field-count tests and typed runtime filters together
+with byte lexeme pools, typed instance names, and byte output buffers. Physical
+width is checked before runtime callbacks; retained filter decisions and
+selected conflict/support history survive restoration without reevaluation.
+Pattern and join Boolean evaluation remain distinct.
 
-This build supports only version 7. Versions 1–6 are rejected before payload
-decoding. In particular, schema 2 contains the independent ordered-cardinality
-layout and schema 5 contains the independent runtime-constraint layout; neither
-is interchangeable with their composition. Versions 3, 4, and 6 belong to the
-separate sequence, template-multislot, and byte-lexeme layouts. A later composition
-including those layouts requires another version; version 8 is reserved for
-that integration and is not supported by this build.
+This local build writes and accepts only version 8. Versions 1–7 are rejected
+before payload decoding. Schema 2 contains ordered cardinality, schema 5 runtime
+constraints, schema 6 byte lexemes, and schema 7 the ordered-cardinality/runtime
+composition. Schemas 3 and 4 belong to separate sequence and template-multislot
+layouts. These parallel formats are not interchangeable. The complete union and
+its new stored fixture are still being assembled; a schema-8 fixture and final
+integration validation have not yet been completed.
 
 Use the producing Ferric version to export durable application data before
-upgrading. There is no automatic RETE-state migration. Original schema-1,
-schema-2, and schema-5 fixtures remain unchanged rejection regressions, while
-their source scenarios exercise current-format resume behavior. The current
-fixture captures retained local decisions and a selected negative conflict;
-all-codec tests also cover cardinality, future assertions, later rule compilation,
-reset, and initial versus replacement existence-support errors.
+upgrading. There is no automatic RETE-state migration. Original historical
+fixtures remain unchanged rejection regressions, while their source scenarios
+exercise current-format resume behavior in all five codecs. Those regressions
+retain cardinality, future assertions, later rule compilation, byte/name
+identity, reset, and initial versus replacement existence-support errors.
 
 Builds supporting a schema must keep its meaning and pass its stored fixture
 and resume regressions. Changes to the serialized layout or runtime semantics
@@ -77,7 +77,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`7`) |
+| 8–9 | Little-endian schema version (`8`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -127,6 +127,12 @@ filter membership are retained, since re-evaluating against globals changed
 later would alter refraction and resume behavior. Runtime negative joins retain
 the selected conflict and candidate order; replacement proceeds after that
 conflict instead of reconsidering rejected predecessors.
+
+Scanner notices retain their public message and router bytes, but diagnostic
+history stores their existing textual error alternative rather than introducing
+a notice-specific wire variant. Other evaluator diagnostics retain their typed
+payloads. Restoring a structured scanner notice normalizes it without replaying
+output or callbacks; this does not bypass envelope version rejection.
 
 These checks run at snapshot boundaries, not on ordinary evaluation paths.
 Decoding creates a separate engine; an error cannot partially replace the caller's

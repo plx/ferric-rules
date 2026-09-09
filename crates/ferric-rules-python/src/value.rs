@@ -1,83 +1,198 @@
 //! Value conversion between Rust and Python.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use ferric_rules_runtime::{Engine, HostValue, Value, HOST_VALUE_MAX_DEPTH, HOST_VALUE_MAX_ITEMS};
 
-/// A CLIPS symbol value.
-///
-/// Wraps a Python string and converts to `Value::Symbol` on the Rust side.
-/// Use this explicit marker for unquoted CLIPS symbols.
+/// Decode a byte lexeme with Python's checked UTF-8 decoder.
+pub(crate) fn checked_text(py: Python<'_>, bytes: &[u8]) -> PyResult<String> {
+    PyBytes::new(py, bytes)
+        .call_method1("decode", ("utf-8",))?
+        .extract()
+}
+
+fn lexeme_bytes(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(text) = value.downcast::<PyString>() {
+        // to_cow remains available with abi3-py39 and rejects unpaired surrogates.
+        return Ok(text.to_cow()?.as_bytes().to_vec());
+    }
+    if let Ok(bytes) = value.downcast::<PyBytes>() {
+        return Ok(bytes.as_bytes().to_vec());
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "expected str or bytes",
+    ))
+}
+
+/// A distinct CLIPS Symbol lexeme with lossless byte storage.
 #[pyclass(name = "Symbol", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct Symbol {
-    #[pyo3(get)]
-    pub value: String,
+    pub bytes: Vec<u8>,
 }
 
 #[pymethods]
 impl Symbol {
     #[new]
-    fn new(value: String) -> Self {
-        Self { value }
+    fn new(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            bytes: lexeme_bytes(value)?,
+        })
+    }
+
+    /// Checked UTF-8 text; raises `UnicodeDecodeError` for arbitrary bytes.
+    #[getter]
+    fn value(&self, py: Python<'_>) -> PyResult<String> {
+        checked_text(py, &self.bytes)
+    }
+
+    /// An immutable copy of the exact lexeme bytes.
+    #[getter]
+    fn bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.bytes)
     }
 
     fn __repr__(&self) -> String {
-        format!("Symbol({:?})", self.value)
+        match std::str::from_utf8(&self.bytes) {
+            Ok(text) => format!("Symbol({text:?})"),
+            Err(_) => format!("Symbol({:?})", self.bytes),
+        }
     }
 
-    fn __str__(&self) -> &str {
-        &self.value
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        checked_text(py, &self.bytes)
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        if let Ok(sym) = other.downcast::<Symbol>() {
-            return self.value == sym.borrow().value;
-        }
-        false
+        other
+            .downcast::<Symbol>()
+            .is_ok_and(|other| self.bytes == other.borrow().bytes)
     }
 
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
-        PyTuple::new(py, ["ferric.Symbol", &self.value])?.hash()
+        PyTuple::new(
+            py,
+            [
+                "ferric.Symbol".into_pyobject(py)?.into_any(),
+                PyBytes::new(py, &self.bytes).into_any(),
+            ],
+        )?
+        .hash()
     }
 }
 
-/// A CLIPS string value (distinct from a symbol).
-///
-/// Plain Python `str` also maps to a CLIPS string literal.
-/// Returned values retain this wrapper to preserve their native type.
+/// A distinct CLIPS String lexeme with lossless byte storage.
 #[pyclass(name = "String", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct ClipsString {
-    #[pyo3(get)]
-    pub value: String,
+    pub bytes: Vec<u8>,
 }
 
 #[pymethods]
 impl ClipsString {
     #[new]
-    fn new(value: String) -> Self {
-        Self { value }
+    fn new(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            bytes: lexeme_bytes(value)?,
+        })
     }
 
-    fn __repr__(&self) -> std::string::String {
-        format!("String({:?})", self.value)
+    /// Checked UTF-8 text; raises `UnicodeDecodeError` for arbitrary bytes.
+    #[getter]
+    fn value(&self, py: Python<'_>) -> PyResult<String> {
+        checked_text(py, &self.bytes)
     }
 
-    fn __str__(&self) -> &str {
-        &self.value
+    /// An immutable copy of the exact lexeme bytes.
+    #[getter]
+    fn bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.bytes)
+    }
+
+    fn __repr__(&self) -> String {
+        match std::str::from_utf8(&self.bytes) {
+            Ok(text) => format!("String({text:?})"),
+            Err(_) => format!("String({:?})", self.bytes),
+        }
+    }
+
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        checked_text(py, &self.bytes)
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        if let Ok(cs) = other.downcast::<ClipsString>() {
-            return self.value == cs.borrow().value;
-        }
-        false
+        other
+            .downcast::<ClipsString>()
+            .is_ok_and(|other| self.bytes == other.borrow().bytes)
     }
 
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
-        PyTuple::new(py, ["ferric.String", &self.value])?.hash()
+        PyTuple::new(
+            py,
+            [
+                "ferric.String".into_pyobject(py)?.into_any(),
+                PyBytes::new(py, &self.bytes).into_any(),
+            ],
+        )?
+        .hash()
+    }
+}
+
+/// A distinct CLIPS `InstanceName` lexeme with lossless byte storage.
+#[pyclass(name = "InstanceName", module = "ferric")]
+#[derive(Clone, Debug)]
+pub struct InstanceName {
+    pub bytes: Vec<u8>,
+}
+
+#[pymethods]
+impl InstanceName {
+    #[new]
+    fn new(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            bytes: lexeme_bytes(value)?,
+        })
+    }
+
+    /// Checked UTF-8 text; raises `UnicodeDecodeError` for arbitrary bytes.
+    #[getter]
+    fn value(&self, py: Python<'_>) -> PyResult<String> {
+        checked_text(py, &self.bytes)
+    }
+
+    /// An immutable copy of the exact lexeme bytes.
+    #[getter]
+    fn bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.bytes)
+    }
+
+    fn __repr__(&self) -> String {
+        match std::str::from_utf8(&self.bytes) {
+            Ok(text) => format!("InstanceName({text:?})"),
+            Err(_) => format!("InstanceName({:?})", self.bytes),
+        }
+    }
+
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        checked_text(py, &self.bytes)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        other
+            .downcast::<InstanceName>()
+            .is_ok_and(|other| self.bytes == other.borrow().bytes)
+    }
+
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        PyTuple::new(
+            py,
+            [
+                "ferric.InstanceName".into_pyobject(py)?.into_any(),
+                PyBytes::new(py, &self.bytes).into_any(),
+            ],
+        )?
+        .hash()
     }
 }
 
@@ -91,16 +206,25 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
         Value::Integer(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
         Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Value::Symbol(sym) => {
-            let s = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
-            Ok(Symbol {
-                value: s.to_owned(),
-            }
-            .into_pyobject(py)?
-            .into_any()
-            .unbind())
+            let s = engine.resolve_core_symbol_bytes(*sym).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("unresolved engine symbol")
+            })?;
+            Ok(Symbol { bytes: s.to_vec() }
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
         }
         Value::String(s) => Ok(ClipsString {
-            value: s.as_str().to_owned(),
+            bytes: s.as_bytes().to_vec(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        Value::InstanceName(name) => Ok(InstanceName {
+            bytes: engine
+                .resolve_core_symbol_bytes(name.as_symbol())
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("unresolved instance name"))?
+                .to_vec(),
         }
         .into_pyobject(py)?
         .into_any()
@@ -156,17 +280,23 @@ impl PythonValueBudget {
         }
         // Check marker types first: Symbol and ClipsString
         if let Ok(cs) = obj.downcast::<ClipsString>() {
-            let val = cs.borrow().value.clone();
+            let val = cs.borrow().bytes.clone();
             let fs = engine
-                .create_string(&val)
+                .create_string_bytes(&val)
                 .map_err(crate::error::engine_error_to_pyerr)?;
             return Ok(Value::String(fs).into());
         }
 
         if let Ok(sym) = obj.downcast::<Symbol>() {
-            let val = sym.borrow().value.clone();
+            let val = sym.borrow().bytes.clone();
             return engine
-                .symbol_value(&val)
+                .symbol_value_bytes(&val)
+                .map_err(crate::error::engine_error_to_pyerr);
+        }
+
+        if let Ok(name) = obj.downcast::<InstanceName>() {
+            return engine
+                .instance_name_value_bytes(&name.borrow().bytes)
                 .map_err(crate::error::engine_error_to_pyerr);
         }
 

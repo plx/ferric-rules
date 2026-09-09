@@ -1,0 +1,7 @@
+fields:3
+FALSE:FALSE:FALSE:TRUE:[a]
+FALSE:FALSE:TRUE:FALSE:[two words]
+TRUE:FALSE:FALSE:FALSE:[3]
+trace:1
+empty:0
+trace:1

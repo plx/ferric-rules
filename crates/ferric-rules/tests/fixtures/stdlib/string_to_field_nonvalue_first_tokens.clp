@@ -1,0 +1,18 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (floatp ?value) ":"
+  (stringp ?value) ":" (symbolp ?value) ":[" ?value "]" crlf))
+(defrule probe =>
+ (show left (string-to-field "(a b)"))
+ (show right (string-to-field ") rest"))
+ (show variable (string-to-field "?x rest"))
+ (show multi-variable (string-to-field "$?x rest"))
+ (show global (string-to-field "?*x* rest"))
+ (show anonymous (string-to-field "? rest"))
+ (show multi-anonymous (string-to-field "$? rest"))
+ (show equals (string-to-field "= rest"))
+ (show arrow (string-to-field "<- rest"))
+ (show amp (string-to-field "& rest"))
+ (show or (string-to-field "| rest"))
+ (show not (string-to-field "~ rest"))
+ (show colon (string-to-field ": rest"))
+)

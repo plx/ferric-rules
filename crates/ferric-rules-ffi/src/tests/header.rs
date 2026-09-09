@@ -293,7 +293,18 @@ fn ci_runs_debug_and_release_panic_containment_harness() {
     assert!(script.contains("FERRIC_FFI_TEST_PANIC_INJECTION_BUILD=1"));
     assert!(script.contains("--features serde"));
     assert!(script.contains("panic_containment.c"));
-    assert!(script.contains("expected 101 header exports"));
+    for required in [
+        "header/source export inventory is empty",
+        "authored/header export coverage differs",
+        "header/archive export coverage differs",
+        "diff -u \"$authored\" \"$expected\"",
+        "diff -u \"$expected\" \"$exported\"",
+    ] {
+        assert!(
+            script.contains(required),
+            "panic export audit is missing: {required}"
+        );
+    }
 }
 
 #[test]
@@ -350,10 +361,39 @@ fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
 
     exports.sort();
     exports.dedup();
+    assert!(
+        !exports.is_empty(),
+        "authored C export inventory must not be empty"
+    );
+    let header = read_committed_header();
+    let mut header_exports: Vec<_> = header
+        .lines()
+        .filter_map(|line| {
+            let (declaration, _) = line.split_once('(')?;
+            let name = declaration
+                .split_whitespace()
+                .last()?
+                .trim_start_matches('*');
+            if !name.starts_with("ferric_")
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            {
+                return None;
+            }
+            Some(name.to_owned())
+        })
+        .collect();
+    header_exports.sort();
+    header_exports.dedup();
+    assert!(
+        !header_exports.is_empty(),
+        "header export inventory must not be empty"
+    );
     assert_eq!(
-        exports.len(),
-        101,
-        "the export audit count changed; verify every new return category has a panic sentinel"
+        exports,
+        header_exports,
+        "header and authored C exports disagree; retain panic sentinel coverage for every return category"
     );
 }
 
@@ -807,7 +847,7 @@ fn header_has_counted_by_and_sized_by_annotations() {
 
     // Struct field: FerricValue.multifield_ptr counted_by multifield_len
     assert!(
-        header.contains("*multifield_ptr FERRIC_COUNTED_BY(multifield_len)"),
+        header.contains("*multifield_ptr FERRIC_COUNTED_BY(value_type == FERRIC_VALUE_TYPE_MULTIFIELD ? multifield_len : 0)"),
         "Missing FERRIC_COUNTED_BY on FerricValue.multifield_ptr"
     );
 
@@ -866,7 +906,10 @@ fn header_documents_embedded_nul_policy() {
     assert!(header.contains("Embedded NUL policy:"));
     assert!(header.contains("ferric_value_symbol_bytes()"));
     assert!(header.contains("ferric_value_string_bytes()"));
-    assert!(header.contains("Legacy FerricValue"));
+    assert!(header.contains("STRING_BYTES/SYMBOL_BYTES"));
+    assert!(header.contains("ferric_value_string_raw(const uint8_t *data FERRIC_SIZED_BY(len),"));
+    assert!(header.contains("ferric_value_symbol_raw(const uint8_t *data FERRIC_SIZED_BY(len),"));
+    assert!(header.contains("ferric_value_instance_name(const uint8_t *data FERRIC_SIZED_BY(len),"));
     assert!(header.contains("ferric_engine_get_output_copy()"));
 }
 
@@ -874,11 +917,9 @@ fn header_documents_embedded_nul_policy() {
 fn header_has_null_terminated_annotations() {
     let header = read_committed_header();
 
-    // Struct field: FerricValue.string_ptr
-    assert!(
-        header.contains("FERRIC_NULL_TERMINATED string_ptr"),
-        "Missing FERRIC_NULL_TERMINATED on FerricValue.string_ptr"
-    );
+    // The tag selects either a C string or a length-bearing byte span.
+    assert!(header.contains("char *string_ptr;"));
+    assert!(!header.contains("FERRIC_NULL_TERMINATED string_ptr"));
 
     // Return types
     assert!(

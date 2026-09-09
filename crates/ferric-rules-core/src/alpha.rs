@@ -1780,3 +1780,40 @@ mod proptests {
         }
     }
 }
+
+#[cfg(test)]
+mod byte_value_tests {
+    use super::*;
+    use crate::{InstanceName, StringEncoding, SymbolTable};
+
+    #[test]
+    fn instance_names_have_distinct_constant_and_index_identity() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let symbol = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let name = InstanceName::from_symbol(symbol);
+        let mut facts = FactBase::new();
+        let named = facts.assert_ordered(relation, smallvec::smallvec![Value::InstanceName(name)]);
+        let symbolic = facts.assert_ordered(relation, smallvec::smallvec![Value::Symbol(symbol)]);
+        let mut memory = AlphaMemory::new(AlphaMemoryId(0));
+        for id in [named, symbolic] {
+            memory.insert(id, &facts.get(id).unwrap().fact);
+        }
+        memory.request_index(SlotIndex::Ordered(0), &facts);
+        let key = AtomKey::InstanceName(name);
+        let matches = memory.lookup_by_slot(SlotIndex::Ordered(0), &key).unwrap();
+        assert_eq!(matches.collect::<Vec<_>>(), vec![named]);
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Equal(key),
+        };
+        assert!(evaluate_test(&facts.get(named).unwrap().fact, &test));
+        assert!(!evaluate_test(&facts.get(symbolic).unwrap().fact, &test));
+        memory.remove(named, &facts.get(named).unwrap().fact);
+        assert!(memory
+            .lookup_by_slot(SlotIndex::Ordered(0), &AtomKey::InstanceName(name))
+            .is_none());
+    }
+}

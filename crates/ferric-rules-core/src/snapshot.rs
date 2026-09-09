@@ -25,10 +25,30 @@ use crate::symbol::SymbolTable;
 use crate::value::Value;
 
 impl SymbolTable {
+    /// Check interned value spellings against an engine's explicit encoding policy.
+    pub fn validate_encoding(&self, encoding: crate::StringEncoding) -> Result<(), String> {
+        if encoding != crate::StringEncoding::Utf8 {
+            require!(
+                self.bytes_strings.is_empty(),
+                "byte symbols violate strict ASCII symbol policy"
+            );
+            require!(
+                self.utf8_strings.iter().all(|text| text.is_ascii()),
+                "non-ASCII symbol violates encoding policy"
+            );
+        }
+        require!(
+            self.ascii_strings.iter().all(|bytes| bytes.is_ascii()),
+            "invalid ASCII symbol pool"
+        );
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn validate_snapshot(&self) -> Result<(), String> {
         require_eq!(self.ascii_strings.len(), self.ascii_to_id.len());
         require_eq!(self.utf8_strings.len(), self.utf8_to_id.len());
+        require_eq!(self.bytes_strings.len(), self.bytes_to_id.len());
         for (index, text) in self.ascii_strings.iter().enumerate() {
             require!(text.is_ascii(), "non-ASCII entry in ASCII symbol pool");
             require!(
@@ -44,6 +64,18 @@ impl SymbolTable {
                     .get(text)
                     .is_some_and(|id| *id as usize == index),
                 "invalid UTF-8 symbol index"
+            );
+        }
+        for (index, bytes) in self.bytes_strings.iter().enumerate() {
+            require!(
+                std::str::from_utf8(bytes).is_err(),
+                "valid text in byte symbol pool"
+            );
+            require!(
+                self.bytes_to_id
+                    .get(bytes)
+                    .is_some_and(|id| *id as usize == index),
+                "invalid byte symbol index"
             );
         }
         Ok(())
@@ -64,12 +96,14 @@ impl SymbolTable {
                     return Err("snapshot contains unsupported external identity".to_owned())
                 }
                 Value::Symbol(symbol) => require!(
-                    self.resolve_symbol_str(*symbol).is_some(),
+                    self.resolve_symbol_bytes(*symbol).is_some(),
                     "dangling symbol in snapshot value"
                 ),
-                Value::String(crate::string::FerricString::Ascii(bytes)) => {
-                    require!(bytes.is_ascii(), "invalid ASCII string value");
-                }
+                Value::InstanceName(name) => require!(
+                    self.resolve_symbol_bytes(name.as_symbol()).is_some(),
+                    "dangling instance name in snapshot value"
+                ),
+                Value::String(value) => validate_snapshot_string(value)?,
                 Value::Multifield(fields) => {
                     pending.extend(fields.iter().map(|item| (item, depth + 1)));
                 }
@@ -78,6 +112,41 @@ impl SymbolTable {
         }
         Ok(())
     }
+
+    // Derived keys need representation validation before their byte-based
+    // equality can compare them with rebuilt, canonical values.
+    fn validate_snapshot_atom(&self, atom: &crate::value::AtomKey) -> Result<(), String> {
+        use crate::value::AtomKey;
+        match atom {
+            AtomKey::Symbol(symbol) => require!(
+                self.resolve_symbol_bytes(*symbol).is_some(),
+                "dangling symbol in snapshot value"
+            ),
+            AtomKey::InstanceName(name) => require!(
+                self.resolve_symbol_bytes(name.as_symbol()).is_some(),
+                "dangling instance name in snapshot value"
+            ),
+            AtomKey::String(value) => validate_snapshot_string(value)?,
+            AtomKey::ExternalAddress { .. } => {
+                return Err("snapshot contains unsupported external identity".to_owned());
+            }
+            AtomKey::Integer(_) | AtomKey::FloatBits(_) => {}
+        }
+        Ok(())
+    }
+}
+
+fn validate_snapshot_string(value: &crate::string::FerricString) -> Result<(), String> {
+    use crate::string::FerricString;
+    match value {
+        FerricString::Bytes(bytes) => require!(
+            std::str::from_utf8(bytes).is_err(),
+            "valid text in byte string variant"
+        ),
+        FerricString::Ascii(bytes) => require!(bytes.is_ascii(), "invalid ASCII string value"),
+        FerricString::Utf8(_) => {}
+    }
+    Ok(())
 }
 
 impl FactBase {
@@ -102,7 +171,7 @@ impl FactBase {
                 Fact::Ordered(fact) => {
                     require!(
                         symbols.resolve_symbol_str(fact.relation).is_some(),
-                        "dangling ordered relation"
+                        "invalid ordered relation identifier"
                     );
                     by_relation
                         .entry(fact.relation)
@@ -127,17 +196,18 @@ impl FactBase {
             "inconsistent template fact index"
         );
         let mut actual_relations = rustc_hash::FxHashMap::default();
-        for (pool, ascii) in [
-            (&self.by_relation.ascii, true),
-            (&self.by_relation.utf8, false),
+        for (pool, kind) in [
+            (&self.by_relation.ascii, 0),
+            (&self.by_relation.utf8, 1),
+            (&self.by_relation.bytes, 2),
         ] {
             for (index, ids) in pool.iter().enumerate() {
                 if let Some(ids) = ids {
                     let index = u32::try_from(index).map_err(|_| "oversized relation index")?;
-                    let symbol = crate::symbol::Symbol(if ascii {
-                        crate::symbol::SymbolId::Ascii(index)
-                    } else {
-                        crate::symbol::SymbolId::Utf8(index)
+                    let symbol = crate::symbol::Symbol(match kind {
+                        0 => crate::symbol::SymbolId::Ascii(index),
+                        1 => crate::symbol::SymbolId::Utf8(index),
+                        _ => crate::symbol::SymbolId::Bytes(index),
                     });
                     require!(!ids.is_empty(), "empty ordered fact index");
                     actual_relations.insert(symbol, ids.clone());
@@ -242,10 +312,10 @@ fn validate_constant(
         | Test::GreaterThan(value)
         | Test::LessThan(value)
         | Test::GreaterOrEqual(value)
-        | Test::LessOrEqual(value) => symbols.validate_snapshot_value(&value.to_value())?,
+        | Test::LessOrEqual(value) => symbols.validate_snapshot_atom(value)?,
         Test::EqualAny(values) => {
             for value in values {
-                symbols.validate_snapshot_value(&value.to_value())?;
+                symbols.validate_snapshot_atom(value)?;
             }
         }
         _ => {}
@@ -404,6 +474,8 @@ impl ReteNetwork {
                         .ok_or("unexpected beta variable index")?;
                     require_eq!(keys.len(), expected.len());
                     for (key, ids) in keys {
+                        work.step()?;
+                        symbols.validate_snapshot_atom(key)?;
                         let expected = expected.get(key).ok_or("wrong beta binding key")?;
                         require!(
                             ids == expected,
@@ -793,7 +865,7 @@ impl ReteNetwork {
                     if let AlphaEntryType::OrderedRelation(symbol) = entry_type {
                         require!(
                             symbols.resolve_symbol_str(*symbol).is_some(),
-                            "dangling alpha relation"
+                            "invalid alpha relation identifier"
                         );
                     }
                     require!(
@@ -971,6 +1043,8 @@ impl ReteNetwork {
                     .ok_or("unexpected indexed alpha slot")?;
                 require_eq!(keys.len(), expected.len());
                 for (key, ids) in keys {
+                    work.step()?;
+                    symbols.validate_snapshot_atom(key)?;
                     let expected = expected.get(key).ok_or("unexpected alpha binding key")?;
                     require!(
                         ids.iter().eq(expected.iter()),
@@ -1546,7 +1620,11 @@ impl crate::compiler::ReteCompiler {
     #[doc(hidden)]
     // Cache ownership and graph identity checks form one bounded validation pass.
     #[allow(clippy::too_many_lines)]
-    pub fn validate_snapshot(&self, rete: &ReteNetwork) -> Result<(), String> {
+    pub fn validate_snapshot(
+        &self,
+        rete: &ReteNetwork,
+        symbols: &SymbolTable,
+    ) -> Result<(), String> {
         let mut work = Work(10_000_000);
         require!(
             self.next_rule_id > 0 && self.next_rule_id < u32::MAX,
@@ -1621,6 +1699,7 @@ impl crate::compiler::ReteCompiler {
                     crate::alpha::ConstantTestType::EqualAny(values) => values.len() + 1,
                     _ => 1,
                 })?;
+                validate_constant(expected, symbols)?;
                 require!(
                     matches!(rete.alpha.nodes.get(id.0 as usize), Some(AlphaNode::ConstantTest { test, .. }) if test == expected),
                     "cached alpha test mismatch"
@@ -1675,5 +1754,346 @@ mod composed_count_tests {
             };
             assert_eq!(validate_constant(&test, &symbols).is_ok(), accepted);
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_snapshot_tests {
+    use super::*;
+    use crate::alpha::{ConstantTest, ConstantTestType, SlotIndex};
+    use crate::beta::BetaMemoryId;
+    use crate::binding::VarId;
+    use crate::compiler::{CompilablePattern, CompilableRule, ReteCompiler};
+    use crate::symbol::SymbolId;
+    use crate::{AtomKey, FerricString, InstanceName, Salience, StringEncoding, Symbol};
+
+    struct IndexedAtomFixture {
+        symbols: SymbolTable,
+        facts: FactBase,
+        rete: ReteNetwork,
+        compiler: ReteCompiler,
+        alpha: AlphaMemoryId,
+        beta: BetaMemoryId,
+        variable: VarId,
+    }
+
+    impl IndexedAtomFixture {
+        fn new(mut symbols: SymbolTable, value: &Value) -> Self {
+            let row = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+            let key = symbols.intern_symbol("key", StringEncoding::Utf8).unwrap();
+            let name = symbols.intern_symbol("x", StringEncoding::Utf8).unwrap();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            let rule = CompilableRule {
+                rule_id: compiler.allocate_rule_id(),
+                salience: Salience::DEFAULT,
+                patterns: [row, key]
+                    .into_iter()
+                    .map(|relation| CompilablePattern {
+                        entry_type: AlphaEntryType::OrderedRelation(relation),
+                        constant_tests: if relation == row {
+                            vec![ConstantTest {
+                                slot: SlotIndex::Ordered(0),
+                                test_type: ConstantTestType::Equal(
+                                    AtomKey::from_value(value).unwrap(),
+                                ),
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        variable_slots: vec![(SlotIndex::Ordered(0), name)],
+                        negated_variable_slots: Vec::new(),
+                        negated: false,
+                        exists: false,
+                    })
+                    .collect(),
+            };
+            let rule_network = compiler.compile_rule(&mut rete, &facts, &rule).unwrap();
+            let alpha = rule_network.alpha_memories[0];
+            rete.alpha
+                .get_memory_mut(alpha)
+                .unwrap()
+                .request_index(SlotIndex::Ordered(0), &facts);
+            let variable = rule_network.var_map.lookup(name).unwrap();
+            let beta = rete
+                .beta
+                .nodes
+                .values()
+                .find_map(|node| match node {
+                    BetaNode::Join { parent, memory, .. } if *parent == rete.beta.root_id() => {
+                        Some(*memory)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            for relation in [row, key] {
+                let id = facts.assert_ordered(relation, smallvec::smallvec![value.clone()]);
+                rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+            }
+            assert_eq!(rete.agenda.len(), 1);
+            let fixture = Self {
+                symbols,
+                facts,
+                rete,
+                compiler,
+                alpha,
+                beta,
+                variable,
+            };
+            fixture.validate();
+            fixture
+        }
+
+        fn text() -> Self {
+            Self::new(
+                SymbolTable::new(),
+                &Value::String(FerricString::new("x", StringEncoding::Utf8).unwrap()),
+            )
+        }
+
+        fn validate(&self) {
+            self.symbols.validate_snapshot().unwrap();
+            self.facts.validate_snapshot(&self.symbols).unwrap();
+            self.rete
+                .validate_snapshot(&self.facts, &self.symbols)
+                .unwrap();
+            self.compiler
+                .validate_snapshot(&self.rete, &self.symbols)
+                .unwrap();
+        }
+    }
+
+    fn noncanonical_text_key() -> AtomKey {
+        AtomKey::String(FerricString::Bytes(b"x".as_slice().into()))
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_noncanonical_alpha_index_key() {
+        let mut fixture = IndexedAtomFixture::text();
+        let keys = fixture
+            .rete
+            .alpha
+            .get_memory_mut(fixture.alpha)
+            .unwrap()
+            .slot_indices
+            .get_mut(&SlotIndex::Ordered(0))
+            .unwrap();
+        let bad = noncanonical_text_key();
+        let (canonical, members) = keys.remove_entry(&bad).unwrap();
+        assert_eq!(
+            canonical, bad,
+            "byte equality alone cannot validate representation"
+        );
+        keys.insert(bad, members);
+        assert_eq!(
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_noncanonical_beta_index_key() {
+        let mut fixture = IndexedAtomFixture::text();
+        let keys = fixture
+            .rete
+            .beta
+            .get_memory_mut(fixture.beta)
+            .unwrap()
+            .var_indices
+            .get_mut(&fixture.variable)
+            .unwrap();
+        let bad = noncanonical_text_key();
+        let (canonical, members) = keys.remove_entry(&bad).unwrap();
+        assert_eq!(
+            canonical, bad,
+            "byte equality alone cannot validate representation"
+        );
+        keys.insert(bad, members);
+        assert_eq!(
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_noncanonical_cached_constant() {
+        let mut fixture = IndexedAtomFixture::text();
+        let key = fixture
+            .compiler
+            .alpha_path_cache
+            .keys()
+            .find(|key| !key.tests.is_empty())
+            .unwrap()
+            .clone();
+        let memory = fixture.compiler.alpha_path_cache.remove(&key).unwrap();
+        let mut corrupt = key.clone();
+        corrupt.tests[0].test_type = ConstantTestType::Equal(noncanonical_text_key());
+        assert_eq!(
+            key, corrupt,
+            "byte equality alone cannot validate cached representation"
+        );
+        fixture.compiler.alpha_path_cache.insert(corrupt, memory);
+        fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap();
+        assert_eq!(
+            fixture
+                .compiler
+                .validate_snapshot(&fixture.rete, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_accepts_raw_atoms_in_indices_and_cached_constants() {
+        for kind in ["string", "symbol", "instance-name"] {
+            let mut symbols = SymbolTable::new();
+            let raw = symbols
+                .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+                .unwrap();
+            let value = match kind {
+                "string" => {
+                    Value::String(FerricString::from_bytes(b"\xff", StringEncoding::Utf8).unwrap())
+                }
+                "symbol" => Value::Symbol(raw),
+                _ => Value::InstanceName(InstanceName::from_symbol(raw)),
+            };
+            IndexedAtomFixture::new(symbols, &value).validate();
+        }
+    }
+
+    #[test]
+    fn byte_snapshot_validation_accepts_live_interned_values() {
+        let mut symbols = SymbolTable::new();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let values = Value::Multifield(Box::new(
+            [
+                Value::Symbol(raw),
+                Value::InstanceName(InstanceName::from_symbol(raw)),
+                Value::String(FerricString::from_bytes(b"\xc3", StringEncoding::Utf8).unwrap()),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        assert!(symbols.validate_snapshot().is_ok());
+        assert!(symbols.validate_encoding(StringEncoding::Utf8).is_ok());
+        assert!(symbols.validate_encoding(StringEncoding::Ascii).is_err());
+        assert!(symbols
+            .validate_encoding(StringEncoding::AsciiSymbolsUtf8Strings)
+            .is_err());
+        assert!(symbols.validate_snapshot_value(&values).is_ok());
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let mut facts = FactBase::new();
+        facts.assert_ordered(relation, smallvec::smallvec![values]);
+        assert!(facts.validate_snapshot(&symbols).is_ok());
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_live_raw_ordered_relation_identifier() {
+        let mut symbols = SymbolTable::new();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        // This symbol is a valid data value, not a dangling reference. The
+        // low-level insertion also keeps the fact's derived indexes coherent.
+        assert!(symbols.validate_snapshot().is_ok());
+        assert!(symbols.validate_snapshot_value(&Value::Symbol(raw)).is_ok());
+        let mut facts = FactBase::new();
+        facts.assert_ordered(raw, smallvec::smallvec![Value::Integer(1)]);
+        assert_eq!(
+            facts.validate_snapshot(&symbols).unwrap_err(),
+            "invalid ordered relation identifier"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_live_raw_alpha_relation_identifier() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let facts = FactBase::new();
+        let mut rete = ReteNetwork::new();
+        rete.alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(relation));
+        assert!(rete.validate_snapshot(&facts, &symbols).is_ok());
+        // An unused alpha entry must be rejected too: no live fact is needed
+        // to expose an invalid persisted rule relation.
+        rete.alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(raw));
+        assert_eq!(
+            rete.validate_snapshot(&facts, &symbols).unwrap_err(),
+            "invalid alpha relation identifier"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_raw_compiler_relation_mismatching_valid_alpha_entry() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let mut rete = ReteNetwork::new();
+        let entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(relation));
+        let memory = rete.alpha.create_memory(entry);
+        assert!(rete.validate_snapshot(&FactBase::new(), &symbols).is_ok());
+        let mut compiler = crate::compiler::ReteCompiler::new();
+        let mut key = crate::compiler::AlphaPathKey {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            tests: Vec::new(),
+            runtime: None,
+        };
+        compiler.alpha_path_cache.insert(key.clone(), memory);
+        assert!(compiler.validate_snapshot(&rete, &symbols).is_ok());
+        compiler.alpha_path_cache.clear();
+        key.entry_type = AlphaEntryType::OrderedRelation(raw);
+        compiler.alpha_path_cache.insert(key, memory);
+        assert_eq!(
+            compiler.validate_snapshot(&rete, &symbols).unwrap_err(),
+            "cached alpha entry mismatch"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_dangling_names_and_noncanonical_storage() {
+        let mut symbols = SymbolTable::new();
+        let dangling = InstanceName::from_symbol(Symbol(SymbolId::Bytes(0)));
+        assert!(symbols
+            .validate_snapshot_value(&Value::InstanceName(dangling))
+            .is_err());
+        assert!(symbols
+            .validate_snapshot_value(&Value::String(FerricString::Bytes(b"valid"[..].into())))
+            .is_err());
+        assert!(symbols
+            .validate_snapshot_value(&Value::String(FerricString::Ascii(b"\xff"[..].into())))
+            .is_err());
+        symbols.bytes_strings.push(b"valid"[..].into());
+        symbols.bytes_to_id.insert(b"valid"[..].into(), 0);
+        assert!(symbols.validate_snapshot().is_err());
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_inconsistent_pool_indexes() {
+        let mut symbols = SymbolTable::new();
+        symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        symbols.bytes_to_id.insert(b"\xff"[..].into(), 2);
+        assert!(symbols.validate_snapshot().is_err());
     }
 }

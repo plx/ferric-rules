@@ -836,9 +836,35 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
-| `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
-| `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
+| `string-to-field` | Read the first CLIPS field from STRING, SYMBOL, or INSTANCE-NAME bytes | `(string-to-field "42 trailing")` => `42` |
+| `explode$`, `str-explode` | Scan STRING bytes into typed CLIPS fields | `(explode$ "a \"two words\" 3")` => `(a "two words" 3)` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
+
+`string-to-field` ignores the input after its first token and preserves INTEGER,
+FLOAT, STRING, SYMBOL, and INSTANCE-NAME identity. Empty or comment-only input
+returns the symbol `EOF`; variable and punctuation tokens return their literal
+print forms as strings. Quoted fields preserve bytes and CLIPS escape behavior.
+Like a CLIPS string source, the input ends at its first NUL byte.
+
+Integer overflow saturates with a scanner warning. An unterminated quoted field
+returns its partial string with a notice, including a literal `0xff` byte when
+the final escape reaches EOF. These notices remain observable through action
+diagnostics and the `wwarning` or `werror` output channel while evaluation
+continues. Wrong argument count or type halts evaluation; an unknown scanner
+token instead returns the string `*** ERROR ***` without a diagnostic.
+
+`explode$` (also named `str-explode`) scans every field and returns a
+MULTIFIELD, preserving quoted strings, INTEGER/FLOAT distinctions, symbols,
+and instance names. Empty input returns an empty multifield. Variable and
+punctuation tokens become strings of their print forms; an unknown token
+becomes the string `<<<unprintable character>>>` and scanning continues.
+It shares the byte, escape, NUL, and nonfatal notice behavior described above,
+retaining earlier fields when a later quoted string is incomplete.
+
+Both aliases require exactly one STRING argument, evaluated once. Wrong
+argument count, wrong type, or an operand error yields an empty multifield
+and halts evaluation. SYMBOL and INSTANCE-NAME input values are not accepted
+by these aliases.
 
 ### Multifield Functions
 
@@ -915,9 +941,9 @@ it can end the current rule after sort supplies its result, while other
 activations remain eligible to run.
 
 **Compatibility boundary.** These semantics apply to Ferric's supported
-runtime value representations and callable implementations. They do not add
-an `INSTANCE-NAME` type or arbitrary invalid-UTF-8 string representation, or
-repair unrelated builtin and qualified-declaration limitations. The pinned
+runtime value representations and callable implementations. Instance-name
+values and byte lexemes are supported by the value layer; unrelated builtin
+and qualified-declaration limitations remain. The pinned
 CLIPS 6.30 process faults when Void is used as a sort data field; that case has
 no supported returned-value contract and is not a required process fault in
 Ferric. A Void *predicate result* is distinct and is supported as described
@@ -944,14 +970,48 @@ full compatibility for every builtin or special form.
 |----------|-------------|
 | `printout` | Write to a named channel |
 | `format` | Printf-style formatting (returns string; does not write to router) |
-| `read` | Read a single value from input |
-| `readline` | Read a line from input |
+| `read` | Scan the first field of a queued input line |
+| `readline` | Return the next queued input line unchanged |
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
 
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
 `(printout t (format nil "n=%d" 42) crlf)` to produce output.
+
+#### Queued input
+
+`read` and `readline` share the lines supplied through `Engine::push_input`.
+Each accepts zero or one input name, evaluated once when present; `t`, `T`,
+and `stdin` select the same queue. `read` skips blank or comment-only lines,
+returns the first token of the selected line, and discards its remaining
+text. `readline` returns the next complete line unchanged, including an
+empty line. The host supplies already-framed lines; `push_input` does not
+split or normalize CR/LF sequences.
+
+`read` preserves INTEGER, FLOAT, STRING, SYMBOL, and INSTANCE-NAME identity.
+For example, input `"two words"` returns the STRING `two words`. Variable
+and punctuation tokens return STRING print forms. An exhausted queue
+returns the SYMBOL `EOF`; an unknown scanner token instead returns the
+STRING `*** READ ERROR ***` without a diagnostic. Integer overflow and
+incomplete quotes return their clamped or partial values with nonfatal
+scanner notices, including through the `werror` channel. Quoted strings
+retain CLIPS escapes and exact bytes, including an invalid UTF-8 `0xff`
+when a trailing escape reaches EOF. Returned bytes follow the configured
+encoding policy.
+
+An unknown or invalid input name returns `*** READ ERROR ***` as a STRING,
+records a diagnostic, and halts following actions without consuming input.
+After resolving a valid input name, an already halted evaluation also
+returns that STRING without consuming a queued line or adding a diagnostic.
+This is Ferric's framed-input policy: CLIPS can consume one byte before
+checking halt, which this line queue cannot represent. An evaluation error
+without a halt does not by itself prevent a read.
+
+Reset preserves unread input; clear discards it. Snapshots preserve the
+remaining queue with the existing schema. Named-file input and `open` are
+unsupported; the queued-line behavior does not imply a persistent named
+stream or a raw stdin API.
 
 ### Agenda / Focus Functions
 
@@ -1177,9 +1237,10 @@ global channel as a fallback or for pre-engine failures.
 
 ### Embedded-NUL String Policy
 
-Ferric's Rust strings can contain `\0`, but the legacy C ABI represents input
-strings and `FerricValue` Symbol/String payloads as NUL-terminated C strings.
-The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
+Ferric strings, symbols, and instance names can preserve arbitrary bytes.
+Legacy C text entry points still use NUL-terminated UTF-8 strings; explicit raw
+constructors and appended transport tags carry byte spans without changing the
+`FerricValue` layout:
 
 - A legacy `const char *` input ends at its first NUL by definition; bytes
   after it are not part of the C string. Bindings starting from a
@@ -1188,19 +1249,24 @@ The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
 - `ferric_value_symbol_bytes` and `ferric_value_string_bytes` accept an
   explicit UTF-8 byte span and return `FERRIC_ERROR_INVALID_ARGUMENT` if it
   contains embedded NUL. Their output remains Void on failure.
-- Fact-field, global, and named-slot queries return
-  `FERRIC_ERROR_INVALID_ARGUMENT` (with a diagnostic) instead of converting a
-  stored NUL-bearing Symbol/String to empty or truncated `FerricValue` data.
-  This rule applies recursively to multifields.
+- `ferric_value_string_raw`, `ferric_value_symbol_raw`, and
+  `ferric_value_instance_name` copy arbitrary bytes. Their transport tags are
+  `STRING_BYTES` (7), `SYMBOL_BYTES` (8), and `INSTANCE_NAME` (9).
+- Fact-field, global, and named-slot queries retain the legacy String/Symbol
+  tags for valid UTF-8 without NUL. Other strings and symbols use their byte
+  tags, recursively inside multifields. Instance names always use tag 9;
+  their payload excludes brackets. Byte tags use `string_ptr` together with
+  `multifield_len` as the byte count. Free them with `ferric_value_free`,
+  never `ferric_string_free`.
 - `ferric_engine_get_output` returns NULL and records
-  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL.
-  Use `ferric_engine_get_output_copy` for exact access.
+  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL
+  or invalid UTF-8. Use `ferric_engine_get_output_copy` for exact access.
 - Length-reporting copy APIs preserve every source byte, including embedded
   NUL. Their reported length includes one additional trailing terminator, so
   callers must use `out_len` rather than `strlen`.
 - Snapshot serialization/deserialization APIs are byte-oriented and preserve
-  their serialized bytes exactly. If a restored engine contains NUL-bearing
-  values, the same legacy-egress rejection rules apply.
+  their serialized bytes exactly, including byte lexemes and instance names.
+  Restored values use the same lossless byte-span egress.
 
 The Go binding rejects embedded NUL before every legacy `C.CString`
 conversion. Rejections return `ErrInvalidArgument` through error-bearing APIs;

@@ -22,6 +22,8 @@ impl Engine {
     #[allow(clippy::too_many_lines)]
     fn validate_snapshot_metadata(&self) -> Result<(), String> {
         self.symbol_table.validate_snapshot()?;
+        self.symbol_table
+            .validate_encoding(self.config.string_encoding)?;
         self.fact_base.validate_snapshot(&self.symbol_table)?;
         self.rete
             .validate_snapshot(&self.fact_base, &self.symbol_table)?;
@@ -29,7 +31,8 @@ impl Engine {
             self.config.strategy == self.rete.agenda.strategy(),
             "configured strategy disagrees with restored agenda",
         )?;
-        self.compiler.validate_snapshot(&self.rete)?;
+        self.compiler
+            .validate_snapshot(&self.rete, &self.symbol_table)?;
         // Installation allocates sequential IDs and reuses removed slots. The
         // index retains its capacity after removal; only a new engine is empty.
         // A forged counter must not make the next load allocate a sparse Vec.
@@ -73,6 +76,17 @@ impl Engine {
             // rules. Their public names may coincide; the unique slot/terminal
             // association above is their executable identity.
             info.var_map.validate_snapshot(&self.symbol_table)?;
+            for index in 0..info.var_map.len() {
+                let id = ferric_rules_core::VarId(
+                    u16::try_from(index).map_err(|_| "oversized variable map")?,
+                );
+                ensure(
+                    self.symbol_table
+                        .resolve_symbol_str(info.var_map.name(id))
+                        .is_some(),
+                    "runtime variable name must be UTF-8 text",
+                )?;
+            }
             ensure(
                 info.actions.len() == info.runtime_actions.len(),
                 "inconsistent compiled action index",
@@ -138,8 +152,7 @@ impl Engine {
                         "noncanonical template type union",
                     )?;
                 }
-                self.symbol_table
-                    .validate_snapshot_value(&template.defaults[index])?;
+                self.validate_snapshot_runtime_value(&template.defaults[index])?;
                 if !matches!(template.defaults[index], Value::Void) {
                     template.validate_slot(index, &template.defaults[index])?;
                 }
@@ -173,7 +186,7 @@ impl Engine {
             }
         }
         if let Some(id) = self.initial_fact_id {
-            ensure(self.fact_base.get(id).is_some_and(|entry| matches!(&entry.fact, Fact::Ordered(fact) if fact.fields.is_empty() && self.symbol_table.resolve_symbol_str(fact.relation) == Some("initial-fact"))), "invalid initial-fact identity")?;
+            ensure(self.fact_base.get(id).is_some_and(|entry| matches!(&entry.fact, Fact::Ordered(fact) if fact.fields.is_empty() && self.symbol_table.resolve_symbol_bytes(fact.relation) == Some(b"initial-fact".as_slice()))), "invalid initial-fact identity")?;
         }
         for (module, values) in &self.globals.values {
             ensure(modules.get(*module).is_some(), "global has dangling module")?;
@@ -187,7 +200,7 @@ impl Engine {
                         == Some(*module),
                     "global missing from owner index",
                 )?;
-                self.symbol_table.validate_snapshot_value(value)?;
+                self.validate_snapshot_runtime_value(value)?;
             }
         }
         ensure(self.globals.gensym_counter >= 1, "invalid gensym counter")?;
@@ -211,7 +224,7 @@ impl Engine {
                         == Some(*module),
                 "registered global missing from runtime or owner index",
             )?;
-            self.symbol_table.validate_snapshot_value(value)?;
+            self.validate_snapshot_runtime_value(value)?;
         }
         for (module, functions) in &self.functions.functions {
             ensure(
@@ -300,7 +313,7 @@ impl Engine {
                     self.symbol_table
                         .resolve_symbol_str(fact.relation)
                         .is_some(),
-                    "dangling deffacts relation",
+                    "ordered relation identifier must be valid UTF-8 text",
                 )?;
                 fact.fields.as_slice()
             }
@@ -324,7 +337,28 @@ impl Engine {
             }
         };
         for value in values {
-            self.symbol_table.validate_snapshot_value(value)?;
+            self.validate_snapshot_runtime_value(value)?;
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_runtime_value(&self, value: &Value) -> Result<(), String> {
+        self.symbol_table.validate_snapshot_value(value)?;
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::String(string) => {
+                    ferric_rules_core::FerricString::from_bytes(
+                        string.as_bytes(),
+                        self.config.string_encoding,
+                    )
+                    .map_err(|error| {
+                        format!("snapshot string violates configured encoding: {error}")
+                    })?;
+                }
+                Value::Multifield(fields) => pending.extend(fields.iter()),
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -335,7 +369,7 @@ impl Engine {
             ensure(depth < 16, "snapshot expression-depth limit is 16")?;
             let mut branches = Vec::new();
             match expr {
-                RuntimeExpr::Literal(value) => self.symbol_table.validate_snapshot_value(value)?,
+                RuntimeExpr::Literal(value) => self.validate_snapshot_runtime_value(value)?,
                 RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {}
                 RuntimeExpr::Call { args, .. } => {
                     pending.extend(args.iter().map(|expr| (expr, depth + 1)));

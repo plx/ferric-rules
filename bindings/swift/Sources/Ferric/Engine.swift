@@ -250,6 +250,18 @@ public final class Engine: Sendable {
     }
   }
 
+  /// Retrieve exact output bytes without UTF-8 replacement or NUL truncation.
+  public func outputBytes(channel: String = "t") async throws -> Data? {
+    try await storage.perform { state in
+      let handle = try state.requireHandle()
+      return try withCString(channel) { channel in
+        try copiedBytes(handle: handle, optional: true) {
+          ferric_engine_get_output_copy(handle, channel, $0, $1, $2)
+        }
+      }
+    }
+  }
+
   /// Copy a recommended CBOR snapshot into independent Swift-owned bytes.
   public func snapshot() async throws -> Data {
     try await storage.perform { state in

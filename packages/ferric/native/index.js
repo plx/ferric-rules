@@ -103,9 +103,16 @@ const continueRun = (engine, limit) => nativeContinueRun.call(engine, limit);
 // the Rust boundary recognizes. This shape is distinct from the worker wire
 // representation in packages/ferric/src/wire.ts.
 const FerricSymbolClass = nativeBinding.FerricSymbol;
+const byteLexemeClasses = ["FerricStringBytes", "FerricSymbolBytes", "FerricInstanceName"];
 
 function marshalValue(value, depth = 0) {
   if (value === null || value === undefined) return value;
+  for (const kind of byteLexemeClasses) {
+    const ctor = nativeBinding[kind];
+    if (typeof ctor === "function" && value instanceof ctor) {
+      return { __ferric_lexeme: kind, bytes: value.bytes };
+    }
+  }
   if (value instanceof FerricSymbolClass) {
     return { __ferric_symbol: true, value: value.value };
   }
@@ -116,6 +123,10 @@ function marshalValue(value, depth = 0) {
   if (typeof value === "object") {
     const tag = Object.getOwnPropertyDescriptor(value, "__type");
     const payload = Object.getOwnPropertyDescriptor(value, "value");
+    const bytes = Object.getOwnPropertyDescriptor(value, "bytes");
+    if (byteLexemeClasses.includes(tag?.value) && bytes?.value instanceof Uint8Array) {
+      return { __ferric_lexeme: tag.value, bytes: bytes.value };
+    }
     if (tag?.value === "FerricSymbol" && typeof payload?.value === "string") {
       return { __ferric_symbol: true, value: payload.value };
     }

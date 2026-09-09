@@ -1,0 +1,9 @@
+words:FALSE:FALSE:TRUE:FALSE:[two words]
+empty:FALSE:FALSE:TRUE:FALSE:[]
+quote:FALSE:FALSE:TRUE:FALSE:[a"b]
+backslash:FALSE:FALSE:TRUE:FALSE:[a\b]
+backslash-n:FALSE:FALSE:TRUE:FALSE:[anb]
+backslash-t:FALSE:FALSE:TRUE:FALSE:[atb]
+unknown-escape:FALSE:FALSE:TRUE:FALSE:[aqb]
+newline:FALSE:FALSE:TRUE:FALSE:[a
+b]

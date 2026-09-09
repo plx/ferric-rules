@@ -173,6 +173,7 @@ pub(crate) struct JoinNodeKey {
 struct SymbolSet {
     ascii: Vec<u8>,
     utf8: Vec<u8>,
+    bytes: Vec<u8>,
 }
 
 impl SymbolSet {
@@ -184,6 +185,7 @@ impl SymbolSet {
         match key.0 {
             SymbolId::Ascii(idx) => self.ascii.get(idx as usize).copied().unwrap_or(0) != 0,
             SymbolId::Utf8(idx) => self.utf8.get(idx as usize).copied().unwrap_or(0) != 0,
+            SymbolId::Bytes(idx) => self.bytes.get(idx as usize).copied().unwrap_or(0) != 0,
         }
     }
 
@@ -215,6 +217,13 @@ impl SymbolSet {
                     self.utf8.resize(idx + 1, 0);
                 }
                 &mut self.utf8[idx]
+            }
+            SymbolId::Bytes(idx) => {
+                let idx = idx as usize;
+                if idx >= self.bytes.len() {
+                    self.bytes.resize(idx + 1, 0);
+                }
+                &mut self.bytes[idx]
             }
         }
     }

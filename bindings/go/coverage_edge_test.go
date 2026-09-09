@@ -1363,7 +1363,8 @@ func TestPropertyWireConversionErrorSurfaces(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		kind := WireValueKind(rapid.String().Filter(func(s string) bool {
 			switch WireValueKind(s) {
-			case WireValueVoid, WireValueInteger, WireValueFloat, WireValueSymbol, WireValueString, WireValueMultifield:
+			case WireValueVoid, WireValueInteger, WireValueFloat, WireValueSymbol, WireValueString, WireValueMultifield,
+				WireValueStringBytes, WireValueSymbolBytes, WireValueInstanceName:
 				return false
 			default:
 				return true

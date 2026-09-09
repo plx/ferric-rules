@@ -19,6 +19,7 @@ use ferric_rules_core::symbol::SymbolTable;
 use ferric_rules_core::value::Value;
 use ferric_rules_core::StringEncoding;
 
+use crate::byte_buffer::ByteBuffer;
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStore, UserFunction};
 // Qualified name utilities: wired into dispatch chain in passes 003/004.
@@ -27,6 +28,10 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::tracing_support::ferric_event;
 #[cfg(feature = "tracing")]
 use crate::tracing_support::ferric_span;
+
+#[path = "evaluator/queued_input.rs"]
+mod queued_input;
+use queued_input::{builtin_read, builtin_readline};
 
 // ---------------------------------------------------------------------------
 // Source span for diagnostics
@@ -54,6 +59,22 @@ fn format_span(span: Option<&SourceSpan>) -> String {
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
+
+/// Metadata for a nonfatal scanner notice.
+///
+/// [`EvalError`] boxes this payload so notices do not enlarge every recursive
+/// evaluator result and its native stack frame.
+#[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[error("[{code}] {message} in `{function}` on {channel} at input byte {offset} ({})", format_span(.span.as_ref()))]
+pub struct ScannerNoticeDiagnostic {
+    pub function: String,
+    pub code: String,
+    pub channel: String,
+    pub message: String,
+    pub offset: usize,
+    pub span: Option<SourceSpan>,
+}
 
 /// Errors during expression evaluation.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -151,6 +172,10 @@ pub enum EvalError {
         reason: String,
         span: Option<SourceSpan>,
     },
+
+    /// A scanner notice preserves the returned field and does not request a halt.
+    #[error(transparent)]
+    ScannerNotice(Box<ScannerNoticeDiagnostic>),
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +300,7 @@ pub enum RuntimeExpr {
 /// Active generic dispatch chain for `call-next-method` support.
 ///
 /// When a generic method is executing, this tracks the ordered list of
-/// applicable methods and the current position so `call-next-method` can
+/// candidate methods and the current position so `call-next-method` can
 /// advance to the next one.
 #[derive(Clone, Debug)]
 pub struct MethodChain {
@@ -283,7 +308,8 @@ pub struct MethodChain {
     pub generic_name: String,
     /// Module where the generic is defined.
     pub generic_module: crate::modules::ModuleId,
-    /// All applicable methods, sorted most-specific-first.
+    /// Candidate methods sorted most-specific-first, checked only when reached.
+    /// The field name is retained for compatibility with existing contexts.
     pub applicable_methods: Vec<crate::functions::RegisteredMethod>,
     /// Index of the currently executing method in `applicable_methods`.
     pub current_index: usize,
@@ -1560,6 +1586,7 @@ fn value_matches_type(value: &Value, type_name: &str) -> bool {
         "SYMBOL" => matches!(value, Value::Symbol(_)),
         "STRING" => matches!(value, Value::String(_)),
         "LEXEME" => matches!(value, Value::Symbol(_) | Value::String(_)),
+        "INSTANCE-NAME" | "INSTANCE" => matches!(value, Value::InstanceName(_)),
         "MULTIFIELD" => matches!(value, Value::Multifield(_)),
         "EXTERNAL-ADDRESS" => matches!(value, Value::ExternalAddress(_)),
         _ => false,
@@ -1572,6 +1599,7 @@ fn generic_value_type_name(value: &Value) -> &'static str {
         Value::Integer(_) => "INTEGER",
         Value::Float(_) => "FLOAT",
         Value::Symbol(_) => "SYMBOL",
+        Value::InstanceName(_) => "INSTANCE-NAME",
         Value::String(_) => "STRING",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
@@ -1592,10 +1620,28 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
     }
     let mut count = 0usize;
     // Tracks whether each concrete type has been counted:
-    // 0=INTEGER, 1=FLOAT, 2=SYMBOL, 3=STRING, 4=MULTIFIELD, 5=EXTERNAL-ADDRESS
-    let mut seen = [false; 6];
+    // INTEGER, FLOAT, SYMBOL, STRING, MULTIFIELD, EXTERNAL-ADDRESS,
+    // INSTANCE-NAME, INSTANCE-ADDRESS. The last remains a conceptual leaf:
+    // supporting typed names does not create COOL instances or addresses.
+    let mut seen = [false; 8];
     for t in restrictions {
         match t.as_str() {
+            "INSTANCE-NAME" if !seen[6] => {
+                seen[6] = true;
+                count += 1;
+            }
+            "INSTANCE-ADDRESS" if !seen[7] => {
+                seen[7] = true;
+                count += 1;
+            }
+            "INSTANCE" => {
+                for leaf in &mut seen[6..8] {
+                    if !*leaf {
+                        *leaf = true;
+                        count += 1;
+                    }
+                }
+            }
             "INTEGER" if !seen[0] => {
                 seen[0] = true;
                 count += 1;
@@ -1686,17 +1732,20 @@ fn compare_method_specificity(
 }
 
 /// Check if a method is applicable for the given evaluated arguments.
-fn method_applicable(method: &crate::functions::RegisteredMethod, arg_values: &[Value]) -> bool {
+fn method_applicable(
+    method: &crate::functions::RegisteredMethod,
+    arg_values: &[Value],
+) -> Result<bool, ferric_rules_core::InstanceName> {
     let required_count = method.parameters.len();
     let has_wildcard = method.wildcard_parameter.is_some();
 
     // Arity check: exact match without wildcard, or at-least match with wildcard.
     if has_wildcard {
         if arg_values.len() < required_count {
-            return false;
+            return Ok(false);
         }
     } else if arg_values.len() != required_count {
-        return false;
+        return Ok(false);
     }
 
     // Type restriction check for each required parameter.
@@ -1705,17 +1754,66 @@ fn method_applicable(method: &crate::functions::RegisteredMethod, arg_values: &[
             continue; // No restriction = any type.
         }
         if i >= arg_values.len() {
-            return false; // Shouldn't happen given arity check, but be safe.
+            return Ok(false); // Shouldn't happen given arity check, but be safe.
+        }
+        // DetermineRestrictionClass is reached only after arity and earlier
+        // restrictions pass, and only for a nonempty type restriction.
+        if let Value::InstanceName(name) = arg_values[i] {
+            return Err(name);
         }
         if !restrictions
             .iter()
             .any(|t| value_matches_type(&arg_values[i], t))
         {
-            return false;
+            return Ok(false);
         }
     }
 
-    true
+    Ok(true)
+}
+
+/// No COOL objects are installed by the typed-name value prerequisite.
+fn missing_instance_error(
+    ctx: &EvalContext<'_>,
+    name: ferric_rules_core::InstanceName,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> EvalError {
+    let bytes = ctx
+        .symbol_table
+        .resolve_symbol_bytes(name.as_symbol())
+        .expect("validated instance name");
+    let spelling = std::str::from_utf8(bytes).map_or_else(
+        |_| bytes.escape_ascii().map(char::from).collect::<String>(),
+        str::to_owned,
+    );
+    EvalError::TypeError {
+        function: function.into(),
+        expected: "existing instance".into(),
+        actual: format!("missing instance [{spelling}]"),
+        span: span.cloned(),
+    }
+}
+
+fn find_applicable_method(
+    ctx: &mut EvalContext<'_>,
+    methods: &[crate::functions::RegisteredMethod],
+    values: &[Value],
+    start: usize,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Option<usize> {
+    for (index, method) in methods.iter().enumerate().skip(start) {
+        match method_applicable(method, values) {
+            Ok(true) => return Some(index),
+            Ok(false) => {}
+            Err(name) => {
+                let error = missing_instance_error(ctx, name, function, span);
+                ctx.globals.push_halt_diagnostic(error);
+            }
+        }
+    }
+    None
 }
 
 /// Dispatch a call to a generic function.
@@ -1742,16 +1840,22 @@ fn dispatch_generic(
         }
     }
 
-    // Collect all applicable methods, sorted by specificity (most specific first).
-    let mut applicable: Vec<crate::functions::RegisteredMethod> = generic
-        .methods
-        .iter()
-        .filter(|m| method_applicable(m, &arg_values))
-        .cloned()
-        .collect();
+    // CLIPS tests candidates in specificity order, stopping at the first
+    // applicable method. Lower methods are examined only by call-next-method.
+    let mut applicable = generic.methods.clone();
     applicable.sort_by(compare_method_specificity);
-
-    if applicable.is_empty() {
+    let selected = find_applicable_method(
+        ctx,
+        &applicable,
+        &arg_values,
+        0,
+        &generic.name,
+        span.as_ref(),
+    );
+    if ctx.globals.evaluation_halted() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
+    let Some(selected) = selected else {
         ferric_event!(
             debug,
             callable = %generic.name,
@@ -1764,9 +1868,9 @@ fn dispatch_generic(
             actual_types: types.join(", "),
             span,
         });
-    }
+    };
 
-    let method = applicable[0].clone();
+    let method = applicable[selected].clone();
 
     // Check recursion limit.
     if ctx.call_depth >= max_call_depth {
@@ -1789,7 +1893,7 @@ fn dispatch_generic(
         generic_name: generic.name.clone(),
         generic_module,
         applicable_methods: applicable,
-        current_index: 0,
+        current_index: selected,
         arg_values: arg_values.clone(),
     };
 
@@ -1819,6 +1923,11 @@ fn dispatch_call_next_method(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
+    // CLIPS CallNextMethod returns FALSE before searching when Halt is set.
+    // Searching first could add an unrelated missing-instance diagnostic.
+    if ctx.globals.evaluation_halted() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
     let max_call_depth = ctx.config.effective_max_call_depth();
     // call-next-method takes no arguments.
     if !args.is_empty() {
@@ -1843,19 +1952,37 @@ fn dispatch_call_next_method(
         }
     };
 
-    let next_index = chain.current_index + 1;
-    if next_index >= chain.applicable_methods.len() {
+    let next_index = find_applicable_method(
+        ctx,
+        &chain.applicable_methods,
+        &chain.arg_values,
+        chain.current_index + 1,
+        &chain.generic_name,
+        span.as_ref(),
+    );
+    let Some(next_index) = next_index else {
         ferric_event!(
             debug,
             callable = %chain.generic_name,
             current_index = chain.current_index,
             "call_next_method_missing_next"
         );
-        return Err(EvalError::NoApplicableMethod {
+        let error = EvalError::NoApplicableMethod {
             name: format!("call-next-method for `{}`", chain.generic_name),
             actual_types: "no next method in dispatch chain".to_string(),
             span,
-        });
+        };
+        // GENRCEXE2 is still emitted when the unsuccessful search already
+        // reported a missing instance and set Error/Halt (genrcexe.c421–427).
+        if ctx.globals.evaluation_halted() {
+            ctx.globals.push_halt_diagnostic(error);
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
+        return Err(error);
+    };
+
+    if ctx.globals.evaluation_halted() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     }
 
     // Recursion limit check.
@@ -2324,6 +2451,17 @@ fn from_sexpr_inner(
                     });
                 }
             };
+            if matches!(func_name.as_str(), "read" | "readline") && items.len() > 2 {
+                return Err(EvalError::ArityMismatch {
+                    name: func_name,
+                    expected: "0 or 1".into(),
+                    actual: items.len() - 1,
+                    span: Some(SourceSpan {
+                        line: span.start.line,
+                        column: span.start.column,
+                    }),
+                });
+            }
             let mut args = Vec::with_capacity(items.len() - 1);
             for item in &items[1..] {
                 args.push(from_sexpr_inner(item, symbol_table, config)?);
@@ -2379,6 +2517,22 @@ fn sexpr_atom_to_runtime(
                     }),
                 })?;
             Ok(RuntimeExpr::Literal(Value::Symbol(sym)))
+        }
+        ferric_rules_parser::Atom::InstanceName(s) => {
+            let sym = symbol_table
+                .intern_symbol(s, config.string_encoding)
+                .map_err(|_| EvalError::TypeError {
+                    function: "literal".to_string(),
+                    expected: "valid symbol".to_string(),
+                    actual: format!("encoding error for {s:?}"),
+                    span: Some(SourceSpan {
+                        line: span.start.line,
+                        column: span.start.column,
+                    }),
+                })?;
+            Ok(RuntimeExpr::Literal(Value::InstanceName(
+                ferric_rules_core::InstanceName::from_symbol(sym),
+            )))
         }
         ferric_rules_parser::Atom::SingleVar(name) => Ok(RuntimeExpr::BoundVar {
             name: name.clone(),
@@ -2456,6 +2610,19 @@ fn literal_to_value(
                     span: None,
                 })?;
             Ok(Value::Symbol(sym))
+        }
+        ferric_rules_parser::LiteralKind::InstanceName(s) => {
+            let sym = symbol_table
+                .intern_symbol(s, config.string_encoding)
+                .map_err(|_| EvalError::TypeError {
+                    function: "literal".to_string(),
+                    expected: "valid symbol".to_string(),
+                    actual: format!("encoding error for {s:?}"),
+                    span: None,
+                })?;
+            Ok(Value::InstanceName(
+                ferric_rules_core::InstanceName::from_symbol(sym),
+            ))
         }
     }
 }
@@ -2657,6 +2824,11 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "upcase"
             | "lowcase"
             | "str-compare"
+            | "instance-namep"
+            | "instancep"
+            | "type"
+            | "symbol-to-instance-name"
+            | "instance-name-to-symbol"
             | "string-to-field"
             | "explode$"
             | "str-explode"
@@ -2789,6 +2961,11 @@ fn dispatch_builtin_inner(
         "stringp" => builtin_stringp(ctx, args, span_ref),
         "lexemep" => builtin_lexemep(ctx, args, span_ref),
         "multifieldp" => builtin_multifieldp(ctx, args, span_ref),
+        "instance-namep"
+        | "instancep"
+        | "type"
+        | "symbol-to-instance-name"
+        | "instance-name-to-symbol" => builtin_instance_type(ctx, name, args, span_ref),
         "evenp" => builtin_evenp(ctx, args, span_ref),
         "oddp" => builtin_oddp(ctx, args, span_ref),
 
@@ -4185,7 +4362,7 @@ fn format_float_for_str_cat(f: f64) -> String {
 /// to resolve symbol names.
 ///
 /// Shared by `str-cat` and `sym-cat`.  Multifield elements are space-separated.
-fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mut String) {
+fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mut ByteBuffer) {
     use std::fmt::Write as _;
     for val in values {
         match val {
@@ -4195,11 +4372,18 @@ fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mu
             }
             Value::Float(f) => buf.push_str(&format_float_for_str_cat(*f)),
             Value::Symbol(sym) => {
-                if let Some(name) = ctx.symbol_table.resolve_symbol_str(*sym) {
-                    buf.push_str(name);
-                }
+                buf.push_bytes(
+                    ctx.symbol_table
+                        .resolve_symbol_bytes(*sym)
+                        .expect("validated symbol"),
+                );
             }
-            Value::String(s) => buf.push_str(s.as_str()),
+            Value::InstanceName(name) => buf.push_bytes(
+                ctx.symbol_table
+                    .resolve_symbol_bytes(name.as_symbol())
+                    .expect("validated instance name"),
+            ),
+            Value::String(s) => buf.push_bytes(s.as_bytes()),
             Value::Multifield(mf) => {
                 // Collect first to avoid holding borrow through recursive call.
                 let elems: Vec<Value> = mf.iter().cloned().collect();
@@ -4236,7 +4420,11 @@ fn builtin_str_cat(
         if (ctx.globals.is_sort_recovery_active() || ctx.globals.evaluation_halted())
             && !matches!(
                 value,
-                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Symbol(_)
+                Value::Integer(_)
+                    | Value::Float(_)
+                    | Value::String(_)
+                    | Value::Symbol(_)
+                    | Value::InstanceName(_)
             )
         {
             return Err(EvalError::TypeError {
@@ -4248,16 +4436,17 @@ fn builtin_str_cat(
         }
         values.push(value);
     }
-    let mut result = String::new();
+    let mut result = ByteBuffer::new();
     concat_values_to_string(ctx, &values, &mut result);
-    let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
-        EvalError::TypeError {
-            function: "str-cat".to_string(),
-            expected: "encodable string".to_string(),
-            actual: format!("{e}"),
-            span: span.cloned(),
-        }
-    })?;
+    let fs =
+        FerricString::from_bytes(result.as_bytes(), ctx.config.string_encoding).map_err(|e| {
+            EvalError::TypeError {
+                function: "str-cat".to_string(),
+                expected: "encodable string".to_string(),
+                actual: format!("{e}"),
+                span: span.cloned(),
+            }
+        })?;
     Ok(Value::String(fs))
 }
 
@@ -4278,7 +4467,11 @@ fn builtin_sym_cat(
         if (ctx.globals.is_sort_recovery_active() || ctx.globals.evaluation_halted())
             && !matches!(
                 value,
-                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Symbol(_)
+                Value::Integer(_)
+                    | Value::Float(_)
+                    | Value::String(_)
+                    | Value::Symbol(_)
+                    | Value::InstanceName(_)
             )
         {
             return Err(EvalError::TypeError {
@@ -4290,11 +4483,11 @@ fn builtin_sym_cat(
         }
         values.push(value);
     }
-    let mut result = String::new();
+    let mut result = ByteBuffer::new();
     concat_values_to_string(ctx, &values, &mut result);
     let sym = ctx
         .symbol_table
-        .intern_symbol(&result, ctx.config.string_encoding)
+        .intern_symbol_bytes(result.as_bytes(), ctx.config.string_encoding)
         .map_err(|e| EvalError::TypeError {
             function: "sym-cat".to_string(),
             expected: "encodable symbol name".to_string(),
@@ -4457,7 +4650,7 @@ fn builtin_str_length(
     }
     match &val {
         Value::String(s) => {
-            let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
+            let char_len = i64::try_from(lexeme_length(s.as_bytes())).unwrap_or(i64::MAX);
             Ok(Value::Integer(char_len))
         }
         _ => Err(EvalError::TypeError {
@@ -4505,7 +4698,7 @@ fn builtin_sub_string(
         }
     };
     let s = match &values[2] {
-        Value::String(s) => s.as_str(),
+        Value::String(s) => s.as_bytes(),
         _ => {
             return Err(EvalError::TypeError {
                 function: "sub-string".to_string(),
@@ -4526,7 +4719,7 @@ fn builtin_sub_string(
         })
     };
 
-    let char_len = s.chars().count();
+    let char_len = lexeme_length(s);
     let char_len_i64 = i64::try_from(char_len).unwrap_or(i64::MAX);
     if start < 1 || end < 1 || end < start || start > char_len_i64 {
         let fs = make_empty_string(ctx)?;
@@ -4539,23 +4732,11 @@ fn builtin_sub_string(
     };
     let end_char_exclusive = usize::try_from(end).unwrap_or(usize::MAX).min(char_len);
 
-    let mut start_byte_idx = None;
-    let mut end_byte_idx = None;
-    for (char_idx, (byte_idx, _)) in s.char_indices().enumerate() {
-        if char_idx == start_char_idx {
-            start_byte_idx = Some(byte_idx);
-        }
-        if char_idx == end_char_exclusive {
-            end_byte_idx = Some(byte_idx);
-            break;
-        }
-    }
-
-    let start_byte_idx = start_byte_idx.unwrap_or(s.len());
-    let end_byte_idx = end_byte_idx.unwrap_or(s.len());
+    let start_byte_idx = lexeme_offset(s, start_char_idx);
+    let end_byte_idx = lexeme_offset(s, end_char_exclusive);
     let substr = &s[start_byte_idx..end_byte_idx];
 
-    let fs = FerricString::new(substr, ctx.config.string_encoding).map_err(|e| {
+    let fs = FerricString::from_bytes(substr, ctx.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
             function: "sub-string".to_string(),
             expected: "encodable string".to_string(),
@@ -4570,25 +4751,149 @@ fn builtin_sub_string(
 // String search/transform built-ins
 // ---------------------------------------------------------------------------
 
-/// Extract the string content from a STRING or SYMBOL value.
+/// Borrow a lexeme payload without converting or replacing bytes.
+fn as_lexeme_bytes<'a>(
+    value: &'a Value,
+    symbol_table: &'a SymbolTable,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<&'a [u8], EvalError> {
+    match value {
+        Value::String(s) => Ok(s.as_bytes()),
+        Value::Symbol(s) => {
+            symbol_table
+                .resolve_symbol_bytes(*s)
+                .ok_or_else(|| EvalError::TypeError {
+                    function: function.into(),
+                    expected: "interned symbol".into(),
+                    actual: "dangling symbol".into(),
+                    span: span.cloned(),
+                })
+        }
+        Value::InstanceName(name) => symbol_table
+            .resolve_symbol_bytes(name.as_symbol())
+            .ok_or_else(|| EvalError::TypeError {
+                function: function.into(),
+                expected: "interned instance name".into(),
+                actual: "dangling instance name".into(),
+                span: span.cloned(),
+            }),
+        other => Err(EvalError::TypeError {
+            function: function.into(),
+            expected: "STRING, SYMBOL, or INSTANCE-NAME".into(),
+            actual: generic_value_type_name(other).into(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// Text-only identifiers and legacy parsers must reject undecodable bytes.
+fn checked_text<'a>(
+    bytes: &'a [u8],
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<&'a str, EvalError> {
+    std::str::from_utf8(bytes).map_err(|error| EvalError::TypeError {
+        function: function.into(),
+        expected: "UTF-8 text".into(),
+        actual: error.to_string(),
+        span: span.cloned(),
+    })
+}
+
 fn as_lexeme_str(
-    v: &Value,
+    value: &Value,
     symbol_table: &SymbolTable,
     function: &str,
     span: Option<&SourceSpan>,
 ) -> Result<String, EvalError> {
-    match v {
-        Value::String(s) => Ok(s.as_str().to_string()),
-        Value::Symbol(s) => Ok(symbol_table
-            .resolve_symbol_str(*s)
-            .unwrap_or("???")
-            .to_string()),
-        _ => Err(EvalError::TypeError {
-            function: function.to_string(),
-            expected: "STRING or SYMBOL".to_string(),
-            actual: generic_value_type_name(v).to_string(),
-            span: span.cloned(),
-        }),
+    Ok(checked_text(
+        as_lexeme_bytes(value, symbol_table, function, span)?,
+        function,
+        span,
+    )?
+    .to_owned())
+}
+
+/// Preserve character positions for text and use byte positions for raw payloads.
+fn lexeme_length(bytes: &[u8]) -> usize {
+    std::str::from_utf8(bytes).map_or(bytes.len(), |text| text.chars().count())
+}
+
+fn lexeme_offset(bytes: &[u8], position: usize) -> usize {
+    std::str::from_utf8(bytes).map_or(position.min(bytes.len()), |text| {
+        text.char_indices()
+            .nth(position)
+            .map_or(bytes.len(), |(offset, _)| offset)
+    })
+}
+
+fn builtin_instance_type(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact(name, args, 1, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    // CLIPS inscom.c uses EnvArgTypeCheck for conversions: inherited Error
+    // yields FALSE, while Halt alone does not prevent a direct conversion.
+    if matches!(name, "symbol-to-instance-name" | "instance-name-to-symbol")
+        && ctx.globals.evaluation_error()
+    {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
+    match name {
+        "instance-namep" | "instancep" => Ok(clips_bool(
+            matches!(value, Value::InstanceName(_)),
+            ctx.symbol_table,
+            ctx.config.string_encoding,
+        )),
+        "type" => {
+            let error = match value {
+                Value::InstanceName(name) => Some(missing_instance_error(ctx, name, "type", span)),
+                Value::Void => Some(EvalError::TypeError {
+                    function: "type".into(),
+                    expected: "defined primitive or instance type".into(),
+                    actual: "VOID".into(),
+                    span: span.cloned(),
+                }),
+                _ => None,
+            };
+            if let Some(error) = error {
+                ctx.globals.push_halt_diagnostic(error);
+                Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+            } else {
+                Ok(Value::Symbol(
+                    ctx.symbol_table
+                        .intern_symbol(generic_value_type_name(&value), ctx.config.string_encoding)
+                        .expect("ASCII type name"),
+                ))
+            }
+        }
+        "symbol-to-instance-name" => match value {
+            Value::InstanceName(_) => Ok(value),
+            Value::Symbol(symbol) => Ok(Value::InstanceName(
+                ferric_rules_core::InstanceName::from_symbol(symbol),
+            )),
+            _ => Err(EvalError::TypeError {
+                function: name.into(),
+                expected: "SYMBOL".into(),
+                actual: generic_value_type_name(&value).into(),
+                span: span.cloned(),
+            }),
+        },
+        "instance-name-to-symbol" => match value {
+            Value::Symbol(_) => Ok(value),
+            Value::InstanceName(name) => Ok(Value::Symbol(name.as_symbol())),
+            _ => Err(EvalError::TypeError {
+                function: name.into(),
+                expected: "INSTANCE-NAME".into(),
+                actual: generic_value_type_name(&value).into(),
+                span: span.cloned(),
+            }),
+        },
+        _ => unreachable!("known classification builtin"),
     }
 }
 
@@ -4602,14 +4907,26 @@ fn builtin_str_index(
     let Some(values) = eval_checked_args(ctx, args)? else {
         return Ok(builtin_error_value(ctx, "str-index"));
     };
-    let find = as_lexeme_str(&values[0], ctx.symbol_table, "str-index", span)?;
-    let search = as_lexeme_str(&values[1], ctx.symbol_table, "str-index", span)?;
-    match search.find(find.as_str()) {
-        Some(byte_pos) => {
-            // Convert byte offset to 1-based character position.
-            let char_pos = search[..byte_pos].chars().count() + 1;
+    let find = as_lexeme_bytes(&values[0], ctx.symbol_table, "str-index", span)?;
+    let search = as_lexeme_bytes(&values[1], ctx.symbol_table, "str-index", span)?;
+    // Choose the position unit from both complete operands. A valid prefix
+    // cannot make a raw haystack textual, and a raw needle may match inside a
+    // UTF-8 code point. str::find guarantees boundaries only in the text branch.
+    let position = match (std::str::from_utf8(find), std::str::from_utf8(search)) {
+        (Ok(find), Ok(search)) => search
+            .find(find)
+            .map(|byte_pos| search[..byte_pos].chars().count() + 1),
+        _ if find.is_empty() => Some(1),
+        _ => search
+            .windows(find.len())
+            .position(|part| part == find)
+            .map(|byte_pos| byte_pos + 1),
+    };
+    match position {
+        Some(position) =>
+        {
             #[allow(clippy::cast_possible_wrap)]
-            Ok(Value::Integer(char_pos as i64))
+            Ok(Value::Integer(position as i64))
         }
         None => Ok(clips_bool(
             false,
@@ -4625,83 +4942,63 @@ fn builtin_upcase(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("upcase", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        Value::String(s) => {
-            let upper = s.as_str().to_uppercase();
-            let fs = FerricString::new(&upper, ctx.config.string_encoding).map_err(|e| {
-                EvalError::TypeError {
-                    function: "upcase".to_string(),
-                    expected: "encodable string".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                }
-            })?;
-            Ok(Value::String(fs))
-        }
-        Value::Symbol(_s) => {
-            let upper = as_lexeme_str(&val, ctx.symbol_table, "upcase", span)?.to_uppercase();
-            let sym = ctx
-                .symbol_table
-                .intern_symbol(&upper, ctx.config.string_encoding)
-                .map_err(|e| EvalError::TypeError {
-                    function: "upcase".to_string(),
-                    expected: "encodable symbol".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                })?;
-            Ok(Value::Symbol(sym))
-        }
-        _ => Err(EvalError::TypeError {
-            function: "upcase".to_string(),
-            expected: "STRING or SYMBOL".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    builtin_case(ctx, args, "upcase", true, span)
 }
 
-/// `lowcase` — convert STRING or SYMBOL to lowercase, preserving type.
 fn builtin_lowcase(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("lowcase", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        Value::String(s) => {
-            let lower = s.as_str().to_lowercase();
-            let fs = FerricString::new(&lower, ctx.config.string_encoding).map_err(|e| {
-                EvalError::TypeError {
-                    function: "lowcase".to_string(),
-                    expected: "encodable string".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                }
-            })?;
-            Ok(Value::String(fs))
+    builtin_case(ctx, args, "lowcase", false, span)
+}
+
+fn builtin_case(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    function: &str,
+    upper: bool,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact(function, args, 1, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    let bytes = as_lexeme_bytes(&value, ctx.symbol_table, function, span)?;
+    let converted = match std::str::from_utf8(bytes) {
+        Ok(text) => if upper {
+            text.to_uppercase()
+        } else {
+            text.to_lowercase()
         }
-        Value::Symbol(_s) => {
-            let lower = as_lexeme_str(&val, ctx.symbol_table, "lowcase", span)?.to_lowercase();
-            let sym = ctx
-                .symbol_table
-                .intern_symbol(&lower, ctx.config.string_encoding)
-                .map_err(|e| EvalError::TypeError {
-                    function: "lowcase".to_string(),
-                    expected: "encodable symbol".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                })?;
-            Ok(Value::Symbol(sym))
+        .into_bytes(),
+        Err(_) => {
+            if upper {
+                bytes.to_ascii_uppercase()
+            } else {
+                bytes.to_ascii_lowercase()
+            }
         }
-        _ => Err(EvalError::TypeError {
-            function: "lowcase".to_string(),
-            expected: "STRING or SYMBOL".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
+    };
+    let encoding_error = |error: ferric_rules_core::EncodingError| EvalError::TypeError {
+        function: function.into(),
+        expected: "encodable lexeme".into(),
+        actual: error.to_string(),
+        span: span.cloned(),
+    };
+    if matches!(value, Value::String(_)) {
+        Ok(Value::String(
+            FerricString::from_bytes(&converted, ctx.config.string_encoding)
+                .map_err(encoding_error)?,
+        ))
+    } else {
+        let symbol = ctx
+            .symbol_table
+            .intern_symbol_bytes(&converted, ctx.config.string_encoding)
+            .map_err(encoding_error)?;
+        Ok(if matches!(value, Value::InstanceName(_)) {
+            Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+        } else {
+            Value::Symbol(symbol)
+        })
     }
 }
 
@@ -4715,9 +5012,9 @@ fn builtin_str_compare(
     let Some(values) = eval_checked_args(ctx, args)? else {
         return Ok(builtin_error_value(ctx, "str-compare"));
     };
-    let a = as_lexeme_str(&values[0], ctx.symbol_table, "str-compare", span)?;
-    let b = as_lexeme_str(&values[1], ctx.symbol_table, "str-compare", span)?;
-    let result = match a.cmp(&b) {
+    let a = as_lexeme_bytes(&values[0], ctx.symbol_table, "str-compare", span)?;
+    let b = as_lexeme_bytes(&values[1], ctx.symbol_table, "str-compare", span)?;
+    let result = match a.cmp(b) {
         std::cmp::Ordering::Less => -1i64,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
@@ -4725,95 +5022,208 @@ fn builtin_str_compare(
     Ok(Value::Integer(result))
 }
 
-/// `string-to-field` — parse string as a typed value (integer, float, or symbol).
+/// `string-to-field` consumes exactly one CLIPS field token from lexeme bytes.
 fn builtin_string_to_field(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("string-to-field", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::String(s) = &val else {
-        return Err(EvalError::TypeError {
-            function: "string-to-field".to_string(),
-            expected: "STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        });
+    if let Err(error) = check_arity_exact("string-to-field", args, 1, span) {
+        return Ok(string_to_field_failure(ctx, error));
+    }
+    let argument = match eval_inner(ctx, &args[0]) {
+        Ok(value) => value,
+        // Keep non-local control distinct from an argument evaluation failure.
+        Err(error @ EvalError::ReturnControl { .. }) => return Err(error),
+        Err(error) => return Ok(string_to_field_failure(ctx, error)),
     };
-    parse_string_as_value(
-        s.as_str(),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-        "string-to-field",
-        span,
+    // EnvArgTypeCheck tests EvaluationError after evaluating its operand. A
+    // sticky Halt by itself neither skips conversion nor gets cleared here.
+    if ctx.globals.evaluation_error() {
+        return Ok(string_to_field_error_value(ctx));
+    }
+    let bytes = match as_lexeme_bytes(&argument, ctx.symbol_table, "string-to-field", span) {
+        Ok(bytes) => bytes,
+        Err(error) => return Ok(string_to_field_failure(ctx, error)),
+    };
+    let scanned = crate::field_scanner::FieldScanner::clips_string(bytes).next_token();
+    // A SYMBOL/NAME argument may borrow the intern table. Own only the selected
+    // token before interning its result; do not clone an ignored input suffix.
+    let token = scanned.token.into_owned();
+    for notice in scanned.notices {
+        queue_field_scan_notice(ctx, &notice, "string-to-field", span);
+    }
+    match string_to_field_token_value(ctx, token, span) {
+        Ok(value) => Ok(value),
+        Err(error) => Ok(string_to_field_failure(ctx, error)),
+    }
+}
+
+fn string_to_field_error_value(ctx: &EvalContext<'_>) -> Value {
+    Value::String(
+        FerricString::new("*** ERROR ***", ctx.config.string_encoding)
+            .expect("ASCII error default is encodable"),
     )
 }
 
-/// Parse a string token as integer, float, or symbol.
-fn parse_string_as_value(
-    s: &str,
-    symbol_table: &mut SymbolTable,
-    encoding: StringEncoding,
+fn string_to_field_failure(ctx: &mut EvalContext<'_>, error: EvalError) -> Value {
+    ctx.globals.push_halt_diagnostic(error);
+    string_to_field_error_value(ctx)
+}
+
+fn string_to_field_token_value(
+    ctx: &mut EvalContext<'_>,
+    token: crate::field_scanner::FieldToken<'static>,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    use crate::field_scanner::FieldToken;
+
+    match token {
+        FieldToken::Stop(_) => ctx
+            .symbol_table
+            .intern_symbol("EOF", ctx.config.string_encoding)
+            .map(Value::Symbol)
+            .map_err(|error| scanned_field_encoding_error(error, "string-to-field", span)),
+        FieldToken::Unknown { .. } => Ok(string_to_field_error_value(ctx)),
+        other => scanned_field_value(ctx, other, "string-to-field", span),
+    }
+}
+
+/// Convert a scanned field without changing a consumer's STOP/UNKNOWN policy.
+/// Consumers handle STOP before calling; non-atomic fields use scanner print forms.
+fn scanned_field_value(
+    ctx: &mut EvalContext<'_>,
+    token: crate::field_scanner::FieldToken<'_>,
     function: &str,
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        let sym = symbol_table
-            .intern_symbol("", encoding)
-            .map_err(|e| EvalError::TypeError {
-                function: function.to_string(),
-                expected: "encodable symbol".to_string(),
-                actual: format!("{e}"),
-                span: span.cloned(),
-            })?;
-        return Ok(Value::Symbol(sym));
-    }
-    if let Ok(n) = trimmed.parse::<i64>() {
-        return Ok(Value::Integer(n));
-    }
-    if let Ok(f) = trimmed.parse::<f64>() {
-        return Ok(Value::Float(f));
-    }
-    let sym = symbol_table
-        .intern_symbol(trimmed, encoding)
-        .map_err(|e| EvalError::TypeError {
-            function: function.to_string(),
-            expected: "encodable symbol".to_string(),
-            actual: format!("{e}"),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
+    use crate::field_scanner::FieldToken;
+
+    let encoding = ctx.config.string_encoding;
+    let converted = match token {
+        FieldToken::Integer(value) => return Ok(Value::Integer(value)),
+        FieldToken::Float(value) => return Ok(Value::Float(value)),
+        FieldToken::String(bytes) => FerricString::from_bytes(&bytes, encoding).map(Value::String),
+        FieldToken::Symbol(bytes) => ctx
+            .symbol_table
+            .intern_symbol_bytes(&bytes, encoding)
+            .map(Value::Symbol),
+        FieldToken::InstanceName(bytes) => ctx
+            .symbol_table
+            .intern_symbol_bytes(&bytes, encoding)
+            .map(|symbol| {
+                Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+            }),
+        other => FerricString::from_bytes(
+            other
+                .non_atomic_print_form()
+                .expect("non-atomic token has a print form")
+                .as_ref(),
+            encoding,
+        )
+        .map(Value::String),
+    };
+    converted.map_err(|error| scanned_field_encoding_error(error, function, span))
 }
 
-/// `explode$` / `str-explode` — split string by whitespace into multifield.
+fn scanned_field_encoding_error(
+    error: impl std::fmt::Display,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> EvalError {
+    EvalError::TypeError {
+        function: function.into(),
+        expected: "field permitted by the configured encoding".into(),
+        actual: error.to_string(),
+        span: span.cloned(),
+    }
+}
+
+fn queue_field_scan_notice(
+    ctx: &mut EvalContext<'_>,
+    notice: &crate::field_scanner::ScanNotice,
+    function: &str,
+    span: Option<&SourceSpan>,
+) {
+    use crate::field_scanner::ScanNoticeChannel;
+
+    let channel = match notice.channel() {
+        ScanNoticeChannel::Warning => "wwarning",
+        ScanNoticeChannel::Error => "werror",
+    };
+    // Nonfatal scanner notices have an explicit logical-router projection and
+    // an observable diagnostic. Neither path sets EvaluationError or Halt.
+    ctx.globals
+        .push_printout_event(channel.into(), notice.router_bytes());
+    ctx.globals
+        .push_diagnostic(EvalError::ScannerNotice(Box::new(
+            ScannerNoticeDiagnostic {
+                function: function.into(),
+                code: notice.code().into(),
+                channel: channel.into(),
+                message: notice.message().into(),
+                offset: notice.range().start,
+                span: span.cloned(),
+            },
+        )));
+}
+
+/// `explode$` / `str-explode` scan STRING bytes into typed CLIPS fields.
 fn builtin_explode_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("explode$", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::String(s) = &val else {
-        return Err(EvalError::TypeError {
-            function: "explode$".to_string(),
-            expected: "STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        });
-    };
-    let mut result = ferric_rules_core::value::Multifield::new();
-    for word in s.as_str().split_whitespace() {
-        result.push(parse_string_as_value(
-            word,
-            ctx.symbol_table,
-            ctx.config.string_encoding,
-            "explode$",
-            span,
-        )?);
+    use crate::field_scanner::{FieldScanner, FieldToken};
+
+    if let Err(error) = check_arity_exact("explode$", args, 1, span) {
+        return Ok(explode_field_failure(ctx, error));
     }
-    Ok(Value::Multifield(Box::new(result)))
+    let argument = match eval_inner(ctx, &args[0]) {
+        Ok(value) => value,
+        // Preserve the existing evaluator's non-local control protocol.
+        Err(error @ EvalError::ReturnControl { .. }) => return Err(error),
+        Err(error) => return Ok(explode_field_failure(ctx, error)),
+    };
+    // EnvArgTypeCheck observes EvaluationError after evaluating the operand.
+    // A sticky Halt alone neither skips literal scanning nor gets cleared here.
+    if ctx.globals.evaluation_error() {
+        return Ok(Value::Multifield(Box::default()));
+    }
+    let Value::String(text) = argument else {
+        return Ok(explode_field_failure(
+            ctx,
+            EvalError::TypeError {
+                function: "explode$".into(),
+                expected: "STRING".into(),
+                actual: generic_value_type_name(&argument).into(),
+                span: span.cloned(),
+            },
+        ));
+    };
+    let mut tokens = FieldScanner::clips_string(text.as_bytes());
+    let mut fields = ferric_rules_core::value::Multifield::new();
+    loop {
+        let scanned = tokens.next_token();
+        for notice in scanned.notices {
+            queue_field_scan_notice(ctx, &notice, "explode$", span);
+        }
+        if matches!(scanned.token, FieldToken::Stop(_)) {
+            break;
+        }
+        // StringToMultifield stores each non-atomic token's print form as a
+        // STRING, including UNKNOWN. STOP contributes no field, including EOF.
+        match scanned_field_value(ctx, scanned.token, "explode$", span) {
+            Ok(value) => fields.push(value),
+            Err(error) => return Ok(explode_field_failure(ctx, error)),
+        }
+    }
+    Ok(Value::Multifield(Box::new(fields)))
+}
+
+fn explode_field_failure(ctx: &mut EvalContext<'_>, error: EvalError) -> Value {
+    ctx.globals.push_halt_diagnostic(error);
+    Value::Multifield(Box::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -4856,7 +5266,7 @@ fn builtin_length(
         #[allow(clippy::cast_possible_wrap)] // container length fits in i64 in practice
         Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
         Value::String(s) => {
-            let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
+            let char_len = i64::try_from(lexeme_length(s.as_bytes())).unwrap_or(i64::MAX);
             Ok(Value::Integer(char_len))
         }
         _ => Err(EvalError::TypeError {
@@ -5005,21 +5415,20 @@ fn builtin_implode_mf(
     }
     match &val {
         Value::Multifield(mf) => {
-            let mut result = String::new();
+            let mut result = ByteBuffer::new();
             for (idx, element) in mf.iter().enumerate() {
                 if idx > 0 {
                     result.push(' ');
                 }
                 concat_values_to_string(ctx, std::slice::from_ref(element), &mut result);
             }
-            let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
-                EvalError::TypeError {
+            let fs = FerricString::from_bytes(result.as_bytes(), ctx.config.string_encoding)
+                .map_err(|e| EvalError::TypeError {
                     function: "implode$".to_string(),
                     expected: "encodable string".to_string(),
                     actual: format!("{e}"),
                     span: span.cloned(),
-                }
-            })?;
+                })?;
             Ok(Value::String(fs))
         }
         _ => Err(EvalError::TypeError {
@@ -5656,11 +6065,17 @@ fn builtin_sort_inner(
             span: span.cloned(),
         });
     };
-    let name = ctx
-        .symbol_table
-        .resolve_symbol_str(symbol)
-        .unwrap_or("")
-        .to_string();
+    let name = if let Ok(Some(name)) = ctx.symbol_table.resolve_symbol_text(symbol) {
+        name.to_owned()
+    } else {
+        ctx.globals.push_diagnostic(EvalError::TypeError {
+            function: "sort".into(),
+            expected: "UTF-8 function name".into(),
+            actual: "non-text symbol".into(),
+            span: span.cloned(),
+        });
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
     let comparator = match resolve_sort_comparator(ctx, &name, span) {
         Ok(comparator) => comparator,
         Err(error) => {
@@ -5722,18 +6137,15 @@ fn builtin_funcall(
     if ctx.globals.evaluation_error() {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     }
-    let fn_name = match &name_val {
-        Value::Symbol(sym) => ctx
-            .symbol_table
-            .resolve_symbol_str(*sym)
-            .unwrap_or("")
-            .to_string(),
-        Value::String(s) => s.as_str().to_string(),
+    let fn_name = match name_val {
+        Value::Symbol(_) | Value::String(_) => {
+            as_lexeme_str(&name_val, ctx.symbol_table, "funcall", span)?
+        }
         _ => {
             return Err(EvalError::TypeError {
-                function: "funcall".to_string(),
-                expected: "SYMBOL or STRING (function name)".to_string(),
-                actual: generic_value_type_name(&name_val).to_string(),
+                function: "funcall".into(),
+                expected: "SYMBOL or STRING (function name)".into(),
+                actual: generic_value_type_name(&name_val).into(),
                 span: span.cloned(),
             })
         }
@@ -5914,11 +6326,7 @@ fn printout_channel_name(
     span: Option<&SourceSpan>,
 ) -> Result<String, EvalError> {
     match value {
-        Value::Symbol(sym) => Ok(symbol_table
-            .resolve_symbol_str(*sym)
-            .unwrap_or("???")
-            .to_string()),
-        Value::String(s) => Ok(s.as_str().to_string()),
+        Value::Symbol(_) | Value::String(_) => as_lexeme_str(value, symbol_table, "printout", span),
         Value::Integer(n) => Ok(n.to_string()),
         Value::Float(f) => Ok(f.to_string()),
         other => Err(EvalError::TypeError {
@@ -5930,7 +6338,7 @@ fn printout_channel_name(
     }
 }
 
-fn append_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
+fn append_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut ByteBuffer) {
     use std::fmt::Write as _;
     match value {
         Value::Integer(n) => {
@@ -5944,16 +6352,28 @@ fn append_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut
             }
         }
         Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
+            let name = symbol_table
+                .resolve_symbol_bytes(*sym)
+                .expect("validated symbol");
+            {
                 match name {
-                    "crlf" => output.push('\n'),
-                    "tab" => output.push('\t'),
-                    "ff" => output.push('\x0C'),
-                    other => output.push_str(other),
+                    b"crlf" => output.push('\n'),
+                    b"tab" => output.push('\t'),
+                    b"ff" => output.push('\x0C'),
+                    other => output.push_bytes(other),
                 }
             }
         }
-        Value::String(s) => output.push_str(s.as_str()),
+        Value::InstanceName(name) => {
+            output.push('[');
+            output.push_bytes(
+                symbol_table
+                    .resolve_symbol_bytes(name.as_symbol())
+                    .expect("validated instance name"),
+            );
+            output.push(']');
+        }
+        Value::String(s) => output.push_bytes(s.as_bytes()),
         Value::Void => {}
         Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
         Value::Multifield(mf) => {
@@ -5982,7 +6402,7 @@ fn builtin_printout(
     let channel_value = eval_inner(ctx, &args[0])?;
     let channel = printout_channel_name(&channel_value, ctx.symbol_table, span)?;
 
-    let mut output = String::new();
+    let mut output = ByteBuffer::new();
     for expr in &args[1..] {
         let value = eval_inner(ctx, expr)?;
         if ctx.globals.evaluation_halted() {
@@ -6025,7 +6445,7 @@ fn builtin_format(
 
     // Second arg is format string
     let fmt_str = match eval_inner(ctx, &args[1])? {
-        Value::String(s) => s.as_str().to_string(),
+        Value::String(s) => s.as_bytes().to_vec(),
         other => {
             return Err(EvalError::TypeError {
                 function: "format".to_string(),
@@ -6040,34 +6460,45 @@ fn builtin_format(
     let format_args = eval_args(ctx, &args[2..])?;
 
     let result = apply_format_string(&fmt_str, &format_args, ctx.symbol_table, span)?;
-    let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|_| {
-        EvalError::TypeError {
-            function: "format".to_string(),
-            expected: "valid string encoding".to_string(),
-            actual: "result contains invalid characters".to_string(),
-            span: span.cloned(),
-        }
-    })?;
+    let fs =
+        FerricString::from_bytes(result.as_bytes(), ctx.config.string_encoding).map_err(|_| {
+            EvalError::TypeError {
+                function: "format".to_string(),
+                expected: "valid string encoding".to_string(),
+                actual: "result contains invalid characters".to_string(),
+                span: span.cloned(),
+            }
+        })?;
     Ok(Value::String(fs))
 }
 
 /// Apply CLIPS format directives to produce a formatted string.
 #[allow(clippy::too_many_lines)]
 fn apply_format_string(
-    fmt: &str,
+    fmt: impl AsRef<[u8]>,
     args: &[Value],
     symbol_table: &SymbolTable,
     span: Option<&SourceSpan>,
-) -> Result<String, EvalError> {
-    use std::fmt::Write as FmtWrite;
-
-    let mut result = String::new();
-    let mut chars = fmt.chars().peekable();
+) -> Result<ByteBuffer, EvalError> {
+    let mut result = ByteBuffer::new();
+    // Preserve the existing Unicode format behavior for valid text. Raw formats
+    // use byte units so undecodable literal payloads are never replaced.
+    let text = std::str::from_utf8(fmt.as_ref());
+    let raw = text.is_err();
+    let units: Vec<char> = match text {
+        Ok(text) => text.chars().collect(),
+        Err(_) => fmt.as_ref().iter().copied().map(char::from).collect(),
+    };
+    let mut chars = units.into_iter().peekable();
     let mut arg_idx = 0;
 
     while let Some(ch) = chars.next() {
         if ch != '%' {
-            result.push(ch);
+            if raw {
+                result.push_bytes(&[u8::try_from(u32::from(ch)).expect("input byte")]);
+            } else {
+                result.push(ch);
+            }
             continue;
         }
 
@@ -6218,25 +6649,24 @@ fn apply_format_string(
                             e_str
                         }
                     }
-                    's' => format_value_for_format(arg, symbol_table),
+                    's' => {
+                        let formatted = format_value_for_format(arg, symbol_table);
+                        append_format_width(&mut result, &formatted, width, left_align);
+                        continue;
+                    }
                     _ => {
-                        // Unknown directive — just emit literal
+                        // Unknown directive — just emit literal.
+                        if raw && !conv.is_ascii() {
+                            result.push('%');
+                            result
+                                .push_bytes(&[u8::try_from(u32::from(conv)).expect("input byte")]);
+                            continue;
+                        }
                         format!("%{conv}")
                     }
                 };
 
-                // Apply width and alignment
-                match (width, left_align) {
-                    (Some(w), true) => {
-                        write!(result, "{formatted:<w$}").unwrap();
-                    }
-                    (Some(w), false) => {
-                        write!(result, "{formatted:>w$}").unwrap();
-                    }
-                    (None, _) => {
-                        result.push_str(&formatted);
-                    }
-                }
+                append_format_width(&mut result, formatted.as_bytes(), width, left_align);
             }
         }
     }
@@ -6244,170 +6674,53 @@ fn apply_format_string(
     Ok(result)
 }
 
-/// Format a value for `%s` in `format` strings.
-fn format_value_for_format(value: &Value, symbol_table: &SymbolTable) -> String {
+fn append_format_width(
+    result: &mut ByteBuffer,
+    bytes: &[u8],
+    width: Option<usize>,
+    left_align: bool,
+) {
+    let padding = width.unwrap_or(0).saturating_sub(lexeme_length(bytes));
+    if !left_align {
+        for _ in 0..padding {
+            result.push(' ');
+        }
+    }
+    result.push_bytes(bytes);
+    if left_align {
+        for _ in 0..padding {
+            result.push(' ');
+        }
+    }
+}
+
+/// Format a value for `%s` without conflating symbol controls and payload text.
+fn format_value_for_format(value: &Value, symbol_table: &SymbolTable) -> Vec<u8> {
     match value {
-        Value::Integer(n) => n.to_string(),
-        Value::Float(f) => {
-            if f.fract() == 0.0 {
-                format!("{f:.1}")
-            } else {
-                f.to_string()
-            }
-        }
+        Value::Integer(n) => n.to_string().into_bytes(),
+        Value::Float(f) => format_float_for_str_cat(*f).into_bytes(),
         Value::Symbol(sym) => symbol_table
-            .resolve_symbol_str(*sym)
-            .unwrap_or("???")
-            .to_string(),
-        Value::String(s) => s.as_str().to_string(),
-        Value::Void => String::new(),
-        Value::ExternalAddress(_) => "<ExternalAddress>".to_string(),
+            .resolve_symbol_bytes(*sym)
+            .expect("validated symbol")
+            .to_vec(),
+        Value::InstanceName(name) => symbol_table
+            .resolve_symbol_bytes(name.as_symbol())
+            .expect("validated instance name")
+            .to_vec(),
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Void => Vec::new(),
+        Value::ExternalAddress(_) => b"<ExternalAddress>".to_vec(),
         Value::Multifield(mf) => {
-            let parts: Vec<String> = mf
-                .as_slice()
-                .iter()
-                .map(|v| format_value_for_format(v, symbol_table))
-                .collect();
-            format!("({})", parts.join(" "))
-        }
-    }
-}
-
-/// Intern the `EOF` symbol — shared helper for `read`/`readline`.
-fn intern_eof_symbol(
-    ctx: &mut EvalContext<'_>,
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    let sym = ctx
-        .symbol_table
-        .intern_symbol("EOF", ctx.config.string_encoding)
-        .map_err(|_| EvalError::TypeError {
-            function: "read".to_string(),
-            expected: "valid string encoding".to_string(),
-            actual: "cannot intern EOF symbol".to_string(),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
-}
-
-/// `read` — read a single atom from the input buffer.
-///
-/// `(read)` or `(read <channel>)`
-///
-/// Pops a line from the input buffer and parses the first whitespace-delimited
-/// token as a typed value (integer, float, quoted string, or symbol).
-/// Returns `Symbol("EOF")` when no input is available.
-fn builtin_read(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    if args.len() > 1 {
-        return Err(EvalError::ArityMismatch {
-            name: "read".to_string(),
-            expected: "0 or 1".to_string(),
-            actual: args.len(),
-            span: span.cloned(),
-        });
-    }
-    // Evaluate channel arg if present (but don't use it)
-    if !args.is_empty() {
-        let _ = eval_inner(ctx, &args[0])?;
-    }
-
-    let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    let Some(line) = buffer.pop_front() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return intern_eof_symbol(ctx, span);
-    }
-
-    // Get first whitespace-delimited token
-    let token_str = trimmed.split_whitespace().next().unwrap_or(trimmed);
-
-    // Try to parse as integer
-    if let Ok(i) = token_str.parse::<i64>() {
-        return Ok(Value::Integer(i));
-    }
-
-    // Try to parse as float
-    if let Ok(f) = token_str.parse::<f64>() {
-        return Ok(Value::Float(f));
-    }
-
-    // If quoted string: "..."
-    if token_str.starts_with('"') && token_str.ends_with('"') && token_str.len() >= 2 {
-        let inner = &token_str[1..token_str.len() - 1];
-        let fs = FerricString::new(inner, ctx.config.string_encoding).map_err(|_| {
-            EvalError::TypeError {
-                function: "read".to_string(),
-                expected: "valid string encoding".to_string(),
-                actual: format!("cannot create string from `{inner}`"),
-                span: span.cloned(),
-            }
-        })?;
-        return Ok(Value::String(fs));
-    }
-
-    // Otherwise it's a symbol
-    let sym = ctx
-        .symbol_table
-        .intern_symbol(token_str, ctx.config.string_encoding)
-        .map_err(|_| EvalError::TypeError {
-            function: "read".to_string(),
-            expected: "valid symbol".to_string(),
-            actual: format!("cannot intern `{token_str}`"),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
-}
-
-/// `readline` — read a complete line from the input buffer as a string.
-///
-/// `(readline)` or `(readline <channel>)`
-///
-/// Returns the complete line as a `STRING` value (without a trailing newline).
-/// Returns `Symbol("EOF")` when no input is available.
-fn builtin_readline(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    if args.len() > 1 {
-        return Err(EvalError::ArityMismatch {
-            name: "readline".to_string(),
-            expected: "0 or 1".to_string(),
-            actual: args.len(),
-            span: span.cloned(),
-        });
-    }
-    if !args.is_empty() {
-        let _ = eval_inner(ctx, &args[0])?;
-    }
-
-    let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    match buffer.pop_front() {
-        Some(line) => {
-            let fs = FerricString::new(&line, ctx.config.string_encoding).map_err(|_| {
-                EvalError::TypeError {
-                    function: "readline".to_string(),
-                    expected: "valid string encoding".to_string(),
-                    actual: "cannot create string from input line".to_string(),
-                    span: span.cloned(),
+            let mut output = vec![b'('];
+            for (index, value) in mf.iter().enumerate() {
+                if index > 0 {
+                    output.push(b' ');
                 }
-            })?;
-            Ok(Value::String(fs))
+                output.extend(format_value_for_format(value, symbol_table));
+            }
+            output.push(b')');
+            output
         }
-        None => intern_eof_symbol(ctx, span),
     }
 }
 
@@ -6566,11 +6879,7 @@ fn builtin_fact_relation(
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
     let relation_name: String = match &entry.fact {
-        ferric_rules_core::Fact::Ordered(of) => ctx
-            .symbol_table
-            .resolve_symbol_str(of.relation)
-            .unwrap_or("???")
-            .to_string(),
+        ferric_rules_core::Fact::Ordered(of) => return Ok(Value::Symbol(of.relation)),
         ferric_rules_core::Fact::Template(tf) => {
             // Look up the template name from template_defs.
             ctx.template_defs
@@ -7194,6 +7503,29 @@ mod tests {
     // -------------------------------------------------------------------
     // Literal evaluation
     // -------------------------------------------------------------------
+
+    #[test]
+    fn instance_name_restriction_metadata_is_narrower_than_instance() {
+        let method = |index, restriction: &str| crate::functions::RegisteredMethod {
+            index,
+            parameters: vec!["value".into()],
+            type_restrictions: vec![vec![restriction.into()]],
+            wildcard_parameter: None,
+            body: Vec::new(),
+        };
+        for (specific_index, broad_index) in [(1, 2), (2, 1)] {
+            let specific = method(specific_index, "INSTANCE-NAME");
+            let broad = method(broad_index, "INSTANCE");
+            assert_eq!(
+                compare_method_specificity(&specific, &broad),
+                Ordering::Less
+            );
+            assert_eq!(
+                compare_method_specificity(&broad, &specific),
+                Ordering::Greater
+            );
+        }
+    }
 
     #[test]
     fn eval_literal_integer() {
@@ -9473,7 +9805,7 @@ mod tests {
         let expr = call("str-cat", vec![]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9483,7 +9815,7 @@ mod tests {
         let expr = call("str-cat", vec![int(42), int(-7)]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "42-7"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "42-7"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9493,7 +9825,7 @@ mod tests {
         let expr = call("str-cat", vec![float(3.0)]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "3.0"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "3.0"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9503,7 +9835,7 @@ mod tests {
         let expr = call("str-cat", vec![float(1.5)]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "1.5"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "1.5"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9513,7 +9845,7 @@ mod tests {
         let expr = call("str-cat", vec![str_lit("hello"), str_lit(" world")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "hello world"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "hello world"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9524,7 +9856,7 @@ mod tests {
         let expr = call("str-cat", vec![str_lit("val="), int(42)]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "val=42"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "val=42"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9799,7 +10131,7 @@ mod tests {
         let events = gs.take_printout_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "t");
-        assert_eq!(events[0].1, "v=\t7\n");
+        assert_eq!(events[0].1, b"v=\t7\n");
     }
 
     #[test]
@@ -9922,7 +10254,7 @@ mod tests {
         let expr = call("sub-string", vec![int(2), int(4), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "ell"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "ell"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9933,7 +10265,7 @@ mod tests {
         let expr = call("sub-string", vec![int(1), int(5), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "hello"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "hello"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9944,7 +10276,7 @@ mod tests {
         let expr = call("sub-string", vec![int(10), int(15), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
             other => panic!("expected empty STRING, got {other:?}"),
         }
     }
@@ -9955,7 +10287,7 @@ mod tests {
         let expr = call("sub-string", vec![int(4), int(2), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
             other => panic!("expected empty STRING, got {other:?}"),
         }
     }
@@ -9966,7 +10298,7 @@ mod tests {
         let expr = call("sub-string", vec![int(0), int(3), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
             other => panic!("expected empty STRING, got {other:?}"),
         }
     }
@@ -9977,7 +10309,7 @@ mod tests {
         let expr = call("sub-string", vec![int(3), int(100), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "llo"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "llo"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9987,7 +10319,7 @@ mod tests {
         let expr = call("sub-string", vec![int(2), int(2), str_lit("héllo")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "é"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "é"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -9997,7 +10329,7 @@ mod tests {
         let expr = call("sub-string", vec![int(2), int(2), str_lit("é")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -10221,7 +10553,7 @@ mod tests {
         let expr = call("implode$", vec![mf]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), "10 20 30"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "10 20 30"),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -10231,7 +10563,7 @@ mod tests {
         let expr = call("implode$", vec![mf_lit(vec![])]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
@@ -10761,7 +11093,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String result");
         };
-        assert_eq!(s.as_str(), "hello world");
+        assert_eq!(s.as_str().unwrap(), "hello world");
     }
 
     #[test]
@@ -10782,7 +11114,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "count: 42");
+        assert_eq!(s.as_str().unwrap(), "count: 42");
     }
 
     #[test]
@@ -10802,7 +11134,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "val: 1.500000");
+        assert_eq!(s.as_str().unwrap(), "val: 1.500000");
     }
 
     #[test]
@@ -10822,7 +11154,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "1.50");
+        assert_eq!(s.as_str().unwrap(), "1.50");
     }
 
     #[test]
@@ -10842,7 +11174,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "        42");
+        assert_eq!(s.as_str().unwrap(), "        42");
     }
 
     #[test]
@@ -10862,7 +11194,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "42        ");
+        assert_eq!(s.as_str().unwrap(), "42        ");
     }
 
     #[test]
@@ -10881,7 +11213,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "a\nb");
+        assert_eq!(s.as_str().unwrap(), "a\nb");
     }
 
     #[test]
@@ -10900,7 +11232,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "100%");
+        assert_eq!(s.as_str().unwrap(), "100%");
     }
 
     #[test]
@@ -10923,7 +11255,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "age is 25");
+        assert_eq!(s.as_str().unwrap(), "age is 25");
     }
 
     #[test]
@@ -10944,9 +11276,9 @@ mod tests {
             panic!("expected String");
         };
         assert!(
-            s.as_str().contains('e'),
+            s.as_str().unwrap().contains('e'),
             "expected scientific notation, got: {}",
-            s.as_str()
+            s.as_str().unwrap()
         );
     }
 
@@ -11111,7 +11443,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "hello");
+        assert_eq!(s.as_str().unwrap(), "hello");
     }
 
     // -----------------------------------------------------------------------
@@ -11148,7 +11480,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert_eq!(s.as_str(), "hello world");
+        assert_eq!(s.as_str().unwrap(), "hello world");
     }
 
     #[test]
@@ -11219,8 +11551,8 @@ mod tests {
         let Value::String(s2) = second else {
             panic!("expected String");
         };
-        assert_eq!(s1.as_str(), "first line");
-        assert_eq!(s2.as_str(), "second line");
+        assert_eq!(s1.as_str().unwrap(), "first line");
+        assert_eq!(s2.as_str().unwrap(), "second line");
     }
 
     #[test]
@@ -11584,3 +11916,15 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "evaluator/string_to_field_tests.rs"]
+mod string_to_field_tests;
+
+#[cfg(test)]
+#[path = "evaluator/explode_fields_tests.rs"]
+mod explode_fields_tests;
+
+#[cfg(test)]
+#[path = "evaluator/queued_input_tests.rs"]
+mod queued_input_tests;

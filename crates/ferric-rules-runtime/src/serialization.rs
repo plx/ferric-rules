@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 7")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 8")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,7 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 7;
+const SCHEMA_VERSION: u16 = 8;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -293,7 +293,19 @@ impl EngineSnapshotOwned {
             global_modules: self.global_modules,
             generic_modules: self.generic_modules,
             initial_fact_id: self.initial_fact_id,
-            action_diagnostics: self.action_diagnostics,
+            // Normalize structured scanner notices in decoded diagnostic history
+            // without exposing or reserializing that wire alternative. Envelope
+            // version validation still precedes this payload conversion.
+            action_diagnostics: self
+                .action_diagnostics
+                .into_iter()
+                .map(|diagnostic| match diagnostic {
+                    ActionError::Evaluator(
+                        error @ crate::evaluator::EvalError::ScannerNotice(_),
+                    ) => ActionError::from(error),
+                    other => other,
+                })
+                .collect(),
             processing_predicates: false,
             halted: self.halted,
             input_buffer: self.input_buffer,
@@ -810,7 +822,10 @@ mod tests {
             assert!(restored.action_diagnostics()[0]
                 .to_string()
                 .contains("timestamp capacity exhausted"));
-            assert!(restored.get_output("t").map_or(true, str::is_empty));
+            assert!(restored
+                .get_output("t")
+                .unwrap()
+                .map_or(true, str::is_empty));
             let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
             Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         }
@@ -890,7 +905,7 @@ mod tests {
             );
             assert_eq!(restored.rules().len(), 1);
             assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-            assert_eq!(restored.get_output("t"), Some("old\n"));
+            assert_eq!(restored.get_output("t").unwrap(), Some("old\n"));
             let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
             Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         }
@@ -1139,7 +1154,7 @@ mod tests {
             assert_eq!(original.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
             let bytes = original.serialize(format).unwrap();
             let mut resumed = Engine::deserialize(&bytes, format).unwrap();
-            assert_eq!(resumed.get_output("t"), Some("8\n"));
+            assert_eq!(resumed.get_output("t").unwrap(), Some("8\n"));
             assert_eq!(
                 resumed.run(RunLimit::Unlimited).unwrap().rules_fired,
                 0,
@@ -1155,7 +1170,7 @@ mod tests {
             assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
             resumed.retract(blockers[1]).unwrap();
             assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-            assert_eq!(resumed.get_output("t"), Some("8\n7\n"));
+            assert_eq!(resumed.get_output("t").unwrap(), Some("8\n7\n"));
             assert_eq!(resumed.find_facts("picked").unwrap().len(), 2);
             assert!(matches!(
                 resumed
@@ -1532,23 +1547,26 @@ mod tests {
             Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-1.clp")).unwrap();
         engine.set_focus("WORK").unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("done 3\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("done 3\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
     }
 
     fn verify_schema_one_resume(mut engine: Engine) {
         assert_eq!(engine.facts().unwrap().count(), 4);
-        assert_eq!(engine.get_output("t"), Some("done 3\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("done 3\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("done 3\ndone 1\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("done 3\ndone 1\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
         let blocker = engine.find_facts("blocked").unwrap()[0].0;
         engine.retract(blocker).unwrap();
         engine.set_focus("WORK").unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("done 3\ndone 1\ndone 2\n"));
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("done 3\ndone 1\ndone 2\n")
+        );
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
         assert_eq!(engine.facts().unwrap().count(), 3);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
@@ -1570,15 +1588,14 @@ mod tests {
     #[test]
     fn committed_schema_one_snapshot_is_rejected_before_payload_decode() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-1.cbor");
-        assert!(matches!(
-            Engine::deserialize(bytes, SerializationFormat::Cbor),
-            Err(SerializationError::UnsupportedVersion(1))
-        ));
-        let header_only = &bytes[..HEADER_LEN];
-        assert!(matches!(
-            Engine::deserialize(header_only, SerializationFormat::Cbor),
-            Err(SerializationError::UnsupportedVersion(1))
-        ));
+        for &format in SerializationFormat::ALL {
+            for input in [bytes.as_slice(), &bytes[..HEADER_LEN]] {
+                assert!(matches!(
+                    Engine::deserialize(input, format),
+                    Err(SerializationError::UnsupportedVersion(1))
+                ));
+            }
+        }
     }
 
     #[test]
@@ -1586,7 +1603,7 @@ mod tests {
         let engine = Engine::new(EngineConfig::default());
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
-            for version in 1_u16..=6 {
+            for version in 1_u16..=7 {
                 // An unsupported version takes precedence over the missing
                 // payload and invalid checksum, without invoking its codec.
                 let mut header_only = bytes[..HEADER_LEN].to_vec();
@@ -1600,11 +1617,80 @@ mod tests {
     }
 
     #[test]
+    fn earlier_reserved_schemas_are_rejected_before_payload_decode() {
+        for &format in SerializationFormat::ALL {
+            let bytes = Engine::new(EngineConfig::default())
+                .serialize(format)
+                .unwrap();
+            for version in 1_u16..8 {
+                let mut forged = bytes.clone();
+                forged[8..10].copy_from_slice(&version.to_le_bytes());
+                // Deliberately leave the checksum stale: version rejection comes first.
+                assert!(
+                    matches!(Engine::deserialize(&forged, format), Err(SerializationError::UnsupportedVersion(actual)) if actual == version)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn schema_one_fixture_source_has_expected_resume_behavior() {
         let engine = schema_one_fixture_engine();
-        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
-        let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
-        verify_schema_one_resume(restored);
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let restored = Engine::deserialize(&bytes, format).unwrap();
+            verify_schema_one_resume(restored);
+        }
+    }
+
+    fn schema_eight_fixture_engine() -> Engine {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-8.clp");
+        let source = std::fs::read_to_string(path)
+            .expect("install the schema-8 source before fixture generation");
+        let mut engine = Engine::with_rules(&source).unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        engine
+    }
+
+    /// Explicit fixture maintenance command; ordinary test runs never write it.
+    #[test]
+    #[ignore = "regenerates the committed schema-8 snapshot"]
+    fn regenerate_schema_eight_fixture() {
+        let bytes = schema_eight_fixture_engine()
+            .serialize(SerializationFormat::Cbor)
+            .unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-8.cbor");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn committed_schema_eight_snapshot_roundtrips_and_resumes_in_all_codecs() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-8.cbor");
+        let bytes = std::fs::read(path).expect("generate the schema-8 fixture explicitly first");
+        let mut expected = schema_eight_fixture_engine();
+        let expected_run = expected.run(RunLimit::Unlimited).unwrap();
+        for &format in SerializationFormat::ALL {
+            let stored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+            let mut restored =
+                Engine::deserialize(&stored.serialize(format).unwrap(), format).unwrap();
+            let resumed = restored.run(RunLimit::Unlimited).unwrap();
+            assert_eq!(resumed.rules_fired, expected_run.rules_fired);
+            assert_eq!(resumed.halt_reason, expected_run.halt_reason);
+            assert_eq!(
+                restored.get_output_bytes("t"),
+                expected.get_output_bytes("t")
+            );
+            assert_eq!(
+                restored.facts().unwrap().count(),
+                expected.facts().unwrap().count()
+            );
+            let mut completed =
+                Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+            assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        }
     }
 
     fn schema_seven_fixture_engine() -> Engine {
@@ -1621,18 +1707,6 @@ mod tests {
         ));
         assert_eq!(engine.agenda_len(), 0);
         engine
-    }
-
-    /// Explicit fixture maintenance command; ordinary test runs never write it.
-    #[test]
-    #[ignore = "regenerates the committed schema-7 snapshot"]
-    fn regenerate_schema_seven_fixture() {
-        let bytes = schema_seven_fixture_engine()
-            .serialize(SerializationFormat::Cbor)
-            .unwrap();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-7.cbor");
-        std::fs::write(path, bytes).unwrap();
     }
 
     fn schema_seven_data(engine: &Engine, value: i64) -> crate::FactHandle {
@@ -1653,7 +1727,7 @@ mod tests {
     fn verify_schema_seven_pending_resume(mut engine: Engine) -> Engine {
         assert_eq!(engine.agenda_len(), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("safe:2\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("safe:2\n"));
         // The remaining candidate was rejected before the selected conflict.
         // Replacement must not rescan it or reevaluate its retained local test.
         assert!(matches!(
@@ -1676,7 +1750,7 @@ mod tests {
         ));
         engine.retract(schema_seven_data(&engine, 1)).unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("safe:2\nsafe:1\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("safe:2\nsafe:1\n"));
         // Reasserting invokes the local filter again, now with gate FALSE.
         engine.assert_ordered("data", vec![1_i64]).unwrap();
         assert!(matches!(
@@ -1690,7 +1764,10 @@ mod tests {
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
         engine.assert_ordered("anchor", vec![3_i64]).unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("safe:2\nsafe:1\nsafe:3\n"));
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("safe:2\nsafe:1\nsafe:3\n")
+        );
         assert!(engine.action_diagnostics().is_empty());
         engine
     }
@@ -1732,12 +1809,10 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_seven_snapshot_preserves_runtime_constraint_history() {
-        // Read at test execution so the ignored generator can compile before
-        // this new fixture exists. Missing bytes are an ordinary test failure.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-7.cbor");
-        let bytes = std::fs::read(path).expect("generate the schema-7 fixture explicitly first");
+    fn schema_seven_source_preserves_runtime_constraint_history() {
+        let bytes = schema_seven_fixture_engine()
+            .serialize(SerializationFormat::Cbor)
+            .unwrap();
         let mut engine = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(engine.agenda_len(), 0);
         assert!(matches!(
@@ -1808,24 +1883,27 @@ mod tests {
                 } else {
                     "CHECK:0:2\n"
                 };
-                assert_eq!(engine.get_output("t"), Some(expected));
+                assert_eq!(engine.get_output("t").unwrap(), Some(expected));
                 assert_eq!(
                     engine.action_diagnostics().len(),
                     usize::from(!selected_first)
                 );
                 let mut restored =
                     Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
-                assert_eq!(restored.get_output("t"), Some(expected));
+                assert_eq!(restored.get_output("t").unwrap(), Some(expected));
                 if selected_first {
                     restored.retract(schema_seven_data(&restored, 9)).unwrap();
-                    assert_eq!(restored.get_output("t"), Some("CHECK:9:2\nCHECK:0:2\n"));
+                    assert_eq!(
+                        restored.get_output("t").unwrap(),
+                        Some("CHECK:9:2\nCHECK:0:2\n")
+                    );
                 }
                 assert_eq!(restored.action_diagnostics().len(), 1);
                 // The callback error's effect on membership is historical;
                 // restoring must not rerun it or turn initial rejection into support.
                 let mut restored =
                     Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
-                let before = restored.get_output("t").unwrap().to_owned();
+                let before = restored.get_output("t").unwrap().unwrap().to_owned();
                 restored.assert_ordered("later", Vec::<i64>::new()).unwrap();
                 assert_eq!(
                     restored.run(RunLimit::Unlimited).unwrap().rules_fired,
@@ -1836,12 +1914,12 @@ mod tests {
                 } else {
                     before
                 };
-                assert_eq!(restored.get_output("t"), Some(expected.as_str()));
+                assert_eq!(restored.get_output("t").unwrap(), Some(expected.as_str()));
                 restored.retract(schema_seven_data(&restored, 0)).unwrap();
                 let mut completed =
                     Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
                 assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
-                assert_eq!(completed.get_output("t"), Some(expected.as_str()));
+                assert_eq!(completed.get_output("t").unwrap(), Some(expected.as_str()));
             }
         }
     }
@@ -1897,7 +1975,7 @@ mod tests {
             let mut pending =
                 Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
             assert_eq!(pending.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-            assert_eq!(pending.get_output("t"), Some("safe\n"));
+            assert_eq!(pending.get_output("t").unwrap(), Some("safe\n"));
             assert!(matches!(
                 pending.get_global("calls"),
                 Some(Value::Integer(1))
@@ -1911,12 +1989,12 @@ mod tests {
             Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
-        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("one field\n"));
         engine
     }
 
     fn verify_schema_two_cardinality_resume(mut engine: Engine) {
-        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("one field\n"));
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
         // Restored compiled paths must reject new facts of the wrong width.
@@ -1940,7 +2018,7 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_two_and_five_snapshots_are_rejected_before_payload_decode() {
+    fn committed_retired_schema_snapshots_are_rejected_before_payload_decode() {
         for (version, bytes) in [
             (
                 2,
@@ -1950,12 +2028,22 @@ mod tests {
                 5,
                 include_bytes!("../tests/fixtures/snapshots/schema-5.cbor").as_slice(),
             ),
+            (
+                6,
+                include_bytes!("../tests/fixtures/snapshots/schema-6.cbor").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../tests/fixtures/snapshots/schema-7.cbor").as_slice(),
+            ),
         ] {
-            for input in [bytes, &bytes[..HEADER_LEN]] {
-                assert!(matches!(
-                    Engine::deserialize(input, SerializationFormat::Cbor),
-                    Err(SerializationError::UnsupportedVersion(found)) if found == version
-                ));
+            for &format in SerializationFormat::ALL {
+                for input in [bytes, &bytes[..HEADER_LEN]] {
+                    assert!(matches!(
+                        Engine::deserialize(input, format),
+                        Err(SerializationError::UnsupportedVersion(found)) if found == version
+                    ));
+                }
             }
         }
     }
@@ -1967,6 +2055,129 @@ mod tests {
             let bytes = engine.serialize(format).unwrap();
             verify_schema_two_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
         }
+    }
+
+    fn schema_six_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-6.clp")).unwrap();
+        let text = engine.create_string_bytes(b"a\0\xffz").unwrap();
+        let symbol = engine.symbol_value_bytes(b"s\xff").unwrap();
+        let name = engine.instance_name_value_bytes(b"n\xff").unwrap();
+        engine
+            .assert_ordered("payload", vec![crate::HostValue::from(text), symbol, name])
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t").unwrap(), Some("TRUE\n"));
+        engine
+    }
+
+    fn verify_schema_six_resume(mut engine: Engine) {
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(
+            engine.get_output_bytes("t"),
+            Some(b"TRUE\na\0\xffz|s\xff|[n\xff]\n".as_slice())
+        );
+        assert!(engine.get_output("t").is_err());
+        let Some(Value::Multifield(fields)) = engine.get_global("captured") else {
+            panic!("captured multifield")
+        };
+        let [Value::String(text), Value::Symbol(symbol), Value::InstanceName(name)] =
+            fields.as_slice()
+        else {
+            panic!("distinct lexeme types")
+        };
+        assert_eq!(text.as_bytes(), b"a\0\xffz");
+        assert_eq!(
+            engine.resolve_core_symbol_bytes(*symbol),
+            Some(b"s\xff".as_slice())
+        );
+        assert_eq!(
+            engine.resolve_core_symbol_bytes(name.as_symbol()),
+            Some(b"n\xff".as_slice())
+        );
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        let handle = engine.find_facts("payload").unwrap()[0].0;
+        engine.retract(handle).unwrap();
+        engine.reset().unwrap();
+        assert!(engine.find_facts("payload").unwrap().is_empty());
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t").unwrap(), Some("TRUE\n"));
+    }
+
+    #[test]
+    fn schema_six_source_roundtrips_every_codec() {
+        for &format in SerializationFormat::ALL {
+            let engine = schema_six_fixture_engine();
+            verify_schema_six_resume(
+                Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn schema_six_source_preserves_bytes_and_typed_names() {
+        verify_schema_six_resume(
+            Engine::deserialize(
+                &schema_six_fixture_engine()
+                    .serialize(SerializationFormat::Cbor)
+                    .unwrap(),
+                SerializationFormat::Cbor,
+            )
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_raw_names_and_strings_when_configuration_is_strict() {
+        let engine = schema_six_fixture_engine();
+        for encoding in ["Ascii", "AsciiSymbolsUtf8Strings"] {
+            let result = alter_state(&engine, |state| {
+                state["config"]["string_encoding"] = serde_json::json!(encoding);
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{encoding}"
+            );
+        }
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let value = engine.create_string_bytes(b"\xff").unwrap();
+        engine.assert_ordered("raw", [value]).unwrap();
+        let result = alter_state(&engine, |state| {
+            state["config"]["string_encoding"] = serde_json::json!("Ascii");
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("encoding"))
+        );
+    }
+
+    #[test]
+    fn byte_value_symbols_cannot_be_forged_into_relation_identifiers() {
+        let mut engine = Engine::with_rules("(deffacts seed (item 1))").unwrap();
+        let raw = engine.symbol_value_bytes(b"\xff").unwrap();
+        let Value::Symbol(symbol) = raw.as_value() else {
+            unreachable!()
+        };
+        let raw_symbol = serde_json::to_value(symbol).unwrap();
+        engine.assert_ordered("data", [raw]).unwrap();
+        for &format in SerializationFormat::ALL {
+            // The same pool entry is valid as ordinary fact data.
+            Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+        }
+        let result = alter_state(&engine, |state| {
+            state["registered_deffacts"][0]["facts"][0]["Ordered"]["relation"] = raw_symbol.clone();
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("relation"))
+        );
+        let result = alter_state(&engine, |state| {
+            let facts = state["fact_base"]["facts"].as_array_mut().unwrap();
+            let fact = facts
+                .iter_mut()
+                .find_map(|slot| slot.get_mut("value")?.get_mut("fact")?.get_mut("Ordered"))
+                .unwrap();
+            fact["relation"] = raw_symbol;
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
     }
 
     #[test]
@@ -2505,7 +2716,7 @@ mod tests {
                 result.rules_fired, 1,
                 "format {format:?} lost the passing predicate token"
             );
-            assert_eq!(restored.get_output("t"), Some("1\n"));
+            assert_eq!(restored.get_output("t").unwrap(), Some("1\n"));
         }
     }
 
@@ -2553,3 +2764,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "serialization/scanner_notice_tests.rs"]
+mod scanner_notice_tests;

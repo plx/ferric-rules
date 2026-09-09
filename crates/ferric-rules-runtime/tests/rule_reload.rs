@@ -31,7 +31,7 @@ fn replacement_removes_queued_old_actions_and_backfills_current_facts() {
         assert!(engine.get_fact(id).unwrap().is_some());
     }
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("new\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("new\n"));
     assert_eq!(engine.find_facts("result").unwrap().len(), 1);
 }
 
@@ -48,7 +48,7 @@ fn replacement_preserves_shared_siblings_without_refiring_them() {
         .unwrap();
     engine.load_str("(defrule choose (subject ?x) (gate open) (exists (proof ?x)) => (printout t final crlf))").unwrap();
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("sibling\nfinal\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("sibling\nfinal\n"));
     assert!(engine.find_facts("old").unwrap().is_empty());
     assert!(engine.find_facts("middle").unwrap().is_empty());
 }
@@ -68,7 +68,7 @@ fn failed_replacement_leaves_old_rule_matches_and_network_unchanged() {
         assert_eq!(engine.rules().len(), 1);
     }
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("old\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("old\n"));
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn replacement_identity_is_module_and_local_name() {
     run(&mut engine, 1);
     engine.set_focus("A").unwrap();
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("B\nA-new\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("B\nA-new\n"));
     assert_eq!(engine.rules().len(), 2);
 }
 

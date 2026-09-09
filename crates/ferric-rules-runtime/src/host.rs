@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ferric_rules_core::{Fact, FactBase, FactId, FerricString, Symbol, Value};
+use ferric_rules_core::{Fact, FactBase, FactId, FerricString, InstanceName, Symbol, Value};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -53,6 +53,14 @@ impl FactHandle {
 pub struct SymbolHandle {
     pub(crate) owner: u64,
     pub(crate) symbol: Symbol,
+}
+
+/// An interned instance name bound to its originating engine. This is a typed
+/// name value; it does not identify or create a COOL instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InstanceNameHandle {
+    pub(crate) owner: u64,
+    pub(crate) name: InstanceName,
 }
 
 /// An owned host input. Primitives and strings are portable. Interned symbols,
@@ -114,12 +122,15 @@ impl HostValue {
                 EngineError::InvalidHostValue("too many values in one assertion".into())
             })?;
             match value {
-                Value::Symbol(_) if self.owner.is_none() => return Err(EngineError::InvalidHostValue(
-                    "raw core symbols have no host provenance; use engine.symbol_value or an owned fact value".into())),
+                Value::Symbol(_) | Value::InstanceName(_) if self.owner.is_none() => return Err(EngineError::InvalidHostValue(
+                    "raw core names have no host provenance; use engine.symbol_value, engine.instance_name_value, or an owned fact value".into())),
                 Value::Void => return Err(EngineError::InvalidHostValue(
                     "void cannot be stored in a fact, including inside a multifield".into())),
                 Value::String(value) => {
                     let bytes = value.as_bytes();
+                    if matches!(value, FerricString::Bytes(_)) && std::str::from_utf8(bytes).is_ok() {
+                        return Err(EngineError::InvalidHostValue("noncanonical byte string; construct text with FerricString::from_bytes".into()));
+                    }
                     if (matches!(value, FerricString::Ascii(_)) || encoding == StringEncoding::Ascii)
                         && !bytes.is_ascii() {
                         return Err(EngineError::InvalidHostValue("non-ASCII bytes in an ASCII string".into()));
@@ -146,6 +157,15 @@ impl From<SymbolHandle> for HostValue {
         Self {
             owner: Some(symbol.owner),
             value: Value::Symbol(symbol.symbol),
+        }
+    }
+}
+
+impl From<InstanceNameHandle> for HostValue {
+    fn from(name: InstanceNameHandle) -> Self {
+        Self {
+            owner: Some(name.owner),
+            value: Value::InstanceName(name.name),
         }
     }
 }
@@ -196,7 +216,16 @@ macro_rules! field {
         }
     )* };
 }
-field!(HostValue, SymbolHandle, Value, i64, i32, f64, FerricString);
+field!(
+    HostValue,
+    SymbolHandle,
+    InstanceNameHandle,
+    Value,
+    i64,
+    i32,
+    f64,
+    FerricString
+);
 
 /// An owned fact obtained from an engine, suitable for checked reassertion.
 /// Cloning it retains the origin and template shape rather than exporting
@@ -230,7 +259,7 @@ impl HostFact {
 
 fn contains_symbol(value: &Value) -> bool {
     let Value::Multifield(values) = value else {
-        return matches!(value, Value::Symbol(_));
+        return matches!(value, Value::Symbol(_) | Value::InstanceName(_));
     };
     // Stored values already satisfy the engine's depth/item limits. Keep one
     // iterator per nesting level, rather than collecting every pending sibling.
@@ -238,7 +267,7 @@ fn contains_symbol(value: &Value) -> bool {
     let mut current = values.iter();
     loop {
         match current.next() {
-            Some(Value::Symbol(_)) => return true,
+            Some(Value::Symbol(_) | Value::InstanceName(_)) => return true,
             Some(Value::Multifield(values)) => {
                 parents.push(current);
                 current = values.iter();

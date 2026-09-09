@@ -40,6 +40,15 @@ unsafe fn nul_string_value(engine: *mut FerricEngine) -> Value {
     )
 }
 
+unsafe fn assert_byte_payload(value: &FerricValue, tag: FerricValueType, bytes: &[u8]) {
+    assert_eq!(value.value_type, tag.as_raw());
+    assert_eq!(value.multifield_len, bytes.len());
+    assert_eq!(
+        std::slice::from_raw_parts(value.string_ptr.cast::<u8>(), bytes.len()),
+        bytes
+    );
+}
+
 #[test]
 fn length_aware_value_constructors_reject_nul_and_preserve_valid_bytes() {
     unsafe {
@@ -98,7 +107,7 @@ fn length_aware_value_constructors_reject_nul_and_preserve_valid_bytes() {
 }
 
 #[test]
-fn legacy_value_egress_rejects_embedded_nul_strings_and_symbols() {
+fn value_egress_preserves_embedded_nul_strings_and_symbols() {
     unsafe {
         let engine = ferric_engine_new();
         assert!(!engine.is_null());
@@ -114,7 +123,10 @@ fn legacy_value_egress_rejects_embedded_nul_strings_and_symbols() {
             ferric_rules_runtime::HostValue::from(symbol),
         );
 
-        for fact_id in [string_id, symbol_id] {
+        for (fact_id, tag) in [
+            (string_id, FerricValueType::StringBytes),
+            (symbol_id, FerricValueType::SymbolBytes),
+        ] {
             let mut out = FerricValue {
                 value_type: FerricValueType::Integer.as_raw(),
                 integer: 91,
@@ -122,20 +134,11 @@ fn legacy_value_egress_rejects_embedded_nul_strings_and_symbols() {
             };
             assert_eq!(
                 ferric_engine_get_fact_field(engine, fact_id, 0, &mut out),
-                FerricError::InvalidArgument,
-                "legacy FerricValue egress must reject content it cannot represent"
+                FerricError::Ok,
+                "the byte-span tag must preserve all data"
             );
-            assert_eq!(out.value_type, FerricValueType::Void.as_raw());
-            assert!(out.string_ptr.is_null());
-
-            let diagnostic = ferric_engine_last_error(engine);
-            assert!(!diagnostic.is_null());
-            assert!(
-                CStr::from_ptr(diagnostic)
-                    .to_string_lossy()
-                    .contains("embedded NUL"),
-                "the rejection must explain the offending content"
-            );
+            assert_byte_payload(&out, tag, b"a\0b");
+            assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
         }
 
         assert_eq!(ferric_engine_free(engine), FerricError::Ok);
@@ -143,7 +146,7 @@ fn legacy_value_egress_rejects_embedded_nul_strings_and_symbols() {
 }
 
 #[test]
-fn nested_and_template_slot_value_egress_rejects_embedded_nul() {
+fn nested_and_template_slot_value_egress_preserves_embedded_nul() {
     unsafe {
         let engine = ferric_engine_new();
         assert!(!engine.is_null());
@@ -168,9 +171,10 @@ fn nested_and_template_slot_value_egress_rejects_embedded_nul() {
         let slot_name = CString::new("value").unwrap();
         assert_eq!(
             ferric_engine_get_fact_slot_by_name(engine, template_id, slot_name.as_ptr(), &mut out,),
-            FerricError::InvalidArgument
+            FerricError::Ok
         );
-        assert_eq!(out.value_type, FerricValueType::Void.as_raw());
+        assert_byte_payload(&out, FerricValueType::StringBytes, b"a\0b");
+        assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
 
         let mut multifield = Multifield::new();
         multifield.push(Value::Integer(7));
@@ -187,9 +191,17 @@ fn nested_and_template_slot_value_egress_rejects_embedded_nul() {
         };
         assert_eq!(
             ferric_engine_get_fact_field(engine, multifield_id, 0, &mut out),
-            FerricError::InvalidArgument
+            FerricError::Ok
         );
-        assert_eq!(out.value_type, FerricValueType::Void.as_raw());
+        assert_eq!(out.value_type, FerricValueType::Multifield.as_raw());
+        assert_eq!(out.multifield_len, 2);
+        assert_eq!((*out.multifield_ptr).integer, 7);
+        assert_byte_payload(
+            &*out.multifield_ptr.add(1),
+            FerricValueType::StringBytes,
+            b"a\0b",
+        );
+        assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
 
         assert_eq!(ferric_engine_free(engine), FerricError::Ok);
     }
@@ -197,7 +209,7 @@ fn nested_and_template_slot_value_egress_rejects_embedded_nul() {
 
 #[cfg(feature = "serde")]
 #[test]
-fn snapshot_round_trip_preserves_nul_before_legacy_egress_rejects_it() {
+fn snapshot_round_trip_preserves_nul_through_byte_egress() {
     unsafe {
         let engine = ferric_engine_new();
         assert!(!engine.is_null());
@@ -237,9 +249,10 @@ fn snapshot_round_trip_preserves_nul_before_legacy_egress_rejects_it() {
         let mut out = FerricValue::void();
         assert_eq!(
             ferric_engine_get_fact_field(restored, fact_id, 0, &mut out),
-            FerricError::InvalidArgument
+            FerricError::Ok
         );
-        assert_eq!(out.value_type, FerricValueType::Void.as_raw());
+        assert_byte_payload(&out, FerricValueType::StringBytes, b"a\0b");
+        assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
 
         assert_eq!(ferric_engine_free(restored), FerricError::Ok);
         assert_eq!(ferric_engine_free(engine), FerricError::Ok);
@@ -263,7 +276,13 @@ fn borrowed_output_rejects_embedded_nul_while_copy_is_lossless() {
         let mut fired = 0;
         assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
         assert_eq!(fired, 1);
-        assert_eq!((&*engine).engine.get_output("shared"), Some("a\0b"));
+        assert_eq!(
+            (&*engine)
+                .engine
+                .get_output("shared")
+                .expect("fixture output is UTF-8"),
+            Some("a\0b")
+        );
 
         let channel = CString::new("shared").unwrap();
         assert!(

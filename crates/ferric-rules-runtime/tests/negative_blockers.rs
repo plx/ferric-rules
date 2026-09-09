@@ -29,7 +29,10 @@ fn fire(engine: &mut Engine, expected: usize) {
 fn clips_correlated_not_waits_for_the_last_blocker() {
     let mut engine = Engine::with_rules(include_str!("fixtures/not_last_blocker.clp")).unwrap();
     fire(&mut engine, 3);
-    assert_eq!(engine.get_output("t"), Some("unblocked\nselected a\n"));
+    assert_eq!(
+        engine.get_output("t").unwrap(),
+        Some("unblocked\nselected a\n")
+    );
     assert!(engine.find_facts("block").unwrap().is_empty());
     assert!(engine.find_facts("phase").unwrap().is_empty());
     let facts = engine.find_facts("result").unwrap();

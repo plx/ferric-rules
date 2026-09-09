@@ -51,12 +51,41 @@ Fatal expression or predicate errors stop subsequent rule actions, but may
 still carry a partial value into an enclosing assignment. Diagnostic presence
 alone does not distinguish these outcomes; inspect the run's halt reason.
 
-This support uses existing value representations. It does not add
-`INSTANCE-NAME` or invalid-UTF-8 strings, and it does not require reproducing
-the pinned CLIPS process fault for Void used as a data field. The CLIPS-valid
+The value layer supports `INSTANCE-NAME` and byte lexemes, including strings
+that are not valid UTF-8. This does not require reproducing the pinned CLIPS
+process fault for Void used as a data field. The CLIPS-valid
 `(sort bind c b a)` callback remains an unsupported local-binding/special-form
 invocation; comparator metadata does not imply parity for every builtin.
 Malformed source bind targets are a separate parsed-variable restriction.
+
+## Queued input
+
+`read` and `readline` share lines supplied through `Engine::push_input`.
+Their optional input name is evaluated once; `t`, `T`, and `stdin` select
+that queue. `read` skips blank or comment-only lines, scans the first token
+of the selected line, and discards the rest. `readline` returns the next
+line unchanged, even if empty. Hosts supply already-framed lines: the API
+does not split or normalize CR/LF sequences.
+
+Quoted input `"two words"` returns an actual STRING `two words`. Other fields
+retain INTEGER, FLOAT, SYMBOL, or INSTANCE-NAME identity; variable and
+punctuation tokens return STRING print forms. Exhausted input yields the
+SYMBOL `EOF`. An unknown scanner token yields the STRING
+`*** READ ERROR ***` without a diagnostic. Overflow and incomplete quotes
+retain clamped or partial values with nonfatal notices; an error-channel
+notice does not halt execution. Quoted fields retain CLIPS escapes and
+exact bytes, including invalid UTF-8 from a trailing escape at EOF, subject
+to the configured encoding policy.
+
+Unknown or invalid input names return the read-error STRING, record a
+diagnostic and halt without consuming input. After resolving a valid name, an already
+halted evaluation returns the same STRING without a new diagnostic or
+consuming a line. This is Ferric policy: CLIPS's raw stream can consume a
+byte before checking halt. An error flag alone does not block a read.
+
+Reset preserves unread lines, clear discards them, and snapshots preserve
+the remaining queue. Named-file input and `open` remain unsupported;
+queued input does not imply a persistent named stream or raw stdin API.
 
 ## Known Differential Gaps
 

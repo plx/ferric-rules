@@ -17,7 +17,7 @@ fn run_scenario(
     engine.clear_output_channel("t");
     setup(engine)?;
     engine.run(RunLimit::Unlimited)?;
-    let output = engine.get_output("t").unwrap_or("").trim_end();
+    let output = engine.get_output("t")?.unwrap_or("").trim_end();
     println!("[{label}]\n{output}\n");
     Ok(())
 }

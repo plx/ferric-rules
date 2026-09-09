@@ -940,3 +940,48 @@ def test_ferric_and_clips_diagnostic_phase_category_mismatch_remains_divergent()
     assert not evaluation.equivalent
     assert ("engines", "diagnostic.phase") in mismatch_fields
     assert ("engines", "diagnostic.category") in mismatch_fields
+
+
+def test_ferric_v2_text_observation_projects_like_v1() -> None:
+    original = _raw_observation("ferric")
+    extended = deepcopy(original)
+    extended["version"] = 2
+    assert project_ferric_observation(
+        extended, harness_identity=None
+    ) == project_ferric_observation(original, harness_identity=None)
+
+
+@pytest.mark.parametrize("value_type", ["string", "symbol", "instance-name"])
+def test_ferric_v2_raw_values_are_not_fabricated_as_oracle_text(value_type: str) -> None:
+    observation = _raw_observation("ferric")
+    observation["version"] = 2
+    observation["facts"][0]["fields"] = [{"type": value_type, "bytes": [195, 255]}]
+    with pytest.raises(ObservationProjectionError):
+        project_ferric_observation(observation, harness_identity=None)
+
+
+def test_ferric_v2_raw_channel_is_not_fabricated_as_oracle_text() -> None:
+    observation = _raw_observation("ferric")
+    observation["version"] = 2
+    observation["channels"][0] = {"name": "t", "present": True, "text": None, "bytes": [255]}
+    with pytest.raises(ObservationProjectionError):
+        project_ferric_observation(observation, harness_identity=None)
+
+
+@pytest.mark.parametrize("value_type", ["string", "symbol", "integer", "multifield"])
+def test_ferric_v2_conflicting_text_and_bytes_are_rejected(value_type: str) -> None:
+    observation = _raw_observation("ferric")
+    observation["version"] = 2
+    observation["facts"][0]["fields"] = [
+        {"type": value_type, "value": "1", "values": [], "bytes": [255]}
+    ]
+    with pytest.raises(ObservationProjectionError, match="byte value"):
+        project_ferric_observation(observation, harness_identity=None)
+
+
+def test_ferric_v2_conflicting_text_and_channel_bytes_are_rejected() -> None:
+    observation = _raw_observation("ferric")
+    observation["version"] = 2
+    observation["channels"][0] = {"name": "t", "present": True, "text": "ok", "bytes": [255]}
+    with pytest.raises(ObservationProjectionError, match="byte channel"):
+        project_ferric_observation(observation, harness_identity=None)

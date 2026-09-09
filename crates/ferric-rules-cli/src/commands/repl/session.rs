@@ -375,12 +375,28 @@ mod tests {
         assert!(engine.reset().is_ok());
         assert!(engine.run(RunLimit::Unlimited).is_ok());
 
-        assert_eq!(engine.get_output("t"), Some("hello\n"));
-        assert_eq!(engine.get_output("stderr"), Some("err"));
+        assert_eq!(
+            engine.get_output("t").expect("fixture output is UTF-8"),
+            Some("hello\n")
+        );
+        assert_eq!(
+            engine
+                .get_output("stderr")
+                .expect("fixture output is UTF-8"),
+            Some("err")
+        );
 
         display::print_output(&mut engine);
 
-        assert!(engine.get_output("t").is_none());
-        assert_eq!(engine.get_output("stderr"), Some("err"));
+        assert!(engine
+            .get_output("t")
+            .expect("fixture output is UTF-8")
+            .is_none());
+        assert_eq!(
+            engine
+                .get_output("stderr")
+                .expect("fixture output is UTF-8"),
+            Some("err")
+        );
     }
 }

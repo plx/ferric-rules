@@ -1,0 +1,1254 @@
+{
+  "format_version": 1,
+  "issue": {
+    "number": 346,
+    "url": "https://github.com/plx/ferric-rules/issues/346",
+    "title": "CLIPS compatibility: read truncates quoted strings at whitespace"
+  },
+  "reference": {
+    "image_id": "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
+    "image_identity_kind": "recorded local Docker image ID; not a registry pull reference",
+    "clips_version": "6.30",
+    "package_version": "6.30-4.1",
+    "platform": "linux/arm64",
+    "binary_sha256": "a9fca5ca7d0f9a71626553245bb7fe9d4cde9ea79c4afcb7c6ec3b6607247450",
+    "library_sha256": "55d42c4054f29f551be33e2662c71e5f2e47b96df87a21b8acadfec88d0f5bcb",
+    "base_image": "debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241",
+    "source_archive": "https://downloads.sourceforge.net/project/clipsrules/CLIPS/6.30/clips_core_source_630.zip",
+    "source_archive_sha256": "01555b257efae281199b82621ad5cc1106a395acc095b9ba66f40fe50fe3ef1c",
+    "source_files": {
+      "iofun.c": {
+        "sha256": "6023fe8d2769ae5d071aec0d00427e2aeaef433dbd64dd9297f2ba718574b53b"
+      }
+    },
+    "provenance_record": "FERRIC-CLIPS-PROVENANCE|1|6.30|6.30-4.1|linux/arm64|a9fca5ca7d0f9a71626553245bb7fe9d4cde9ea79c4afcb7c6ec3b6607247450|55d42c4054f29f551be33e2662c71e5f2e47b96df87a21b8acadfec88d0f5bcb|debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241"
+  },
+  "scope": {
+    "programs": 30,
+    "payloads": 90,
+    "original_corpus_triples": 7,
+    "classifications": {
+      "stdin-exact": 23,
+      "router-semantic": 4,
+      "arity-load-rejection": 1,
+      "exploratory-named-file": 2
+    },
+    "reference_replay": {
+      "exact_matches": 30,
+      "exit_zero": 30,
+      "stderr_empty": 30,
+      "new_oracle_runs_for_this_metadata": 0
+    },
+    "ferric_validation_claim": null
+  },
+  "protocol": {
+    "program_bytes": "source .clp bytes + ASCII (reset)\\n(run)\\n + UTF8 post_run_commands + ASCII (exit)\\n",
+    "stdin": "exact companion .in bytes, supplied independently of the command program",
+    "argv": [
+      "docker",
+      "run",
+      "--rm",
+      "-i",
+      "-v",
+      "{absolute_staging_directory}:/work:ro",
+      "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
+      "-f2",
+      "/work/{case}.input.clp"
+    ],
+    "timeout_seconds": 20,
+    "stdout": "raw bytes compared with .out, including reference diagnostics",
+    "stderr": "raw bytes; every recorded case is empty",
+    "named_file_mount": "Stage the exact companion {case}.in at /work/{case}.in. Both named-file sources open that path with logical name source and mode r; their process stdin still receives the same bytes, as recorded."
+  },
+  "attributes": {
+    "ordinary": "existing LF .clp/.out rules plus read/*.in text eol=lf",
+    "exact_byte_exceptions": [
+      "crates/ferric-rules/tests/fixtures/read/crlf-readline-state.in -text",
+      "crates/ferric-rules/tests/fixtures/read/unterminated-terminal-backslash.out -text"
+    ]
+  },
+  "cases": [
+    {
+      "name": "read-string",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/read-string",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "read-string.clp",
+          "bytes": 173,
+          "sha256": "7b7d28479a0bf4cd27f795446da37e4568de190bdcf6502118a39216816c6c93",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-string.in",
+          "bytes": 12,
+          "sha256": "0c6734cc0d108d901ea48cac209f633416c607d5270e38be651f11f15e8c1dcd",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-string.out",
+          "bytes": 15,
+          "sha256": "f12d311f15a16cad5748ced3d86f84483b79db0bef02755c3db39281ed6ee821",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "08bb4f265d45a2be375b83b32f97682e3a0450ef9eb55a1a21a845aba1bb1adf",
+        "stdout_sha256": "f12d311f15a16cad5748ced3d86f84483b79db0bef02755c3db39281ed6ee821",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "read-integer",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/read-integer",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "read-integer.clp",
+          "bytes": 144,
+          "sha256": "041d44d2009f9bbe80db8c9ed5ff7bcd0c5c947b72cbdc6e69c7b7f12f789f54",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-integer.in",
+          "bytes": 3,
+          "sha256": "084c799cd551dd1d8d5c5f9a5d593b2e931f5e36122ee5c793c1d08a19839cc0",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-integer.out",
+          "bytes": 3,
+          "sha256": "084c799cd551dd1d8d5c5f9a5d593b2e931f5e36122ee5c793c1d08a19839cc0",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "2f41ac09c1b3516ce20afd81715c171455c15821108e28d17acefaa3c9c60805",
+        "stdout_sha256": "084c799cd551dd1d8d5c5f9a5d593b2e931f5e36122ee5c793c1d08a19839cc0",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "read-symbol",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/read-symbol",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "read-symbol.clp",
+          "bytes": 173,
+          "sha256": "db157eaf26784c16ddcb65c3024aab0b8a5ee58bb736eb9579b9312a8bfa96db",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-symbol.in",
+          "bytes": 5,
+          "sha256": "a0bee6616b5e5eae6799cb4525a884a82e7161614f11122bbdf4383b2ac05998",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-symbol.out",
+          "bytes": 10,
+          "sha256": "b25a291abfae9d31d0723fb1f02bbd94dd3492399e58ab8270ffcbc0f0bdf8e3",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "0fdf58e9fe9e62b73ca0b3cb9020dfbb05473aae1e58fcb073238b78746db416",
+        "stdout_sha256": "b25a291abfae9d31d0723fb1f02bbd94dd3492399e58ab8270ffcbc0f0bdf8e3",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "read-eof",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/read-eof",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "read-eof.clp",
+          "bytes": 143,
+          "sha256": "7d348faecf6b8b1a257b6108903cb3774d9e690885f25d14ff79148b04825c79",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-eof.in",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-eof.out",
+          "bytes": 4,
+          "sha256": "2a21c5b3bff0299c0161470468f355e5b4afcf17a5f593ab68394ef7af319cdc",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "e2d38bad208376fb7d099f3ea45341ccd0593f402ff0e4fddb279c00fa2de59f",
+        "stdout_sha256": "2a21c5b3bff0299c0161470468f355e5b4afcf17a5f593ab68394ef7af319cdc",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "read-two-tokens",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/read-two-tokens",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "read-two-tokens.clp",
+          "bytes": 163,
+          "sha256": "0deb8d24d25966de44b8d45f2e6630dd84244398f0c4ae2bd1a227d05872998e",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-two-tokens.in",
+          "bytes": 6,
+          "sha256": "8b3a3ad9552da324931fb27537e3151951d3641d00b8fb322de4a2b0580d353d",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "read-two-tokens.out",
+          "bytes": 7,
+          "sha256": "7dbbaffc072d83761d8cbf768607b7527ce7a61b13413af8dfa39169448ad128",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "3978670778779c81a26d613ede24008be69729c22dcd155b499763f584f7705e",
+        "stdout_sha256": "7dbbaffc072d83761d8cbf768607b7527ce7a61b13413af8dfa39169448ad128",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "readline-whitespace",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/readline-whitespace",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "readline-whitespace.clp",
+          "bytes": 166,
+          "sha256": "d2c4d0ad22cfd31771d725fda31a7f307ad7126e5986af01ae035bfe853b6388",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "readline-whitespace.in",
+          "bytes": 14,
+          "sha256": "c1fd49220635fd018e32903a54764c321052fb0e51683200ec8e866d0d43c170",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "readline-whitespace.out",
+          "bytes": 16,
+          "sha256": "b391d9ec9981a26853cdc0f662d7ce3efb358f6686d1980204e17d48952ef43f",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "9c1c0ce6707762e479ba6ea47e2c98f801e5ba516e4909d77ad4f4515dd27847",
+        "stdout_sha256": "b391d9ec9981a26853cdc0f662d7ce3efb358f6686d1980204e17d48952ef43f",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "readline-eof",
+      "classification": "stdin-exact",
+      "original_corpus_path": "tests/clips_compat/corpus/io/readline-eof",
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "readline-eof.clp",
+          "bytes": 151,
+          "sha256": "074489a7afd285a3be7f281a0483f06e25edbd5fa061c888a44678f41f1b7e77",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "readline-eof.in",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "readline-eof.out",
+          "bytes": 4,
+          "sha256": "2a21c5b3bff0299c0161470468f355e5b4afcf17a5f593ab68394ef7af319cdc",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "09a79348669e9f8723b49cba5e39b5cb2795663884537e65a7bc0ac7bd3e24c7",
+        "stdout_sha256": "2a21c5b3bff0299c0161470468f355e5b4afcf17a5f593ab68394ef7af319cdc",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "quoted-strings-and-escapes",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "quoted-strings-and-escapes.clp",
+          "bytes": 363,
+          "sha256": "22da1767c4546cfb4c0ae6b7eddeefbc7f3d7b11514e18dff6f0f743c8139459",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "quoted-strings-and-escapes.in",
+          "bytes": 102,
+          "sha256": "c3e6ad98a9c3995be31ac4c1389a4e607fe97e6d4229111c7da4fc8a028b5149",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "quoted-strings-and-escapes.out",
+          "bytes": 303,
+          "sha256": "60ae146edd6c8b7c9115c56e0b4f3f9f11738abf491728302994c4daaded0d9a",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "664edd3c36c48d317d9c7a5d5b8feb877331a7eee485f5ae95dee73b1082565b",
+        "stdout_sha256": "60ae146edd6c8b7c9115c56e0b4f3f9f11738abf491728302994c4daaded0d9a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "numeric-token-types",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "numeric-token-types.clp",
+          "bytes": 409,
+          "sha256": "37c476c8781e66d60765e49dfae14ba9cd89d47d0f6df8e5fb5a2b4d82f29047",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "numeric-token-types.in",
+          "bytes": 121,
+          "sha256": "2ec4c9f61aaa7b0ab069be5ceb8ea7aec4ca25974790d4c58b35f8cc0c7261ea",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "numeric-token-types.out",
+          "bytes": 402,
+          "sha256": "31ad92dac73236e731c232681bc08f4f03a2134d275cbc70c9e15973cb2895e5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "93e6ea5b298176a252dfb64ec82adbe7c643d727dcf2ec04040006210a26ee25",
+        "stdout_sha256": "31ad92dac73236e731c232681bc08f4f03a2134d275cbc70c9e15973cb2895e5",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "numeric-looking-symbols",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "numeric-looking-symbols.clp",
+          "bytes": 354,
+          "sha256": "db2a16d8b0097ea190184e81e4ab37c6789bda8b8888e83fb9e30a116a5b0ddd",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "numeric-looking-symbols.in",
+          "bytes": 78,
+          "sha256": "e5385c237019f1eb2f37c5961ba748b7181cde904b61c7ecb85c96eca1f0da0b",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "numeric-looking-symbols.out",
+          "bytes": 290,
+          "sha256": "29165e225733a688fab150054f83c8315d65a42a53b233f3a00f5fcdd5c2ed5e",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "509d921090f2de5fd5b703b1c5d47ea21df2847bd6dbffed96a5b9f199f2deeb",
+        "stdout_sha256": "29165e225733a688fab150054f83c8315d65a42a53b233f3a00f5fcdd5c2ed5e",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "symbol-delimiters-and-special-tokens",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "symbol-delimiters-and-special-tokens.clp",
+          "bytes": 447,
+          "sha256": "03ae05ae4760560d1d96ec92086c7d43ebf22f61de5605b20075377643901e69",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "symbol-delimiters-and-special-tokens.in",
+          "bytes": 124,
+          "sha256": "4f7b32fa5db9b3a9b2eaacaf4f1e0aac526d16fe4b5c338894423bbb21848586",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "symbol-delimiters-and-special-tokens.out",
+          "bytes": 449,
+          "sha256": "b086104de6a746deae407f22353470118625968987be5c2d10502c02a88b9be5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "2404484c5670931c52951cd09f907139de571dda5394bca1987208dbc367b833",
+        "stdout_sha256": "b086104de6a746deae407f22353470118625968987be5c2d10502c02a88b9be5",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "blank-comment-lines-skip",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "blank-comment-lines-skip.clp",
+          "bytes": 243,
+          "sha256": "5812faa1b1a1babde36287b892ab68226e2f1c6f0f7e43fd9f354cd31b842f36",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "blank-comment-lines-skip.in",
+          "bytes": 49,
+          "sha256": "6e1d2eb0e92dc9d8aaeda0ba04ff9e474da3133eb54160de8f84c0e0e7e9e43d",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "blank-comment-lines-skip.out",
+          "bytes": 111,
+          "sha256": "982b3802a8a7fbf194cb20147f35cacdab4c43dcf420617514e66e0c8c680560",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "7b8be1b8a960f0fb4bb33572f0b88637a2d0ec838ca63b294347035879e31a80",
+        "stdout_sha256": "982b3802a8a7fbf194cb20147f35cacdab4c43dcf420617514e66e0c8c680560",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "physical-lines-and-readline",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "physical-lines-and-readline.clp",
+          "bytes": 285,
+          "sha256": "6d421c8204a342b40807597f44479775a4782c274cde963dae3a3e4d769a7a85",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "physical-lines-and-readline.in",
+          "bytes": 46,
+          "sha256": "a107afffa1d71870b15da0e7af70cc70ad112a5570a7a1ac9a3ba88bee0314a3",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "physical-lines-and-readline.out",
+          "bytes": 190,
+          "sha256": "5b5c369c4b9eab56b48c05ed89919772ff457686081e11feacfe6710eac2167d",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "b407017b608bd9d21e7de0fcc20e529f148a26a2653a06a04a959b0bd2d76eae",
+        "stdout_sha256": "5b5c369c4b9eab56b48c05ed89919772ff457686081e11feacfe6710eac2167d",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "crlf-readline-state",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "crlf-readline-state.clp",
+          "bytes": 291,
+          "sha256": "b696f30efce758f4382d22765f6af826feda13e52bc53f9d11ca12db2c2d1933",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "crlf-readline-state.in",
+          "bytes": 27,
+          "sha256": "37e9a6131e5b4ffd96c8f849ef64bf2f6aa56410343dfaffac99ea8eb5ef384f",
+          "cr_bytes": 2,
+          "crlf_pairs": 2,
+          "valid_utf8": true
+        },
+        {
+          "path": "crlf-readline-state.out",
+          "bytes": 176,
+          "sha256": "22f2bf5d0f6a7d326d8ef3627354a892af2c868e87e236053f00efac20880d98",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "7e97b9ae73793a6a2b67b002d98543626f225b0f0e2f67b292284aa19280f331",
+        "stdout_sha256": "22f2bf5d0f6a7d326d8ef3627354a892af2c868e87e236053f00efac20880d98",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "no-final-newline",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "no-final-newline.clp",
+          "bytes": 219,
+          "sha256": "e08273f16f8ba12c82269689794d2a610645e7dc08adc702e2def5d88644b924",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "no-final-newline.in",
+          "bytes": 11,
+          "sha256": "30b0c53cc188ba492964b63641d6868174efaf61bcaa58fc74bf9e0f349dd210",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "no-final-newline.out",
+          "bytes": 74,
+          "sha256": "e25c2aed24b71ef2cc77297ad3ca525af20b63697b3ac54111903d60fbd741a5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "b075f8ff417f0f3965d43e1e5b625be36ab2bb5c0e627165b5b3a2aa9dc353ec",
+        "stdout_sha256": "e25c2aed24b71ef2cc77297ad3ca525af20b63697b3ac54111903d60fbd741a5",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "valid-first-ignores-malformed-tail",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "valid-first-ignores-malformed-tail.clp",
+          "bytes": 226,
+          "sha256": "dcf5a2306c54c38b84db4e785defcabf4a53bbcc1c40f7ea2771962caece0f16",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "valid-first-ignores-malformed-tail.in",
+          "bytes": 39,
+          "sha256": "4b7e6ce0a17a3c267bd3972c30514a5756770aed708a86400ed6def524bf2677",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "valid-first-ignores-malformed-tail.out",
+          "bytes": 77,
+          "sha256": "c2760e9eaf72a7b9af74d95469fca9c020c2b3d2cc37130c2e34d1b51a89e9a0",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "298e6026d5bf4b745f507e655601bcd2f9fceb16c2612b475066d53ed1536e0e",
+        "stdout_sha256": "c2760e9eaf72a7b9af74d95469fca9c020c2b3d2cc37130c2e34d1b51a89e9a0",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "vertical-tab-and-formfeed",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "vertical-tab-and-formfeed.clp",
+          "bytes": 276,
+          "sha256": "f4586475bd3bf2527995b26ab27ea2cea368ce8a53c70126cffc6ea6ffd15667",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "vertical-tab-and-formfeed.in",
+          "bytes": 19,
+          "sha256": "2e0f95a95d66422ef532a7ce97465cb697eadd4408f2d10cd76d24c06a0b51da",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "vertical-tab-and-formfeed.out",
+          "bytes": 165,
+          "sha256": "dff9db7376568ad43ca817834f665537952c2ad1123fa94334db7bbd62d15400",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "eaaeaf85a32c220ee140c5e10a21cc7d10c82c85c9ce83de3e13fc406f7ed6af",
+        "stdout_sha256": "dff9db7376568ad43ca817834f665537952c2ad1123fa94334db7bbd62d15400",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "integer-overflow",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "integer-overflow.clp",
+          "bytes": 245,
+          "sha256": "edf285c4e585d810083e9253391eb90f39c45dd7ebf9c086c6dbd03bf8f9b6f0",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "integer-overflow.in",
+          "bytes": 46,
+          "sha256": "81bd4364b27089f5813e1d98101aa10b80a5f12452a4df86e3ae644c1cdbbf4d",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "integer-overflow.out",
+          "bytes": 259,
+          "sha256": "3ae28e928145476e9be068aa04b1e6a1135d26f7c3070acfe1ecef887060632a",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "225f048d51c70a627ac5c5c1ec4a801b69f13a5675f6fae225b842a8d241b203",
+        "stdout_sha256": "3ae28e928145476e9be068aa04b1e6a1135d26f7c3070acfe1ecef887060632a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "unterminated-quote-per-line",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "unterminated-quote-per-line.clp",
+          "bytes": 242,
+          "sha256": "3006eb40a60e2977cb50d141b5bfdc48850bc9616dda1543bd08934c513cecab",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "unterminated-quote-per-line.in",
+          "bytes": 15,
+          "sha256": "8c455ecc6434da78c1506364c056eedc1f69c5c93e5156696bf3b991196ca83f",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "unterminated-quote-per-line.out",
+          "bytes": 167,
+          "sha256": "3cc2699e686922df57cfdcdeb7355dc90c2ddb457a8aaa30830f5f7b78102f70",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "ab1e15ba19a81a4cd066fd770da4eebfcef4806e4bc0b8c2b70e6535cd5bb581",
+        "stdout_sha256": "3cc2699e686922df57cfdcdeb7355dc90c2ddb457a8aaa30830f5f7b78102f70",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "unterminated-terminal-backslash",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "unterminated-terminal-backslash.clp",
+          "bytes": 219,
+          "sha256": "e08273f16f8ba12c82269689794d2a610645e7dc08adc702e2def5d88644b924",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "unterminated-terminal-backslash.in",
+          "bytes": 12,
+          "sha256": "8a2247460ebae17dfd6f864f36ee6d50f7a359f7d3119f30b378eaef62d87388",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "unterminated-terminal-backslash.out",
+          "bytes": 136,
+          "sha256": "fd0068ad1d617181f7cf678220e178b312728485e5269513d95926bdb2fbd22b",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": false
+        }
+      ],
+      "reference": {
+        "program_sha256": "b075f8ff417f0f3965d43e1e5b625be36ab2bb5c0e627165b5b3a2aa9dc353ec",
+        "stdout_sha256": "fd0068ad1d617181f7cf678220e178b312728485e5269513d95926bdb2fbd22b",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "instance-name-token",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "instance-name-token.clp",
+          "bytes": 269,
+          "sha256": "d2a245983cc51306eba64f2bd1be7e71007a4c15bcc4644ef2b916afc1e8a7ae",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "instance-name-token.in",
+          "bytes": 9,
+          "sha256": "e539140f996116dff04ba4cd5f45542d75a6d29c626e889548534d4e7912f4f5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "instance-name-token.out",
+          "bytes": 60,
+          "sha256": "2f5efea7f91a459662748bdd9f274ab99a70fadb16fb2dfb1e19a0cd649561d3",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "ef057e13891840a10e441f90c58d51a08ac3da33d8a77fa1a82507156869a47d",
+        "stdout_sha256": "2f5efea7f91a459662748bdd9f274ab99a70fadb16fb2dfb1e19a0cd649561d3",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "explicit-stdin-channel",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "explicit-stdin-channel.clp",
+          "bytes": 454,
+          "sha256": "2a56c00fb5ffff6d5aeb7e8db2e917081c1da5234a6c981dca76456ea01747f5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "explicit-stdin-channel.in",
+          "bytes": 8,
+          "sha256": "16fbd7d1f18d2fedb247d73edc3bc6aa040f5ab99bd3b48c35b79e543d22179b",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "explicit-stdin-channel.out",
+          "bytes": 140,
+          "sha256": "add6c9a50ae4bc480abccf528ee945f3c9fb5af7b129b32690578158a93bc8f4",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "ba66d7e347dcd1613d4abfce22416c80e93ad1669387126d0ad8e88562fa20f8",
+        "stdout_sha256": "add6c9a50ae4bc480abccf528ee945f3c9fb5af7b129b32690578158a93bc8f4",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "unknown-router",
+      "classification": "router-semantic",
+      "original_corpus_path": null,
+      "post_run_commands": "(show result ?*result*)\n(printout t \"trace:\" ?*trace* crlf)\n(show remaining (read))\n",
+      "payloads": [
+        {
+          "path": "unknown-router.clp",
+          "bytes": 359,
+          "sha256": "8d1e7995e33d9f343fa80dfc959eebee84be1b61160a88b1fff44222e445273b",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "unknown-router.in",
+          "bytes": 16,
+          "sha256": "bb329d25f01fa8d14c0abc9ac6751dedcccf79a3d0cea02e68d66102280697be",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "unknown-router.out",
+          "bytes": 238,
+          "sha256": "c9d280da4479f8923f04ac3dff4035fced2686746b5fd8c12e36088dceb31582",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "45f9f9053cc5b03545250d776a504eb5479b48067ba1674294b9f96614ffba15",
+        "stdout_sha256": "c9d280da4479f8923f04ac3dff4035fced2686746b5fd8c12e36088dceb31582",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "invalid-router-type",
+      "classification": "router-semantic",
+      "original_corpus_path": null,
+      "post_run_commands": "(show result ?*result*)\n(printout t \"trace:\" ?*trace* crlf)\n(show remaining (read))\n",
+      "payloads": [
+        {
+          "path": "invalid-router-type.clp",
+          "bytes": 365,
+          "sha256": "32b279ea5bcc448eea39a15ca4be597a4ec76cd01ba0065da5f0126f23cea20b",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "invalid-router-type.in",
+          "bytes": 16,
+          "sha256": "bb329d25f01fa8d14c0abc9ac6751dedcccf79a3d0cea02e68d66102280697be",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "invalid-router-type.out",
+          "bytes": 227,
+          "sha256": "09a31b1e3b863d958846a92f33f6a28115e00bb204debd37c4a7246980f070a9",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "7188e1340979fa6a14202e256f193d76fab25cd90d7bb9c1871661b82fe4e7f3",
+        "stdout_sha256": "09a31b1e3b863d958846a92f33f6a28115e00bb204debd37c4a7246980f070a9",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "numeric-router",
+      "classification": "router-semantic",
+      "original_corpus_path": null,
+      "post_run_commands": "(show result ?*result*)\n(printout t \"trace:\" ?*trace* crlf)\n(show remaining (read))\n",
+      "payloads": [
+        {
+          "path": "numeric-router.clp",
+          "bytes": 354,
+          "sha256": "e925bcd14a0cc1f982db12327365ba584aa981687ecc17abafcce1a852dd65a5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "numeric-router.in",
+          "bytes": 16,
+          "sha256": "bb329d25f01fa8d14c0abc9ac6751dedcccf79a3d0cea02e68d66102280697be",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "numeric-router.out",
+          "bytes": 233,
+          "sha256": "c6571833534fa7b8a0b4455dc550ff05d631e48638f9e485f28e8ff2378cc95e",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "eb3e128afd5ed8507ec3d052793e4dec127ebc9b80d6aeef990464c754ed1e8b",
+        "stdout_sha256": "c6571833534fa7b8a0b4455dc550ff05d631e48638f9e485f28e8ff2378cc95e",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "channel-expression-error",
+      "classification": "router-semantic",
+      "original_corpus_path": null,
+      "post_run_commands": "(show result ?*result*)\n(printout t \"trace:\" ?*trace* crlf)\n(show remaining (read))\n",
+      "payloads": [
+        {
+          "path": "channel-expression-error.clp",
+          "bytes": 346,
+          "sha256": "ef56ba16c2ee24ac20f159776530528d4ca6180ef23816699c375fae27f3dbb8",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "channel-expression-error.in",
+          "bytes": 16,
+          "sha256": "bb329d25f01fa8d14c0abc9ac6751dedcccf79a3d0cea02e68d66102280697be",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "channel-expression-error.out",
+          "bytes": 360,
+          "sha256": "415f99725f820bf8b8fdf8e41558e19f4c52ee33261e564da527e6bf1bb3b84e",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "9de69fa5ad983ff3c8150f64c6a5c8a527238a7691af1049397579579b5d314d",
+        "stdout_sha256": "415f99725f820bf8b8fdf8e41558e19f4c52ee33261e564da527e6bf1bb3b84e",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "arity-rejected-at-load",
+      "classification": "arity-load-rejection",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "arity-rejected-at-load.clp",
+          "bytes": 30,
+          "sha256": "f911708c405cbf807a821ff570a7b5aef72af145fa692fc96dae984a4162e8bd",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "arity-rejected-at-load.in",
+          "bytes": 7,
+          "sha256": "2a37b3fecb9e5b1ea21167eae81c526f9a1449a226ccb1ce87b83e068ae79f23",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "arity-rejected-at-load.out",
+          "bytes": 111,
+          "sha256": "8d7ac661603a767eebbddc208a17bf49304815cfff7f3b14273a6f9651efa2fe",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "d97ae7d38b4f2a41b34e34ca837e96d4951e37947527570a774bc8c6d2a141a9",
+        "stdout_sha256": "8d7ac661603a767eebbddc208a17bf49304815cfff7f3b14273a6f9651efa2fe",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    },
+    {
+      "name": "named-file-router",
+      "classification": "exploratory-named-file",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "named-file-router.clp",
+          "bytes": 376,
+          "sha256": "940772be06032348ce19f5ca37abc20544994126b1af3dddcb2d580cc01ec59e",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "named-file-router.in",
+          "bytes": 34,
+          "sha256": "f8ba2991819008689c1920b68a108b1a06926b4e4bae493f34e17ebe80738a9c",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "named-file-router.out",
+          "bytes": 174,
+          "sha256": "6ba6310fd94eaf4af2885a12156fcbd641a29d913c01b9dbc3df9c1090e339cd",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "0b9d33a981588f90f2e5e7d5e3350247c12d9f8551c5ddf44fac282c5a4c2a59",
+        "stdout_sha256": "6ba6310fd94eaf4af2885a12156fcbd641a29d913c01b9dbc3df9c1090e339cd",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      },
+      "named_file": {
+        "container_path": "/work/named-file-router.in",
+        "logical_name": "source",
+        "mode": "r",
+        "ferric_support": "unsupported exploratory control"
+      }
+    },
+    {
+      "name": "named-file-multiline-quote",
+      "classification": "exploratory-named-file",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "named-file-multiline-quote.clp",
+          "bytes": 304,
+          "sha256": "d3610c4b155c532595fd36cd071975cca98464b0acc2c9e4dacf4f849f8b4452",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "named-file-multiline-quote.in",
+          "bytes": 15,
+          "sha256": "f4c56b5872890f8599ad20dea660542d225f6c9968a39e1bdfcb98e4e6424b54",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "named-file-multiline-quote.out",
+          "bytes": 71,
+          "sha256": "ba8f7c71a03943ec6f6ff7426d925bbee38fb22293429e73982cbfe3c2384f73",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "dc59117f9a925085fff29fe842b7ef1b1f105aa704a8a841cf33f2fdd6866976",
+        "stdout_sha256": "ba8f7c71a03943ec6f6ff7426d925bbee38fb22293429e73982cbfe3c2384f73",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      },
+      "named_file": {
+        "container_path": "/work/named-file-multiline-quote.in",
+        "logical_name": "source",
+        "mode": "r",
+        "ferric_support": "unsupported exploratory control"
+      }
+    },
+    {
+      "name": "callable-and-nested-read",
+      "classification": "stdin-exact",
+      "original_corpus_path": null,
+      "post_run_commands": "",
+      "payloads": [
+        {
+          "path": "callable-and-nested-read.clp",
+          "bytes": 391,
+          "sha256": "1accf6932d46bd4f848e7a90193f2e64e69376eca78c408cbcfe68e0eff99773",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "callable-and-nested-read.in",
+          "bytes": 20,
+          "sha256": "e822397465e645077a9aab4e5fc44a29cb63605cab77e34df4cd834e634d5af4",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        },
+        {
+          "path": "callable-and-nested-read.out",
+          "bytes": 118,
+          "sha256": "9750206ec847c4e3d94e70dc42fd59799edf2b5c3a6c0ae209e6ae5c997ca8e5",
+          "cr_bytes": 0,
+          "crlf_pairs": 0,
+          "valid_utf8": true
+        }
+      ],
+      "reference": {
+        "program_sha256": "4b0ffd945469b1fffcdae17461c3346e418d95804da7ec775e1574b3fb6f3074",
+        "stdout_sha256": "9750206ec847c4e3d94e70dc42fd59799edf2b5c3a6c0ae209e6ae5c997ca8e5",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_status": 0,
+        "exact_golden_match": true
+      }
+    }
+  ]
+}

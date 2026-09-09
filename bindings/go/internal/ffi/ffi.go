@@ -698,6 +698,42 @@ func ValueString(s string) Value {
 	return value
 }
 
+// ValueStringRaw constructs an exact byte lexeme, including embedded NUL.
+func ValueStringRaw(s string) (Value, ErrorCode) {
+	var value C.struct_FerricValue
+	var data *C.uint8_t
+	if len(s) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(s)))
+	}
+	//nolint:gocritic // dupSubExpr false positive in cgo-generated code.
+	rc := ErrorCode(C.ferric_value_string_raw(data, C.uintptr_t(len(s)), &value))
+	return Value(value), rc
+}
+
+// ValueSymbolRaw constructs an exact byte lexeme, including embedded NUL.
+func ValueSymbolRaw(s string) (Value, ErrorCode) {
+	var value C.struct_FerricValue
+	var data *C.uint8_t
+	if len(s) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(s)))
+	}
+	//nolint:gocritic // dupSubExpr false positive in cgo-generated code.
+	rc := ErrorCode(C.ferric_value_symbol_raw(data, C.uintptr_t(len(s)), &value))
+	return Value(value), rc
+}
+
+// ValueInstanceName constructs an exact byte lexeme, including embedded NUL.
+func ValueInstanceName(s string) (Value, ErrorCode) {
+	var value C.struct_FerricValue
+	var data *C.uint8_t
+	if len(s) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(s)))
+	}
+	//nolint:gocritic // dupSubExpr false positive in cgo-generated code.
+	rc := ErrorCode(C.ferric_value_instance_name(data, C.uintptr_t(len(s)), &value))
+	return Value(value), rc
+}
+
 // ValueVoid creates a void FerricValue.
 func ValueVoid() Value {
 	return Value(C.ferric_value_void())

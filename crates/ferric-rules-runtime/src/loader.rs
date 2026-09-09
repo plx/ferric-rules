@@ -324,6 +324,9 @@ pub struct LoadResult {
     pub warnings: Vec<String>,
 }
 
+#[path = "loader/queued_input_validation.rs"]
+mod queued_input_validation;
+
 impl Engine {
     /// Load CLIPS source code from a string.
     ///
@@ -352,6 +355,11 @@ impl Engine {
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         let diagnostics_start = self.action_diagnostics.len();
         let mut result = self.load_str_inner(source);
+        // Scanner notices and other evaluator output must be observable when
+        // a load boundary returns, before a later action clears stale events.
+        for (channel, bytes) in self.globals.take_printout_events() {
+            self.router.write(&channel, &bytes);
+        }
         self.drain_evaluator_diagnostics();
         self.globals.take_evaluation_halt();
         self.globals.take_sort_return();
@@ -591,6 +599,12 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = func.body.iter().try_for_each(|expression| {
+                            self.validate_queued_input_expression(expression, owning_module)
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
                         if self.generics.contains(owning_module, &func.name) {
@@ -684,6 +698,12 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = method.body.iter().try_for_each(|expression| {
+                            self.validate_queued_input_expression(expression, owning_module)
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
                         // Conflict check: a defmethod that would auto-create a
                         // generic cannot share a name with an existing deffunction.
                         if !self.generics.contains(owning_module, &method.name)
@@ -1283,6 +1303,7 @@ impl Engine {
                 } else {
                     match slot_def.allowed_types.as_ref().and_then(|types| types.first()) {
                     None | Some(SlotValueType::Symbol) => Value::Symbol(self.compile_symbol("nil")?),
+                    Some(SlotValueType::InstanceName) => Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(self.compile_symbol("nil")?)),
                     Some(SlotValueType::String) => Value::String(self.compile_string("")?),
                     Some(SlotValueType::Integer) => Value::Integer(0),
                     Some(SlotValueType::Float) => Value::Float(0.0),
@@ -1385,6 +1406,11 @@ impl Engine {
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
         let current_module = self.module_registry.current_module();
+        // Parse-time arity is checked across the whole declaration before any
+        // initializer side effects or registered global values are published.
+        for definition in &global.globals {
+            self.validate_queued_input_expression(&definition.value, current_module)?;
+        }
         let mut seen_in_construct: HashSet<&str> = HashSet::default();
         for def in &global.globals {
             if !seen_in_construct.insert(def.name.as_str())
@@ -1561,6 +1587,14 @@ impl Engine {
             LiteralKind::Float(f) => Some(Value::Float(*f)),
             LiteralKind::String(s) => self.warned_string_value(s, line, result),
             LiteralKind::Symbol(s) => self.warned_symbol_value(s, line, result),
+            LiteralKind::InstanceName(s) => {
+                self.warned_symbol_value(s, line, result).map(|v| match v {
+                    Value::Symbol(symbol) => {
+                        Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+                    }
+                    _ => unreachable!(),
+                })
+            }
         }
     }
 
@@ -1703,6 +1737,12 @@ impl Engine {
             Atom::Float(f) => Some(Value::Float(*f)),
             Atom::String(s) => self.warned_string_value(s, line, result),
             Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
+            Atom::InstanceName(s) => self.warned_symbol_value(s, line, result).map(|v| match v {
+                Value::Symbol(symbol) => {
+                    Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+                }
+                _ => unreachable!(),
+            }),
             // Variables and connectives are not supported as fact values in Phase 1
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
@@ -1873,6 +1913,7 @@ impl Engine {
         current_module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
         for action in &rule.actions {
+            self.validate_queued_input_call(&action.call, current_module)?;
             self.validate_rule_action_call(&action.call, current_module, &rule.name)?;
         }
         Ok(())
@@ -4006,6 +4047,9 @@ impl Engine {
                 Atom::Float(f) => Some(PredicateOperand::Literal(LiteralKind::Float(*f))),
                 Atom::String(s) => Some(PredicateOperand::Literal(LiteralKind::String(s.clone()))),
                 Atom::Symbol(s) => Some(PredicateOperand::Literal(LiteralKind::Symbol(s.clone()))),
+                Atom::InstanceName(s) => Some(PredicateOperand::Literal(
+                    LiteralKind::InstanceName(s.clone()),
+                )),
                 Atom::SingleVar(name) | Atom::MultiVar(name) => {
                     Some(PredicateOperand::Variable(name.clone()))
                 }
@@ -4146,6 +4190,9 @@ impl Engine {
                 let sym = self.compile_symbol(s)?;
                 Ok(Some(AtomKey::Symbol(sym)))
             }
+            LiteralKind::InstanceName(s) => Ok(Some(AtomKey::InstanceName(
+                ferric_rules_core::InstanceName::from_symbol(self.compile_symbol(s)?),
+            ))),
             LiteralKind::String(s) => {
                 let fs = self.compile_string(s)?;
                 Ok(Some(AtomKey::String(fs)))
@@ -4713,7 +4760,9 @@ mod tests {
             {
                 assert!(matches!(ordered.fields[1], Value::Float(f) if (f - 3.14).abs() < 0.001));
             }
-            assert!(matches!(&ordered.fields[2], Value::String(s) if s.as_str() == "hello"));
+            assert!(
+                matches!(&ordered.fields[2], Value::String(s) if s.as_str().unwrap() == "hello")
+            );
             assert!(matches!(&ordered.fields[3], Value::Symbol(_)));
         } else {
             panic!("expected ordered fact");
@@ -5865,7 +5914,12 @@ mod tests {
 
         engine.reset().expect("reset");
         run_to_completion(&mut engine);
-        let output = engine.get_output("t").unwrap_or("").trim().to_string();
+        let output = engine
+            .get_output("t")
+            .unwrap()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         assert_eq!(output, "42");
     }
 
@@ -5891,7 +5945,7 @@ mod tests {
 
         engine.reset().expect("reset");
         run_to_completion(&mut engine);
-        let output = engine.get_output("t").unwrap_or("");
+        let output = engine.get_output("t").unwrap().unwrap_or("");
         assert!(
             output.contains("GOOD"),
             "expected valid rule to run after recovery, got: {output:?}"

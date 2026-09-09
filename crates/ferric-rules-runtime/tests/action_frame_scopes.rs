@@ -8,7 +8,7 @@ fn output(source: &str) -> String {
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
     assert_eq!(result.rules_fired, 1);
     assert!(engine.action_diagnostics().is_empty());
-    engine.get_output("t").unwrap_or("").to_owned()
+    engine.get_output("t").unwrap().unwrap_or("").to_owned()
 }
 
 #[test]

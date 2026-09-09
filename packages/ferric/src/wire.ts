@@ -191,6 +191,26 @@ export function isWireSymbol(val: unknown): val is WireSymbol {
 }
 
 // ---------------------------------------------------------------------------
+export type ByteLexemeConstructors = Partial<Record<
+  "FerricStringBytes" | "FerricSymbolBytes" | "FerricInstanceName",
+  new (bytes: Uint8Array) => unknown
+>>;
+
+interface WireByteLexeme {
+  __type: keyof ByteLexemeConstructors;
+  bytes: Uint8Array;
+}
+
+function isByteLexemeName(name: unknown): name is keyof ByteLexemeConstructors {
+  return name === "FerricStringBytes" || name === "FerricSymbolBytes" || name === "FerricInstanceName";
+}
+
+function isWireByteLexeme(val: unknown): val is WireByteLexeme {
+  if (typeof val !== "object" || val === null) return false;
+  return isByteLexemeName(Object.getOwnPropertyDescriptor(val, "__type")?.value)
+    && Object.getOwnPropertyDescriptor(val, "bytes")?.value instanceof Uint8Array;
+}
+
 // Serialization helpers
 // ---------------------------------------------------------------------------
 
@@ -205,6 +225,8 @@ export function isWireSymbol(val: unknown): val is WireSymbol {
  * - Primitives → unchanged
  */
 export function toWire(val: unknown): unknown {
+  if (val instanceof Uint8Array) return new Uint8Array(val);
+  if (isWireByteLexeme(val)) return { __type: val.__type, bytes: new Uint8Array(val.bytes) };
   if (val === null || val === undefined) {
     return null;
   }
@@ -227,6 +249,10 @@ export function toWire(val: unknown): unknown {
     // This avoids importing the native addon here (which may not exist at
     // type-check time) while still correctly identifying the class.
     const ctorName = (val as object).constructor?.name;
+    if (isByteLexemeName(ctorName)) {
+      const bytes = (val as { bytes?: unknown }).bytes;
+      if (bytes instanceof Uint8Array) return { __type: ctorName, bytes: new Uint8Array(bytes) } satisfies WireByteLexeme;
+    }
     if (ctorName === "FerricSymbol" && typeof (val as { value?: unknown }).value === "string") {
       return {
         __type: "FerricSymbol",
@@ -265,7 +291,13 @@ export function toWire(val: unknown): unknown {
 export function fromWireToNative(
   val: unknown,
   FerricSymbolCtor: new (value: string) => unknown,
+  byteCtors: ByteLexemeConstructors = {},
 ): unknown {
+  if (val instanceof Uint8Array) return val;
+  if (isWireByteLexeme(val)) {
+    const ctor = byteCtors[val.__type];
+    return ctor ? new ctor(val.bytes) : val;
+  }
   if (val === null || val === undefined) return val;
   if (typeof val !== "object") return val;
 
@@ -274,12 +306,12 @@ export function fromWireToNative(
   }
 
   if (Array.isArray(val)) {
-    return val.map((v) => fromWireToNative(v, FerricSymbolCtor));
+    return val.map((v) => fromWireToNative(v, FerricSymbolCtor, byteCtors));
   }
 
   const result: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(val)) {
-    result[k] = fromWireToNative(v, FerricSymbolCtor);
+    result[k] = fromWireToNative(v, FerricSymbolCtor, byteCtors);
   }
   return result;
 }
@@ -297,7 +329,13 @@ export function fromWireToNative(
 export function fromWire(
   val: unknown,
   FerricSymbolCtor?: new (value: string) => unknown,
+  byteCtors: ByteLexemeConstructors = {},
 ): unknown {
+  if (val instanceof Uint8Array) return val;
+  if (isWireByteLexeme(val)) {
+    const ctor = byteCtors[val.__type];
+    return ctor ? new ctor(val.bytes) : val;
+  }
   if (val === null || val === undefined) return val;
 
   if (
@@ -310,7 +348,7 @@ export function fromWire(
   }
 
   if (Array.isArray(val)) {
-    return val.map((v) => fromWire(v, FerricSymbolCtor));
+    return val.map((v) => fromWire(v, FerricSymbolCtor, byteCtors));
   }
 
   if (typeof val === "object") {
@@ -329,7 +367,7 @@ export function fromWire(
     // Recursively convert plain objects (e.g. Fact, slots).
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(val)) {
-      result[k] = fromWire(v, FerricSymbolCtor);
+      result[k] = fromWire(v, FerricSymbolCtor, byteCtors);
     }
     return result;
   }

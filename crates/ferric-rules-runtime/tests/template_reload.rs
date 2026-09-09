@@ -66,7 +66,7 @@ fn live_template_rejection_preserves_fact_identity_and_original_slot_behavior() 
         )
         .unwrap();
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("original:9\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("original:9\n"));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn reset_seed_keeps_template_live_even_after_all_current_facts_are_retracted() {
         .load_str("(defrule read-record (record (original ?v)) => (printout t ?v crlf))")
         .unwrap();
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("8\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("8\n"));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn pending_constructs_retain_the_original_template_during_incremental_load() {
                 .unwrap();
         }
         run(&mut engine, 1);
-        assert_eq!(engine.get_output("t"), Some("3\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("3\n"));
     }
 }
 
@@ -176,7 +176,7 @@ fn reload_identity_is_module_and_local_name_with_stable_host_spelling() {
         .unwrap();
     engine.set_focus("A").unwrap();
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("4\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("4\n"));
 }
 
 #[cfg(feature = "serde")]

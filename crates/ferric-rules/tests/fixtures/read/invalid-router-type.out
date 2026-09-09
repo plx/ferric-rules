@@ -1,0 +1,5 @@
+[IOFUN1] Illegal logical name used for read function.
+[PRCCODE4] Execution halted during the actions of defrule probe.
+result:FALSE:FALSE:TRUE:FALSE:[*** READ ERROR ***]
+trace:1
+remaining:FALSE:FALSE:TRUE:FALSE:[input remains]

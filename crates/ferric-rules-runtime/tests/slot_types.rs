@@ -22,7 +22,7 @@ fn primitive_and_union_defaults_match_clips_priority() {
     engine.assert_template("defaults", &[], ()).unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
     assert_eq!(
-        engine.get_output("t"),
+        engine.get_output("t").unwrap(),
         Some("0|0.0|0|nil|0|nil|0|0|nil|0\n")
     );
 }
@@ -42,7 +42,7 @@ fn invalid_literal_rule_replacement_preserves_the_previous_consumer() {
         .iter()
         .any(|error| error.to_string().contains("allowed types")));
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert_eq!(engine.get_output("t"), Some("valid 5\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("valid 5\n"));
 }
 
 #[test]
@@ -175,6 +175,39 @@ fn host_template_values_obey_declared_scalar_and_multislot_types() {
 }
 
 #[test]
+fn instance_name_slots_accept_typed_defaults_and_values_but_reject_symbols() {
+    let mut engine =
+        Engine::with_rules("(deftemplate named (slot value (type INSTANCE-NAME)))").unwrap();
+    let default = engine.assert_template("named", &[], ()).unwrap();
+    let Value::InstanceName(name) = engine.get_fact_slot_by_name(default, "value").unwrap() else {
+        panic!("INSTANCE-NAME defaults must retain their value type")
+    };
+    assert_eq!(
+        engine.resolve_core_symbol_bytes(name.as_symbol()),
+        Some(b"nil".as_slice())
+    );
+
+    let name = engine.instance_name_value("widget").unwrap();
+    let explicit = engine
+        .assert_template("named", &["value"], vec![name])
+        .unwrap();
+    let Value::InstanceName(name) = engine.get_fact_slot_by_name(explicit, "value").unwrap() else {
+        panic!("a typed name must remain an INSTANCE-NAME")
+    };
+    assert_eq!(
+        engine.resolve_core_symbol_bytes(name.as_symbol()),
+        Some(b"widget".as_slice())
+    );
+
+    let symbol = engine.symbol_value("widget").unwrap();
+    assert!(matches!(
+        engine.assert_template("named", &["value"], vec![symbol]),
+        Err(EngineError::InvalidSlotValue { .. })
+    ));
+    assert_eq!(engine.facts().unwrap().count(), 2);
+}
+
+#[test]
 fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
     for attribute in [
         "(range 1 10)",
@@ -183,7 +216,6 @@ fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
         "(default-dynamic (+ 1 2))",
         "(default (+ 1 2))",
         "(type FACT-ADDRESS)",
-        "(type INSTANCE-NAME)",
         "(type)",
         "(type INTEGER) (type FLOAT)",
     ] {
@@ -224,6 +256,6 @@ fn restored_constraints_and_named_seeds_preserve_type_validation() {
         assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         restored.reset().unwrap();
         assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(restored.get_output("t"), Some("5\n"));
+        assert_eq!(restored.get_output("t").unwrap(), Some("5\n"));
     }
 }

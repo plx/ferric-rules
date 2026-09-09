@@ -6,6 +6,8 @@
 //! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
 
+use crate::byte_buffer::ByteBuffer;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
@@ -428,11 +430,24 @@ pub enum ActionError {
     #[error("expression evaluation error: {0}")]
     EvalError(String),
     #[error("expression evaluation error: {0}")]
-    Evaluator(#[from] crate::evaluator::EvalError),
+    Evaluator(#[source] crate::evaluator::EvalError),
     /// Internal non-error signal used to unwind the current rule RHS.
     #[doc(hidden)]
     #[error("internal rule return control escaped the action sequence")]
     RuleReturn,
+}
+
+impl From<crate::evaluator::EvalError> for ActionError {
+    fn from(error: crate::evaluator::EvalError) -> Self {
+        match error {
+            // Scanner metadata is transient. Persist its unchanged public
+            // message using the existing schema-6 string diagnostic variant.
+            crate::evaluator::EvalError::ScannerNotice(notice) => {
+                Self::EvalError(notice.to_string())
+            }
+            other => Self::Evaluator(other),
+        }
+    }
 }
 
 /// Execute actions for a fired rule.
@@ -704,9 +719,11 @@ fn build_runtime_eval_bindings(
             continue;
         };
         let original = rule_info.var_map.name(outer_id);
-        let Some(name) = context.engine.symbol_table.resolve_symbol_str(original) else {
-            continue;
-        };
+        let name = context
+            .engine
+            .symbol_table
+            .resolve_symbol_str(original)
+            .ok_or_else(|| ActionError::EvalError("binding name is not valid UTF-8 text".into()))?;
         let name = name.strip_prefix("$?").unwrap_or(name);
         // Reuse the interned canonical name when present, while retaining the
         // current encoding's lookup/intern behavior for aliases and mixed tables.
@@ -2152,21 +2169,7 @@ fn execute_load(
     }
 
     let selector = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
-    let path_text = match selector {
-        Value::String(s) => s.as_str().to_string(),
-        Value::Symbol(sym) => context
-            .engine
-            .symbol_table
-            .resolve_symbol_str(sym)
-            .unwrap_or("???")
-            .to_string(),
-        other => {
-            return Err(ActionError::EvalError(format!(
-                "load: expected STRING or SYMBOL, got {}",
-                runtime_value_type_name(&other)
-            )))
-        }
-    };
+    let path_text = action_lexeme_text(&selector, &context.engine.symbol_table, "load")?;
 
     let path = Path::new(&path_text);
     let saved_module = context.engine.module_registry.current_module();
@@ -2194,7 +2197,7 @@ fn execute_load(
 /// Format a `Value` as it should appear inside a `.fct` file (CLIPS s-expression syntax).
 ///
 /// Strings are quoted; symbols, integers, floats, and multifields render as CLIPS expects.
-fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
+fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut ByteBuffer) {
     match value {
         Value::Integer(n) => output.push_str(&n.to_string()),
         Value::Float(f) => {
@@ -2204,19 +2207,27 @@ fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut 
                 output.push_str(&f.to_string());
             }
         }
-        Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
-                output.push_str(name);
-            }
+        Value::Symbol(sym) => output.push_bytes(
+            symbol_table
+                .resolve_symbol_bytes(*sym)
+                .expect("validated symbol"),
+        ),
+        Value::InstanceName(name) => {
+            output.push('[');
+            output.push_bytes(
+                symbol_table
+                    .resolve_symbol_bytes(name.as_symbol())
+                    .expect("validated instance name"),
+            );
+            output.push(']');
         }
         Value::String(s) => {
             output.push('"');
-            for ch in s.as_str().chars() {
-                match ch {
-                    '\\' => output.push_str("\\\\"),
-                    '"' => output.push_str("\\\""),
-                    _ => output.push(ch),
+            for byte in s.as_bytes() {
+                if matches!(*byte, b'\\' | b'"') {
+                    output.push('\\');
                 }
+                output.push_bytes(std::slice::from_ref(byte));
             }
             output.push('"');
         }
@@ -2240,13 +2251,13 @@ fn format_fact_for_fct(
     fact: &Fact,
     symbol_table: &SymbolTable,
     template_defs: &slotmap::SlotMap<TemplateId, Arc<crate::templates::RegisteredTemplate>>,
-) -> String {
-    let mut out = String::new();
+) -> ByteBuffer {
+    let mut out = ByteBuffer::new();
     match fact {
         Fact::Ordered(o) => {
             out.push('(');
-            if let Some(rel) = symbol_table.resolve_symbol_str(o.relation) {
-                out.push_str(rel);
+            if let Some(rel) = symbol_table.resolve_symbol_bytes(o.relation) {
+                out.push_bytes(rel);
             }
             for field in &o.fields {
                 out.push(' ');
@@ -2276,6 +2287,29 @@ fn format_fact_for_fct(
     out
 }
 
+/// Names used by the text parser and registry must decode without replacement.
+fn action_lexeme_text(
+    value: &Value,
+    symbols: &SymbolTable,
+    command: &str,
+) -> Result<String, ActionError> {
+    let bytes = match value {
+        Value::String(string) => string.as_bytes(),
+        Value::Symbol(symbol) => symbols
+            .resolve_symbol_bytes(*symbol)
+            .ok_or_else(|| ActionError::EvalError(format!("{command}: dangling symbol")))?,
+        other => {
+            return Err(ActionError::EvalError(format!(
+                "{command}: expected STRING or SYMBOL, got {}",
+                runtime_value_type_name(other)
+            )))
+        }
+    };
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|error| ActionError::EvalError(format!("{command}: expected UTF-8 text: {error}")))
+}
+
 /// Evaluate the first argument of `load-facts` or `save-facts` as a filename string.
 fn eval_filename_arg(
     token: &Token,
@@ -2293,19 +2327,7 @@ fn eval_filename_arg(
         )));
     }
     let val = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
-    match val {
-        Value::String(s) => Ok(s.as_str().to_string()),
-        Value::Symbol(sym) => Ok(context
-            .engine
-            .symbol_table
-            .resolve_symbol_str(sym)
-            .unwrap_or("???")
-            .to_string()),
-        other => Err(ActionError::EvalError(format!(
-            "{command_name}: expected STRING or SYMBOL filename, got {}",
-            runtime_value_type_name(&other)
-        ))),
-    }
+    action_lexeme_text(&val, &context.engine.symbol_table, command_name)
 }
 
 /// `(save-facts <filename>)` — write all current facts to a file in `.fct` format.
@@ -2374,7 +2396,8 @@ fn do_save_facts(
             &context.engine.symbol_table,
             &context.engine.template_defs,
         );
-        writeln!(writer, "{line}")?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
         count += 1;
     }
 
@@ -2433,21 +2456,7 @@ fn evaluated_rule_selectors(
     let mut selectors = Vec::with_capacity(args.len());
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        let selector = match value {
-            Value::Symbol(symbol) => context
-                .engine
-                .symbol_table
-                .resolve_symbol_str(symbol)
-                .unwrap_or("???")
-                .to_string(),
-            Value::String(s) => s.as_str().to_string(),
-            other => {
-                return Err(ActionError::EvalError(format!(
-                    "{command_name}: expected SYMBOL or STRING, got {}",
-                    runtime_value_type_name(&other)
-                )))
-            }
-        };
+        let selector = action_lexeme_text(&value, &context.engine.symbol_table, command_name)?;
         selectors.push(selector);
     }
     Ok(selectors)
@@ -2545,6 +2554,7 @@ fn runtime_value_type_name(value: &Value) -> &'static str {
         Value::Integer(_) => "INTEGER",
         Value::Float(_) => "FLOAT",
         Value::Symbol(_) => "SYMBOL",
+        Value::InstanceName(_) => "INSTANCE-NAME",
         Value::String(_) => "STRING",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
@@ -2575,7 +2585,9 @@ fn execute_printout(
     // First argument is the channel name and must be a literal token.
     let channel = match &args[0] {
         ActionExpr::Literal(lit) => match &lit.value {
-            LiteralKind::Symbol(s) | LiteralKind::String(s) => s.clone(),
+            LiteralKind::Symbol(s) | LiteralKind::String(s) | LiteralKind::InstanceName(s) => {
+                s.clone()
+            }
             LiteralKind::Integer(n) => n.to_string(),
             LiteralKind::Float(f) => f.to_string(),
         },
@@ -2587,7 +2599,7 @@ fn execute_printout(
     };
 
     // Evaluate and format remaining arguments.
-    let mut output = String::new();
+    let mut output = ByteBuffer::new();
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         flush_deferred_evaluation(context);
@@ -2616,7 +2628,7 @@ fn execute_println(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    let mut output = String::new();
+    let mut output = ByteBuffer::new();
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         flush_deferred_evaluation(context);
@@ -2636,7 +2648,7 @@ fn execute_println(
 /// Special symbols `crlf`, `tab`, and `ff` are expanded to their control
 /// characters. All other values are formatted as their display string.
 /// Strings are written without surrounding quotes.
-fn format_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
+fn format_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut ByteBuffer) {
     match value {
         Value::Integer(n) => output.push_str(&n.to_string()),
         Value::Float(f) => {
@@ -2650,16 +2662,28 @@ fn format_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut
             }
         }
         Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
+            let name = symbol_table
+                .resolve_symbol_bytes(*sym)
+                .expect("validated symbol");
+            {
                 match name {
-                    "crlf" => output.push('\n'),
-                    "tab" => output.push('\t'),
-                    "ff" => output.push('\x0C'),
-                    other => output.push_str(other),
+                    b"crlf" => output.push('\n'),
+                    b"tab" => output.push('\t'),
+                    b"ff" => output.push('\x0C'),
+                    other => output.push_bytes(other),
                 }
             }
         }
-        Value::String(s) => output.push_str(s.as_str()),
+        Value::InstanceName(name) => {
+            output.push('[');
+            output.push_bytes(
+                symbol_table
+                    .resolve_symbol_bytes(name.as_symbol())
+                    .expect("validated instance name"),
+            );
+            output.push(']');
+        }
+        Value::String(s) => output.push_bytes(s.as_bytes()),
         Value::Void => {}
         Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
         Value::Multifield(mf) => {

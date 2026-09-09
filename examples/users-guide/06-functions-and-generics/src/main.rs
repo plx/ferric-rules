@@ -13,7 +13,7 @@ fn run_temp() -> anyhow::Result<()> {
     engine.assert_ordered("reading", vec![kind, Value::Float(20.0).into()])?;
     engine.run(RunLimit::Unlimited)?;
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     assert!(output.contains("20"));
     assert!(output.contains("68"));
     print!("{output}");
@@ -28,7 +28,7 @@ fn run_generics() -> anyhow::Result<()> {
     engine.assert_ordered("value", Value::Float(2.5))?;
     engine.run(RunLimit::Unlimited)?;
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     assert!(output.contains("int/number(7)"));
     assert!(output.contains("number(2.5)"));
     print!("{output}");

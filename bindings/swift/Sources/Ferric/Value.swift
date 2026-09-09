@@ -8,6 +8,12 @@ public indirect enum Value: Sendable, Equatable {
   case float(Double)
   case symbol(String)
   case string(String)
+  /// Arbitrary STRING bytes, including embedded NUL and invalid UTF-8.
+  case stringBytes(Data)
+  /// Arbitrary SYMBOL bytes, including embedded NUL and invalid UTF-8.
+  case symbolBytes(Data)
+  /// An INSTANCE-NAME is distinct from a symbol with the same bytes.
+  case instanceName(Data)
   case multifield([Value])
 }
 

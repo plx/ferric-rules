@@ -19,6 +19,15 @@ const maxMultifieldNestingDepth = 128
 // opposed to quoted string literals.
 type Symbol string
 
+// StringBytes explicitly represents arbitrary CLIPS STRING bytes.
+type StringBytes string
+
+// SymbolBytes explicitly represents arbitrary CLIPS SYMBOL bytes.
+type SymbolBytes string
+
+// InstanceName is a distinct CLIPS INSTANCE-NAME, stored as exact bytes.
+type InstanceName string
+
 // goToFFIValue converts a Go value to a Ferric-owned C FerricValue for passing
 // to the FFI layer. Recursive multifields are constructed through Ferric's
 // copy API; no Go- or C-allocated value array is transferred to Rust cleanup.
@@ -38,6 +47,12 @@ func goToFFIValueAtPath(v any, path string, depth int) (ffi.Value, error) {
 		return ffi.ValueFloat(val), nil
 	case float32:
 		return ffi.ValueFloat(float64(val)), nil
+	case StringBytes:
+		return goRawStringToFFIValue(path, string(val), ffiValueStringRaw)
+	case SymbolBytes:
+		return goRawStringToFFIValue(path, string(val), ffiValueSymbolRaw)
+	case InstanceName:
+		return goRawStringToFFIValue(path, string(val), ffiValueInstanceName)
 	case Symbol:
 		return goStringToFFIValue(path, string(val), ffiValueSymbolBytes)
 	case string:
@@ -50,39 +65,43 @@ func goToFFIValueAtPath(v any, path string, depth int) (ffi.Value, error) {
 	case nil:
 		return ffi.ValueVoid(), nil
 	case []any:
-		if depth >= maxMultifieldNestingDepth {
-			return ffi.Value{}, fmt.Errorf(
-				"%w: %s multifield nesting exceeds %d levels",
-				ErrInvalidArgument,
-				path,
-				maxMultifieldNestingDepth,
-			)
-		}
-		elements := make([]ffi.Value, len(val))
-		for i, elem := range val {
-			ev, err := goToFFIValueAtPath(elem, fmt.Sprintf("%s[%d]", path, i), depth+1)
-			if err != nil {
-				// Free the elements converted before this failure. Goes through
-				// the ffiValueFree seam (as AssertFact/AssertTemplate do) so the
-				// cleanup is observable in tests.
-				for j := range i {
-					ffiValueFree(&elements[j])
-				}
-				return ffi.Value{}, err
-			}
-			elements[i] = ev
-		}
-		result, copyErr := copyFFIMultifield(elements)
-		for i := range elements {
-			ffiValueFree(&elements[i])
-		}
-		if copyErr != nil {
-			return ffi.Value{}, copyErr
-		}
-		return result, nil
+		return goMultifieldToFFIValue(val, path, depth)
 	default:
 		return ffi.Value{}, fmt.Errorf("%w at %s: %T", errUnsupportedGoTypeForFFI, path, v)
 	}
+}
+
+func goMultifieldToFFIValue(val []any, path string, depth int) (ffi.Value, error) {
+	if depth >= maxMultifieldNestingDepth {
+		return ffi.Value{}, fmt.Errorf(
+			"%w: %s multifield nesting exceeds %d levels",
+			ErrInvalidArgument,
+			path,
+			maxMultifieldNestingDepth,
+		)
+	}
+	elements := make([]ffi.Value, len(val))
+	for i, elem := range val {
+		ev, err := goToFFIValueAtPath(elem, fmt.Sprintf("%s[%d]", path, i), depth+1)
+		if err != nil {
+			// Free the elements converted before this failure. Goes through
+			// the ffiValueFree seam (as AssertFact/AssertTemplate do) so the
+			// cleanup is observable in tests.
+			for j := range i {
+				ffiValueFree(&elements[j])
+			}
+			return ffi.Value{}, err
+		}
+		elements[i] = ev
+	}
+	result, copyErr := copyFFIMultifield(elements)
+	for i := range elements {
+		ffiValueFree(&elements[i])
+	}
+	if copyErr != nil {
+		return ffi.Value{}, copyErr
+	}
+	return result, nil
 }
 
 // Copy a constructor error while its calling-thread TLS is still current.
@@ -104,6 +123,10 @@ func goStringToFFIValue(
 	if err := validateCStringArgument(path, value); err != nil {
 		return ffi.Value{}, err
 	}
+	return goRawStringToFFIValue(path, value, constructor)
+}
+
+func goRawStringToFFIValue(path, value string, constructor func(string) (ffi.Value, ffi.ErrorCode)) (ffi.Value, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	result, rc := constructor(value)
@@ -127,6 +150,12 @@ func ffiValueToGo(v *ffi.Value) any {
 		return Symbol(ffi.ValueGetStringPtr(v))
 	case ffi.ValueTypeString:
 		return ffi.ValueGetStringPtr(v)
+	case ffi.ValueTypeStringBytes:
+		return StringBytes(ffi.ValueGetBytes(v))
+	case ffi.ValueTypeSymbolBytes:
+		return SymbolBytes(ffi.ValueGetBytes(v))
+	case ffi.ValueTypeInstanceName:
+		return InstanceName(ffi.ValueGetBytes(v))
 	case ffi.ValueTypeMultifield:
 		n := ffi.ValueGetMultifieldLen(v)
 		result := make([]any, n)

@@ -17,7 +17,7 @@ fn reset_empty_lhs_chronology_matches_pinned_clips() {
         for _ in 0..2 {
             engine.reset().unwrap();
             assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
-            assert_eq!(engine.get_output("t"), Some(expected));
+            assert_eq!(engine.get_output("t").unwrap(), Some(expected));
         }
     }
 }
