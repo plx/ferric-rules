@@ -63,3 +63,4 @@ crates/ferric-rules/tests/fixtures/stdlib/format_ordinary_directives.out -text
 crates/ferric-rules/tests/fixtures/stdlib/format_unicode_width_and_precision.out -text
 # Preserve exact fixture output and source markers on Windows checkouts.
 # Preserve exact fixture output and source markers on Windows checkouts.
+# Preserve exact fixture output and source markers on Windows checkouts.

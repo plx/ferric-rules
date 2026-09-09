@@ -815,7 +815,7 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 |----------|-------------|---------|
 | `str-cat` | Concatenate to string | `(str-cat "a" "b")` => `"ab"` |
 | `sym-cat` | Concatenate to symbol | `(sym-cat a b)` => `ab` |
-| `str-length` | String length in bytes | `(str-length "hello")` => `5` |
+| `str-length` | Character length of a STRING or SYMBOL | `(str-length "hello")` => `5`; `(str-length abc)` => `3` |
 | `sub-string` | Extract substring (1-indexed) | `(sub-string 1 3 "hello")` => `"hel"` |
 | `str-index` | Find substring position (1-indexed), FALSE if not found | `(str-index "lo" "hello")` => `4` |
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
