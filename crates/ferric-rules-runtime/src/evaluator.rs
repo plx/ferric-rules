@@ -4479,52 +4479,49 @@ fn builtin_str_length(
 
 /// `sub-string` — extract a substring by 1-indexed inclusive position.
 ///
-/// `(sub-string <start> <end> <string>)` — both `start` and `end` are
-/// 1-indexed and inclusive.  Out-of-range or inverted indices return an
-/// empty string.
+/// `(sub-string <start> <end> <lexeme>)` accepts STRING or SYMBOL text.
+/// Bounds are inclusive, with starts below one and ends beyond the text clipped.
+/// An end below one returns an empty STRING without evaluating the text;
+/// positive ends evaluate the text even for reversed or out-of-range starts.
 fn builtin_sub_string(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("sub-string", args, 3, span)?;
-    let values = eval_args(ctx, args)?;
-
-    let start = match &values[0] {
-        Value::Integer(n) => *n,
-        _ => {
+    let start_value = eval_inner(ctx, &args[0])?;
+    // EnvArgTypeCheck inspects Error after each operand, before type checking.
+    // Halt alone does not replace the value or skip subsequent direct builtins.
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "sub-string"));
+    }
+    let start = match start_value {
+        Value::Integer(n) => n.max(1),
+        value => {
             return Err(EvalError::TypeError {
                 function: "sub-string".to_string(),
                 expected: "INTEGER (start position)".to_string(),
-                actual: generic_value_type_name(&values[0]).to_string(),
+                actual: generic_value_type_name(&value).to_string(),
                 span: span.cloned(),
             })
         }
     };
-    let end = match &values[1] {
-        Value::Integer(n) => *n,
-        _ => {
+    let end_value = eval_inner(ctx, &args[1])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "sub-string"));
+    }
+    let end = match end_value {
+        Value::Integer(n) => n,
+        value => {
             return Err(EvalError::TypeError {
                 function: "sub-string".to_string(),
                 expected: "INTEGER (end position)".to_string(),
-                actual: generic_value_type_name(&values[1]).to_string(),
-                span: span.cloned(),
-            })
-        }
-    };
-    let s = match &values[2] {
-        Value::String(s) => s.as_bytes(),
-        _ => {
-            return Err(EvalError::TypeError {
-                function: "sub-string".to_string(),
-                expected: "STRING".to_string(),
-                actual: generic_value_type_name(&values[2]).to_string(),
+                actual: generic_value_type_name(&value).to_string(),
                 span: span.cloned(),
             })
         }
     };
 
-    // CLIPS uses 1-indexed inclusive bounds. Convert to Rust 0-indexed.
     let make_empty_string = |ctx: &mut EvalContext<'_>| {
         FerricString::new("", ctx.config.string_encoding).map_err(|e| EvalError::TypeError {
             function: "sub-string".to_string(),
@@ -4533,24 +4530,40 @@ fn builtin_sub_string(
             span: span.cloned(),
         })
     };
+    if end < 1 {
+        return make_empty_string(ctx).map(Value::String);
+    }
+
+    let text = eval_inner(ctx, &args[2])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "sub-string"));
+    }
+    let s = match &text {
+        Value::String(_) | Value::Symbol(_) => {
+            as_lexeme_bytes(&text, ctx.symbol_table, "sub-string", span)?
+        }
+        _ => {
+            return Err(EvalError::TypeError {
+                function: "sub-string".to_string(),
+                expected: "STRING or SYMBOL".to_string(),
+                actual: generic_value_type_name(&text).to_string(),
+                span: span.cloned(),
+            })
+        }
+    };
 
     let char_len = lexeme_length(s);
     let char_len_i64 = i64::try_from(char_len).unwrap_or(i64::MAX);
-    if start < 1 || end < 1 || end < start || start > char_len_i64 {
-        let fs = make_empty_string(ctx)?;
-        return Ok(Value::String(fs));
+    if end < start || start > char_len_i64 {
+        return make_empty_string(ctx).map(Value::String);
     }
-
     let Ok(start_char_idx) = usize::try_from(start - 1) else {
-        let fs = make_empty_string(ctx)?;
-        return Ok(Value::String(fs));
+        return make_empty_string(ctx).map(Value::String);
     };
     let end_char_exclusive = usize::try_from(end).unwrap_or(usize::MAX).min(char_len);
-
     let start_byte_idx = lexeme_offset(s, start_char_idx);
     let end_byte_idx = lexeme_offset(s, end_char_exclusive);
     let substr = &s[start_byte_idx..end_byte_idx];
-
     let fs = FerricString::from_bytes(substr, ctx.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
             function: "sub-string".to_string(),
@@ -9452,13 +9465,13 @@ mod tests {
     }
 
     #[test]
-    fn sub_string_zero_start_returns_empty() {
-        // start < 1: returns empty
+    fn sub_string_zero_start_clips_to_one() {
+        // start < 1: include characters starting at position one
         let expr = call("sub-string", vec![int(0), int(3), str_lit("hello")]);
         let result = eval_expr(&expr).unwrap();
         match result {
-            Value::String(s) => assert_eq!(s.as_str().unwrap(), ""),
-            other => panic!("expected empty STRING, got {other:?}"),
+            Value::String(s) => assert_eq!(s.as_str().unwrap(), "hel"),
+            other => panic!("expected STRING, got {other:?}"),
         }
     }
 
