@@ -858,7 +858,7 @@ by these aliases.
 | `create$` | Create a multifield | `(create$ a b c)` |
 | `implode$` | Convert multifield fields to a STRING | `(implode$ (create$ a 3))` => `"a 3"` |
 | `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
-| `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
+| `nth$` | Get nth element (1-indexed), `nil` if absent | `(nth$ 2 (create$ a b c))` => `b` |
 | `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
 | `subsetp` | Subset test | `(subsetp (create$ a) (create$ a b))` => `TRUE` |
 | `insert$` | Insert values at position | `(insert$ (create$ a c) 2 b)` => `(a b c)` |
@@ -975,6 +975,13 @@ unsupported because it requires local binding through comparator dispatch.
 This is separate from malformed source `bind` targets, which must retain their
 ordinary variable form. Comparator arity metadata alone does not establish
 full compatibility for every builtin or special form.
+
+`nth$` and its `nth` alias preserve the selected field's type and return the
+lowercase symbol `nil` for zero, negative, or excessive positions, including an
+empty multifield. After validating the numeric index, they evaluate and validate
+the multifield even when the position is absent. Runtime FLOAT indices truncate
+toward zero. CLIPS separately rejects literal FLOAT indices during source
+validation; Ferric's runtime conversion does not implement that static check.
 
 ### Fact Introspection Functions
 

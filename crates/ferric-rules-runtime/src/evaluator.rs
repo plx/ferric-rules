@@ -5181,37 +5181,7 @@ fn builtin_nth(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("nth", args, 2, span)?;
-    let Some(values) = eval_checked_args(ctx, args)? else {
-        return Ok(builtin_error_value(ctx, "nth"));
-    };
-    let Value::Integer(index) = &values[0] else {
-        return Err(EvalError::TypeError {
-            function: "nth".to_string(),
-            expected: "INTEGER (index)".to_string(),
-            actual: generic_value_type_name(&values[0]).to_string(),
-            span: span.cloned(),
-        });
-    };
-    let index = *index;
-    let Value::Multifield(mf) = &values[1] else {
-        return Err(EvalError::TypeError {
-            function: "nth".to_string(),
-            expected: "MULTIFIELD".to_string(),
-            actual: generic_value_type_name(&values[1]).to_string(),
-            span: span.cloned(),
-        });
-    };
-    let idx = usize::try_from(index - 1).ok().filter(|&i| i < mf.len());
-    let Some(idx) = idx else {
-        return Err(EvalError::TypeError {
-            function: "nth".to_string(),
-            expected: format!("index 1..{}", mf.len()),
-            actual: format!("index {index}"),
-            span: span.cloned(),
-        });
-    };
-    Ok(mf[idx].clone())
+    eval_nth(ctx, args, span, "nth")
 }
 
 /// `implode$` — return a space-separated STRING with quoted, escaped STRING fields.
@@ -5254,45 +5224,76 @@ fn builtin_implode_mf(
 
 /// `nth$` — get the nth element of a multifield (1-indexed).
 ///
-/// `(nth$ <index> <multifield>)`. Returns the value at that position.
-/// Returns a `TypeError` if the index is out of range.
+/// Returns the selected value, or the symbol `nil` for an absent position.
 fn builtin_nth_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("nth$", args, 2, span)?;
-    let Some(values) = eval_checked_args(ctx, args)? else {
-        return Ok(builtin_error_value(ctx, "nth$"));
+    eval_nth(ctx, args, span, "nth$")
+}
+
+fn eval_nth(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    function: &str,
+) -> Result<Value, EvalError> {
+    check_arity_exact(function, args, 2, span)?;
+    let index_value = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, function));
+    }
+    let index = match index_value {
+        Value::Integer(index) => Numeric::Int(index),
+        Value::Float(index) => Numeric::Flt(index),
+        other => {
+            return Err(EvalError::TypeError {
+                function: function.to_string(),
+                expected: "INTEGER or FLOAT (index)".to_string(),
+                actual: generic_value_type_name(&other).to_string(),
+                span: span.cloned(),
+            });
+        }
     };
-    let Value::Integer(index) = &values[0] else {
+    // Even an absent numeric position must evaluate and validate the multifield.
+    let value = eval_inner(ctx, &args[1])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, function));
+    }
+    let Value::Multifield(mf) = value else {
         return Err(EvalError::TypeError {
-            function: "nth$".to_string(),
-            expected: "INTEGER (index)".to_string(),
-            actual: generic_value_type_name(&values[0]).to_string(),
-            span: span.cloned(),
-        });
-    };
-    let index = *index;
-    let Value::Multifield(mf) = &values[1] else {
-        return Err(EvalError::TypeError {
-            function: "nth$".to_string(),
+            function: function.to_string(),
             expected: "MULTIFIELD".to_string(),
-            actual: generic_value_type_name(&values[1]).to_string(),
+            actual: generic_value_type_name(&value).to_string(),
             span: span.cloned(),
         });
     };
-    // CLIPS uses 1-based indexing. Convert safely: index < 1 catches negative and zero.
-    let idx = usize::try_from(index - 1).ok().filter(|&i| i < mf.len());
-    let Some(idx) = idx else {
-        return Err(EvalError::TypeError {
-            function: "nth$".to_string(),
-            expected: format!("index 1..{}", mf.len()),
-            actual: format!("index {index}"),
-            span: span.cloned(),
-        });
+    let position = match index {
+        Numeric::Int(index) => index.checked_sub(1),
+        Numeric::Flt(index) => {
+            // Runtime FLOAT indices truncate toward zero. The exclusive upper
+            // bound is 2^63: i64::MAX rounds up to it when represented as f64.
+            if index.is_finite() && (1.0..9_223_372_036_854_775_808.0).contains(&index) {
+                #[allow(clippy::cast_possible_truncation)]
+                let integer = index as i64;
+                Some(integer - 1)
+            } else {
+                None
+            }
+        }
     };
-    Ok(mf[idx].clone())
+    if let Some(value) = position
+        .and_then(|position| usize::try_from(position).ok())
+        .and_then(|position| mf.get(position))
+    {
+        return Ok(value.clone());
+    }
+    let nil = ctx
+        .symbol_table
+        .intern_symbol("nil", ctx.config.string_encoding)
+        .expect("nil is valid ASCII");
+    Ok(Value::Symbol(nil))
 }
 
 /// `member$` — test membership in a multifield.
@@ -9754,27 +9755,27 @@ mod tests {
     }
 
     #[test]
-    fn nth_mf_out_of_range_returns_error() {
+    fn nth_mf_out_of_range_returns_nil() {
         let mf = mf_lit(vec![Value::Integer(10), Value::Integer(20)]);
         let expr = call("nth$", vec![int(5), mf]);
         let result = eval_expr(&expr);
-        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+        assert!(matches!(result, Ok(Value::Symbol(_))));
     }
 
     #[test]
-    fn nth_mf_zero_index_returns_error() {
+    fn nth_mf_zero_index_returns_nil() {
         let mf = mf_lit(vec![Value::Integer(10)]);
         let expr = call("nth$", vec![int(0), mf]);
         let result = eval_expr(&expr);
-        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+        assert!(matches!(result, Ok(Value::Symbol(_))));
     }
 
     #[test]
-    fn nth_mf_negative_index_returns_error() {
+    fn nth_mf_negative_index_returns_nil() {
         let mf = mf_lit(vec![Value::Integer(10)]);
         let expr = call("nth$", vec![int(-1), mf]);
         let result = eval_expr(&expr);
-        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+        assert!(matches!(result, Ok(Value::Symbol(_))));
     }
 
     #[test]
@@ -9784,11 +9785,28 @@ mod tests {
     }
 
     #[test]
-    fn nth_mf_type_error_non_integer_index() {
+    fn nth_mf_runtime_float_index_truncates() {
         let mf = mf_lit(vec![Value::Integer(10)]);
-        let expr = call("nth$", vec![float(1.0), mf]);
-        let result = eval_expr(&expr);
-        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+        let expr = call("nth$", vec![float(1.9), mf]);
+        assert!(matches!(eval_expr(&expr), Ok(Value::Integer(10))));
+    }
+
+    #[test]
+    fn nth_mf_type_error_nonnumeric_index() {
+        let mf = mf_lit(vec![Value::Integer(10)]);
+        let expr = call("nth$", vec![str_lit("1"), mf]);
+        assert!(matches!(eval_expr(&expr), Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
+    fn nth_mf_unrepresentable_float_positions_are_absent() {
+        // Host-created values must not overflow an integer conversion. These
+        // safety cases make no claim about CLIPS's out-of-range C casts.
+        for index in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 2.0_f64.powi(63)] {
+            let mf = mf_lit(vec![Value::Integer(10)]);
+            let expr = call("nth$", vec![float(index), mf]);
+            assert!(matches!(eval_expr(&expr), Ok(Value::Symbol(_))));
+        }
     }
 
     #[test]
