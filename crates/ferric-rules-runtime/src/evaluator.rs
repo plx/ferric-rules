@@ -9,6 +9,7 @@
 
 #[cfg(feature = "tracing")]
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -501,7 +502,141 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
     result
 }
 
-fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, EvalError> {
+/// Pattern and join networks use distinct Boolean primitive conventions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LhsEvaluationMode {
+    Pattern,
+    Join,
+}
+
+/// Evaluate a pattern or join test without changing ordinary expression truth.
+///
+/// Only the LHS Boolean tree is interpreted here. Function arguments and
+/// callable bodies retain ordinary evaluation. The caller owns the final
+/// `EvaluationError` decision and cleanup: in particular, a negative join can
+/// treat an error as a conflict while preserving the enclosing execution halt.
+pub(crate) fn eval_lhs(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+    mode: LhsEvaluationMode,
+) -> Result<bool, EvalError> {
+    let owns_action_loop_budget = ctx.config.begin_action_loop_budget_if_inactive();
+
+    #[cfg(feature = "tracing")]
+    let result = {
+        if EvalRunGuard::is_active() {
+            finish_root_evaluation(eval_lhs_inner(ctx, expr, mode))
+        } else {
+            let _run_guard = EvalRunGuard::enter_root();
+            ferric_span!(debug_span, "eval_lhs_root", call_depth = ctx.call_depth);
+            finish_root_evaluation(eval_lhs_inner(ctx, expr, mode))
+        }
+    };
+    #[cfg(not(feature = "tracing"))]
+    let result = finish_root_evaluation(eval_lhs_inner(ctx, expr, mode));
+
+    if owns_action_loop_budget {
+        ctx.config.end_action_loop_budget();
+    }
+    result
+}
+
+fn eval_lhs_inner(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+    mode: LhsEvaluationMode,
+) -> Result<bool, EvalError> {
+    if let RuntimeExpr::Call { name, args, .. } = expr {
+        if name == "and" || name == "or" {
+            if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
+                return Err(EvalError::ExpressionNestingLimit {
+                    limit: MAX_EXPRESSION_DEPTH,
+                });
+            }
+            ctx.expression_depth += 1;
+            let result = eval_lhs_boolean_arguments(ctx, args, mode, name == "and");
+            ctx.expression_depth -= 1;
+            return result;
+        }
+    }
+
+    let primitive = mode == LhsEvaluationMode::Join && lhs_join_primitive(ctx, expr);
+    let value = match eval_inner(ctx, expr) {
+        Ok(value) => value,
+        Err(error)
+            if primitive
+                && matches!(expr, RuntimeExpr::Call { .. })
+                && !matches!(error, EvalError::ReturnControl { .. }) =>
+        {
+            // CLIPS's callable primitive exposes FALSE plus Error/Halt on
+            // failure. A later primitive in join-level OR can clear Error
+            // while remaining skipped under Halt, so retain that distinction.
+            ctx.globals.push_halt_diagnostic(error);
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    if mode == LhsEvaluationMode::Join
+        && matches!(
+            expr,
+            RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. }
+        )
+    {
+        // CLIPS join getters report primitive success independently of the
+        // copied value. Resolve normally first so missing bindings still fail.
+        return Ok(true);
+    }
+    // Pattern/join fallback evaluation rejects only the actual FALSE symbol.
+    // In particular, a callback returning VOID satisfies an LHS predicate.
+    Ok(
+        !matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("FALSE")),
+    )
+}
+
+fn eval_lhs_boolean_arguments(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    mode: LhsEvaluationMode,
+    conjunction: bool,
+) -> Result<bool, EvalError> {
+    for arg in args {
+        let passed = eval_lhs_inner(ctx, arg, mode)?;
+        if ctx.globals.evaluation_error()
+            && (mode == LhsEvaluationMode::Pattern || !lhs_join_primitive(ctx, arg))
+        {
+            return Ok(false);
+        }
+        if passed != conjunction {
+            return Ok(passed);
+        }
+    }
+    Ok(conjunction)
+}
+
+fn lhs_join_primitive(ctx: &EvalContext<'_>, expr: &RuntimeExpr) -> bool {
+    match expr {
+        RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => true,
+        RuntimeExpr::Call { name, .. } if !is_builtin_callable(name) => {
+            match parse_qualified_name(name) {
+                Ok(QualifiedName::Qualified { module, name }) => ctx
+                    .module_registry
+                    .get_by_name(&module)
+                    .is_some_and(|module| {
+                        ctx.functions.contains(module, &name)
+                            || ctx.generics.contains(module, &name)
+                    }),
+                Ok(QualifiedName::Unqualified(name)) => {
+                    !ctx.functions.modules_for_name(&name).is_empty()
+                        || !ctx.generics.modules_for_name(&name).is_empty()
+                }
+                Err(_) => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn finish_root_evaluation<T>(result: Result<T, EvalError>) -> Result<T, EvalError> {
     match result {
         Err(EvalError::ReturnControl { span, .. }) => {
             Err(EvalError::ReturnOutsideCallable { span })
@@ -516,16 +651,41 @@ fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, Eva
 /// it introduces no shared mutable state or atomics on the expression path.
 const MAX_EXPRESSION_DEPTH: usize = 64;
 
-fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
-    if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
-        return Err(EvalError::ExpressionNestingLimit {
-            limit: MAX_EXPRESSION_DEPTH,
-        });
+/// Preserve a CLIPS error's returned value while sort is evaluating, and while
+/// an enclosing expression consumes that value. The action/callable boundary
+/// stops execution; individual builtins may still consume values before then.
+fn recover_sort_error(
+    ctx: &mut EvalContext<'_>,
+    error: EvalError,
+    value: Value,
+) -> Result<Value, EvalError> {
+    if matches!(error, EvalError::ReturnControl { .. })
+        || !(ctx.globals.is_sort_recovery_active() || ctx.globals.evaluation_halted())
+    {
+        return Err(error);
     }
-    ctx.expression_depth += 1;
-    let result = eval_dispatch(ctx, expr);
-    ctx.expression_depth -= 1;
-    result
+    ctx.globals.push_halt_diagnostic(error);
+    Ok(value)
+}
+
+fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
+    let result = if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
+        Err(EvalError::ExpressionNestingLimit {
+            limit: MAX_EXPRESSION_DEPTH,
+        })
+    } else {
+        ctx.expression_depth += 1;
+        let result = eval_dispatch(ctx, expr);
+        ctx.expression_depth -= 1;
+        result
+    };
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let value = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            recover_sort_error(ctx, error, value)
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
@@ -679,6 +839,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             ..
         } => {
             let cond_value = eval_inner(ctx, condition)?;
+            if ctx.globals.evaluation_halted() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            if ctx.globals.sort_return_requested() {
+                return Ok(cond_value);
+            }
             let branch = if is_truthy(&cond_value, ctx.symbol_table) {
                 then_branch
             } else {
@@ -693,6 +859,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
                     result = eval_inner(ctx, &rt)?;
                 }
+                if ctx.globals.evaluation_halted() {
+                    return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+                }
+                if ctx.globals.sort_return_requested() {
+                    return Ok(result);
+                }
             }
             Ok(result)
         }
@@ -704,6 +876,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             loop {
                 let cond_value = eval_inner(ctx, condition)?;
+                if ctx.globals.evaluation_halted() {
+                    return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+                }
+                if ctx.globals.sort_return_requested() {
+                    return Ok(cond_value);
+                }
                 if !is_truthy(&cond_value, ctx.symbol_table) {
                     break;
                 }
@@ -714,6 +892,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     } else {
                         let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
                         result = eval_inner(ctx, &rt)?;
+                    }
+                    if ctx.globals.evaluation_halted() {
+                        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+                    }
+                    if ctx.globals.sort_return_requested() {
+                        return Ok(result);
                     }
                 }
             }
@@ -727,7 +911,19 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             span,
         } => {
             let start_val = eval_inner(ctx, start)?;
+            if ctx.globals.evaluation_halted() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            if ctx.globals.sort_return_requested() {
+                return Ok(start_val);
+            }
             let end_val = eval_inner(ctx, end)?;
+            if ctx.globals.evaluation_halted() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            if ctx.globals.sort_return_requested() {
+                return Ok(end_val);
+            }
             #[allow(clippy::cast_possible_truncation)] // intentional float-to-int for loop bounds
             let start_int = match &start_val {
                 Value::Integer(n) => *n,
@@ -819,6 +1015,15 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
                         result = eval_inner(&mut iter_ctx, &rt)?;
                     }
+                    if iter_ctx.globals.evaluation_halted() {
+                        return Ok(clips_false(
+                            iter_ctx.symbol_table,
+                            iter_ctx.config.string_encoding,
+                        ));
+                    }
+                    if iter_ctx.globals.sort_return_requested() {
+                        return Ok(result);
+                    }
                 }
             }
             Ok(result)
@@ -830,6 +1035,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             span,
         } => {
             let list_val = eval_inner(ctx, list_expr)?;
+            if ctx.globals.evaluation_halted() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            if ctx.globals.sort_return_requested() {
+                return Ok(list_val);
+            }
             let elements: Vec<Value> = match list_val {
                 Value::Multifield(mf) => mf.as_slice().to_vec(),
                 // A scalar value is treated as a single-element multifield.
@@ -923,6 +1134,15 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
                         result = eval_inner(&mut iter_ctx, &rt)?;
                     }
+                    if iter_ctx.globals.evaluation_halted() {
+                        return Ok(clips_false(
+                            iter_ctx.symbol_table,
+                            iter_ctx.config.string_encoding,
+                        ));
+                    }
+                    if iter_ctx.globals.sort_return_requested() {
+                        return Ok(result);
+                    }
                 }
             }
             Ok(result)
@@ -934,9 +1154,21 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             ..
         } => {
             let disc_value = eval_inner(ctx, expr)?;
+            if ctx.globals.evaluation_halted() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            if ctx.globals.sort_return_requested() {
+                return Ok(disc_value);
+            }
             // Find matching case (equality comparison)
             for (test_val_expr, case_body) in cases {
                 let test_value = eval_inner(ctx, test_val_expr)?;
+                if ctx.globals.evaluation_halted() {
+                    return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+                }
+                if ctx.globals.sort_return_requested() {
+                    return Ok(test_value);
+                }
                 if disc_value.structural_eq(&test_value) {
                     let mut result = Value::Void;
                     for (action_expr, rt_expr) in case_body {
@@ -945,6 +1177,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         } else {
                             let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
                             result = eval_inner(ctx, &rt)?;
+                        }
+                        if ctx.globals.evaluation_halted() {
+                            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+                        }
+                        if ctx.globals.sort_return_requested() {
+                            return Ok(result);
                         }
                     }
                     return Ok(result);
@@ -959,6 +1197,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     } else {
                         let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
                         result = eval_inner(ctx, &rt)?;
+                    }
+                    if ctx.globals.evaluation_halted() {
+                        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+                    }
+                    if ctx.globals.sort_return_requested() {
+                        return Ok(result);
                     }
                 }
                 Ok(result)
@@ -1163,6 +1407,9 @@ fn execute_callable_body(
     current_module: crate::modules::ModuleId,
     method_chain: Option<MethodChain>,
 ) -> Result<Value, EvalError> {
+    if ctx.globals.evaluation_halted() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
     // Translate body expressions (ActionExpr → RuntimeExpr) BEFORE constructing
     // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
     let mut body_exprs = Vec::with_capacity(body.len());
@@ -1196,8 +1443,28 @@ fn execute_callable_body(
     for body_expr in &body_exprs {
         match eval_inner(&mut inner_ctx, body_expr) {
             Ok(value) => result = value,
-            Err(EvalError::ReturnControl { value, .. }) => return Ok(value),
-            Err(error) => return Err(error),
+            Err(EvalError::ReturnControl { value, .. }) => {
+                inner_ctx.globals.take_sort_return();
+                return Ok(if inner_ctx.globals.evaluation_halted() {
+                    clips_false(inner_ctx.symbol_table, inner_ctx.config.string_encoding)
+                } else {
+                    value
+                });
+            }
+            Err(error) => {
+                inner_ctx.globals.take_sort_return();
+                return Err(error);
+            }
+        }
+        if inner_ctx.globals.evaluation_halted() {
+            inner_ctx.globals.take_sort_return();
+            return Ok(clips_false(
+                inner_ctx.symbol_table,
+                inner_ctx.config.string_encoding,
+            ));
+        }
+        if inner_ctx.globals.take_sort_return() {
+            return Ok(result);
         }
     }
     Ok(result)
@@ -1212,6 +1479,12 @@ fn dispatch_user_function(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
+    // CLIPS clears EvaluationError before its sticky HaltExecution gate.
+    // A skipped later call can therefore clear Error without clearing Halt.
+    ctx.globals.clear_evaluation_error();
+    if ctx.globals.evaluation_halted() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
     let span_ref = span.as_ref();
     let max_call_depth = ctx.config.effective_max_call_depth();
 
@@ -1232,7 +1505,13 @@ fn dispatch_user_function(
     }
 
     // Evaluate all arguments in the caller's context.
-    let arg_values = eval_args(ctx, args)?;
+    let mut arg_values = Vec::with_capacity(args.len());
+    for argument in args {
+        arg_values.push(eval_inner(ctx, argument)?);
+        if ctx.globals.evaluation_error() {
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
+    }
 
     // Check arity.
     let required = func.parameters.len();
@@ -1447,9 +1726,21 @@ fn dispatch_generic(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
+    // CLIPS clears EvaluationError before its sticky HaltExecution gate.
+    // A skipped later call can therefore clear Error without clearing Halt.
+    ctx.globals.clear_evaluation_error();
+    if ctx.globals.evaluation_halted() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
     let max_call_depth = ctx.config.effective_max_call_depth();
     // Evaluate all arguments first (eager evaluation).
-    let arg_values = eval_args(ctx, args)?;
+    let mut arg_values = Vec::with_capacity(args.len());
+    for argument in args {
+        arg_values.push(eval_inner(ctx, argument)?);
+        if ctx.globals.evaluation_error() {
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
+    }
 
     // Collect all applicable methods, sorted by specificity (most specific first).
     let mut applicable: Vec<crate::functions::RegisteredMethod> = generic
@@ -2386,9 +2677,49 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
     )
 }
 
+/// Defaults written by CLIPS handlers on their local failure branches. Folded
+/// arithmetic and delegated calls preserve their partial values in the handlers.
+fn builtin_error_value(ctx: &mut EvalContext<'_>, name: &str) -> Value {
+    match name {
+        "str-cat" | "format" | "sub-string" | "implode$" => Value::String(
+            FerricString::new("", ctx.config.string_encoding).expect("empty string is encodable"),
+        ),
+        "sym-cat" | "nth" | "nth$" => Value::Symbol(
+            ctx.symbol_table
+                .intern_symbol("nil", ctx.config.string_encoding)
+                .expect("nil is encodable"),
+        ),
+        "create$" => Value::Multifield(Box::default()),
+        "printout" | "watch" | "unwatch" => Value::Void,
+        "str-length" | "length" | "length$" => Value::Integer(-1),
+        "mod" | "abs" | "integer" | "round" | "str-compare" => Value::Integer(0),
+        "**" | "sqrt" | "float" => Value::Float(0.0),
+        _ => clips_false(ctx.symbol_table, ctx.config.string_encoding),
+    }
+}
+
+fn dispatch_builtin(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<SourceSpan>,
+) -> Result<Value, EvalError> {
+    match dispatch_builtin_inner(ctx, name, args, span) {
+        // Unknown names still need ordinary user/generic resolution.
+        Err(error @ (EvalError::UnknownFunction { .. } | EvalError::ReturnControl { .. })) => {
+            Err(error)
+        }
+        Err(error) => {
+            let value = builtin_error_value(ctx, name);
+            recover_sort_error(ctx, error, value)
+        }
+        result => result,
+    }
+}
+
 /// Dispatch a built-in function call.
 #[allow(clippy::too_many_lines)]
-fn dispatch_builtin(
+fn dispatch_builtin_inner(
     ctx: &mut EvalContext<'_>,
     name: &str,
     args: &[RuntimeExpr],
@@ -2710,6 +3041,22 @@ fn eval_args(ctx: &mut EvalContext<'_>, args: &[RuntimeExpr]) -> Result<Vec<Valu
     Ok(values)
 }
 
+/// Type-checked CLIPS argument access stops as soon as a child leaves Error
+/// set. A later callable must not get a chance to clear that bit first.
+fn eval_checked_args(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+) -> Result<Option<Vec<Value>>, EvalError> {
+    let mut values = Vec::with_capacity(args.len());
+    for argument in args {
+        values.push(eval_inner(ctx, argument)?);
+        if ctx.globals.evaluation_error() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(values))
+}
+
 // ---------------------------------------------------------------------------
 // Arithmetic built-ins
 // ---------------------------------------------------------------------------
@@ -2721,20 +3068,38 @@ fn builtin_add(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
-    if values.is_empty() {
-        return Ok(Value::Integer(0));
-    }
     let mut use_float = false;
     let mut int_sum: i64 = 0;
     let mut float_sum: f64 = 0.0;
-    for v in &values {
-        match as_numeric(v, "+", span)? {
+    let mut recovery_float_sum: f64 = 0.0;
+    for arg in args {
+        let value = eval_inner(ctx, arg)?;
+        let numeric = match as_numeric(&value, "+", span) {
+            Ok(numeric) => numeric,
+            Err(error) => {
+                let partial = if use_float {
+                    Value::Float(recovery_float_sum)
+                } else {
+                    Value::Integer(int_sum)
+                };
+                return recover_sort_error(ctx, error, partial);
+            }
+        };
+        match numeric {
             Numeric::Int(i) => {
+                if use_float {
+                    recovery_float_sum += i as f64;
+                }
                 int_sum = int_sum.wrapping_add(i);
                 float_sum += i as f64;
             }
             Numeric::Flt(f) => {
+                // CLIPS converts the accumulated integer only at first FLOAT.
+                recovery_float_sum = if use_float {
+                    recovery_float_sum + f
+                } else {
+                    int_sum as f64 + f
+                };
                 use_float = true;
                 float_sum += f;
             }
@@ -2754,31 +3119,47 @@ fn builtin_sub(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("-", args, 1, span)?;
-    let values = eval_args(ctx, args)?;
-    if values.len() == 1 {
-        // Unary negation
-        return match as_numeric(&values[0], "-", span)? {
-            Numeric::Int(i) => Ok(Value::Integer(-i)),
-            Numeric::Flt(f) => Ok(Value::Float(-f)),
-        };
+    if let Err(error) = check_arity_min("-", args, 1, span) {
+        return recover_sort_error(ctx, error, Value::Integer(0));
     }
-    // Subtraction: first - rest
     let mut use_float = false;
     let mut int_result: i64 = 0;
     let mut float_result: f64 = 0.0;
-    for (idx, v) in values.iter().enumerate() {
-        match as_numeric(v, "-", span)? {
+    let mut recovery_float_result: f64 = 0.0;
+    for (idx, arg) in args.iter().enumerate() {
+        let value = eval_inner(ctx, arg)?;
+        let numeric = match as_numeric(&value, "-", span) {
+            Ok(numeric) => numeric,
+            Err(error) => {
+                let partial = if use_float {
+                    Value::Float(recovery_float_result)
+                } else {
+                    Value::Integer(int_result)
+                };
+                return recover_sort_error(ctx, error, partial);
+            }
+        };
+        match numeric {
             Numeric::Int(i) => {
                 if idx == 0 {
                     int_result = i;
                     float_result = i as f64;
                 } else {
+                    if use_float {
+                        recovery_float_result -= i as f64;
+                    }
                     int_result = int_result.wrapping_sub(i);
                     float_result -= i as f64;
                 }
             }
             Numeric::Flt(f) => {
+                recovery_float_result = if idx == 0 {
+                    f
+                } else if use_float {
+                    recovery_float_result - f
+                } else {
+                    int_result as f64 - f
+                };
                 use_float = true;
                 if idx == 0 {
                     float_result = f;
@@ -2788,7 +3169,14 @@ fn builtin_sub(
             }
         }
     }
-    if use_float {
+    if args.len() == 1 {
+        // Preserve Ferric's existing unary-negation extension.
+        if use_float {
+            Ok(Value::Float(-float_result))
+        } else {
+            Ok(Value::Integer(-int_result))
+        }
+    } else if use_float {
         Ok(Value::Float(float_result))
     } else {
         Ok(Value::Integer(int_result))
@@ -2802,20 +3190,38 @@ fn builtin_mul(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
-    if values.is_empty() {
-        return Ok(Value::Integer(1));
-    }
     let mut use_float = false;
     let mut int_prod: i64 = 1;
     let mut float_prod: f64 = 1.0;
-    for v in &values {
-        match as_numeric(v, "*", span)? {
+    let mut recovery_float_prod: f64 = 1.0;
+    for arg in args {
+        let value = eval_inner(ctx, arg)?;
+        let numeric = match as_numeric(&value, "*", span) {
+            Ok(numeric) => numeric,
+            Err(error) => {
+                // CLIPS folds the failed argument's numeric zero into the product.
+                let partial = if use_float {
+                    Value::Float(recovery_float_prod * 0.0)
+                } else {
+                    Value::Integer(0)
+                };
+                return recover_sort_error(ctx, error, partial);
+            }
+        };
+        match numeric {
             Numeric::Int(i) => {
+                if use_float {
+                    recovery_float_prod *= i as f64;
+                }
                 int_prod = int_prod.wrapping_mul(i);
                 float_prod *= i as f64;
             }
             Numeric::Flt(f) => {
+                recovery_float_prod = if use_float {
+                    recovery_float_prod * f
+                } else {
+                    int_prod as f64 * f
+                };
                 use_float = true;
                 float_prod *= f;
             }
@@ -2835,21 +3241,34 @@ fn builtin_div(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("/", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let lhs = match as_numeric(&values[0], "/", span)? {
-        Numeric::Int(i) => i as f64,
-        Numeric::Flt(f) => f,
+    if let Err(error) = check_arity_exact("/", args, 2, span) {
+        return recover_sort_error(ctx, error, Value::Float(1.0));
+    }
+    let lhs_value = eval_inner(ctx, &args[0])?;
+    let lhs = match as_numeric(&lhs_value, "/", span) {
+        Ok(Numeric::Int(i)) => i as f64,
+        Ok(Numeric::Flt(f)) => f,
+        Err(error) => return recover_sort_error(ctx, error, Value::Float(1.0)),
     };
-    let rhs = match as_numeric(&values[1], "/", span)? {
-        Numeric::Int(i) => i as f64,
-        Numeric::Flt(f) => f,
+    let rhs_value = eval_inner(ctx, &args[1])?;
+    let rhs = match as_numeric(&rhs_value, "/", span) {
+        Ok(Numeric::Int(i)) => i as f64,
+        Ok(Numeric::Flt(f)) => f,
+        Err(error) => {
+            // A bad divisor becomes numeric zero, then reaches divide-by-zero.
+            recover_sort_error(ctx, error, Value::Float(1.0))?;
+            0.0
+        }
     };
     if rhs == 0.0 {
-        return Err(EvalError::DivisionByZero {
-            function: "/".to_string(),
-            span: span.cloned(),
-        });
+        return recover_sort_error(
+            ctx,
+            EvalError::DivisionByZero {
+                function: "/".to_string(),
+                span: span.cloned(),
+            },
+            Value::Float(1.0),
+        );
     }
     Ok(Value::Float(lhs / rhs))
 }
@@ -2861,21 +3280,33 @@ fn builtin_int_div(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("div", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let lhs = match as_numeric(&values[0], "div", span)? {
-        Numeric::Int(i) => i,
-        Numeric::Flt(f) => f as i64,
+    if let Err(error) = check_arity_exact("div", args, 2, span) {
+        return recover_sort_error(ctx, error, Value::Integer(1));
+    }
+    let lhs_value = eval_inner(ctx, &args[0])?;
+    let lhs = match as_numeric(&lhs_value, "div", span) {
+        Ok(Numeric::Int(i)) => i,
+        Ok(Numeric::Flt(f)) => f as i64,
+        Err(error) => return recover_sort_error(ctx, error, Value::Integer(0)),
     };
-    let rhs = match as_numeric(&values[1], "div", span)? {
-        Numeric::Int(i) => i,
-        Numeric::Flt(f) => f as i64,
+    let rhs_value = eval_inner(ctx, &args[1])?;
+    let rhs = match as_numeric(&rhs_value, "div", span) {
+        Ok(Numeric::Int(i)) => i,
+        Ok(Numeric::Flt(f)) => f as i64,
+        Err(error) => {
+            recover_sort_error(ctx, error, Value::Integer(1))?;
+            0
+        }
     };
     if rhs == 0 {
-        return Err(EvalError::DivisionByZero {
-            function: "div".to_string(),
-            span: span.cloned(),
-        });
+        return recover_sort_error(
+            ctx,
+            EvalError::DivisionByZero {
+                function: "div".to_string(),
+                span: span.cloned(),
+            },
+            Value::Integer(1),
+        );
     }
     Ok(Value::Integer(lhs / rhs))
 }
@@ -2888,7 +3319,9 @@ fn builtin_mod(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("mod", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "mod"));
+    };
     let lhs = match as_numeric(&values[0], "mod", span)? {
         Numeric::Int(i) => i,
         Numeric::Flt(f) => f as i64,
@@ -2927,13 +3360,36 @@ fn builtin_min(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("min", args, 1, span)?;
-    let values = eval_args(ctx, args)?;
+    if let Err(error) = check_arity_min("min", args, 1, span) {
+        return recover_sort_error(ctx, error, Value::Integer(0));
+    }
+    let mut selected = Value::Integer(0);
     let mut use_float = false;
     let mut min_int: i64 = i64::MAX;
     let mut min_float: f64 = f64::INFINITY;
-    for v in &values {
-        match as_numeric(v, "min", span)? {
+    for (index, arg) in args.iter().enumerate() {
+        let value = eval_inner(ctx, arg)?;
+        // EnvArgTypeCheck returns the prior selection after an inherited error.
+        if ctx.globals.evaluation_error() {
+            return Ok(selected);
+        }
+        let numeric = match as_numeric(&value, "min", span) {
+            Ok(numeric) => numeric,
+            Err(error) => return recover_sort_error(ctx, error, selected),
+        };
+        // Track the exact selected operand for failure transport, retaining the
+        // existing successful-result promotion policy below.
+        let replaces_selection = match (&value, &selected) {
+            (Value::Integer(left), Value::Integer(right)) => left < right,
+            (Value::Integer(left), Value::Float(right)) => (*left as f64) < *right,
+            (Value::Float(left), Value::Integer(right)) => *left < (*right as f64),
+            (Value::Float(left), Value::Float(right)) => left < right,
+            _ => unreachable!("selected extrema operands are numeric"),
+        };
+        if index == 0 || replaces_selection {
+            selected = value;
+        }
+        match numeric {
             Numeric::Int(i) => {
                 if i < min_int {
                     min_int = i;
@@ -2964,13 +3420,36 @@ fn builtin_max(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("max", args, 1, span)?;
-    let values = eval_args(ctx, args)?;
+    if let Err(error) = check_arity_min("max", args, 1, span) {
+        return recover_sort_error(ctx, error, Value::Integer(0));
+    }
+    let mut selected = Value::Integer(0);
     let mut use_float = false;
     let mut max_int: i64 = i64::MIN;
     let mut max_float: f64 = f64::NEG_INFINITY;
-    for v in &values {
-        match as_numeric(v, "max", span)? {
+    for (index, arg) in args.iter().enumerate() {
+        let value = eval_inner(ctx, arg)?;
+        // EnvArgTypeCheck returns the prior selection after an inherited error.
+        if ctx.globals.evaluation_error() {
+            return Ok(selected);
+        }
+        let numeric = match as_numeric(&value, "max", span) {
+            Ok(numeric) => numeric,
+            Err(error) => return recover_sort_error(ctx, error, selected),
+        };
+        // Track the exact selected operand for failure transport, retaining the
+        // existing successful-result promotion policy below.
+        let replaces_selection = match (&value, &selected) {
+            (Value::Integer(left), Value::Integer(right)) => left > right,
+            (Value::Integer(left), Value::Float(right)) => (*left as f64) > *right,
+            (Value::Float(left), Value::Integer(right)) => *left > (*right as f64),
+            (Value::Float(left), Value::Float(right)) => left > right,
+            _ => unreachable!("selected extrema operands are numeric"),
+        };
+        if index == 0 || replaces_selection {
+            selected = value;
+        }
+        match numeric {
             Numeric::Int(i) => {
                 if i > max_int {
                     max_int = i;
@@ -3192,7 +3671,9 @@ fn builtin_pow(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("**", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "**"));
+    };
     let base = as_float(&values[0], "**", span)?;
     let exp = as_float(&values[1], "**", span)?;
     Ok(Value::Float(base.powf(exp)))
@@ -3292,25 +3773,68 @@ fn builtin_grad_deg(
 // Comparison built-ins
 // ---------------------------------------------------------------------------
 
-/// Helper: extract two numeric values for comparison.
-#[allow(clippy::cast_precision_loss)]
-fn eval_cmp_pair(
+#[derive(Clone, Copy)]
+enum NumericComparison {
+    Greater,
+    Less,
+    GreaterOrEqual,
+    LessOrEqual,
+    Equal,
+    NotEqual,
+}
+
+impl NumericComparison {
+    #[allow(clippy::cast_precision_loss)]
+    fn matches(self, left: &Numeric, right: &Numeric) -> bool {
+        let order = match (left, right) {
+            (Numeric::Int(left), Numeric::Int(right)) => Some(left.cmp(right)),
+            (Numeric::Flt(left), Numeric::Flt(right)) => left.partial_cmp(right),
+            (Numeric::Int(left), Numeric::Flt(right)) => (*left as f64).partial_cmp(right),
+            (Numeric::Flt(left), Numeric::Int(right)) => left.partial_cmp(&(*right as f64)),
+        };
+        match self {
+            Self::Greater => order == Some(Ordering::Greater),
+            Self::Less => order == Some(Ordering::Less),
+            Self::GreaterOrEqual => matches!(order, Some(Ordering::Greater | Ordering::Equal)),
+            Self::LessOrEqual => matches!(order, Some(Ordering::Less | Ordering::Equal)),
+            Self::Equal => order == Some(Ordering::Equal),
+            Self::NotEqual => order != Some(Ordering::Equal),
+        }
+    }
+}
+
+/// Evaluate only the operands needed to decide a numeric comparison chain.
+/// Equality and inequality keep the first operand; ordering advances the cursor.
+fn eval_cmp_chain(
     ctx: &mut EvalContext<'_>,
     name: &str,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
-) -> Result<(f64, f64), EvalError> {
-    check_arity_exact(name, args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let lhs = match as_numeric(&values[0], name, span)? {
-        Numeric::Int(i) => i as f64,
-        Numeric::Flt(f) => f,
-    };
-    let rhs = match as_numeric(&values[1], name, span)? {
-        Numeric::Int(i) => i as f64,
-        Numeric::Flt(f) => f,
-    };
-    Ok((lhs, rhs))
+    comparison: NumericComparison,
+) -> Result<Value, EvalError> {
+    check_arity_min(name, args, 2, span)?;
+    let mut previous = as_numeric(&eval_inner(ctx, &args[0])?, name, span)?;
+    for argument in &args[1..] {
+        let next = as_numeric(&eval_inner(ctx, argument)?, name, span)?;
+        if !comparison.matches(&previous, &next) {
+            return Ok(clips_bool(
+                false,
+                ctx.symbol_table,
+                ctx.config.string_encoding,
+            ));
+        }
+        if !matches!(
+            comparison,
+            NumericComparison::Equal | NumericComparison::NotEqual
+        ) {
+            previous = next;
+        }
+    }
+    Ok(clips_bool(
+        true,
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+    ))
 }
 
 fn builtin_cmp_gt(
@@ -3318,12 +3842,7 @@ fn builtin_cmp_gt(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, ">", args, span)?;
-    Ok(clips_bool(
-        l > r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, ">", args, span, NumericComparison::Greater)
 }
 
 fn builtin_cmp_lt(
@@ -3331,12 +3850,7 @@ fn builtin_cmp_lt(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "<", args, span)?;
-    Ok(clips_bool(
-        l < r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "<", args, span, NumericComparison::Less)
 }
 
 fn builtin_cmp_gte(
@@ -3344,12 +3858,7 @@ fn builtin_cmp_gte(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, ">=", args, span)?;
-    Ok(clips_bool(
-        l >= r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, ">=", args, span, NumericComparison::GreaterOrEqual)
 }
 
 fn builtin_cmp_lte(
@@ -3357,40 +3866,23 @@ fn builtin_cmp_lte(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "<=", args, span)?;
-    Ok(clips_bool(
-        l <= r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "<=", args, span, NumericComparison::LessOrEqual)
 }
 
-#[allow(clippy::float_cmp)]
 fn builtin_cmp_eq(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "=", args, span)?;
-    Ok(clips_bool(
-        (l - r).abs() < f64::EPSILON || l == r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "=", args, span, NumericComparison::Equal)
 }
 
-#[allow(clippy::float_cmp)]
 fn builtin_cmp_neq(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "!=", args, span)?;
-    Ok(clips_bool(
-        !((l - r).abs() < f64::EPSILON || l == r),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "!=", args, span, NumericComparison::NotEqual)
 }
 
 /// `eq` — value equality (symbols, strings, numbers).
@@ -3437,6 +3929,9 @@ fn builtin_and(
 ) -> Result<Value, EvalError> {
     for arg in args {
         let v = eval_inner(ctx, arg)?;
+        if ctx.globals.evaluation_error() {
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
         if !is_truthy(&v, ctx.symbol_table) {
             return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
         }
@@ -3452,6 +3947,9 @@ fn builtin_or(
 ) -> Result<Value, EvalError> {
     for arg in args {
         let v = eval_inner(ctx, arg)?;
+        if ctx.globals.evaluation_error() {
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
         if is_truthy(&v, ctx.symbol_table) {
             return Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding));
         }
@@ -3628,6 +4126,9 @@ fn builtin_to_integer(
 ) -> Result<Value, EvalError> {
     check_arity_exact("integer", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "integer"));
+    }
     match val {
         Value::Integer(_) => Ok(val),
         #[allow(clippy::cast_possible_truncation)]
@@ -3649,6 +4150,9 @@ fn builtin_to_float(
 ) -> Result<Value, EvalError> {
     check_arity_exact("float", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "float"));
+    }
     match val {
         Value::Float(_) => Ok(val),
         Value::Integer(n) => Ok(Value::Float(n as f64)),
@@ -3723,7 +4227,27 @@ fn builtin_str_cat(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
+    let mut values = Vec::with_capacity(args.len());
+    for argument in args {
+        let value = eval_inner(ctx, argument)?;
+        if ctx.globals.evaluation_error() {
+            return Ok(builtin_error_value(ctx, "str-cat"));
+        }
+        if (ctx.globals.is_sort_recovery_active() || ctx.globals.evaluation_halted())
+            && !matches!(
+                value,
+                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Symbol(_)
+            )
+        {
+            return Err(EvalError::TypeError {
+                function: "str-cat".to_string(),
+                expected: "NUMBER or LEXEME".to_string(),
+                actual: generic_value_type_name(&value).to_string(),
+                span: span.cloned(),
+            });
+        }
+        values.push(value);
+    }
     let mut result = String::new();
     concat_values_to_string(ctx, &values, &mut result);
     let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
@@ -3745,7 +4269,27 @@ fn builtin_sym_cat(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
+    let mut values = Vec::with_capacity(args.len());
+    for argument in args {
+        let value = eval_inner(ctx, argument)?;
+        if ctx.globals.evaluation_error() {
+            return Ok(builtin_error_value(ctx, "sym-cat"));
+        }
+        if (ctx.globals.is_sort_recovery_active() || ctx.globals.evaluation_halted())
+            && !matches!(
+                value,
+                Value::Integer(_) | Value::Float(_) | Value::String(_) | Value::Symbol(_)
+            )
+        {
+            return Err(EvalError::TypeError {
+                function: "sym-cat".to_string(),
+                expected: "NUMBER or LEXEME".to_string(),
+                actual: generic_value_type_name(&value).to_string(),
+                span: span.cloned(),
+            });
+        }
+        values.push(value);
+    }
     let mut result = String::new();
     concat_values_to_string(ctx, &values, &mut result);
     let sym = ctx
@@ -3908,6 +4452,9 @@ fn builtin_str_length(
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-length", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "str-length"));
+    }
     match &val {
         Value::String(s) => {
             let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
@@ -4052,7 +4599,9 @@ fn builtin_str_index(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-index", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "str-index"));
+    };
     let find = as_lexeme_str(&values[0], ctx.symbol_table, "str-index", span)?;
     let search = as_lexeme_str(&values[1], ctx.symbol_table, "str-index", span)?;
     match search.find(find.as_str()) {
@@ -4163,7 +4712,9 @@ fn builtin_str_compare(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-compare", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "str-compare"));
+    };
     let a = as_lexeme_str(&values[0], ctx.symbol_table, "str-compare", span)?;
     let b = as_lexeme_str(&values[1], ctx.symbol_table, "str-compare", span)?;
     let result = match a.cmp(&b) {
@@ -4278,15 +4829,15 @@ fn builtin_create_mf(
     args: &[RuntimeExpr],
     _span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
     let mut result = ferric_rules_core::value::Multifield::new();
-    for val in values {
+    for argument in args {
+        let val = eval_inner(ctx, argument)?;
+        if ctx.globals.evaluation_error() {
+            return Ok(Value::Multifield(Box::default()));
+        }
         match val {
-            Value::Multifield(mf) => {
-                for elem in mf.iter() {
-                    result.push(elem.clone());
-                }
-            }
+            Value::Multifield(mf) => result.extend(*mf),
+            Value::Void => {}
             other => result.push(other),
         }
     }
@@ -4409,7 +4960,9 @@ fn builtin_nth(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("nth", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "nth"));
+    };
     let Value::Integer(index) = &values[0] else {
         return Err(EvalError::TypeError {
             function: "nth".to_string(),
@@ -4447,6 +5000,9 @@ fn builtin_implode_mf(
 ) -> Result<Value, EvalError> {
     check_arity_exact("implode$", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "implode$"));
+    }
     match &val {
         Value::Multifield(mf) => {
             let mut result = String::new();
@@ -4485,7 +5041,9 @@ fn builtin_nth_mf(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("nth$", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "nth$"));
+    };
     let Value::Integer(index) = &values[0] else {
         return Err(EvalError::TypeError {
             function: "nth$".to_string(),
@@ -4527,6 +5085,9 @@ fn builtin_member_mf(
 ) -> Result<Value, EvalError> {
     check_arity_exact("member$", args, 2, span)?;
     let values = eval_args(ctx, args)?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "member$"));
+    }
     let needle = &values[0];
     let Value::Multifield(mf) = &values[1] else {
         return Err(EvalError::TypeError {
@@ -4558,6 +5119,9 @@ fn builtin_member(
 ) -> Result<Value, EvalError> {
     check_arity_exact("member", args, 2, span)?;
     let values = eval_args(ctx, args)?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "member"));
+    }
     let needle = &values[0];
     let Value::Multifield(mf) = &values[1] else {
         return Err(EvalError::TypeError {
@@ -4591,7 +5155,9 @@ fn builtin_subsetp(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("subsetp", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
+    let Some(values) = eval_checked_args(ctx, args)? else {
+        return Ok(builtin_error_value(ctx, "subsetp"));
+    };
     let Value::Multifield(mf1) = &values[0] else {
         return Err(EvalError::TypeError {
             function: "subsetp".to_string(),
@@ -4848,73 +5414,299 @@ fn builtin_rest_mf(
     }
 }
 
-/// CLIPS-compatible value comparison for sort.
-#[allow(clippy::cast_precision_loss)]
-fn clips_compare_values(a: &Value, b: &Value, symbol_table: &SymbolTable) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    // Type ordering: Integer/Float < String < Symbol < other
-    fn type_rank(v: &Value) -> u8 {
-        match v {
-            Value::Integer(_) | Value::Float(_) => 0,
-            Value::String(_) => 1,
-            Value::Symbol(_) => 2,
-            _ => 3,
+/// A comparator resolved before evaluating the sort's data arguments.
+enum SortComparator {
+    Builtin(String),
+    Function(UserFunction, crate::modules::ModuleId),
+    Generic(GenericFunction, crate::modules::ModuleId),
+}
+
+impl SortComparator {
+    fn invoke(
+        &self,
+        ctx: &mut EvalContext<'_>,
+        left: &Value,
+        right: &Value,
+        span: Option<&SourceSpan>,
+    ) -> Result<Value, EvalError> {
+        // Match the expression frame used by an ordinary RuntimeExpr::Call.
+        if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
+            return Err(EvalError::ExpressionNestingLimit {
+                limit: MAX_EXPRESSION_DEPTH,
+            });
         }
-    }
-    let ra = type_rank(a);
-    let rb = type_rank(b);
-    if ra != rb {
-        return ra.cmp(&rb);
-    }
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        (Value::Integer(a), Value::Float(b)) => {
-            (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
+        let args = [
+            RuntimeExpr::Literal(left.clone()),
+            RuntimeExpr::Literal(right.clone()),
+        ];
+        ctx.expression_depth += 1;
+        let result = match self {
+            Self::Builtin(name) if name == "return" => {
+                ctx.globals.request_sort_return();
+                Ok(left.clone())
+            }
+            Self::Builtin(name) => dispatch_builtin(ctx, name, &args, span.cloned()),
+            Self::Function(function, module) => {
+                dispatch_user_function(ctx, function, *module, &args, span.cloned())
+            }
+            Self::Generic(generic, module) => {
+                dispatch_generic(ctx, generic, *module, &args, span.cloned())
+            }
+        };
+        ctx.expression_depth -= 1;
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let value = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+                recover_sort_error(ctx, error, value)
+            }
         }
-        (Value::Float(a), Value::Integer(b)) => {
-            a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)
-        }
-        (Value::String(a), Value::String(b)) => a.as_str().cmp(b.as_str()),
-        (Value::Symbol(a), Value::Symbol(b)) => {
-            let a_str = symbol_table.resolve_symbol_str(*a).unwrap_or("");
-            let b_str = symbol_table.resolve_symbol_str(*b).unwrap_or("");
-            a_str.cmp(b_str)
-        }
-        _ => Ordering::Equal,
     }
 }
 
-/// `sort` — sort a multifield using a comparison function.
+/// Metadata for the builtin handlers that accept two arguments. Do not invoke
+/// candidates with trial values: name validation must not cause body effects.
+fn builtin_accepts_sort_arity(name: &str) -> bool {
+    matches!(
+        name,
+        "+" | "-"
+            | "*"
+            | "/"
+            | "div"
+            | "mod"
+            | "min"
+            | "max"
+            | ">"
+            | "<"
+            | ">="
+            | "<="
+            | "="
+            | "!="
+            | "<>"
+            | "eq"
+            | "neq"
+            | "and"
+            | "or"
+            | "str-cat"
+            | "sym-cat"
+            | "watch"
+            | "unwatch"
+            | "create$"
+            | "nth"
+            | "member"
+            | "nth$"
+            | "member$"
+            | "subsetp"
+            | "printout"
+            | "format"
+            | "save-facts"
+            | "return"
+            | "bind"
+            | "atan2"
+            | "**"
+            | "str-index"
+            | "str-compare"
+            | "sort"
+            | "funcall"
+            | "fact-slot-value"
+    )
+}
+
+fn resolve_sort_comparator(
+    ctx: &EvalContext<'_>,
+    name: &str,
+    span: Option<&SourceSpan>,
+) -> Result<SortComparator, EvalError> {
+    let invalid = || EvalError::TypeError {
+        function: "sort".to_string(),
+        expected: "unqualified function accepting two arguments".to_string(),
+        actual: name.to_string(),
+        span: span.cloned(),
+    };
+    if name.contains("::") {
+        return Err(invalid());
+    }
+    if is_builtin_callable(name) {
+        return if builtin_accepts_sort_arity(name) {
+            Ok(SortComparator::Builtin(name.to_string()))
+        } else {
+            Err(invalid())
+        };
+    }
+    let function_modules = sorted_dedup_modules(ctx.functions.modules_for_name(name));
+    if let Some(module) = resolve_unqualified_callable_module(
+        ctx,
+        name,
+        "deffunction",
+        &function_modules,
+        ctx.functions.contains(ctx.current_module, name),
+        AmbiguityMessages {
+            expected: "unambiguous deffunction resolution",
+            actual: "multiple visible deffunctions; use MODULE::name",
+        },
+        span.cloned(),
+    )? {
+        if let Some(function) = ctx.functions.get(module, name) {
+            let minimum = function.parameters.len();
+            if minimum > 2 || (function.wildcard_parameter.is_none() && minimum != 2) {
+                return Err(invalid());
+            }
+            return Ok(SortComparator::Function(function.clone(), module));
+        }
+    }
+    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(name));
+    if let Some(module) = resolve_unqualified_callable_module(
+        ctx,
+        name,
+        "defgeneric",
+        &generic_modules,
+        ctx.generics.contains(ctx.current_module, name),
+        AmbiguityMessages {
+            expected: "unambiguous defgeneric resolution",
+            actual: "multiple visible defgenerics; use MODULE::name",
+        },
+        span.cloned(),
+    )? {
+        if let Some(generic) = ctx.generics.get(module, name) {
+            // Generic applicability depends on the actual compared fields.
+            return Ok(SortComparator::Generic(generic.clone(), module));
+        }
+    }
+    Err(invalid())
+}
+
+fn merge_sort_fields(
+    ctx: &mut EvalContext<'_>,
+    comparator: &SortComparator,
+    values: &mut [Value],
+    scratch: &mut [Value],
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
+    if values.len() < 2 {
+        return Ok(());
+    }
+    let middle = values.len() / 2 + values.len() % 2;
+    let (left, right) = values.split_at_mut(middle);
+    let (left_scratch, right_scratch) = scratch.split_at_mut(middle);
+    merge_sort_fields(ctx, comparator, left, left_scratch, span)?;
+    merge_sort_fields(ctx, comparator, right, right_scratch, span)?;
+
+    let (mut left, mut right) = (0, middle);
+    for slot in scratch.iter_mut() {
+        let take_right = if left == middle {
+            true
+        } else if right == values.len() {
+            false
+        } else {
+            let result = comparator.invoke(ctx, &values[left], &values[right], span)?;
+            // Sort treats only the SYMBOL FALSE as false, including for Void.
+            !matches!(result, Value::Symbol(symbol)
+                if ctx.symbol_table.resolve_symbol_str(symbol) == Some("FALSE"))
+        };
+        let index = if take_right {
+            let index = right;
+            right += 1;
+            index
+        } else {
+            let index = left;
+            left += 1;
+            index
+        };
+        slot.clone_from(&values[index]);
+    }
+    values.clone_from_slice(scratch);
+    Ok(())
+}
+
+/// `sort` — stable sorting with a predicate that requests exchange when true.
 ///
-/// `(sort <comparator> <multifield>)` — comparator is typically `>` or `<`.
+/// `(sort <comparator-symbol> <scalar-or-multifield>...)`.
 fn builtin_sort(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("sort", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let cmp_name = as_lexeme_str(&values[0], ctx.symbol_table, "sort", span)?;
-    let Value::Multifield(mf) = &values[1] else {
+    ctx.globals.begin_sort_recovery();
+    let result = match builtin_sort_inner(ctx, args, span) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let value = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            recover_sort_error(ctx, error, value)
+        }
+    };
+    ctx.globals.end_sort_recovery();
+    result
+}
+
+fn builtin_sort_inner(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("sort", args, 1, span)?;
+    let name_value = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
+    let Value::Symbol(symbol) = name_value else {
         return Err(EvalError::TypeError {
             function: "sort".to_string(),
-            expected: "MULTIFIELD".to_string(),
-            actual: generic_value_type_name(&values[1]).to_string(),
+            expected: "SYMBOL (function name)".to_string(),
+            actual: generic_value_type_name(&name_value).to_string(),
             span: span.cloned(),
         });
     };
-    let mut sorted = mf.clone();
-    sorted.sort_by(|a, b| clips_compare_values(a, b, ctx.symbol_table));
-    if cmp_name == ">" {
-        sorted.reverse();
+    let name = ctx
+        .symbol_table
+        .resolve_symbol_str(symbol)
+        .unwrap_or("")
+        .to_string();
+    let comparator = match resolve_sort_comparator(ctx, &name, span) {
+        Ok(comparator) => comparator,
+        Err(error) => {
+            ctx.globals.push_diagnostic(EvalError::TypeError {
+                function: "sort".to_string(),
+                expected: "unqualified function accepting two arguments".to_string(),
+                actual: format!("{name}: {error}"),
+                span: span.cloned(),
+            });
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
+    };
+    let mut values = Vec::new();
+    for argument in &args[1..] {
+        match eval_inner(ctx, argument)? {
+            Value::Multifield(fields) => values.extend(*fields),
+            value => values.push(value),
+        }
     }
-    Ok(Value::Multifield(sorted))
+    let mut scratch = vec![Value::Void; values.len()];
+    merge_sort_fields(ctx, &comparator, &mut values, &mut scratch, span)?;
+    Ok(Value::Multifield(Box::new(values.into_iter().collect())))
 }
 
 // ---------------------------------------------------------------------------
 // Dynamic dispatch built-ins
 // ---------------------------------------------------------------------------
+
+// CLIPS funcall collects argument values and checks Error before delegated
+// dispatch. Literals prevent duplicated effects when the target is evaluated.
+fn prepare_funcall_arguments(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+) -> Result<Option<Vec<RuntimeExpr>>, EvalError> {
+    if !(ctx.globals.is_sort_recovery_active() || ctx.globals.evaluation_halted()) {
+        return Ok(None);
+    }
+    let mut values = Vec::with_capacity(args.len());
+    for argument in args {
+        values.push(RuntimeExpr::Literal(eval_inner(ctx, argument)?));
+        if ctx.globals.evaluation_error() {
+            break;
+        }
+    }
+    Ok(Some(values))
+}
 
 /// `funcall` — call a function by name at runtime.
 ///
@@ -4927,6 +5719,9 @@ fn builtin_funcall(
 ) -> Result<Value, EvalError> {
     check_arity_min("funcall", args, 1, span)?;
     let name_val = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    }
     let fn_name = match &name_val {
         Value::Symbol(sym) => ctx
             .symbol_table
@@ -4949,6 +5744,11 @@ fn builtin_funcall(
 
     // Try dispatching as a builtin first.
     if is_builtin_callable(&fn_name) {
+        let prepared = prepare_funcall_arguments(ctx, remaining_args)?;
+        if ctx.globals.evaluation_error() {
+            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        }
+        let remaining_args = prepared.as_deref().unwrap_or(remaining_args);
         return dispatch_builtin(ctx, &fn_name, remaining_args, span_owned);
     }
 
@@ -4967,6 +5767,11 @@ fn builtin_funcall(
         span_owned.clone(),
     )? {
         if let Some(func) = ctx.functions.get(target_module, &fn_name).cloned() {
+            let prepared = prepare_funcall_arguments(ctx, remaining_args)?;
+            if ctx.globals.evaluation_error() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            let remaining_args = prepared.as_deref().unwrap_or(remaining_args);
             return dispatch_user_function(ctx, &func, target_module, remaining_args, span_owned);
         }
     }
@@ -4986,6 +5791,11 @@ fn builtin_funcall(
         span_owned.clone(),
     )? {
         if let Some(generic) = ctx.generics.get(target_module, &fn_name).cloned() {
+            let prepared = prepare_funcall_arguments(ctx, remaining_args)?;
+            if ctx.globals.evaluation_error() {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            let remaining_args = prepared.as_deref().unwrap_or(remaining_args);
             return dispatch_generic(ctx, &generic, target_module, remaining_args, span_owned);
         }
     }
@@ -5175,6 +5985,9 @@ fn builtin_printout(
     let mut output = String::new();
     for expr in &args[1..] {
         let value = eval_inner(ctx, expr)?;
+        if ctx.globals.evaluation_halted() {
+            break;
+        }
         append_printout_value(&value, ctx.symbol_table, &mut output);
     }
 
@@ -6071,6 +6884,311 @@ mod tests {
 
     fn float(f: f64) -> RuntimeExpr {
         RuntimeExpr::Literal(Value::Float(f))
+    }
+
+    fn with_lhs_context(test: impl FnOnce(&mut EvalContext<'_>)) {
+        let (mut st, mut vm, mut bs, cfg, mut functions, mut globals, generics, mr, em) =
+            test_ctx();
+        let main = mr.main_module_id();
+        let false_value = clips_false(&mut st, cfg.string_encoding);
+        let variable = st.intern_symbol("field", cfg.string_encoding).unwrap();
+        bs.set(
+            vm.get_or_create(variable).unwrap(),
+            ValueRef::new(false_value.clone()),
+        );
+        globals.set(main, "gate", false_value);
+        functions.register(
+            main,
+            UserFunction {
+                name: "wrapped".into(),
+                parameters: Vec::new(),
+                wildcard_parameter: None,
+                body: vec![ferric_rules_parser::ActionExpr::FunctionCall(
+                    ferric_rules_parser::FunctionCall {
+                        name: "and".into(),
+                        args: vec![ferric_rules_parser::ActionExpr::GlobalVariable(
+                            "gate".into(),
+                            dummy_span(),
+                        )],
+                        span: dummy_span(),
+                    },
+                )],
+            },
+        );
+        functions.register(
+            main,
+            UserFunction {
+                name: "fails".into(),
+                parameters: Vec::new(),
+                wildcard_parameter: None,
+                body: vec![ferric_rules_parser::ActionExpr::FunctionCall(
+                    ferric_rules_parser::FunctionCall {
+                        name: "/".into(),
+                        args: [1, 0]
+                            .into_iter()
+                            .map(|value| {
+                                ferric_rules_parser::ActionExpr::Literal(
+                                    ferric_rules_parser::LiteralValue {
+                                        value: ferric_rules_parser::LiteralKind::Integer(value),
+                                        span: dummy_span(),
+                                    },
+                                )
+                            })
+                            .collect(),
+                        span: dummy_span(),
+                    },
+                )],
+            },
+        );
+        test(&mut EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &functions,
+            globals: &mut globals,
+            generics: &generics,
+            call_depth: 0,
+            expression_depth: 0,
+            current_module: main,
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+            fact_base: None,
+            template_defs: None,
+        });
+    }
+
+    fn lhs_print(ctx: &mut EvalContext<'_>) -> RuntimeExpr {
+        let channel = ctx
+            .symbol_table
+            .intern_symbol("t", ctx.config.string_encoding)
+            .unwrap();
+        call(
+            "printout",
+            vec![RuntimeExpr::Literal(Value::Symbol(channel)), int(7)],
+        )
+    }
+
+    #[test]
+    fn lhs_join_getters_keep_primitive_success_separate_from_false_values() {
+        with_lhs_context(|ctx| {
+            for reference in [
+                RuntimeExpr::BoundVar {
+                    name: "field".into(),
+                    span: None,
+                },
+                RuntimeExpr::GlobalVar {
+                    name: "gate".into(),
+                    span: None,
+                },
+            ] {
+                let expression = call("and", vec![call("or", vec![reference.clone()]), int(1)]);
+                assert!(eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+                assert!(!eval_lhs(ctx, &expression, LhsEvaluationMode::Pattern).unwrap());
+                let ordinary = eval(ctx, &expression).unwrap();
+                assert!(is_false_symbol(&ordinary, ctx.symbol_table));
+                // A getter consumed as an ordinary function argument retains
+                // its FALSE value; only direct join Boolean operands differ.
+                assert!(
+                    eval_lhs(ctx, &call("not", vec![reference]), LhsEvaluationMode::Join).unwrap()
+                );
+            }
+            assert!(!eval_lhs(ctx, &call("wrapped", Vec::new()), LhsEvaluationMode::Join).unwrap());
+        });
+    }
+
+    #[test]
+    fn lhs_fallback_rejects_only_symbol_false_and_preserves_void_effects() {
+        with_lhs_context(|ctx| {
+            let false_value = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            let string_false =
+                Value::String(FerricString::new("FALSE", ctx.config.string_encoding).unwrap());
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                assert!(!eval_lhs(ctx, &RuntimeExpr::Literal(false_value.clone()), mode).unwrap());
+                for value in [
+                    Value::Void,
+                    Value::Integer(0),
+                    Value::Float(0.0),
+                    string_false.clone(),
+                    Value::Multifield(Box::default()),
+                ] {
+                    assert!(eval_lhs(ctx, &RuntimeExpr::Literal(value), mode).unwrap());
+                }
+                let callback = lhs_print(ctx);
+                assert!(eval_lhs(ctx, &callback, mode).unwrap());
+                assert_eq!(
+                    ctx.globals.take_printout_events(),
+                    vec![("t".into(), "7".into())]
+                );
+            }
+            assert!(!is_truthy(&Value::Void, ctx.symbol_table));
+        });
+    }
+
+    #[test]
+    fn lhs_boolean_short_circuit_skips_unreached_callbacks_and_errors() {
+        with_lhs_context(|ctx| {
+            let false_expr =
+                RuntimeExpr::Literal(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                let callback = lhs_print(ctx);
+                for (name, first, expected) in
+                    [("and", false_expr.clone(), false), ("or", int(1), true)]
+                {
+                    let expression = call(
+                        name,
+                        vec![first, callback.clone(), call("/", vec![int(1), int(0)])],
+                    );
+                    assert_eq!(eval_lhs(ctx, &expression, mode).unwrap(), expected);
+                    assert!(ctx.globals.take_printout_events().is_empty());
+                }
+                let expression = call("and", vec![call("/", vec![int(1), int(0)]), callback]);
+                assert!(matches!(
+                    eval_lhs(ctx, &expression, mode),
+                    Err(EvalError::DivisionByZero { .. })
+                ));
+                assert!(ctx.globals.take_printout_events().is_empty());
+                assert_eq!(ctx.expression_depth, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn lhs_recovered_error_stops_group_without_consuming_error_or_halt() {
+        with_lhs_context(|ctx| {
+            let comparator = ctx
+                .symbol_table
+                .intern_symbol(">", ctx.config.string_encoding)
+                .unwrap();
+            let failed_sort = call(
+                "sort",
+                vec![
+                    RuntimeExpr::Literal(Value::Symbol(comparator)),
+                    call("/", vec![int(1), int(0)]),
+                    int(2),
+                ],
+            );
+            let callback = lhs_print(ctx);
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                let expression = call("and", vec![failed_sort.clone(), callback.clone()]);
+                assert!(!eval_lhs(ctx, &expression, mode).unwrap());
+                assert!(ctx.globals.evaluation_error());
+                assert!(ctx.globals.evaluation_halted());
+                assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+                assert!(ctx.globals.take_printout_events().is_empty());
+                // This models the caller's per-candidate cleanup: the error
+                // verdict has already been captured, while the halt remains.
+                ctx.globals.clear_evaluation_error();
+                assert!(ctx.globals.evaluation_halted());
+                assert!(eval_lhs(ctx, &int(1), mode).unwrap());
+                assert!(ctx.globals.take_evaluation_halt());
+            }
+        });
+    }
+
+    #[test]
+    fn lhs_join_or_preserves_callable_primitive_error_clearing() {
+        // Pinned CLIPS: a failed direct user-call primitive in join OR can
+        // reach a later user-call primitive. That call clears Error but skips
+        // its body under Halt. Pattern OR instead stops at the first error.
+        with_lhs_context(|ctx| {
+            let expression = call(
+                "or",
+                vec![call("fails", Vec::new()), call("wrapped", Vec::new())],
+            );
+            assert!(!eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+            assert!(!ctx.globals.evaluation_error());
+            assert!(ctx.globals.evaluation_halted());
+            assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+            assert!(ctx.globals.take_evaluation_halt());
+            assert!(matches!(
+                eval_lhs(ctx, &expression, LhsEvaluationMode::Pattern),
+                Err(EvalError::DivisionByZero { .. })
+            ));
+        });
+        with_lhs_context(|ctx| {
+            let expression = call(
+                "or",
+                vec![
+                    call("fails", Vec::new()),
+                    RuntimeExpr::BoundVar {
+                        name: "field".into(),
+                        span: None,
+                    },
+                ],
+            );
+            assert!(eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+            assert!(ctx.globals.evaluation_error());
+            assert!(ctx.globals.evaluation_halted());
+            assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+        });
+        with_lhs_context(|ctx| {
+            let expression = call(
+                "and",
+                vec![call("fails", Vec::new()), call("wrapped", Vec::new())],
+            );
+            assert!(!eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+            assert!(ctx.globals.evaluation_error());
+            assert!(ctx.globals.evaluation_halted());
+            assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+        });
+    }
+
+    #[test]
+    fn lhs_direct_getters_still_report_missing_bindings() {
+        with_lhs_context(|ctx| {
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                assert!(matches!(
+                    eval_lhs(
+                        ctx,
+                        &RuntimeExpr::BoundVar {
+                            name: "missing".into(),
+                            span: None
+                        },
+                        mode
+                    ),
+                    Err(EvalError::UnboundVariable { .. })
+                ));
+                assert!(matches!(
+                    eval_lhs(
+                        ctx,
+                        &RuntimeExpr::GlobalVar {
+                            name: "missing".into(),
+                            span: None
+                        },
+                        mode
+                    ),
+                    Err(EvalError::UnboundGlobal { .. })
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn lhs_boolean_depth_shares_the_expression_limit_and_unwinds() {
+        with_lhs_context(|ctx| {
+            let mut expression = int(1);
+            for _ in 0..MAX_EXPRESSION_DEPTH {
+                expression = call("and", vec![expression]);
+            }
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                assert!(matches!(
+                    eval_lhs(ctx, &expression, mode),
+                    Err(EvalError::ExpressionNestingLimit { .. })
+                ));
+                assert_eq!(ctx.expression_depth, 0);
+                assert!(eval_lhs(ctx, &int(1), mode).unwrap());
+                assert_eq!(ctx.expression_depth, 0);
+                assert!(matches!(
+                    eval_lhs(ctx, &call("return", vec![int(1)]), mode),
+                    Err(EvalError::ReturnOutsideCallable { .. })
+                ));
+            }
+        });
     }
 
     // -------------------------------------------------------------------

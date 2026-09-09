@@ -274,10 +274,126 @@ fn bench_constraint_negation(c: &mut Criterion) {
     group.finish();
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RuntimeIndexCase {
+    Missing,
+    Late,
+    Replacement,
+}
+
+fn runtime_index_setup(
+    size: usize,
+    case: RuntimeIndexCase,
+) -> (Engine, Option<ferric_rules::runtime::FactHandle>) {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str(
+            r"
+        (defglobal ?*calls* = 0)
+        (deffunction supports (?value ?limit)
+          (bind ?*calls* (+ ?*calls* 1))
+          (> ?value ?limit))
+        (defrule negative
+          (anchor ?key ?limit)
+          (not (data ?key ?value&:(supports ?value ?limit)))
+          =>)
+    ",
+        )
+        .unwrap();
+    engine.reset().unwrap();
+    let count = i64::try_from(size).unwrap();
+    let selected = if matches!(case, RuntimeIndexCase::Replacement) {
+        Some(engine.assert_ordered("data", [-1, count * 2]).unwrap())
+    } else {
+        None
+    };
+    for key in 0..count {
+        engine.assert_ordered("data", [key, count * 2]).unwrap();
+    }
+    if matches!(case, RuntimeIndexCase::Replacement) {
+        engine.assert_ordered("data", [-1, count * 3]).unwrap();
+        for index in 0..count {
+            engine.assert_ordered("anchor", [-1, index + 1]).unwrap();
+        }
+    }
+    (engine, selected)
+}
+
+fn exercise_runtime_index(
+    engine: &mut Engine,
+    selected: Option<ferric_rules::runtime::FactHandle>,
+    size: usize,
+    case: RuntimeIndexCase,
+) {
+    let count = i64::try_from(size).unwrap();
+    if let Some(selected) = selected {
+        engine.retract(selected).unwrap();
+    } else {
+        for index in 0..count {
+            let key = if matches!(case, RuntimeIndexCase::Missing) {
+                count + index
+            } else {
+                count - 1
+            };
+            engine.assert_ordered("anchor", [key, index + 1]).unwrap();
+        }
+    }
+    let result = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(
+        result.rules_fired,
+        if matches!(case, RuntimeIndexCase::Missing) {
+            size
+        } else {
+            0
+        }
+    );
+    assert!(engine.action_diagnostics().is_empty());
+}
+
+fn bench_runtime_negative_index(c: &mut Criterion) {
+    let mut group = c.benchmark_group("runtime_negative_index");
+    group.sample_size(10);
+    for size in [256, 1024] {
+        for case in [
+            RuntimeIndexCase::Missing,
+            RuntimeIndexCase::Late,
+            RuntimeIndexCase::Replacement,
+        ] {
+            // Validate membership and callback count outside measurement first.
+            let (mut checked, selected) = runtime_index_setup(size, case);
+            exercise_runtime_index(&mut checked, selected, size, case);
+            let expected_calls = match case {
+                RuntimeIndexCase::Missing => 0,
+                RuntimeIndexCase::Late => size,
+                RuntimeIndexCase::Replacement => size * 2,
+            };
+            assert!(matches!(
+                checked.get_global("calls"),
+                Some(ferric_rules::core::Value::Integer(actual))
+                    if *actual == i64::try_from(expected_calls).unwrap()
+            ));
+            // Release the validation fixture before Criterion starts sampling.
+            drop(checked);
+            group.bench_function(format!("{case:?}_{size}"), |b| {
+                // Borrow each input so Engine teardown is outside measurement.
+                b.iter_batched_ref(
+                    || runtime_index_setup(size, case),
+                    |(engine, selected)| {
+                        exercise_runtime_index(engine, selected.take(), size, case);
+                    },
+                    criterion::BatchSize::LargeInput,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_constraint_disjunction,
     bench_constraint_predicate,
     bench_constraint_negation,
+    bench_runtime_negative_index,
 );
 criterion_main!(benches);

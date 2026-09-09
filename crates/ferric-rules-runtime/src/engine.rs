@@ -216,7 +216,7 @@ pub struct Engine {
     /// use the independent non-fact root. Public host queries hide this protected
     /// implementation fact, and retraction rejects its ID.
     pub(crate) initial_fact_id: Option<FactId>,
-    /// Non-fatal action diagnostics captured during execution.
+    /// Evaluation diagnostics; whether execution stopped is reported separately.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
     pub(crate) processing_predicates: bool,
@@ -351,6 +351,9 @@ impl Engine {
                 .try_assert_fact(fact, self.fact_duplication())?
             {
                 FactInsertionResult::Inserted(fact_id) => {
+                    // CLIPS starts pattern evaluation with a clear Error bit,
+                    // while retaining a failure's sticky HaltExecution state.
+                    self.globals.clear_evaluation_error();
                     propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
                     self.drain_pending_predicate_matches();
                     FactAssertionResult::Asserted(fact_id)
@@ -366,8 +369,12 @@ impl Engine {
         }
         self.processing_predicates = true;
 
-        while let Some(pending) = self.rete.pop_pending_predicate_match() {
-            let Some(token) = self.rete.token_store.get(pending.parent_token).cloned() else {
+        while let Some(pending) = self.rete.pop_pending_runtime_match() {
+            let Some(bindings) = self.rete.runtime_match_bindings(&pending, &self.fact_base) else {
+                // A candidate can disappear before its callback is reached.
+                // Let the core validate/advance any still-live lazy search.
+                self.rete
+                    .resolve_runtime_match(pending, false, &self.fact_base);
                 continue;
             };
             let Some(info) = rule_index_get(&self.rule_info, pending.rule).cloned() else {
@@ -384,6 +391,13 @@ impl Engine {
                 )));
                 continue;
             };
+            if condition.role != pending.role {
+                self.action_diagnostics.push(ActionError::EvalError(format!(
+                    "rule `{}` has a mismatched role for match condition {}",
+                    info.name, pending.condition_index
+                )));
+                continue;
+            }
             let Some(current_module) = rule_index_get(&self.rule_modules, pending.rule).copied()
             else {
                 self.action_diagnostics.push(ActionError::EvalError(format!(
@@ -392,15 +406,19 @@ impl Engine {
                 )));
                 continue;
             };
-            let collected_facts = if info.multifield_tail_bindings.is_empty() {
-                smallvec::SmallVec::new()
-            } else {
-                self.rete
-                    .token_store
-                    .collect_all_facts(pending.parent_token)
-            };
-
-            let evaluation = {
+            let evaluation = if pending.role
+                == ferric_rules_core::RuntimeConditionRole::PositiveJoin
+                && !info.multifield_tail_bindings.is_empty()
+            {
+                let Some(parent) = pending.parent_token else {
+                    continue;
+                };
+                let Some(token) = self.rete.token_store.get(parent).cloned() else {
+                    self.rete
+                        .resolve_runtime_match(pending, false, &self.fact_base);
+                    continue;
+                };
+                let collected_facts = self.rete.token_store.collect_all_facts(parent);
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
@@ -412,6 +430,18 @@ impl Engine {
                     &collected_facts,
                     &mut context,
                 )
+            } else {
+                let mut context = actions::ActionExecutionContext {
+                    engine: self,
+                    current_module,
+                };
+                Ok(actions::evaluate_runtime_condition(
+                    &bindings,
+                    &info.var_map,
+                    condition,
+                    pending.replacing_conflict,
+                    &mut context,
+                ))
             };
             let passed = match evaluation {
                 Ok(passed) => passed,
@@ -428,10 +458,11 @@ impl Engine {
             };
 
             self.rete
-                .resolve_predicate_match_with_parent(pending, passed, token, &self.fact_base);
+                .resolve_runtime_match(pending, passed, &self.fact_base);
         }
 
         self.processing_predicates = false;
+        self.drain_evaluator_diagnostics();
     }
 
     fn host_fields(
@@ -471,6 +502,8 @@ impl Engine {
         &mut self,
         result: FactAssertionResult<FactId>,
     ) -> FactAssertionResult {
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
         self.host.prune(&self.fact_base);
         match result {
             FactAssertionResult::Asserted(id) => {
@@ -796,6 +829,8 @@ impl Engine {
             .ok_or(EngineError::FactNotFound(handle))?;
         self.drain_pending_predicate_matches();
         self.host.remove(fact_id);
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
 
         Ok(())
     }
@@ -1062,7 +1097,7 @@ impl Engine {
     /// - `logically_fired` is `true` if the already-matched activation executed.
     /// - `reset_requested` is `true` if a `(reset)` action was executed in the RHS.
     /// - `clear_requested` is `true` if a `(clear)` action was executed in the RHS.
-    /// - `action_error` is `true` if evaluation produced an action diagnostic.
+    /// - `action_error` is `true` if evaluation failed and stopped the RHS.
     fn execute_activation_actions(
         &mut self,
         rule_id: RuleId,
@@ -1096,7 +1131,7 @@ impl Engine {
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
 
-        let (fired, reset_requested, clear_requested, errors) = {
+        let (fired, reset_requested, clear_requested, evaluation_halted, errors) = {
             let mut action_context = actions::ActionExecutionContext {
                 engine: self,
                 current_module,
@@ -1116,7 +1151,9 @@ impl Engine {
             diagnostics = errors.len(),
             "activation_actions_complete"
         );
-        let action_error = !errors.is_empty();
+        let predicate_halted = self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
+        let action_error = evaluation_halted || predicate_halted || !errors.is_empty();
         self.action_diagnostics.extend(errors);
         (fired, reset_requested, clear_requested, action_error)
     }
@@ -1165,6 +1202,8 @@ impl Engine {
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
         ferric_span!(info_span, "engine_step");
         self.action_diagnostics.clear();
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
         if self.module_registry.current_focus().is_none() {
             self.module_registry
                 .push_focus(self.module_registry.main_module_id());
@@ -1172,6 +1211,7 @@ impl Engine {
 
         let Some(activation) = self.pop_next_focus_activation() else {
             ferric_event!(debug, "engine_step_no_activation");
+            self.drain_evaluator_diagnostics();
             return Ok(None);
         };
 
@@ -1206,6 +1246,7 @@ impl Engine {
         // After reset or clear, the engine is in a new state.
         // step() still returns the FiredRule indicating what fired.
 
+        self.drain_evaluator_diagnostics();
         self.host.prune(&self.fact_base);
         Ok(Some(fired))
     }
@@ -1224,6 +1265,7 @@ impl Engine {
     /// The `Result` return type is retained for API compatibility.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         let result = self.run_inner(limit, true);
+        self.drain_evaluator_diagnostics();
         self.host.prune(&self.fact_base);
         Ok(result)
     }
@@ -1239,6 +1281,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn continue_run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         let result = self.run_inner(limit, false);
+        self.drain_evaluator_diagnostics();
         self.host.prune(&self.fact_base);
         Ok(result)
     }
@@ -1248,6 +1291,8 @@ impl Engine {
         if clear_execution_state {
             self.halted = false;
             self.action_diagnostics.clear();
+            self.globals.take_evaluation_halt();
+            self.globals.take_sort_return();
             if self.module_registry.current_focus().is_none() {
                 self.module_registry
                     .push_focus(self.module_registry.main_module_id());
@@ -1409,6 +1454,8 @@ impl Engine {
                 self.assert_fact_internal(fact)?;
             }
         }
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
 
         Ok(())
     }
@@ -1480,10 +1527,22 @@ impl Engine {
         self.router.clear_channel(channel);
     }
 
-    /// Get non-fatal action diagnostics captured during the most recent run/step call.
+    /// Get evaluation diagnostics, including warnings that did not stop execution.
+    ///
+    /// A fresh run/step clears earlier diagnostics. Its outcome reports whether
+    /// an action failed; a nonempty diagnostic list alone does not imply failure.
     #[must_use]
     pub fn action_diagnostics(&self) -> &[ActionError] {
         &self.action_diagnostics
+    }
+
+    pub(crate) fn drain_evaluator_diagnostics(&mut self) {
+        self.action_diagnostics.extend(
+            self.globals
+                .take_diagnostics()
+                .into_iter()
+                .map(ActionError::from),
+        );
     }
 
     /// Clear accumulated action diagnostics.

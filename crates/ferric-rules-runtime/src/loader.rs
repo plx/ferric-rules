@@ -47,6 +47,9 @@ use crate::templates::RegisteredTemplate;
 use crate::tracing_support::{ferric_event, ferric_span};
 // GenericRegistry accessed via self.generics (field on Engine)
 
+mod lhs_scope;
+mod runtime_constraints;
+
 /// Derived name index, rebuilt from definitions when restoring a snapshot.
 pub(crate) type TemplateLocalIndex =
     rustc_hash::FxHashMap<Box<str>, smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>>;
@@ -346,8 +349,24 @@ impl Engine {
     /// let result = engine.load_str("(assert (person John 30))").unwrap();
     /// assert_eq!(result.asserted_facts.len(), 1);
     /// ```
-    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
+        let diagnostics_start = self.action_diagnostics.len();
+        let mut result = self.load_str_inner(source);
+        self.drain_evaluator_diagnostics();
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
+        if let Ok(loaded) = &mut result {
+            loaded.warnings.extend(
+                self.action_diagnostics[diagnostics_start..]
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
+    fn load_str_inner(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
         crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
@@ -1392,7 +1411,7 @@ impl Engine {
             // without any rule context).  The block scope ensures the mutable
             // borrows on symbol_table and globals are released before the
             // subsequent self.globals.set() / self.registered_globals.push().
-            let value = {
+            let evaluation = {
                 let empty_bindings = ferric_rules_core::binding::BindingSet::new();
                 let empty_var_map = ferric_rules_core::binding::VarMap::new();
                 let mut ctx = crate::evaluator::EvalContext {
@@ -1416,8 +1435,20 @@ impl Engine {
                     template_defs: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
-                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
+                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))
             };
+
+            // A recovered expression value is usable by RHS consumers, but a
+            // failed global initializer must not publish the new global.
+            let evaluation_halted = self.globals.take_evaluation_halt();
+            self.globals.take_sort_return();
+            let value = evaluation?;
+            if evaluation_halted {
+                return Err(LoadError::Compile(format!(
+                    "global `{}` init: evaluation halted",
+                    def.name
+                )));
+            }
 
             // CLIPS commits named globals incrementally, even within one
             // defglobal group. Publish ownership only after this initializer
@@ -1730,6 +1761,9 @@ impl Engine {
         if !validation_errors.is_empty() {
             return Err(LoadError::Validation(validation_errors));
         }
+        // Expansion must not turn a nonbinding constraint reference into a
+        // leading field binding in a synthetic rule variant.
+        self.validate_rule_lhs_scope(rule)?;
 
         // Pre-process: distribute or CEs inside NCC/exists contexts.
         // This transforms patterns like (not (and A (or B C))) into
@@ -2257,6 +2291,7 @@ impl Engine {
         source: &str,
     ) -> Result<PreparedRuleInstallation, LoadError> {
         self.validate_rule_action_callables(rule, self.module_registry.current_module())?;
+        self.validate_rule_lhs_scope(rule)?;
 
         // Translate the LHS first to preserve source-order symbol interning, but
         // do not expose any Rete nodes or consume a rule ID until every fallible
@@ -2337,18 +2372,6 @@ impl Engine {
         self.drain_pending_predicate_matches();
 
         compile_result
-    }
-
-    fn push_test_predicate(
-        conditions: &mut Vec<CompilableCondition>,
-        test_conditions: &mut Vec<CompiledTestCondition>,
-        test_condition: CompiledTestCondition,
-    ) -> Result<(), LoadError> {
-        let condition_index = u32::try_from(test_conditions.len())
-            .map_err(|_| LoadError::Compile("too many test CEs in one rule".to_string()))?;
-        test_conditions.push(test_condition);
-        conditions.push(CompilableCondition::Predicate { condition_index });
-        Ok(())
     }
 
     /// Recursively flatten a pattern for top-level condition processing.
@@ -2449,39 +2472,6 @@ impl Engine {
             }
             Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Test(_, _) => {}
         }
-    }
-
-    fn first_restricted_sexpr_variable(
-        expr: &SExpr,
-        restricted: &HashSet<String>,
-    ) -> Option<String> {
-        match expr {
-            SExpr::Atom(Atom::SingleVar(name) | Atom::MultiVar(name), _) => {
-                restricted.contains(name).then(|| name.clone())
-            }
-            SExpr::Atom(_, _) => None,
-            SExpr::List(items, _) => items
-                .iter()
-                .find_map(|item| Self::first_restricted_sexpr_variable(item, restricted)),
-        }
-    }
-
-    fn validate_existential_test_scope(
-        rule_name: &str,
-        expr: &SExpr,
-        existential_locals: &HashSet<String>,
-        exported_variables: &HashSet<String>,
-    ) -> Result<(), LoadError> {
-        let restricted: HashSet<String> = existential_locals
-            .difference(exported_variables)
-            .cloned()
-            .collect();
-        if let Some(variable) = Self::first_restricted_sexpr_variable(expr, &restricted) {
-            return Err(LoadError::Compile(format!(
-                "rule `{rule_name}` variable ?{variable} is not exported by existential conditional element"
-            )));
-        }
-        Ok(())
     }
 
     fn validate_rule_rhs_scope(
@@ -2679,195 +2669,6 @@ impl Engine {
         }
     }
 
-    /// Try to extract test CEs from nested contexts (negation, NCC, exists)
-    /// and add them as rule-level test conditions.
-    ///
-    /// Returns `true` if the pattern was fully handled (caller should skip it).
-    /// Returns `false` if the pattern should be processed normally.
-    ///
-    /// Handles these cases:
-    /// - `(not (test expr))` → adds `(not expr)` to `test_conditions`
-    /// - `(not (and (test ...) ...))` where ALL children are test CEs → adds
-    ///   negated conjunction to `test_conditions`
-    /// - `(exists (test expr))` → adds `expr` to `test_conditions`
-    fn try_extract_nested_test_ce(
-        &mut self,
-        pattern: &Pattern,
-        test_conditions: &mut Vec<CompiledTestCondition>,
-    ) -> Result<bool, LoadError> {
-        match pattern {
-            Pattern::Not(inner, _) => {
-                match inner.as_ref() {
-                    // (not (test expr)) → rule fires when expr is false
-                    Pattern::Test(sexpr, _) => {
-                        let inner_expr = crate::evaluator::from_sexpr(
-                            sexpr,
-                            &mut self.symbol_table,
-                            &self.config,
-                        )
-                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                        let negated = crate::evaluator::RuntimeExpr::Call {
-                            name: "not".to_string(),
-                            args: vec![inner_expr],
-                            span: None,
-                        };
-                        test_conditions.push(CompiledTestCondition::Expr(negated));
-                        Ok(true)
-                    }
-                    // (not (and (test1) (test2) ...)) where ALL are test CEs
-                    Pattern::And(inner_patterns, _)
-                        if inner_patterns
-                            .iter()
-                            .all(|p| matches!(p, Pattern::Test(..))) =>
-                    {
-                        let mut test_exprs = Vec::with_capacity(inner_patterns.len());
-                        for sub in inner_patterns {
-                            if let Pattern::Test(sexpr, _) = sub {
-                                let expr = crate::evaluator::from_sexpr(
-                                    sexpr,
-                                    &mut self.symbol_table,
-                                    &self.config,
-                                )
-                                .map_err(|e| {
-                                    LoadError::Compile(format!("test CE translation: {e}"))
-                                })?;
-                                test_exprs.push(expr);
-                            }
-                        }
-                        // Negate the conjunction: not(and(t1, t2, ...))
-                        let conjunction = if test_exprs.len() == 1 {
-                            test_exprs.into_iter().next().unwrap()
-                        } else {
-                            crate::evaluator::RuntimeExpr::Call {
-                                name: "and".to_string(),
-                                args: test_exprs,
-                                span: None,
-                            }
-                        };
-                        let negated = crate::evaluator::RuntimeExpr::Call {
-                            name: "not".to_string(),
-                            args: vec![conjunction],
-                            span: None,
-                        };
-                        test_conditions.push(CompiledTestCondition::Expr(negated));
-                        Ok(true)
-                    }
-                    _ => Ok(false),
-                }
-            }
-            // (exists (test expr)) → rule fires when expr is true
-            Pattern::Exists(patterns, _)
-                if patterns.len() == 1 && matches!(&patterns[0], Pattern::Test(..)) =>
-            {
-                if let Pattern::Test(sexpr, _) = &patterns[0] {
-                    let expr =
-                        crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                            .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                    test_conditions.push(CompiledTestCondition::Expr(expr));
-                }
-                Ok(true)
-            }
-            // (forall (P) (test expr)) where test has no P-local variables:
-            // desugar to just the test as a rule-level condition.
-            // The forall semantics "for all P, expr holds" reduce to "expr holds"
-            // when the test doesn't reference P-local variables.  The condition P
-            // is still checked by the NCC that forall desugars into, but if the
-            // then-clause is a pure test with no pattern dependencies, we handle it
-            // as a rule-level test condition to avoid the NCC needing test support.
-            Pattern::Forall(sub_patterns, _)
-                if sub_patterns.len() == 2 && matches!(&sub_patterns[1], Pattern::Test(..)) =>
-            {
-                // The test CE is the then-clause; just add it as a test condition.
-                // The condition (P) still needs to be checked, but since forall
-                // with a constant test is either always-true or always-false,
-                // adding the test as a rule-level condition is semantically correct.
-                if let Pattern::Test(sexpr, _) = &sub_patterns[1] {
-                    let expr =
-                        crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                            .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                    test_conditions.push(CompiledTestCondition::Expr(expr));
-                }
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    /// Whether a negated ordered pattern contains an expression that cannot
-    /// currently be represented by the negative network.
-    fn has_complex_negated_expression(pattern: &Pattern) -> bool {
-        match pattern {
-            Pattern::Assigned { pattern, .. } => Self::has_complex_negated_expression(pattern),
-            Pattern::Not(inner, _) => {
-                let Pattern::Ordered(ordered) = inner.as_ref() else {
-                    return false;
-                };
-
-                Self::ordered_pattern_has_complex_negated_expression(ordered)
-            }
-            _ => false,
-        }
-    }
-
-    fn ordered_pattern_has_complex_negated_expression(pattern: &OrderedPattern) -> bool {
-        pattern.constraints.iter().any(|constraint| {
-            let mut slot_variables = HashSet::new();
-            Self::collect_slot_constraint_variables(constraint, &mut slot_variables);
-            Self::constraint_has_complex_negated_expression(constraint, &slot_variables)
-        })
-    }
-
-    fn collect_slot_constraint_variables(
-        constraint: &Constraint,
-        slot_variables: &mut HashSet<String>,
-    ) {
-        match constraint {
-            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
-                slot_variables.insert(name.clone());
-            }
-            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
-                for part in parts {
-                    Self::collect_slot_constraint_variables(part, slot_variables);
-                }
-            }
-            // `~?x` does not bind a slot-local variable; keep this strict so we
-            // don't mask unsupported unbound-expression diagnostics.
-            Constraint::Not(_, _)
-            | Constraint::Literal(_)
-            | Constraint::Wildcard(_)
-            | Constraint::MultiWildcard(_)
-            | Constraint::Predicate(_, _)
-            | Constraint::ReturnValue(_, _) => {}
-        }
-    }
-
-    fn constraint_has_complex_negated_expression(
-        constraint: &Constraint,
-        slot_variables: &HashSet<String>,
-    ) -> bool {
-        match constraint {
-            Constraint::Predicate(expr, _) => {
-                !slot_variables.is_empty()
-                    && Self::sexpr_references_any_variable(expr, slot_variables)
-                    && !Self::is_potentially_lowerable_negated_predicate_expr(expr)
-            }
-            Constraint::ReturnValue(expr, _) => {
-                !slot_variables.is_empty()
-                    && Self::sexpr_references_any_variable(expr, slot_variables)
-                    && !Self::is_potentially_lowerable_negated_return_value_expr(expr)
-            }
-            Constraint::And(parts, _) | Constraint::Or(parts, _) => parts
-                .iter()
-                .any(|part| Self::constraint_has_complex_negated_expression(part, slot_variables)),
-            Constraint::Literal(_)
-            | Constraint::Variable(_, _)
-            | Constraint::MultiVariable(_, _)
-            | Constraint::Wildcard(_)
-            | Constraint::MultiWildcard(_)
-            | Constraint::Not(_, _) => false,
-        }
-    }
-
     fn sexpr_references_any_variable(expr: &SExpr, slot_variables: &HashSet<String>) -> bool {
         match expr {
             SExpr::Atom(Atom::SingleVar(name) | Atom::MultiVar(name), _) => {
@@ -2878,15 +2679,6 @@ impl Engine {
                 .iter()
                 .any(|item| Self::sexpr_references_any_variable(item, slot_variables)),
         }
-    }
-
-    fn is_potentially_lowerable_negated_predicate_expr(expr: &SExpr) -> bool {
-        Self::parse_simple_predicate_comparison(expr).is_some()
-            || Self::parse_str_compare_predicate_comparison(expr).is_some()
-    }
-
-    fn is_potentially_lowerable_negated_return_value_expr(expr: &SExpr) -> bool {
-        Self::parse_predicate_operand(expr).is_some()
     }
 
     /// Normalize nested or CEs by distributing them across enclosing contexts.
@@ -3119,6 +2911,9 @@ impl Engine {
 
     /// Recursively expand slot-level `Constraint::Or` disjunctions into pattern variants.
     fn expand_pattern_constraint_disjunctions(pattern: &Pattern) -> Vec<Pattern> {
+        if Self::pattern_needs_runtime_disjunction(pattern) {
+            return vec![pattern.clone()];
+        }
         match pattern {
             Pattern::Ordered(ordered) => Self::expand_ordered_pattern_disjunctions(ordered)
                 .into_iter()
@@ -3172,7 +2967,9 @@ impl Engine {
         let per_slot: Vec<Vec<Constraint>> = pattern
             .constraints
             .iter()
-            .map(Self::expand_constraint_disjunctions)
+            .map(|constraint| {
+                Self::expand_constraint_disjunctions(&Self::field_constraint(constraint))
+            })
             .collect();
         Self::cartesian_product(&per_slot)
             .into_iter()
@@ -3189,14 +2986,16 @@ impl Engine {
             .slot_constraints
             .iter()
             .map(|slot_constraint| {
-                Self::expand_constraint_disjunctions(&slot_constraint.constraint)
-                    .into_iter()
-                    .map(|constraint| SlotConstraint {
-                        slot_name: slot_constraint.slot_name.clone(),
-                        constraint,
-                        span: slot_constraint.span,
-                    })
-                    .collect()
+                Self::expand_constraint_disjunctions(&Self::field_constraint(
+                    &slot_constraint.constraint,
+                ))
+                .into_iter()
+                .map(|constraint| SlotConstraint {
+                    slot_name: slot_constraint.slot_name.clone(),
+                    constraint,
+                    span: slot_constraint.span,
+                })
+                .collect()
             })
             .collect();
 
@@ -3261,127 +3060,28 @@ impl Engine {
         product
     }
 
-    /// Translate a `RuleConstruct` (parser types) into a `CompilableRule` (core types).
-    #[allow(clippy::too_many_lines)] // Preserves source-order CE translation in one pass.
+    /// Plan every source condition before publishing any graph nodes.
     fn translate_rule_construct(
         &mut self,
         rule: &RuleConstruct,
     ) -> Result<TranslatedRule, LoadError> {
-        let mut conditions = Vec::new();
+        let mut plan = runtime_constraints::RuleConstraintPlan::new(rule);
         let mut fact_address_vars = HashMap::new();
-        let mut test_conditions: Vec<CompiledTestCondition> = Vec::new();
         let mut multifield_tail_bindings = Vec::new();
-        let mut fact_index = 0usize;
-        let mut internal_slot_var_seed = 0usize;
-        let mut exported_variables = HashSet::new();
         let mut existential_locals = HashSet::new();
-
-        // Flatten ordinary conjunctions. Logical CEs have already been rejected.
-        // CLIPS treats (and ...) as a grouping CE equivalent to listing sub-patterns directly.
-        // Double negation stays intact and is translated through an exists node.
-        let mut flat_patterns: Vec<&Pattern> = Vec::new();
+        let mut fact_index = 0;
+        let mut flat_patterns = Vec::new();
         for pattern in &rule.patterns {
             Self::flatten_pattern(pattern, &mut flat_patterns);
         }
-
-        for pattern in &flat_patterns {
-            // Test CEs do not consume a fact index. Their expressions are
-            // retained in rule metadata and referenced by predicate nodes at
-            // their source position in the beta network.
-            if let Pattern::Test(sexpr, _span) = pattern {
-                Self::validate_existential_test_scope(
-                    &rule.name,
-                    sexpr,
-                    &existential_locals,
-                    &exported_variables,
-                )?;
-                let runtime_expr =
-                    crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                Self::push_test_predicate(
-                    &mut conditions,
-                    &mut test_conditions,
-                    CompiledTestCondition::Expr(runtime_expr),
-                )?;
-                continue;
-            }
-
+        let mut conditions = Vec::new();
+        for pattern in flat_patterns {
             Self::collect_existential_local_variables(pattern, &mut existential_locals);
-
-            // Handle test CEs inside negation and NCC contexts by extracting
-            // them as predicate nodes at their source position.
-            let previous_test_count = test_conditions.len();
-            if self.try_extract_nested_test_ce(pattern, &mut test_conditions)? {
-                for condition_index in previous_test_count..test_conditions.len() {
-                    let condition_index = u32::try_from(condition_index).map_err(|_| {
-                        LoadError::Compile("too many test CEs in one rule".to_string())
-                    })?;
-                    conditions.push(CompilableCondition::Predicate { condition_index });
+            self.lower_lhs_condition(pattern, &mut plan, &mut conditions)?;
+            if Self::is_positive_fact_pattern(pattern) {
+                if let Pattern::Assigned { variable, .. } = pattern {
+                    fact_address_vars.insert(variable.clone(), fact_index);
                 }
-                continue;
-            }
-
-            // Fallback path for complex negated ordered constraints that cannot
-            // be lowered to join/alpha tests cannot remain a firing-time check:
-            // it would expose an invalid terminal activation and could not react
-            // to right-side assertion/retraction. Reject it until it has a real
-            // negative-network representation.
-            if Self::has_complex_negated_expression(pattern) {
-                return Err(LoadError::Compile(
-                    "complex constraints inside negated patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
-
-            // Check for Pattern::Assigned to track fact-address variables
-            let (var_name, is_negated) = match pattern {
-                Pattern::Assigned {
-                    variable,
-                    pattern: inner,
-                    ..
-                } => {
-                    // Check if inner is negated (which wouldn't make sense for fact address)
-                    let negated = matches!(inner.as_ref(), Pattern::Not(..));
-                    (Some(variable.clone()), negated)
-                }
-                Pattern::Not(..) => (None, true),
-                _ => (None, false),
-            };
-
-            let mut generated_tests = Vec::new();
-            let mut embedded_generated_tests = HashSet::new();
-            let condition = self.translate_condition(
-                pattern,
-                &mut generated_tests,
-                &mut internal_slot_var_seed,
-                test_conditions.len(),
-                &mut embedded_generated_tests,
-            )?;
-            if matches!(
-                &condition,
-                CompilableCondition::Pattern(compilable) if compilable.exists
-            ) && !generated_tests.is_empty()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside existential patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
-            if matches!(condition, CompilableCondition::Ncc(_))
-                && generated_tests.len() != embedded_generated_tests.len()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside NCC patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
-            if let Some(name) = var_name {
-                if !is_negated && Self::condition_has_fact_address(&condition) {
-                    fact_address_vars.insert(name, fact_index);
-                }
-            }
-            if Self::condition_has_fact_address(&condition) {
-                Self::collect_pattern_binding_variables(pattern, &mut exported_variables);
                 Self::collect_multifield_tail_bindings(
                     pattern,
                     fact_index,
@@ -3389,38 +3089,22 @@ impl Engine {
                 );
                 fact_index += 1;
             }
-            conditions.push(condition);
-            for (generated_index, generated_test) in generated_tests.into_iter().enumerate() {
-                if embedded_generated_tests.contains(&generated_index) {
-                    test_conditions.push(CompiledTestCondition::Expr(generated_test));
-                } else {
-                    Self::push_test_predicate(
-                        &mut conditions,
-                        &mut test_conditions,
-                        CompiledTestCondition::Expr(generated_test),
-                    )?;
-                }
-            }
         }
-
-        // Empty conjunctions attach directly to the existing non-fact root.
-        // The visible initial-fact is separate state, not support for this match.
-
-        Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
-
+        Self::validate_rule_rhs_scope(rule, &existential_locals, &plan.available)?;
         Ok(TranslatedRule {
             salience: Salience::new(rule.salience),
             conditions,
             fact_address_vars,
-            test_conditions,
+            test_conditions: plan.conditions,
             multifield_tail_bindings,
         })
     }
 
-    fn condition_has_fact_address(condition: &CompilableCondition) -> bool {
-        match condition {
-            CompilableCondition::Pattern(pattern) => !pattern.negated && !pattern.exists,
-            CompilableCondition::Predicate { .. } | CompilableCondition::Ncc(_) => false,
+    fn is_positive_fact_pattern(pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::Ordered(_) | Pattern::Template(_) => true,
+            Pattern::Assigned { pattern, .. } => Self::is_positive_fact_pattern(pattern),
+            _ => false,
         }
     }
 
@@ -3447,236 +3131,6 @@ impl Engine {
                 });
             }
             _ => {}
-        }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn translate_condition(
-        &mut self,
-        pattern: &Pattern,
-        generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
-        internal_slot_var_seed: &mut usize,
-        test_condition_base: usize,
-        embedded_generated_tests: &mut HashSet<usize>,
-    ) -> Result<CompilableCondition, LoadError> {
-        match pattern {
-            Pattern::Assigned { pattern, .. } => self.translate_condition(
-                pattern,
-                generated_tests,
-                internal_slot_var_seed,
-                test_condition_base,
-                embedded_generated_tests,
-            ),
-            Pattern::Not(inner, span) => {
-                match inner.as_ref() {
-                    Pattern::And(inner_patterns, _) => {
-                        // (not (and P1 P2 ...)) → NCC
-                        if inner_patterns.is_empty() {
-                            return Err(Self::unsupported_pattern(
-                                "not/and",
-                                span,
-                                "not(and ...) requires at least one inner pattern",
-                            ));
-                        }
-                        let mut subconditions = Vec::with_capacity(inner_patterns.len());
-                        for sub in inner_patterns {
-                            let condition = self.translate_condition(
-                                sub,
-                                generated_tests,
-                                internal_slot_var_seed,
-                                test_condition_base,
-                                embedded_generated_tests,
-                            )?;
-                            subconditions.push(condition);
-                        }
-                        Ok(CompilableCondition::Ncc(subconditions))
-                    }
-                    Pattern::Not(doubly_inner, _) => {
-                        // (not (not X)) ≡ (exists X) in CLIPS.
-                        // Preserve further nested negation parity, but compile
-                        // an ordinary doubly-negated fact pattern through the
-                        // support-counted exists node.
-                        if matches!(doubly_inner.as_ref(), Pattern::Not(..)) {
-                            self.translate_condition(
-                                doubly_inner,
-                                generated_tests,
-                                internal_slot_var_seed,
-                                test_condition_base,
-                                embedded_generated_tests,
-                            )
-                        } else {
-                            let mut compilable = self.translate_pattern(
-                                doubly_inner,
-                                generated_tests,
-                                internal_slot_var_seed,
-                                false,
-                            )?;
-                            compilable.exists = true;
-                            Ok(CompilableCondition::Pattern(compilable))
-                        }
-                    }
-                    _ => {
-                        let mut compilable = self.translate_pattern(
-                            inner,
-                            generated_tests,
-                            internal_slot_var_seed,
-                            true,
-                        )?;
-                        compilable.negated = true;
-                        Ok(CompilableCondition::Pattern(compilable))
-                    }
-                }
-            }
-            Pattern::Exists(sub_patterns, span) => {
-                if sub_patterns.is_empty() {
-                    return Err(Self::unsupported_pattern(
-                        "exists",
-                        span,
-                        "exists requires at least one inner pattern",
-                    ));
-                }
-
-                if sub_patterns.len() == 1
-                    && matches!(
-                        &sub_patterns[0],
-                        Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Assigned { .. }
-                    )
-                {
-                    let mut compilable = self.translate_pattern(
-                        &sub_patterns[0],
-                        generated_tests,
-                        internal_slot_var_seed,
-                        false,
-                    )?;
-                    compilable.exists = true;
-                    return Ok(CompilableCondition::Pattern(compilable));
-                }
-
-                let mut tuple_conditions = Vec::new();
-                for sub_pattern in sub_patterns {
-                    match sub_pattern {
-                        Pattern::And(children, _) | Pattern::Logical(children, _) => {
-                            for child in children {
-                                tuple_conditions.push(self.translate_condition(
-                                    child,
-                                    generated_tests,
-                                    internal_slot_var_seed,
-                                    test_condition_base,
-                                    embedded_generated_tests,
-                                )?);
-                            }
-                        }
-                        _ => tuple_conditions.push(self.translate_condition(
-                            sub_pattern,
-                            generated_tests,
-                            internal_slot_var_seed,
-                            test_condition_base,
-                            embedded_generated_tests,
-                        )?),
-                    }
-                }
-
-                // An NCC emits one pass-through only while its tuple subnetwork
-                // has no complete results. Watching that NCC with a second NCC
-                // complements the condition: the outer token propagates exactly
-                // while one or more complete tuples exist. Both NCC memories are
-                // keyed by their owner token, so tuple support stays isolated per
-                // outer match and follows only zero/nonzero transitions.
-                Ok(CompilableCondition::Ncc(vec![
-                    CompilableCondition::Ncc(tuple_conditions),
-                ]))
-            }
-            Pattern::Test(sexpr, _) => {
-                let condition_index = test_condition_base
-                    .checked_add(generated_tests.len())
-                    .and_then(|index| u32::try_from(index).ok())
-                    .ok_or_else(|| {
-                        LoadError::Compile("too many test CEs in one rule".to_string())
-                    })?;
-                let runtime_expr =
-                    crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                embedded_generated_tests.insert(generated_tests.len());
-                generated_tests.push(runtime_expr);
-                Ok(CompilableCondition::Predicate { condition_index })
-            }
-            Pattern::Forall(sub_patterns, span) => {
-                // Phase 3 restriction: exactly 2 sub-patterns (condition + then-clause).
-                if sub_patterns.len() != 2 {
-                    return Err(Self::unsupported_pattern(
-                        "forall",
-                        span,
-                        &format!(
-                            "Phase 3 forall supports exactly one condition and one then-clause, got {} sub-patterns",
-                            sub_patterns.len()
-                        ),
-                    ));
-                }
-
-                // Validate sub-patterns are simple (no nested CEs).
-                for sub in sub_patterns {
-                    match sub {
-                        Pattern::Ordered(_) | Pattern::Template(_) => {}
-                        Pattern::Forall(_, inner_span) => {
-                            return Err(Self::unsupported_pattern(
-                                "forall",
-                                inner_span,
-                                "nested forall is not supported",
-                            ));
-                        }
-                        _ => {
-                            return Err(Self::unsupported_pattern(
-                                "forall",
-                                span,
-                                "forall sub-patterns must be simple fact patterns (ordered or template)",
-                            ));
-                        }
-                    }
-                }
-
-                // Desugar forall(P, Q) → NCC([P, neg(Q)]).
-                // Compile condition (P) as positive pattern.
-                let condition = self.translate_pattern(
-                    &sub_patterns[0],
-                    generated_tests,
-                    internal_slot_var_seed,
-                    false,
-                )?;
-                // Compile then-clause (Q) as negated pattern.
-                let mut then_clause = self.translate_pattern(
-                    &sub_patterns[1],
-                    generated_tests,
-                    internal_slot_var_seed,
-                    true,
-                )?;
-                then_clause.negated = true;
-
-                Ok(CompilableCondition::Ncc(vec![
-                    CompilableCondition::Pattern(condition),
-                    CompilableCondition::Pattern(then_clause),
-                ]))
-            }
-            Pattern::And(_, span) => Err(Self::unsupported_pattern(
-                "and",
-                span,
-                "standalone and conditional elements are not supported; use (not (and ...))",
-            )),
-            Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
-                "logical",
-                span,
-                "truth maintenance is not implemented",
-            )),
-            Pattern::Or(_, span) => Err(Self::unsupported_pattern(
-                "or",
-                span,
-                "or CE should have been expanded via rule duplication before reaching translate_condition",
-            )),
-            _ => Ok(CompilableCondition::Pattern(self.translate_pattern(
-                pattern,
-                generated_tests,
-                internal_slot_var_seed,
-                false,
-            )?)),
         }
     }
 
@@ -3712,6 +3166,21 @@ impl Engine {
                     AlphaEntryType::OrderedRelation(sym)
                 };
                 let mut constant_tests = Vec::new();
+                if matches!(entry_type, AlphaEntryType::OrderedRelation(_)) {
+                    // Single-field constraints consume exactly one field, even
+                    // when anonymous. Multifield constraints may consume none
+                    // or more, so only their fixed neighbors set a lower bound.
+                    let min = ordered
+                        .constraints
+                        .iter()
+                        .filter(|constraint| !Self::constraint_is_multifield(constraint))
+                        .count();
+                    let max = (min == ordered.constraints.len()).then_some(min);
+                    constant_tests.push(ConstantTest {
+                        slot: SlotIndex::Ordered(0),
+                        test_type: ConstantTestType::OrderedFieldCount { min, max },
+                    });
+                }
                 let mut variable_slots = Vec::new();
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
@@ -3870,6 +3339,21 @@ impl Engine {
                 span,
                 "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
+        }
+    }
+
+    fn constraint_is_multifield(constraint: &Constraint) -> bool {
+        match constraint {
+            Constraint::MultiVariable(_, _) | Constraint::MultiWildcard(_) => true,
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                parts.iter().any(Self::constraint_is_multifield)
+            }
+            Constraint::Not(inner, _) => Self::constraint_is_multifield(inner),
+            Constraint::Literal(_)
+            | Constraint::Variable(_, _)
+            | Constraint::Wildcard(_)
+            | Constraint::Predicate(_, _)
+            | Constraint::ReturnValue(_, _) => false,
         }
     }
 
@@ -4045,24 +3529,7 @@ impl Engine {
                     // by the parser, so we just accept any value for this slot.
                 }
             }
-            Constraint::Predicate(expr, span) => {
-                if in_negated_pattern {
-                    if self.try_lower_simple_predicate_constraint(
-                        expr,
-                        slot,
-                        constant_tests,
-                        variable_slots,
-                        negated_variable_slots,
-                        seen_variable_slots,
-                    )? {
-                        return Ok(());
-                    }
-                    return Err(Self::unsupported_constraint(
-                        ":",
-                        span,
-                        "predicate constraints inside negated patterns currently require a simple binary comparison involving the current slot variable",
-                    ));
-                }
+            Constraint::Predicate(expr, _span) => {
                 if self.try_lower_simple_predicate_constraint(
                     expr,
                     slot,
@@ -4080,23 +3547,18 @@ impl Engine {
                         })?;
                 generated_tests.push(runtime_expr);
             }
-            Constraint::ReturnValue(expr, span) => {
-                if in_negated_pattern {
-                    if self.try_lower_negated_return_value_constraint(
+            Constraint::ReturnValue(expr, _span) => {
+                if in_negated_pattern
+                    && self.try_lower_negated_return_value_constraint(
                         expr,
                         slot,
                         constant_tests,
                         variable_slots,
                         negated_variable_slots,
                         seen_variable_slots,
-                    )? {
-                        return Ok(());
-                    }
-                    return Err(Self::unsupported_constraint(
-                        "=",
-                        span,
-                        "return-value constraints inside negated patterns currently require a simple literal/variable expression or a linear (+/- var integer) form",
-                    ));
+                    )?
+                {
+                    return Ok(());
                 }
                 let runtime_expr =
                     crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
@@ -5512,7 +4974,7 @@ mod tests {
     #[test]
     fn load_rule_with_connected_slot_variables_compiles() {
         let mut engine = new_utf8_engine();
-        let result = engine.load_str("(defrule t ?f <- (x ?y&?x) => (retract ?f))");
+        let result = engine.load_str("(defrule t (seed ?x) ?f <- (x ?y&?x) => (retract ?f))");
 
         assert!(
             result.is_ok(),
@@ -5571,6 +5033,7 @@ mod tests {
             r"
             (deftemplate mnj (slot x) (slot y))
             (defrule t
+              (seed ?x ?y)
               (mnj (x ?x | ?y) (y ?x | ?y))
               =>)
             ",
@@ -5857,25 +5320,21 @@ mod tests {
     }
 
     #[test]
-    fn negated_predicate_constraint_rejects_non_linear_expression() {
+    fn negated_predicate_constraint_matches_non_linear_expression() {
         let mut engine = new_utf8_engine();
-        let errors = engine
-            .load_str(
-                r"
+        load_ok(
+            &mut engine,
+            r"
+            (deffacts initial (anchor 2) (anchor 5) (data 3))
             (defrule no-square-greater
-              (anchor ?min)
-              (not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
-              =>
-              (assert (safe-square ?min)))
-            ",
-            )
-            .expect_err("non-linear negated predicate must be rejected");
-
-        assert!(errors.iter().any(|error| matches!(
-            error,
-            LoadError::Compile(message)
-                if message.contains("complex constraints inside negated patterns")
-        )));
+                (anchor ?min)
+                (not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
+                => (assert (safe-square ?min)))",
+        );
+        engine.reset().unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        assert_eq!(run_to_completion(&mut engine).rules_fired, 1);
+        assert_eq!(find_facts_by_relation(&engine, "safe-square").len(), 1);
     }
 
     #[test]
@@ -5931,28 +5390,27 @@ mod tests {
     }
 
     #[test]
-    fn negated_return_value_constraint_rejects_non_linear_expression() {
+    fn negated_return_value_constraint_matches_non_linear_expression() {
         let mut engine = new_utf8_engine();
-        let errors = engine
-            .load_str(
-                r"
+        load_ok(
+            &mut engine,
+            r"
             (defrule no-self-square
-              (not (pair ?x&=(* ?x ?x)))
-              =>
-              (assert (safe-return)))
-            ",
-            )
-            .expect_err("non-linear negated return value must be rejected");
-
-        assert!(errors.iter().any(|error| matches!(
-            error,
-            LoadError::Compile(message)
-                if message.contains("complex constraints inside negated patterns")
-        )));
+                (not (pair ?x&=(* ?x ?x)))
+                => (assert (safe-return)))",
+        );
+        engine.reset().unwrap();
+        engine.assert_ordered("pair", vec![2_i64]).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        let blocker = engine.assert_ordered("pair", vec![1_i64]).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        engine.retract(blocker).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        assert_eq!(run_to_completion(&mut engine).rules_fired, 1);
     }
 
     #[test]
-    fn negated_predicate_constraint_still_reports_unsupported_when_slot_variable_not_involved() {
+    fn negated_predicate_constraint_rejects_unbound_variables() {
         let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule t (not (data b&:(> ?x ?y))) => (assert (ok)))")
@@ -5961,14 +5419,14 @@ mod tests {
         assert!(
             errors.iter().any(|e| matches!(
                 e,
-                LoadError::Compile(msg) if msg.contains("predicate constraints inside negated patterns currently require")
+                LoadError::Compile(msg) if msg.contains("unbound LHS variable")
             )),
-            "expected explicit unsupported diagnostic, got: {errors:?}"
+            "expected an unbound LHS diagnostic, got: {errors:?}"
         );
     }
 
     #[test]
-    fn negated_return_value_constraint_still_reports_unsupported_when_slot_variable_not_involved() {
+    fn negated_return_value_constraint_rejects_unbound_variables() {
         let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule t (not (pair =(* ?x 2))) => (assert (ok)))")
@@ -5977,9 +5435,9 @@ mod tests {
         assert!(
             errors.iter().any(|e| matches!(
                 e,
-                LoadError::Compile(msg) if msg.contains("return-value constraints inside negated patterns currently require")
+                LoadError::Compile(msg) if msg.contains("unbound LHS variable")
             )),
-            "expected explicit unsupported diagnostic, got: {errors:?}"
+            "expected an unbound LHS diagnostic, got: {errors:?}"
         );
     }
 

@@ -36,7 +36,7 @@ members, consolidating overlapping defects rather than making one PR per obsolet
 ticket. The label/dependency batch is **applied and separately verified against live state**.
 The full comparison covers 175 issues: 85 targeted updates, 72 retirements as
 not planned, and 90 untargeted issues unchanged. Twelve implementation members
-are completed; #143 is the final gate closed by this record. Issue #300 remains
+are completed; #143 is the final gate closed by this record. At that checkpoint, issue #300 remained
 unchanged and open.
 Native edges changed from 221 to 59: 180 obsolete edges removed, 18 cohort edges
 added and 41 other edges preserved. Issue history and scope reasons remain.
@@ -299,9 +299,12 @@ Deferred: broad Go/C distribution or parity, public tags/registries/releases,
 new platform certification, production SLO/soak/shadow programs, a task scheduler,
 recurring owner renewals, and speculative RETE/index/refcount redesigns without
 reproduced need. Logical CEs and unsupported optional module/query/strategy forms
-fail explicitly. LEX/MEA remain experimental. CLIPS-valid complex negated
-constraints rejected by PR #254 remain disclosed and tracked in
-[#300](https://github.com/plx/ferric-rules/issues/300); this was not silently closed.
+fail explicitly. LEX/MEA remain experimental. At this gate, CLIPS-valid complex
+negated constraints rejected by PR #254 remained disclosed and tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300); this record did not close it.
+Subsequent compatibility work implements fixed-width scalar constraints with
+retained pattern decisions and lazy negative conflicts; the current supported
+boundary is documented in [compatibility](../compatibility.md).
 Qualified distinct template declarations work; unsupported unqualified cross-module
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.

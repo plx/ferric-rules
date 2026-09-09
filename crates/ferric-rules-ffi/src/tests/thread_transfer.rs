@@ -4,17 +4,17 @@ use crate::engine::*;
 use crate::error::{
     ferric_clear_error_global, ferric_last_error_global, set_global_error, FerricError,
 };
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 
 #[test]
 fn engine_survives_creator_exit_and_copied_output_survives_free() {
     let owned = std::thread::spawn(|| unsafe {
         let engine = ferric_engine_new();
+        let source =
+            CString::new("(deffacts data (item 7)) (defrule r (item ?x) => (printout t ?x crlf))")
+                .unwrap();
         assert_eq!(
-            ferric_engine_load_string(
-                engine,
-                c"(deffacts data (item 7)) (defrule r (item ?x) => (printout t ?x crlf))".as_ptr()
-            ),
+            ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
         );
         assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
@@ -31,10 +31,11 @@ fn engine_survives_creator_exit_and_copied_output_survives_free() {
         assert_eq!(fired, 1);
         let mut output = [0_i8; 32];
         let mut written = 0;
+        let channel = CString::new("t").unwrap();
         assert_eq!(
             ferric_engine_get_output_copy(
                 engine,
-                c"t".as_ptr(),
+                channel.as_ptr(),
                 output.as_mut_ptr(),
                 output.len(),
                 &mut written
@@ -106,7 +107,7 @@ fn overlapping_calls_and_free_are_rejected_while_allocator_holds_admission() {
     }
     unsafe {
         let mut owned = Box::from_raw(ferric_engine_new());
-        let address = std::sync::atomic::AtomicPtr::new(&raw mut *owned);
+        let address = std::sync::atomic::AtomicPtr::new(std::ptr::addr_of_mut!(*owned));
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         let mut context = Context {
@@ -122,7 +123,7 @@ fn overlapping_calls_and_free_are_rejected_while_allocator_holds_admission() {
                 ferric_engine_serialize_bincode(
                     engine,
                     Some(allocator),
-                    (&raw mut context).cast(),
+                    std::ptr::addr_of_mut!(context).cast(),
                     &mut bytes,
                     &mut len
                 ),

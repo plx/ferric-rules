@@ -86,8 +86,7 @@ impl Engine {
                 self.validate_expression(expr)?;
             }
             for condition in &info.test_conditions {
-                let crate::actions::CompiledTestCondition::Expr(expr) = condition;
-                self.validate_expression(expr)?;
+                self.validate_expression(&condition.expr)?;
             }
         }
         self.rete.validate_snapshot_rules(|id| {
@@ -96,6 +95,7 @@ impl Engine {
                 .and_then(Option::as_ref)
                 .map(|info| (info.salience, info.test_conditions.len()))
         })?;
+        self.validate_runtime_condition_uses()?;
         ensure(
             live_rules == terminal_rules.len(),
             "terminal lacks runtime rule metadata",
@@ -313,7 +313,7 @@ impl Engine {
                     fact.slots.len() == template.slot_names.len(),
                     "fact/template slot count mismatch",
                 )?;
-                for (kind, value) in template.slot_types.iter().zip(&fact.slots) {
+                for (kind, value) in template.slot_types.iter().zip(fact.slots.iter()) {
                     ensure(
                         matches!(value, Value::Multifield(_)) == (*kind == SlotType::Multi),
                         "fact/template slot cardinality mismatch",
@@ -396,8 +396,347 @@ impl Engine {
         }
         Ok(())
     }
+
+    fn validate_runtime_condition_uses(&self) -> Result<(), String> {
+        let mut used = rustc_hash::FxHashSet::default();
+        let mut work = 10_000_000_usize;
+        for usage in self.rete.snapshot_runtime_condition_uses() {
+            let info = self
+                .rule_info
+                .get(usage.rule.0 as usize)
+                .and_then(Option::as_ref)
+                .ok_or("runtime condition lacks rule metadata")?;
+            let condition = info
+                .test_conditions
+                .get(usage.condition_index as usize)
+                .ok_or("runtime condition has dangling index")?;
+            ensure(
+                condition.role == usage.role,
+                "runtime condition role disagrees with graph owner",
+            )?;
+            for (slot, variable) in &usage.bindings {
+                work = work
+                    .checked_sub(1)
+                    .ok_or("runtime condition validation work limit exceeded")?;
+                ensure(
+                    (variable.0 as usize) < info.var_map.len(),
+                    "runtime condition binding exceeds rule variable map",
+                )?;
+                if let (
+                    Some(ferric_rules_core::AlphaEntryType::Template(id)),
+                    ferric_rules_core::SlotIndex::Template(index),
+                ) = (&usage.entry_type, slot)
+                {
+                    let template = self
+                        .template_defs
+                        .get(*id)
+                        .ok_or("runtime condition has dangling template")?;
+                    ensure(
+                        *index < template.slot_names.len(),
+                        "runtime condition binding exceeds template slot count",
+                    )?;
+                }
+            }
+            let mut available = rustc_hash::FxHashSet::default();
+            for variable in &usage.available_variables {
+                work = work
+                    .checked_sub(1)
+                    .ok_or("runtime condition validation work limit exceeded")?;
+                ensure(
+                    (variable.0 as usize) < info.var_map.len(),
+                    "runtime condition variable exceeds rule map",
+                )?;
+                let name = self
+                    .symbol_table
+                    .resolve_symbol_str(info.var_map.name(*variable))
+                    .ok_or("runtime condition variable has dangling symbol")?;
+                available.insert(name);
+            }
+            validate_condition_variables(&condition.expr, &available, &mut work)?;
+            used.insert((usage.rule, usage.condition_index));
+        }
+        for (rule, info) in self.rule_info.iter().enumerate() {
+            let Some(info) = info else {
+                continue;
+            };
+            for index in 0..info.test_conditions.len() {
+                work = work
+                    .checked_sub(1)
+                    .ok_or("runtime condition validation work limit exceeded")?;
+                let rule = ferric_rules_core::RuleId(
+                    u32::try_from(rule).map_err(|_| "oversized rule index")?,
+                );
+                let index = u32::try_from(index).map_err(|_| "oversized condition index")?;
+                ensure(
+                    used.contains(&(rule, index)),
+                    "runtime condition lacks graph owner",
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Inspect lexical free variables without executing callbacks or rebuilding a
+/// predicate decision against globals that may have changed since matching.
+#[allow(clippy::too_many_lines)] // Scope-aware traversal of the two persisted expression forms.
+fn validate_condition_variables(
+    root: &RuntimeExpr,
+    available: &rustc_hash::FxHashSet<&str>,
+    work: &mut usize,
+) -> Result<(), String> {
+    enum Expression<'a> {
+        Runtime(&'a RuntimeExpr),
+        Source(&'a ActionExpr),
+    }
+    use Expression::{Runtime, Source};
+    let mut pending = vec![(Runtime(root), Vec::<String>::new())];
+    while let Some((expression, scope)) = pending.pop() {
+        *work = work
+            .checked_sub(scope.len() + 1)
+            .ok_or("runtime condition validation work limit exceeded")?;
+        let mut children = Vec::new();
+        let mut scoped = Vec::new();
+        let mut inner = scope.clone();
+        let mut branches = Vec::new();
+        let mut source_branches = Vec::new();
+        let variable = match expression {
+            Runtime(RuntimeExpr::BoundVar { name, .. }) | Source(ActionExpr::Variable(name, _)) => {
+                Some(name)
+            }
+            Runtime(RuntimeExpr::Literal(_) | RuntimeExpr::GlobalVar { .. })
+            | Source(ActionExpr::Literal(_) | ActionExpr::GlobalVariable(..)) => None,
+            Runtime(RuntimeExpr::Call { args, .. }) => {
+                children.extend(args.iter().map(Runtime));
+                None
+            }
+            Source(ActionExpr::FunctionCall(call)) => {
+                children.extend(call.args.iter().map(Source));
+                None
+            }
+            Runtime(RuntimeExpr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            }) => {
+                children.push(Runtime(condition));
+                branches.extend([then_branch, else_branch]);
+                None
+            }
+            Source(ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            }) => {
+                children.push(Source(condition));
+                source_branches.extend([then_actions, else_actions]);
+                None
+            }
+            Runtime(RuntimeExpr::While {
+                condition, body, ..
+            }) => {
+                children.push(Runtime(condition));
+                branches.push(body);
+                None
+            }
+            Source(ActionExpr::While {
+                condition, body, ..
+            }) => {
+                children.push(Source(condition));
+                source_branches.push(body);
+                None
+            }
+            Runtime(RuntimeExpr::LoopForCount {
+                var_name,
+                start,
+                end,
+                body,
+                ..
+            }) => {
+                children.extend([Runtime(start), Runtime(end)]);
+                inner.extend(var_name.iter().cloned());
+                branches.push(body);
+                None
+            }
+            Source(ActionExpr::LoopForCount {
+                var_name,
+                start,
+                end,
+                body,
+                ..
+            }) => {
+                children.extend([Source(start), Source(end)]);
+                inner.extend(var_name.iter().cloned());
+                source_branches.push(body);
+                None
+            }
+            Runtime(RuntimeExpr::Progn {
+                var_name,
+                list_expr,
+                body,
+                ..
+            }) => {
+                children.push(Runtime(list_expr));
+                inner.extend([var_name.clone(), format!("{var_name}-index")]);
+                branches.push(body);
+                None
+            }
+            Source(ActionExpr::Progn {
+                var_name,
+                list_expr,
+                body,
+                ..
+            }) => {
+                children.push(Source(list_expr));
+                inner.extend([var_name.clone(), format!("{var_name}-index")]);
+                source_branches.push(body);
+                None
+            }
+            Runtime(RuntimeExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            }) => {
+                inner.extend(bindings.iter().map(|(name, _)| name.clone()));
+                scoped.push(Runtime(query));
+                branches.push(body);
+                None
+            }
+            Source(ActionExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            }) => {
+                inner.extend(bindings.iter().map(|(name, _)| name.clone()));
+                scoped.push(Source(query));
+                source_branches.push(body);
+                None
+            }
+            Runtime(RuntimeExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            }) => {
+                children.push(Runtime(expr));
+                for (value, body) in cases {
+                    children.push(Runtime(value));
+                    branches.push(body);
+                }
+                branches.extend(default.iter());
+                None
+            }
+            Source(ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            }) => {
+                children.push(Source(expr));
+                for (value, body) in cases {
+                    children.push(Source(value));
+                    source_branches.push(body);
+                }
+                source_branches.extend(default.iter());
+                None
+            }
+        };
+        if let Some(name) = variable {
+            let name = name.strip_prefix("$?").unwrap_or(name);
+            ensure(
+                available.contains(name)
+                    || scope
+                        .iter()
+                        .any(|bound| bound.strip_prefix("$?").unwrap_or(bound) == name),
+                "runtime condition references a variable outside its graph scope",
+            )?;
+        }
+        for branch in branches {
+            for (source, runtime) in branch {
+                // Both forms are stored and can be selected by execution.
+                scoped.push(Source(source));
+                if let Some(runtime) = runtime {
+                    scoped.push(Runtime(runtime));
+                }
+            }
+        }
+        for branch in source_branches {
+            scoped.extend(branch.iter().map(Source));
+        }
+        pending.extend(children.into_iter().map(|child| (child, scope.clone())));
+        pending.extend(scoped.into_iter().map(|child| (child, inner.clone())));
+    }
+    Ok(())
 }
 
 fn validate_action(root: &ActionExpr) -> Result<(), String> {
     crate::evaluator::validate_action_depth(root).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn variable(name: &str) -> RuntimeExpr {
+        RuntimeExpr::BoundVar {
+            name: name.into(),
+            span: None,
+        }
+    }
+
+    fn body_variable(name: &str) -> (ActionExpr, Option<Box<RuntimeExpr>>) {
+        let position = ferric_rules_parser::Position {
+            offset: 0,
+            line: 1,
+            column: 1,
+        };
+        let span =
+            ferric_rules_parser::Span::new(position, position, ferric_rules_parser::FileId(0));
+        (
+            ActionExpr::Variable(name.into(), span),
+            Some(Box::new(variable(name))),
+        )
+    }
+
+    #[test]
+    fn restored_condition_variables_respect_nested_lexical_scopes() {
+        let available = rustc_hash::FxHashSet::from_iter(["outer"]);
+        let mut loop_expr = RuntimeExpr::LoopForCount {
+            var_name: Some("i".into()),
+            start: Box::new(variable("outer")),
+            end: Box::new(RuntimeExpr::Literal(Value::Integer(2))),
+            body: vec![body_variable("i")],
+            span: None,
+        };
+        assert!(validate_condition_variables(&loop_expr, &available, &mut 1000).is_ok());
+        if let RuntimeExpr::LoopForCount { start, .. } = &mut loop_expr {
+            **start = variable("i");
+        }
+        assert!(validate_condition_variables(&loop_expr, &available, &mut 1000).is_err());
+        let progn = RuntimeExpr::Progn {
+            var_name: "field".into(),
+            list_expr: Box::new(variable("outer")),
+            body: vec![body_variable("field"), body_variable("field-index")],
+            span: None,
+        };
+        assert!(validate_condition_variables(&progn, &available, &mut 1000).is_ok());
+        let query = RuntimeExpr::QueryAction {
+            name: "do-for-fact".into(),
+            bindings: vec![("member".into(), "item".into())],
+            query: Box::new(variable("member")),
+            body: vec![body_variable("member")],
+            span: None,
+        };
+        assert!(validate_condition_variables(&query, &available, &mut 1000).is_ok());
+        for escaped in ["i", "field", "field-index", "member"] {
+            assert!(
+                validate_condition_variables(&variable(escaped), &available, &mut 1000).is_err()
+            );
+        }
+        assert!(validate_condition_variables(&progn, &available, &mut 1).is_err());
+    }
 }

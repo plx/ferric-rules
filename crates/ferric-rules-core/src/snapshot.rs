@@ -152,13 +152,14 @@ impl FactBase {
     }
 }
 
-use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode};
+use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode, ConstantTestType};
 use crate::beta::{BetaNode, RuleId};
 use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
 use crate::token::NodeId;
 
-// Source compilation allows 64 total condition nodes and 64 alpha tests.
+// Source compilation allows 64 total condition nodes and 64 alpha value tests,
+// with one additional ordered field-count test per alpha path.
 // Each condition contributes at most one node to a beta parent chain; an NCC
 // partner substitutes for its wrapper on a subnetwork path. Include root and
 // terminal. Partner callbacks need their own nesting/cycle bound below.
@@ -230,6 +231,12 @@ fn validate_constant(
 ) -> Result<(), String> {
     use crate::alpha::ConstantTestType as Test;
     match &test.test_type {
+        Test::OrderedFieldCount { min, max } => {
+            require!(
+                max.map_or(true, |max| *min <= max),
+                "invalid ordered field-count bounds"
+            );
+        }
         Test::Equal(value)
         | Test::NotEqual(value)
         | Test::GreaterThan(value)
@@ -277,7 +284,9 @@ impl ReteNetwork {
     pub fn validate_snapshot(&self, facts: &FactBase, symbols: &SymbolTable) -> Result<(), String> {
         self.validate_consistency()?;
         require!(
-            self.pending_predicate_matches.is_empty(),
+            self.pending_predicate_matches.is_empty()
+                && self.alpha.pending_runtime.is_empty()
+                && self.runtime_searches.is_empty(),
             "snapshot has unfinished predicate matches"
         );
         let mut work = Work(10_000_000);
@@ -620,6 +629,72 @@ impl ReteNetwork {
         }
         self.validate_join_memberships(facts, &mut work)?;
         self.validate_conditional_memories(facts, &mut work)?;
+        self.validate_runtime_conflict_order(&mut work)?;
+        Ok(())
+    }
+
+    fn validate_runtime_conflict_order(&self, work: &mut Work) -> Result<(), String> {
+        let mut expected = 0_usize;
+        for (&node, value) in &self.beta.nodes {
+            work.step()?;
+            if let BetaNode::Negative {
+                alpha_memory,
+                neg_memory,
+                runtime: Some(_),
+                ..
+            } = value
+            {
+                let state = self
+                    .beta
+                    .get_neg_memory(*neg_memory)
+                    .ok_or("missing runtime negative state")?;
+                work.spend(state.blocked.len())?;
+                for (parent, facts) in &state.blocked {
+                    let fact = *facts.iter().next().ok_or("empty selected conflict")?;
+                    require!(
+                        self.runtime_conflicts
+                            .get(&(*alpha_memory, fact))
+                            .is_some_and(|owners| owners.contains(&(node, *parent))),
+                        "selected conflict lacks ordered reverse owner"
+                    );
+                    expected += 1;
+                }
+            }
+        }
+        let mut actual = 0_usize;
+        for (&(memory, fact), owners) in &self.runtime_conflicts {
+            work.spend(owners.len().saturating_add(1))?;
+            require!(!owners.is_empty(), "empty ordered conflict owner list");
+            require!(
+                self.alpha
+                    .get_memory(memory)
+                    .is_some_and(|alpha| alpha.facts.contains(&fact)),
+                "ordered conflict has stale alpha fact"
+            );
+            for &(node, parent) in owners {
+                let Some(BetaNode::Negative {
+                    alpha_memory,
+                    neg_memory,
+                    runtime: Some(_),
+                    ..
+                }) = self.beta.get_node(node)
+                else {
+                    return Err("ordered conflict has invalid node".into());
+                };
+                require_eq!(*alpha_memory, memory);
+                require!(
+                    self.beta
+                        .get_neg_memory(*neg_memory)
+                        .is_some_and(|state| state
+                            .blocked
+                            .get(&parent)
+                            .is_some_and(|facts| facts.contains(&fact))),
+                    "ordered conflict has stale owner"
+                );
+                actual += 1;
+            }
+        }
+        require_eq!(actual, expected);
         Ok(())
     }
 
@@ -706,6 +781,7 @@ impl ReteNetwork {
         let mut owners = rustc_hash::FxHashSet::default();
         let mut incoming = vec![0_usize; self.alpha.nodes.len()];
         let mut depths = vec![0_usize; self.alpha.nodes.len()];
+        let mut field_count_depths = vec![0_usize; self.alpha.nodes.len()];
         for (index, node) in self.alpha.nodes.iter().enumerate() {
             let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
             let (children, memory) = match node {
@@ -734,6 +810,32 @@ impl ReteNetwork {
                     validate_constant(test, symbols)?;
                     (children, memory)
                 }
+                AlphaNode::RuntimePredicate {
+                    condition,
+                    children,
+                    memory,
+                } => {
+                    work.spend(condition.bindings.len())?;
+                    require!(
+                        condition.role == crate::rete::RuntimeConditionRole::PatternFilter,
+                        "runtime alpha filter has invalid role"
+                    );
+                    require!(
+                        children.is_empty() && memory.is_some(),
+                        "runtime pattern filter must own a terminal alpha memory"
+                    );
+                    require!(
+                        condition
+                            .bindings
+                            .iter()
+                            .map(|(_, variable)| *variable)
+                            .collect::<rustc_hash::FxHashSet<_>>()
+                            .len()
+                            == condition.bindings.len(),
+                        "duplicate runtime filter binding"
+                    );
+                    (children, memory)
+                }
             };
             for child in children {
                 require!(
@@ -741,10 +843,21 @@ impl ReteNetwork {
                     "cyclic or dangling alpha child"
                 );
                 incoming[child.0 as usize] += 1;
-                depths[child.0 as usize] = depths[index] + 1;
+                let field_count_test = matches!(
+                    &self.alpha.nodes[child.0 as usize],
+                    AlphaNode::ConstantTest { test, .. }
+                        if matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                );
+                depths[child.0 as usize] = depths[index] + usize::from(!field_count_test);
+                field_count_depths[child.0 as usize] =
+                    field_count_depths[index] + usize::from(field_count_test);
                 require!(
                     depths[child.0 as usize] <= MAX_ALPHA_DEPTH,
                     "snapshot alpha path exceeds 64 tests"
+                );
+                require!(
+                    field_count_depths[child.0 as usize] <= 1,
+                    "snapshot alpha path exceeds one ordered field-count test"
                 );
             }
             if let Some(memory) = memory {
@@ -759,7 +872,7 @@ impl ReteNetwork {
         for (index, node) in self.alpha.nodes.iter().enumerate() {
             require_eq!(
                 incoming[index],
-                usize::from(matches!(node, AlphaNode::ConstantTest { .. }))
+                usize::from(!matches!(node, AlphaNode::Entry { .. }))
             );
         }
         let mut expected: Vec<AlphaMemory> = self
@@ -806,6 +919,21 @@ impl ReteNetwork {
                 }) = self.alpha.nodes.get(node.0 as usize)
                 {
                     work.spend(values.len())?;
+                }
+                if let Some(AlphaNode::RuntimePredicate {
+                    memory: Some(memory),
+                    ..
+                }) = self.alpha.get_node(node)
+                {
+                    if !self
+                        .alpha
+                        .get_memory(*memory)
+                        .ok_or("missing runtime filter memory")?
+                        .facts
+                        .contains(&id)
+                    {
+                        continue;
+                    }
                 }
                 if let Some((memory, children)) = self.alpha.propagation_plan(node, &entry.fact) {
                     if let Some(memory) = memory {
@@ -869,6 +997,131 @@ impl ReteNetwork {
         work: &mut Work,
     ) -> Result<(), String> {
         for (&node_id, node) in &self.beta.nodes {
+            if let BetaNode::Negative {
+                runtime: Some(condition),
+                parent,
+                alpha_memory,
+                tests,
+                neg_memory,
+                memory: output_id,
+                ..
+            } = node
+            {
+                let state = self
+                    .beta
+                    .get_neg_memory(*neg_memory)
+                    .ok_or("missing runtime negative state")?;
+                let upstream = self
+                    .beta
+                    .memory_id_for_node(*parent)
+                    .and_then(|id| self.beta.get_memory(id))
+                    .ok_or("missing runtime negative parent memory")?;
+                let alpha = self
+                    .alpha
+                    .get_memory(*alpha_memory)
+                    .ok_or("missing runtime negative alpha memory")?;
+                let output = self
+                    .beta
+                    .get_memory(*output_id)
+                    .ok_or("missing runtime negative output memory")?;
+                require!(
+                    matches!(
+                        condition.role,
+                        crate::rete::RuntimeConditionRole::NegativeJoin
+                            | crate::rete::RuntimeConditionRole::ExistsJoin
+                    ),
+                    "runtime negative node has invalid role"
+                );
+                if condition.role == crate::rete::RuntimeConditionRole::ExistsJoin {
+                    let children = children(node);
+                    require_eq!(children.len(), 1);
+                    let partner = children[0];
+                    let Some(BetaNode::NccPartner {
+                        parent: branch,
+                        ncc_node,
+                        ..
+                    }) = self.beta.get_node(partner)
+                    else {
+                        return Err("existential runtime role lacks NCC partner".into());
+                    };
+                    require_eq!(*branch, node_id);
+                    require!(
+                        matches!(self.beta.get_node(*ncc_node), Some(BetaNode::Ncc { parent: prefix, partner: actual_partner, .. }) if prefix == parent && *actual_partner == partner),
+                        "existential runtime role lacks NCC inversion"
+                    );
+                }
+                let disabled = self.is_rule_disabled(condition.rule);
+                if !disabled {
+                    require_eq!(upstream.len(), state.blocked.len() + state.unblocked.len());
+                }
+                require_eq!(output.len(), state.unblocked.len());
+                work.spend(condition.bindings.len())?;
+                let extracted: rustc_hash::FxHashSet<_> = condition
+                    .bindings
+                    .iter()
+                    .map(|(_, variable)| *variable)
+                    .collect();
+                require!(
+                    extracted.len() == condition.bindings.len(),
+                    "duplicate runtime negative extraction"
+                );
+                // Negative pattern locals cannot overwrite their owner's lexical frame,
+                // even when no current token exists to expose a forged extraction.
+                let mut ancestor = Some(*parent);
+                while let Some(id) = ancestor {
+                    work.step()?;
+                    let node = self
+                        .beta
+                        .get_node(id)
+                        .ok_or("runtime negative has dangling ancestor")?;
+                    if let BetaNode::Join { bindings, .. } = node {
+                        work.spend(bindings.len())?;
+                        require!(
+                            !bindings
+                                .iter()
+                                .any(|(_, variable)| extracted.contains(variable)),
+                            "runtime negative extraction overwrites outer binding"
+                        );
+                    }
+                    ancestor = crate::snapshot::parent(node);
+                }
+                for owner in upstream.iter() {
+                    work.step()?;
+                    if let Some(selected) = state.blocked.get(&owner) {
+                        require_eq!(selected.len(), 1);
+                        let fact = *selected.iter().next().ok_or("empty selected conflict")?;
+                        require!(
+                            alpha.facts.contains(&fact),
+                            "selected conflict is not an alpha candidate"
+                        );
+                        let value = &facts
+                            .get(fact)
+                            .ok_or("selected conflict fact is stale")?
+                            .fact;
+                        require!(
+                            crate::rete::evaluate_join(value, self.token_store.get(owner), tests),
+                            "selected conflict fails primitive joins"
+                        );
+                        require!(
+                            !state.unblocked.contains_key(&owner),
+                            "selected conflict owner also has output"
+                        );
+                    } else if !disabled || state.unblocked.contains_key(&owner) {
+                        let passthrough = *state
+                            .unblocked
+                            .get(&owner)
+                            .ok_or("runtime negative owner missing state")?;
+                        self.validate_passthrough(owner, passthrough, node_id)?;
+                    }
+                }
+                for owner in state.blocked.keys().chain(state.unblocked.keys()) {
+                    require!(
+                        upstream.contains(*owner),
+                        "runtime negative state has stale owner"
+                    );
+                }
+                continue;
+            }
             let (parent_id, alpha_id, tests, negative, exists) = match node {
                 BetaNode::Negative {
                     parent,
@@ -1187,6 +1440,48 @@ impl ReteNetwork {
             })
     }
 
+    fn validate_runtime_descriptor_budget(&self) -> Result<(), String> {
+        let mut work = Work(10_000_000);
+        work.spend(self.alpha.nodes.len().saturating_add(self.beta.nodes.len()))?;
+        for node in &self.alpha.nodes {
+            if let AlphaNode::RuntimePredicate { condition, .. } = node {
+                work.spend(condition.bindings.len().saturating_add(1))?;
+            }
+        }
+        for node in self.beta.nodes.values() {
+            let mut current = match node {
+                BetaNode::Predicate { parent, .. } => Some(*parent),
+                BetaNode::Negative {
+                    parent,
+                    runtime: Some(condition),
+                    ..
+                } => {
+                    work.spend(condition.bindings.len())?;
+                    Some(*parent)
+                }
+                _ => None,
+            };
+            let mut depth = 0;
+            while let Some(id) = current {
+                work.step()?;
+                depth += 1;
+                require!(
+                    depth <= MAX_BETA_PATH_NODES,
+                    "runtime condition ancestor path is too deep"
+                );
+                let node = self
+                    .beta
+                    .get_node(id)
+                    .ok_or("runtime condition has dangling ancestor")?;
+                if let BetaNode::Join { bindings, .. } = node {
+                    work.spend(bindings.len())?;
+                }
+                current = parent(node);
+            }
+        }
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn validate_snapshot_rules(
         &self,
@@ -1213,6 +1508,29 @@ impl ReteNetwork {
                 _ => {}
             }
         }
+        self.validate_runtime_descriptor_budget()?;
+        for usage in self.snapshot_runtime_condition_uses() {
+            for (slot, _) in &usage.bindings {
+                require!(
+                    matches!(
+                        (&usage.entry_type, slot),
+                        (
+                            Some(AlphaEntryType::OrderedRelation(_)),
+                            crate::alpha::SlotIndex::Ordered(_)
+                        ) | (
+                            Some(AlphaEntryType::Template(_)),
+                            crate::alpha::SlotIndex::Template(_)
+                        )
+                    ),
+                    "runtime condition physical selector has wrong fact kind"
+                );
+            }
+            let (_, count) = metadata(usage.rule).ok_or("runtime condition lacks rule metadata")?;
+            require!(
+                (usage.condition_index as usize) < count,
+                "dangling runtime condition index"
+            );
+        }
         Ok(())
     }
 }
@@ -1226,6 +1544,8 @@ impl crate::compiler::ReteCompiler {
     }
 
     #[doc(hidden)]
+    // Cache ownership and graph identity checks form one bounded validation pass.
+    #[allow(clippy::too_many_lines)]
     pub fn validate_snapshot(&self, rete: &ReteNetwork) -> Result<(), String> {
         let mut work = Work(10_000_000);
         require!(
@@ -1240,6 +1560,13 @@ impl crate::compiler::ReteCompiler {
                 );
             }
         }
+        rete.validate_runtime_descriptor_budget()?;
+        for usage in rete.snapshot_runtime_condition_uses() {
+            require!(
+                usage.rule.0 > 0 && usage.rule.0 < self.next_rule_id,
+                "runtime condition exceeds rule allocator"
+            );
+        }
         require_eq!(self.alpha_path_cache.len(), rete.alpha.memories.len());
         let mut parents = vec![None; rete.alpha.nodes.len()];
         let mut owners = vec![None; rete.alpha.memories.len()];
@@ -1250,6 +1577,9 @@ impl crate::compiler::ReteCompiler {
                     children, memory, ..
                 }
                 | AlphaNode::ConstantTest {
+                    children, memory, ..
+                }
+                | AlphaNode::RuntimePredicate {
                     children, memory, ..
                 } => (children, memory),
             };
@@ -1275,6 +1605,17 @@ impl crate::compiler::ReteCompiler {
                 .copied()
                 .flatten()
                 .ok_or("cached alpha memory lacks owner")?;
+            if let Some(expected) = &key.runtime {
+                require!(
+                    matches!(rete.alpha.get_node(id), Some(AlphaNode::RuntimePredicate { condition, .. }) if condition == expected),
+                    "cached runtime alpha condition mismatch"
+                );
+                id = parents
+                    .get(id.0 as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or("runtime alpha filter lacks parent")?;
+            }
             for expected in key.tests.iter().rev() {
                 work.spend(match &expected.test_type {
                     crate::alpha::ConstantTestType::EqualAny(values) => values.len() + 1,
@@ -1312,5 +1653,27 @@ impl crate::compiler::ReteCompiler {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod composed_count_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_count_bounds_reject_reversed_ranges_but_allow_exact_and_open_ranges() {
+        let symbols = SymbolTable::new();
+        for (min, max, accepted) in [
+            (0, Some(0), true),
+            (1, Some(1), true),
+            (1, None, true),
+            (2, Some(1), false),
+        ] {
+            let test = crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Ordered(0),
+                test_type: ConstantTestType::OrderedFieldCount { min, max },
+            };
+            assert_eq!(validate_constant(&test, &symbols).is_ok(), accepted);
+        }
     }
 }

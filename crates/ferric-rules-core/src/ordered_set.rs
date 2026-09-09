@@ -148,6 +148,22 @@ impl<K: Copy + Eq + Hash> OrderedSet<K> {
         self.last = None;
     }
 
+    pub(crate) fn first(&self) -> Option<K> {
+        self.first
+    }
+
+    pub(crate) fn successor(&self, key: K) -> Option<K> {
+        if self.entries.capacity() == 0 {
+            if self.first == Some(key) && self.first != self.last {
+                self.last
+            } else {
+                None
+            }
+        } else {
+            self.entries.get(&key).and_then(|links| links.next)
+        }
+    }
+
     pub(crate) fn iter(&self) -> Iter<'_, K> {
         Iter {
             set: self,
@@ -376,7 +392,13 @@ mod tests {
                 prop_assert_eq!(set.iter().copied().collect::<Vec<_>>(), expected.clone());
                 prop_assert_eq!(set.iter().rev().copied().collect::<Vec<_>>(), expected.iter().rev().copied().collect::<Vec<_>>());
                 prop_assert_eq!(set.len(), expected.len());
-                for key in 0..16 { prop_assert_eq!(set.contains(&key), expected.contains(&key)); }
+                prop_assert_eq!(set.first(), expected.first().copied());
+                for key in 0..16 {
+                    prop_assert_eq!(set.contains(&key), expected.contains(&key));
+                    let next = expected.iter().position(|item| *item == key)
+                        .and_then(|index| expected.get(index + 1)).copied();
+                    prop_assert_eq!(set.successor(key), next);
+                }
                 let mut iter = set.iter();
                 let mut remaining = expected.as_slice();
                 while let Some((&first, rest)) = remaining.split_first() {

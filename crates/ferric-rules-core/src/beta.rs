@@ -350,6 +350,7 @@ pub enum BetaNode {
     },
     /// Negative node: blocks parent tokens when a matching fact exists.
     Negative {
+        runtime: Option<crate::rete::RuntimeCondition>,
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
         tests: Arc<[JoinTest]>,
@@ -755,6 +756,7 @@ impl BetaNetwork {
         self.next_neg_memory_id += 1;
 
         let node = BetaNode::Negative {
+            runtime: None,
             parent,
             alpha_memory,
             tests: tests.into(),

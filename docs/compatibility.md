@@ -77,10 +77,36 @@ engine snapshots are not a stable interchange contract across this change;
 retain application facts/rule source for rebuilding. The rehabilitation's
 versioned persistence work will define the supported snapshot envelope.
 
-Complex non-linear predicate or return-value constraints inside negated ordered
-patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
-incorrect firing-time fallback; it did not complete that optional language
-feature. The remaining gap is tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
+Nonlinear predicate and return-value constraints inside `not` are evaluated at
+match time for fixed-width ordered patterns and scalar template slots. For example,
+`(anchor ?limit) (not (data ?x&:(> (* ?x ?x) ?limit)))` suppresses the activation
+as soon as a matching data fact exists, and retracting its blocker can restore
+the activation before `run`.
+
+Constraints using only the current fact run as that fact enters the pattern
+network. Their result is retained, including when no outer match exists yet.
+Constraints requiring earlier patterns run in the join network. A negative join
+selects its first matching blocker and skips later callbacks while blocked;
+removing the blocker continues the search after that fact. Changes to globals
+alone do not reconsider earlier decisions. Retracting and asserting a fact again
+evaluates its constraints again.
+
+A fact-local evaluation error rejects that candidate. An evaluation error left
+set by a negative join counts as a blocker; an error during an RHS assertion also
+stops the active run. Ordinary positive predicates and multi-pattern NCC tests
+reject on error. Local variables introduced inside a negative or existential
+conditional element cannot escape that element. Expression variables, globals,
+and callable declarations are checked before rule installation, even with no
+facts present.
+
+This implements the scalar constraint gap tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300). Runtime constraints on
+ordered sequence fields (`$?`) and scalar fields within multislots still require
+the sequence matching implementation; this path rejects them explicitly.
+Predicates on a whole multislot capture such as `$?items&:(check ?items)` are
+supported. Snapshot schema 5 retains the evaluated pattern memberships and
+selected conflicts; earlier snapshot versions require application migration
+(see [snapshots](snapshots.md)).
 
 ### Fact Identity
 
@@ -279,6 +305,14 @@ Ferric matches CLIPS when evaluating an RHS action fails:
 An action error does not set the engine's persistent halt flag. `step()` still
 returns the processed activation and exposes the diagnostic without consuming
 the next activation.
+
+A diagnostic is not always fatal. Unavailable `sort` comparator names or
+incompatible builtin/deffunction arity produce a diagnostic and return `FALSE`
+without stopping subsequent actions. Check the run outcome rather than treating every entry in
+`action_diagnostics()` as an action failure. A fatal sort error can also return
+a partial value to its enclosing expression before the action stops; it does
+not imply that an enclosing assignment was rolled back. See
+[Predicate sorting](#predicate-sorting) for these distinctions.
 
 **Example -- modify and retract:**
 
@@ -753,11 +787,20 @@ identically to their CLIPS counterparts for the supported argument types.
 
 | Function | Description |
 |----------|-------------|
-| `=` | Numeric equality |
-| `!=` / `<>` | Numeric inequality |
-| `>`, `<`, `>=`, `<=` | Numeric ordering |
+| `=` | First numeric operand equals every subsequent operand |
+| `!=` / `<>` | First numeric operand differs from every subsequent operand |
+| `>`, `<`, `>=`, `<=` | Each adjacent numeric pair satisfies the ordering |
 | `eq` | Value equality (type-sensitive) |
 | `neq` | Value inequality |
+
+Numeric comparisons accept two or more operands and evaluate them from left to
+right, stopping at the first failed comparison. For example, `(< 1 2 3)` and
+`(<> 1 2 2)` return TRUE; `(< 2 1 (later-call))` returns FALSE without evaluating
+`later-call`. A reached nonnumeric operand produces a type error.
+
+INTEGER pairs compare exactly. Mixed INTEGER/FLOAT pairs use floating-point
+conversion, and FLOAT equality uses exact numeric equality without an epsilon
+tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns TRUE.
 
 ### Logical Functions
 
@@ -811,7 +854,79 @@ identically to their CLIPS counterparts for the supported argument types.
 | `replace$` | Replace range with values | `(replace$ (create$ a b c) 2 2 x)` => `(a x c)` |
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
-| `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+| `sort` | Stable predicate sort of scalar and multifield arguments | `(sort < (create$ 3 1 2))` => `(3 2 1)` |
+
+#### Predicate sorting
+
+`(sort <predicate> <value>...)` accepts an unqualified comparator `SYMBOL`
+followed by zero or more values. Scalar values and the fields of multifield
+arguments form one sequence in argument order. The result is always a
+multifield on the normal sorting path, including empty and singleton inputs:
+
+```clp
+(sort > 3 (create$ 1 4) 2)  ; (1 2 3 4)
+(sort < (create$ 3 1 2))    ; (3 2 1)
+(sort >)                   ; ()
+```
+
+The comparator is called with the current left and right fields. Only the
+actual symbol `FALSE` keeps the left field first; every other return value
+selects the right field first. Consequently, `>` sorts numbers in ascending
+order and `<` sorts them in descending order. A user-defined predicate has
+the same direction as the equivalent builtin. `0`, `0.0`, `nil`, an empty
+string or multifield, and a Void predicate result all count as true for sort;
+this rule is specific to sorting.
+
+Sorting is stable when the predicate returns `FALSE` for equal keys. It uses
+merge traversal: split an odd-sized sequence with the larger half on the left,
+sort the left half and then the right half, compare each pair of current heads
+once, and append the unconsumed remainder. Comparator effects therefore have
+a defined order; sort does not make a second, reversed-argument call to decide
+whether two fields are equal. The selected fields retain their runtime types
+and values, including equal numeric values with different INTEGER/FLOAT types.
+
+The comparator expression is evaluated once, before the data expressions.
+Name resolution and builtin/deffunction arity checks also precede data
+execution. Supported builtins, visible deffunctions and generics can be used;
+unqualified names follow the caller's module visibility. Explicit qualified
+comparator names such as `M::compare` are rejected. Generic method applicability
+is checked against the actual pair only when comparison is needed. Thus empty
+and singleton data do not invoke the comparator, although its name must still
+resolve. Data expressions run once, from left to right, before comparisons.
+
+**Diagnostics and control.** An unavailable comparator name or an incompatible
+builtin/deffunction arity returns actual `FALSE`, skips data expressions and
+records a nonfatal `action_diagnostics()` entry. Later actions and activations
+can still run. A non-SYMBOL name, failed source expression, or predicate error
+is fatal instead. Effects already performed remain observable, and the run
+reports `HaltReason::ActionError`.
+
+A fatal error and its returned value are distinct. Once sorting has begun,
+CLIPS can finish merging with the values returned by failed or skipped calls;
+the resulting value may be stored by an enclosing assignment or assertion
+before later rule actions stop. Multifield construction can substitute an empty
+multifield while an evaluation error remains set. Error values depend on the called function: a failed user
+function returns `FALSE`, while numeric builtins may retain a numeric default
+or partial result. Reached builtin expressions may still execute; later user
+function bodies do not. Enclosing builtins also differ in whether they accept
+a value while an evaluation error remains set, so a partial result is not
+proof of successful evaluation. Using `return` as a comparator is separate:
+it can end the current rule after sort supplies its result, while other
+activations remain eligible to run.
+
+**Compatibility boundary.** These semantics apply to Ferric's supported
+runtime value representations and callable implementations. They do not add
+an `INSTANCE-NAME` type or arbitrary invalid-UTF-8 string representation, or
+repair unrelated builtin and qualified-declaration limitations. The pinned
+CLIPS 6.30 process faults when Void is used as a sort data field; that case has
+no supported returned-value contract and is not a required process fault in
+Ferric. A Void *predicate result* is distinct and is supported as described
+above. Callable-local binding and special-form invocation also retain their
+existing limits: the CLIPS-valid `(sort bind c b a)` callback is currently
+unsupported because it requires local binding through comparator dispatch.
+This is separate from malformed source `bind` targets, which must retain their
+ordinary variable form. Comparator arity metadata alone does not establish
+full compatibility for every builtin or special form.
 
 ### Fact Introspection Functions
 
@@ -1146,7 +1261,12 @@ ferric_value_free(&val);
 
 Rule-action evaluation failures are collected as action diagnostics, distinct
 from API/ABI failures. They do not invalidate the engine, but they stop the
-current activation and `run()` as described above:
+current activation and `run()` as described above.
+
+This list also includes nonfatal `sort` comparator-name and arity diagnostics.
+Such a diagnostic accompanies a `FALSE` return and allows later actions to
+continue. Inspect the run's halt reason to distinguish a warning from a fatal
+action failure; a nonempty diagnostic list alone does not make that distinction.
 
 ```c
 size_t diag_count;

@@ -45,10 +45,11 @@ struct ActionEvalEnv {
     runtime_bindings: RuntimeBindingEnv,
 }
 
-fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
+fn flush_deferred_evaluation(context: &mut ActionExecutionContext<'_>) {
     for (channel, text) in context.engine.globals.take_printout_events() {
         context.engine.router.write(&channel, &text);
     }
+    context.engine.drain_evaluator_diagnostics();
 }
 
 impl ActionEvalEnv {
@@ -340,8 +341,32 @@ fn eval_fact_slot_ref_call(
 /// A compiled condition evaluated when a partial match reaches its predicate node.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) enum CompiledTestCondition {
-    Expr(crate::evaluator::RuntimeExpr),
+pub(crate) struct CompiledTestCondition {
+    pub role: ferric_rules_core::RuntimeConditionRole,
+    pub expr: crate::evaluator::RuntimeExpr,
+}
+
+impl CompiledTestCondition {
+    pub(crate) fn join(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::PositiveJoin,
+            expr,
+        }
+    }
+
+    pub(crate) fn pattern(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::PatternFilter,
+            expr,
+        }
+    }
+
+    pub(crate) fn negative_join(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::NegativeJoin,
+            expr,
+        }
+    }
 }
 
 /// Runtime hint for trailing ordered multi-variable captures (`$?var`).
@@ -414,18 +439,20 @@ pub enum ActionError {
 ///
 /// This is called with all the data needed pre-extracted to avoid borrow issues.
 ///
-/// Returns `(fired, reset_requested, clear_requested, errors)` where:
+/// Returns `(fired, reset_requested, clear_requested, evaluation_halted, errors)` where:
 /// - `fired` is `true` once the already-matched activation reaches execution.
 /// - `reset_requested` is `true` if a `(reset)` action was executed.
 /// - `clear_requested` is `true` if a `(clear)` action was executed.
-/// - `errors` is a list of non-fatal action errors that occurred during execution.
+/// - `evaluation_halted` records a deferred failure after its value was consumed.
+/// - `errors` contains failures that stopped the remaining RHS actions.
+///   Nonfatal evaluator diagnostics are recorded separately on the engine.
 #[allow(clippy::too_many_lines)] // Sequential action/test evaluation flow with explicit error branches.
 pub(crate) fn execute_actions(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     collected_facts: &[FactId],
-) -> (bool, bool, bool, Vec<ActionError>) {
+) -> (bool, bool, bool, bool, Vec<ActionError>) {
     context.engine.config.begin_action_loop_budget();
     ferric_span!(
         debug_span,
@@ -475,7 +502,7 @@ pub(crate) fn execute_actions(
                     action_index = index,
                     "rule_action_return"
                 );
-                flush_deferred_printout(context);
+                flush_deferred_evaluation(context);
                 break;
             }
             Err(e) => {
@@ -488,13 +515,17 @@ pub(crate) fn execute_actions(
                     "rule_action_error"
                 );
                 errors.push(e);
-                flush_deferred_printout(context);
+                flush_deferred_evaluation(context);
                 break;
             }
         }
-        flush_deferred_printout(context);
-        // Stop executing further actions if clear/reset was requested.
-        if clear_requested || reset_requested {
+        flush_deferred_evaluation(context);
+        // Preserve the completed expression value before honoring deferred failure.
+        if clear_requested
+            || reset_requested
+            || context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+        {
             ferric_event!(
                 debug,
                 rule = %rule_info.name,
@@ -516,7 +547,15 @@ pub(crate) fn execute_actions(
         "execute_actions_complete"
     );
     context.engine.config.end_action_loop_budget();
-    (true, reset_requested, clear_requested, errors)
+    let evaluation_halted = context.engine.globals.take_evaluation_halt();
+    let _ = context.engine.globals.take_sort_return();
+    (
+        true,
+        reset_requested,
+        clear_requested,
+        evaluation_halted,
+        errors,
+    )
 }
 
 /// Evaluate one rule-local predicate for an incoming partial match.
@@ -537,12 +576,86 @@ pub(crate) fn evaluate_test_condition(
         &mut eval_env.runtime_bindings,
     );
 
-    let CompiledTestCondition::Expr(test_expr) = test_condition;
-    let result = eval_env
-        .eval_runtime_expr(token, rule_info, test_expr, context)
-        .map(|value| crate::evaluator::is_truthy(&value, &context.engine.symbol_table));
-    flush_deferred_printout(context);
-    result
+    if eval_env.runtime_bindings.is_empty() {
+        return Ok(evaluate_runtime_condition(
+            &token.bindings,
+            &rule_info.var_map,
+            test_condition,
+            false,
+            context,
+        ));
+    }
+    let (bindings, var_map) =
+        build_runtime_eval_bindings(token, rule_info, &eval_env.runtime_bindings, context)?;
+    Ok(evaluate_runtime_condition(
+        &bindings,
+        &var_map,
+        test_condition,
+        false,
+        context,
+    ))
+}
+
+/// Evaluate a verified graph-owned condition against its isolated binding frame.
+/// Negative joins convert errors into conflicts. Exists joins do so only while
+/// replacing a selected support; an initial search rejects an erroneous support.
+pub(crate) fn evaluate_runtime_condition(
+    bindings: &BindingSet,
+    var_map: &VarMap,
+    condition: &CompiledTestCondition,
+    replacing_conflict: bool,
+    context: &mut ActionExecutionContext<'_>,
+) -> bool {
+    use crate::evaluator::{eval_lhs, LhsEvaluationMode};
+    use ferric_rules_core::RuntimeConditionRole;
+    let mode = match condition.role {
+        RuntimeConditionRole::PatternFilter => LhsEvaluationMode::Pattern,
+        RuntimeConditionRole::PositiveJoin
+        | RuntimeConditionRole::NegativeJoin
+        | RuntimeConditionRole::ExistsJoin => LhsEvaluationMode::Join,
+    };
+    let engine = &mut *context.engine;
+    let evaluation = eval_lhs(
+        &mut crate::evaluator::EvalContext {
+            bindings,
+            var_map,
+            symbol_table: &mut engine.symbol_table,
+            config: &engine.config,
+            functions: &engine.functions,
+            globals: &mut engine.globals,
+            generics: &engine.generics,
+            call_depth: 0,
+            expression_depth: 0,
+            current_module: context.current_module,
+            module_registry: &engine.module_registry,
+            function_modules: &engine.function_modules,
+            global_modules: &engine.global_modules,
+            generic_modules: &engine.generic_modules,
+            method_chain: None,
+            input_buffer: Some(&mut engine.input_buffer),
+            fact_base: Some(&engine.fact_base),
+            template_defs: Some(&engine.template_defs),
+        },
+        &condition.expr,
+        mode,
+    );
+    let error_conflicts = condition.role == RuntimeConditionRole::NegativeJoin
+        || (condition.role == RuntimeConditionRole::ExistsJoin && replacing_conflict);
+    let passed = match evaluation {
+        Ok(passed) if !engine.globals.evaluation_error() => passed,
+        Ok(_) => error_conflicts,
+        Err(error) => {
+            // Ordinary evaluator errors have not entered the deferred queue.
+            // Preserve their diagnostic and the halt needed by an enclosing RHS.
+            engine.globals.push_halt_diagnostic(error);
+            error_conflicts
+        }
+    };
+    // Capture this whole condition's verdict before clearing its transient
+    // error. A later candidate must not inherit it; sticky halt stays intact.
+    engine.globals.clear_evaluation_error();
+    flush_deferred_evaluation(context);
+    passed
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
@@ -855,6 +968,11 @@ fn execute_single_action(
                         else_branch
                     };
                 for (action_expr, rt_expr) in branch {
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                    {
+                        break;
+                    }
                     // Reconstruct a FunctionCall from the ActionExpr so we can
                     // route through execute_single_action normally.
                     let (branch_call, branch_runtime): (
@@ -941,7 +1059,12 @@ fn execute_single_action(
                         collected_facts,
                     )?;
                     // Propagate early-exit flags.
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
+                    if context.engine.is_halted()
+                        || context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || *reset_requested
+                        || *clear_requested
+                    {
                         break;
                     }
                 }
@@ -979,7 +1102,10 @@ fn execute_single_action(
                         let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                         crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
                     };
-                    if !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table)
+                    {
                         break;
                     }
                     crate::evaluator::consume_action_loop_iteration(
@@ -999,7 +1125,12 @@ fn execute_single_action(
                         eval_env,
                         collected_facts,
                     )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
+                    if context.engine.is_halted()
+                        || context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || *reset_requested
+                        || *clear_requested
+                    {
                         break;
                     }
                 }
@@ -1034,7 +1165,13 @@ fn execute_single_action(
                 let (start_int, end_int) = {
                     let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                     let sv = crate::evaluator::eval(&mut ctx, start).map_err(ActionError::from)?;
+                    if ctx.globals.evaluation_halted() || ctx.globals.sort_return_requested() {
+                        return Ok(());
+                    }
                     let ev = crate::evaluator::eval(&mut ctx, end).map_err(ActionError::from)?;
+                    if ctx.globals.evaluation_halted() || ctx.globals.sort_return_requested() {
+                        return Ok(());
+                    }
                     let si = match &sv {
                         Value::Integer(n) => *n,
                         #[allow(clippy::cast_possible_truncation)]
@@ -1099,7 +1236,12 @@ fn execute_single_action(
                         eval_env,
                         collected_facts,
                     )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
+                    if context.engine.is_halted()
+                        || context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || *reset_requested
+                        || *clear_requested
+                    {
                         break;
                     }
                 }
@@ -1136,6 +1278,12 @@ fn execute_single_action(
                     crate::evaluator::eval(&mut ctx, expr).map_err(ActionError::from)?
                 };
 
+                if context.engine.globals.evaluation_halted()
+                    || context.engine.globals.sort_return_requested()
+                {
+                    return Ok(());
+                }
+
                 // Find first matching case.
                 let mut matched_body = None;
                 for (test_val_expr, case_body) in cases {
@@ -1144,6 +1292,11 @@ fn execute_single_action(
                         crate::evaluator::eval(&mut ctx, test_val_expr)
                             .map_err(ActionError::from)?
                     };
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                    {
+                        return Ok(());
+                    }
                     if disc_value.structural_eq(&test_value) {
                         matched_body = Some(case_body);
                         break;
@@ -1253,7 +1406,12 @@ fn execute_single_action(
                         eval_env,
                         collected_facts,
                     )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
+                    if context.engine.is_halted()
+                        || context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || *reset_requested
+                        || *clear_requested
+                    {
                         break;
                     }
                 }
@@ -1401,6 +1559,11 @@ fn execute_loop_body(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     for (action_expr, rt_expr) in body {
+        if context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+        {
+            break;
+        }
         let (branch_call, branch_runtime): (
             Cow<'_, ferric_rules_parser::FunctionCall>,
             Option<&crate::evaluator::RuntimeExpr>,
@@ -1485,7 +1648,12 @@ fn execute_loop_body(
             eval_env,
             collected_facts,
         )?;
-        if context.engine.is_halted() || *reset_requested || *clear_requested {
+        if context.engine.is_halted()
+            || context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+            || *reset_requested
+            || *clear_requested
+        {
             break;
         }
     }
@@ -1602,6 +1770,11 @@ fn execute_query_action(
             crate::evaluator::eval(&mut ctx, query).map_err(ActionError::from)?
         };
 
+        if context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+        {
+            break;
+        }
         if !crate::evaluator::is_truthy(&query_val, &context.engine.symbol_table) {
             continue;
         }
@@ -1617,7 +1790,12 @@ fn execute_query_action(
                 eval_env,
                 collected_facts,
             )?;
-            if context.engine.is_halted() || *reset_requested || *clear_requested {
+            if context.engine.is_halted()
+                || context.engine.globals.evaluation_halted()
+                || context.engine.globals.sort_return_requested()
+                || *reset_requested
+                || *clear_requested
+            {
                 break;
             }
             if stop_after_first {
@@ -2412,7 +2590,11 @@ fn execute_printout(
     let mut output = String::new();
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
+        flush_deferred_evaluation(context);
+        if context.engine.globals.evaluation_halted() {
+            context.engine.router.write(&channel, &output);
+            return Ok(());
+        }
         format_printout_value(&value, &context.engine.symbol_table, &mut output);
     }
 
@@ -2437,7 +2619,11 @@ fn execute_println(
     let mut output = String::new();
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
+        flush_deferred_evaluation(context);
+        if context.engine.globals.evaluation_halted() {
+            context.engine.router.write("t", &output);
+            return Ok(());
+        }
         format_printout_value(&value, &context.engine.symbol_table, &mut output);
     }
     output.push('\n');
@@ -2514,6 +2700,7 @@ fn execute_assert(
                         &mut slots,
                         &fact_pattern.args,
                         &registered,
+                        false,
                         token,
                         rule_info,
                         context,
@@ -2545,6 +2732,12 @@ fn execute_assert(
                         context,
                         collected_facts,
                     )?;
+                    // StoreInMultifield discards the whole collected sequence
+                    // on EvaluationError, but the assertion itself still occurs.
+                    if context.engine.globals.evaluation_error() {
+                        fields.clear();
+                        break;
+                    }
                     match value {
                         // CLIPS splices multifield values into ordered assertions.
                         Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
@@ -2708,6 +2901,7 @@ fn execute_fact_mutation(
                 &mut slots,
                 &args[1..],
                 &registered,
+                true,
                 token,
                 rule_info,
                 context,
@@ -2842,6 +3036,7 @@ fn apply_template_slot_overrides(
     slots: &mut [Value],
     slot_overrides: &[ActionExpr],
     registered: &RegisteredTemplate,
+    clear_slot_evaluation_error: bool,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
@@ -2879,13 +3074,18 @@ fn apply_template_slot_overrides(
             ferric_rules_parser::SlotType::Multi => {
                 let mut values = ferric_rules_core::Multifield::new();
                 for expression in &call.args {
-                    match eval_env.eval_expr(
+                    let value = eval_env.eval_expr(
                         token,
                         rule_info,
                         expression,
                         context,
                         collected_facts,
-                    )? {
+                    )?;
+                    if context.engine.globals.evaluation_error() {
+                        values = ferric_rules_core::Multifield::new();
+                        break;
+                    }
+                    match value {
                         Value::Multifield(fields) => {
                             values.extend(fields.as_slice().iter().cloned());
                         }
@@ -2898,6 +3098,11 @@ fn apply_template_slot_overrides(
                 Value::Multifield(Box::new(values))
             }
         };
+        // Modify/duplicate finish each slot evaluation independently. The
+        // deferred halt survives, while later overrides receive a clear error.
+        if clear_slot_evaluation_error {
+            context.engine.globals.clear_evaluation_error();
+        }
     }
 
     Ok(())
@@ -2924,6 +3129,63 @@ mod tests {
     use super::*;
 
     use proptest::prelude::*;
+
+    const EXISTS_PHASE_SOURCE: &str = r#"
+        (deffunction qualifies (?x ?a)
+          (printout t "CHECK:" ?x ":" ?a crlf) (> (/ ?a ?x) 0))
+        (defrule r (anchor ?a) (exists (data ?x&:(qualifies ?x ?a)))
+          (later) => (printout t "EXISTS" crlf))
+    "#;
+
+    #[test]
+    fn runtime_exists_initial_error_rejects_support() {
+        let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
+        assert_eq!(engine.get_output("t"), Some("CHECK:0:2\n"));
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+        engine.retract(bad).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+        assert_eq!(engine.get_output("t"), Some("CHECK:0:2\n"));
+    }
+
+    #[test]
+    fn runtime_exists_skips_later_candidates_and_retains_replacement_error_support() {
+        let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        let selected = engine.assert_ordered("data", vec![9_i64]).unwrap();
+        let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
+        assert_eq!(engine.get_output("t"), Some("CHECK:9:2\n"));
+        assert!(engine.action_diagnostics().is_empty());
+        engine.retract(selected).unwrap();
+        assert_eq!(engine.get_output("t"), Some("CHECK:9:2\nCHECK:0:2\n"));
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        // A later CE distinguishes retained support from an already fired rule.
+        let later = engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            1
+        );
+        assert_eq!(
+            engine.get_output("t"),
+            Some("CHECK:9:2\nCHECK:0:2\nEXISTS\n")
+        );
+        engine.retract(bad).unwrap();
+        engine.retract(later).unwrap();
+        engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+    }
 
     proptest! {
         #[test]
