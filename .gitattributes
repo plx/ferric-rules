@@ -65,3 +65,4 @@ crates/ferric-rules/tests/fixtures/stdlib/format_unicode_width_and_precision.out
 # Preserve exact fixture output and source markers on Windows checkouts.
 # Preserve exact fixture output and source markers on Windows checkouts.
 # Preserve exact fixture output and source markers on Windows checkouts.
+# Preserve exact fixture output and source markers on Windows checkouts.

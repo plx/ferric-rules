@@ -212,6 +212,10 @@ tests/fixtures/stdlib/035_substring_one_based.clp
 tests/fixtures/stdlib/035_substring_one_based.out
 tests/fixtures/stdlib/036_substring_clipped_bounds.clp
 tests/fixtures/stdlib/036_substring_clipped_bounds.out
+tests/fixtures/stdlib/037_string_index_found_and_missing.clp
+tests/fixtures/stdlib/037_string_index_found_and_missing.out
+tests/fixtures/stdlib/038_string_index_empty_needle.clp
+tests/fixtures/stdlib/038_string_index_empty_needle.out
 tests/fixtures/stdlib/041_string_to_field_first_token.clp
 tests/fixtures/stdlib/041_string_to_field_first_token.out
 tests/fixtures/stdlib/042_explode_quoted_fields.clp
@@ -489,6 +493,16 @@ tests/fixtures/stdlib/sort_predicate_variadic_callable_predicates.clp
 tests/fixtures/stdlib/sort_predicate_variadic_callable_predicates.out
 tests/fixtures/stdlib/sort_predicate_variadic_flatten_empty_singleton.clp
 tests/fixtures/stdlib/sort_predicate_variadic_flatten_empty_singleton.out
+tests/fixtures/stdlib/str_index_arguments_once.clp
+tests/fixtures/stdlib/str_index_arguments_once.out
+tests/fixtures/stdlib/str_index_bound_callable.clp
+tests/fixtures/stdlib/str_index_bound_callable.out
+tests/fixtures/stdlib/str_index_empty_lexemes.clp
+tests/fixtures/stdlib/str_index_empty_lexemes.out
+tests/fixtures/stdlib/str_index_first_match_boundaries.clp
+tests/fixtures/stdlib/str_index_first_match_boundaries.out
+tests/fixtures/stdlib/str_index_unicode_positions.clp
+tests/fixtures/stdlib/str_index_unicode_positions.out
 tests/fixtures/stdlib/str_length_argument_once.clp
 tests/fixtures/stdlib/str_length_argument_once.out
 tests/fixtures/stdlib/str_length_ascii_symbols.clp
@@ -563,6 +577,7 @@ tests/read_fields.rs
 tests/rounding.rs
 tests/scaling_tests.rs
 tests/sort_predicates.rs
+tests/string_index.rs
 tests/string_length_lexemes.rs
 tests/string_to_field.rs
 tests/substring_bounds.rs

@@ -4726,36 +4726,40 @@ fn builtin_instance_type(
 }
 
 /// `str-index` — find substring, return 1-based position or FALSE.
+/// An empty needle returns the position after the haystack's last character.
 fn builtin_str_index(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-index", args, 2, span)?;
-    let Some(values) = eval_checked_args(ctx, args)? else {
+    let needle_value = eval_inner(ctx, &args[0])?;
+    if ctx.globals.evaluation_error() {
         return Ok(builtin_error_value(ctx, "str-index"));
-    };
-    let find = as_lexeme_bytes(&values[0], ctx.symbol_table, "str-index", span)?;
-    let search = as_lexeme_bytes(&values[1], ctx.symbol_table, "str-index", span)?;
-    // Choose the position unit from both complete operands. A valid prefix
-    // cannot make a raw haystack textual, and a raw needle may match inside a
-    // UTF-8 code point. str::find guarantees boundaries only in the text branch.
+    }
+    // Validate before the second evaluation without retaining the pool borrow.
+    as_lexeme_bytes(&needle_value, ctx.symbol_table, "str-index", span)?;
+    let haystack_value = eval_inner(ctx, &args[1])?;
+    if ctx.globals.evaluation_error() {
+        return Ok(builtin_error_value(ctx, "str-index"));
+    }
+    let find = as_lexeme_bytes(&needle_value, ctx.symbol_table, "str-index", span)?;
+    let search = as_lexeme_bytes(&haystack_value, ctx.symbol_table, "str-index", span)?;
+    // Both complete operands select the position unit. Raw needles may match
+    // mid-codepoint, so only the text branch can slice a str at its match.
     let position = match (std::str::from_utf8(find), std::str::from_utf8(search)) {
+        (Ok(find), Ok(search)) if find.is_empty() => Some(search.chars().count() + 1),
         (Ok(find), Ok(search)) => search
             .find(find)
             .map(|byte_pos| search[..byte_pos].chars().count() + 1),
-        _ if find.is_empty() => Some(1),
+        _ if find.is_empty() => Some(search.len() + 1),
         _ => search
             .windows(find.len())
             .position(|part| part == find)
             .map(|byte_pos| byte_pos + 1),
     };
     match position {
-        Some(position) =>
-        {
-            #[allow(clippy::cast_possible_wrap)]
-            Ok(Value::Integer(position as i64))
-        }
+        Some(position) => Ok(Value::Integer(i64::try_from(position).unwrap_or(i64::MAX))),
         None => Ok(clips_bool(
             false,
             ctx.symbol_table,

@@ -623,10 +623,12 @@ fn str_index_retains_empty_and_missing_results_in_both_position_modes() {
     for (needle, haystack, expected) in [
         (b"\xff".as_slice(), b"\xc3\xa9".as_slice(), None),
         (b"z".as_slice(), b"\xc3\xa9\xff".as_slice(), None),
+        (b"".as_slice(), "é".as_bytes(), Some(2)),
+        (b"".as_slice(), b"\xc3\xa9\xff".as_slice(), Some(4)),
         (b"".as_slice(), b"".as_slice(), Some(1)),
         (b"\xff".as_slice(), b"".as_slice(), None),
     ] {
-        // The empty-haystack result is shared with the separate #337 repair.
+        // #337 uses one past the end, in the complete operands' position mode.
         assert_byte_str_index(needle, haystack, expected);
     }
 }
