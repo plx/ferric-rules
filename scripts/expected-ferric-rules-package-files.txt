@@ -200,6 +200,10 @@ tests/fixtures/read/vertical-tab-and-formfeed.in
 tests/fixtures/read/vertical-tab-and-formfeed.out
 tests/fixtures/smoke.clp
 tests/fixtures/stdlib/.gitkeep
+tests/fixtures/stdlib/009_minimum_mixed_types.clp
+tests/fixtures/stdlib/009_minimum_mixed_types.out
+tests/fixtures/stdlib/010_maximum_mixed_types.clp
+tests/fixtures/stdlib/010_maximum_mixed_types.out
 tests/fixtures/stdlib/041_string_to_field_first_token.clp
 tests/fixtures/stdlib/041_string_to_field_first_token.out
 tests/fixtures/stdlib/042_explode_quoted_fields.clp
@@ -245,6 +249,18 @@ tests/fixtures/stdlib/explode_quoted_adjacency_and_escapes.clp
 tests/fixtures/stdlib/explode_quoted_adjacency_and_escapes.out
 tests/fixtures/stdlib/explode_whitespace_and_comments.clp
 tests/fixtures/stdlib/explode_whitespace_and_comments.out
+tests/fixtures/stdlib/extrema_comparison_follows_selected_type.clp
+tests/fixtures/stdlib/extrema_comparison_follows_selected_type.out
+tests/fixtures/stdlib/extrema_equal_integer_float_ties.clp
+tests/fixtures/stdlib/extrema_equal_integer_float_ties.out
+tests/fixtures/stdlib/extrema_float_winners.clp
+tests/fixtures/stdlib/extrema_float_winners.out
+tests/fixtures/stdlib/extrema_large_integer_exact_order.clp
+tests/fixtures/stdlib/extrema_large_integer_exact_order.out
+tests/fixtures/stdlib/extrema_large_mixed_comparison_ties.clp
+tests/fixtures/stdlib/extrema_large_mixed_comparison_ties.out
+tests/fixtures/stdlib/extrema_signed_zero_ties.clp
+tests/fixtures/stdlib/extrema_signed_zero_ties.out
 tests/fixtures/stdlib/format_bound_callable_return_type.clp
 tests/fixtures/stdlib/format_bound_callable_return_type.out
 tests/fixtures/stdlib/format_c_string.clp
@@ -434,6 +450,7 @@ tests/instance_name_grammar.rs
 tests/msrv_metadata.rs
 tests/multifield_printout.rs
 tests/numeric_comparison_chains.rs
+tests/numeric_extrema.rs
 tests/read_fields.rs
 tests/scaling_tests.rs
 tests/sort_predicates.rs

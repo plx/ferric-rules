@@ -3401,123 +3401,60 @@ fn builtin_abs(
 }
 
 /// `min` (1+ args)
-#[allow(clippy::cast_precision_loss)]
 fn builtin_min(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    if let Err(error) = check_arity_min("min", args, 1, span) {
-        return recover_sort_error(ctx, error, Value::Integer(0));
-    }
-    let mut selected = Value::Integer(0);
-    let mut use_float = false;
-    let mut min_int: i64 = i64::MAX;
-    let mut min_float: f64 = f64::INFINITY;
-    for (index, arg) in args.iter().enumerate() {
-        let value = eval_inner(ctx, arg)?;
-        // EnvArgTypeCheck returns the prior selection after an inherited error.
-        if ctx.globals.evaluation_error() {
-            return Ok(selected);
-        }
-        let numeric = match as_numeric(&value, "min", span) {
-            Ok(numeric) => numeric,
-            Err(error) => return recover_sort_error(ctx, error, selected),
-        };
-        // Track the exact selected operand for failure transport, retaining the
-        // existing successful-result promotion policy below.
-        let replaces_selection = match (&value, &selected) {
-            (Value::Integer(left), Value::Integer(right)) => left < right,
-            (Value::Integer(left), Value::Float(right)) => (*left as f64) < *right,
-            (Value::Float(left), Value::Integer(right)) => *left < (*right as f64),
-            (Value::Float(left), Value::Float(right)) => left < right,
-            _ => unreachable!("selected extrema operands are numeric"),
-        };
-        if index == 0 || replaces_selection {
-            selected = value;
-        }
-        match numeric {
-            Numeric::Int(i) => {
-                if i < min_int {
-                    min_int = i;
-                }
-                if (i as f64) < min_float {
-                    min_float = i as f64;
-                }
-            }
-            Numeric::Flt(f) => {
-                use_float = true;
-                if f < min_float {
-                    min_float = f;
-                }
-            }
-        }
-    }
-    if use_float {
-        Ok(Value::Float(min_float))
-    } else {
-        Ok(Value::Integer(min_int))
-    }
+    builtin_extremum(ctx, args, span, "min", std::cmp::Ordering::Less)
 }
 
 /// `max` (1+ args)
-#[allow(clippy::cast_precision_loss)]
 fn builtin_max(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    if let Err(error) = check_arity_min("max", args, 1, span) {
+    builtin_extremum(ctx, args, span, "max", std::cmp::Ordering::Greater)
+}
+
+/// Return the first selected operand unchanged, including its type and zero sign.
+#[allow(clippy::cast_precision_loss)] // CLIPS compares integer pairs exactly and converts mixed pairs.
+fn builtin_extremum(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    function: &str,
+    preferred: std::cmp::Ordering,
+) -> Result<Value, EvalError> {
+    if let Err(error) = check_arity_min(function, args, 1, span) {
         return recover_sort_error(ctx, error, Value::Integer(0));
     }
     let mut selected = Value::Integer(0);
-    let mut use_float = false;
-    let mut max_int: i64 = i64::MIN;
-    let mut max_float: f64 = f64::NEG_INFINITY;
+    let mut selected_numeric = Numeric::Int(0);
     for (index, arg) in args.iter().enumerate() {
         let value = eval_inner(ctx, arg)?;
         // EnvArgTypeCheck returns the prior selection after an inherited error.
         if ctx.globals.evaluation_error() {
             return Ok(selected);
         }
-        let numeric = match as_numeric(&value, "max", span) {
-            Ok(numeric) => numeric,
+        let candidate = match as_numeric(&value, function, span) {
+            Ok(candidate) => candidate,
             Err(error) => return recover_sort_error(ctx, error, selected),
         };
-        // Track the exact selected operand for failure transport, retaining the
-        // existing successful-result promotion policy below.
-        let replaces_selection = match (&value, &selected) {
-            (Value::Integer(left), Value::Integer(right)) => left > right,
-            (Value::Integer(left), Value::Float(right)) => (*left as f64) > *right,
-            (Value::Float(left), Value::Integer(right)) => *left > (*right as f64),
-            (Value::Float(left), Value::Float(right)) => left > right,
-            _ => unreachable!("selected extrema operands are numeric"),
+        let ordering = match (&candidate, &selected_numeric) {
+            (Numeric::Int(a), Numeric::Int(b)) => Some(a.cmp(b)),
+            (Numeric::Int(a), Numeric::Flt(b)) => (*a as f64).partial_cmp(b),
+            (Numeric::Flt(a), Numeric::Int(b)) => a.partial_cmp(&(*b as f64)),
+            (Numeric::Flt(a), Numeric::Flt(b)) => a.partial_cmp(b),
         };
-        if index == 0 || replaces_selection {
+        // Ties retain the current operand. Later comparisons use its type.
+        if index == 0 || ordering == Some(preferred) {
             selected = value;
-        }
-        match numeric {
-            Numeric::Int(i) => {
-                if i > max_int {
-                    max_int = i;
-                }
-                if (i as f64) > max_float {
-                    max_float = i as f64;
-                }
-            }
-            Numeric::Flt(f) => {
-                use_float = true;
-                if f > max_float {
-                    max_float = f;
-                }
-            }
+            selected_numeric = candidate;
         }
     }
-    if use_float {
-        Ok(Value::Float(max_float))
-    } else {
-        Ok(Value::Integer(max_int))
-    }
+    Ok(selected)
 }
 
 // ---------------------------------------------------------------------------

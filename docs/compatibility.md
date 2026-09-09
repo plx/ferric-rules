@@ -750,6 +750,12 @@ identically to their CLIPS counterparts for the supported argument types.
 | `deg-rad`, `rad-deg` | Angle conversion | `(deg-rad 180)` => `3.14159...` |
 | `deg-grad`, `grad-deg` | Degree/gradian conversion | `(deg-grad 90)` => `100.0` |
 
+`min` and `max` return the selected operand with its original INTEGER or FLOAT
+type. Numeric ties retain the first selected operand, including the sign of a
+floating-point zero. Integer pairs compare exactly; mixed INTEGER/FLOAT pairs
+compare after floating-point conversion. Each comparison uses the current
+selected operand's type, even if an earlier discarded operand was a FLOAT.
+
 ### Type Conversion
 
 | Function | Description |
