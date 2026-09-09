@@ -215,9 +215,11 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
-Use the host fact inspection API for queries. RHS `do-for-*` actions retain
-their existing fact iteration, but CLIPS query expressions (`any-factp`,
-`find-fact`, `find-all-facts`) in expressions or callable bodies are unsupported.
+Use the host fact inspection API for queries. RHS `do-for-*` actions traverse
+each query variable's facts in assertion order, nesting multiple variables in
+declaration order. `do-for-fact` executes its body for the first matching
+combination. CLIPS query expressions (`any-factp`, `find-fact`, `find-all-facts`)
+in expressions or callable bodies are unsupported.
 They now report a load or execution error rather than inventing FALSE/empty
 results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
 rule LHS fact-address slot access remains available. This limitation does not

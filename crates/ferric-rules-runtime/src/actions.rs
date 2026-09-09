@@ -1618,8 +1618,7 @@ fn execute_query_action(
     //
     // We collect all IDs first to avoid borrow issues when executing the body
     // (body actions may assert/retract facts, which would mutate the fact base
-    // while we're iterating it).  This also serves as the snapshot required by
-    // `delayed-do-for-all-facts`.
+    // while we're iterating it).
 
     // Resolve each binding to (variable_name, Vec<FactId>).
     let mut binding_fact_ids: Vec<(String, Vec<FactId>)> = Vec::with_capacity(bindings.len());
@@ -1628,7 +1627,17 @@ fn execute_query_action(
             // Unknown template — no facts match; result is empty / FALSE.
             return Ok(());
         };
-        let ids: Vec<FactId> = context.engine.fact_base.facts_by_template(tid).collect();
+        let mut ids: Vec<FactId> = context.engine.fact_base.facts_by_template(tid).collect();
+        // Template membership is unordered, and reused storage slots can put
+        // newer facts before older survivors. Queries follow assertion order.
+        ids.sort_unstable_by_key(|id| {
+            context
+                .engine
+                .fact_base
+                .get(*id)
+                .expect("template index only contains active facts")
+                .timestamp
+        });
         binding_fact_ids.push((var_name.clone(), ids));
     }
 

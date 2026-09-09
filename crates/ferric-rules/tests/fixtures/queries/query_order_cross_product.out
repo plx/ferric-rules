@@ -1,0 +1,8 @@
+a:x
+a:y
+b:x
+b:y
+reverse:x:a
+reverse:x:b
+reverse:y:a
+reverse:y:b
