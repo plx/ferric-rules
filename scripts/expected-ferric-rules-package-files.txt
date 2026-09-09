@@ -179,6 +179,16 @@ tests/fixtures/negation/ncc_basic.clp
 tests/fixtures/negation/not_multiple_patterns.clp
 tests/fixtures/negation/not_retract.clp
 tests/fixtures/negation/simple_not.clp
+tests/fixtures/procedural/033_switch_matching_case.clp
+tests/fixtures/procedural/033_switch_matching_case.out
+tests/fixtures/procedural/034_switch_default.clp
+tests/fixtures/procedural/034_switch_default.out
+tests/fixtures/procedural/035_switch_type_sensitive.clp
+tests/fixtures/procedural/035_switch_type_sensitive.out
+tests/fixtures/procedural/switch_branch_evaluation_order.clp
+tests/fixtures/procedural/switch_branch_evaluation_order.out
+tests/fixtures/procedural/switch_no_match_without_default.clp
+tests/fixtures/procedural/switch_no_match_without_default.out
 tests/fixtures/queries/expression_query_any_factp_filter.clp
 tests/fixtures/queries/expression_query_any_factp_filter.out
 tests/fixtures/queries/expression_query_any_factp_match.clp
@@ -880,4 +890,5 @@ tests/string_index.rs
 tests/string_length_lexemes.rs
 tests/string_to_field.rs
 tests/substring_bounds.rs
+tests/switch_actions.rs
 tests/unrestricted_methods.rs
