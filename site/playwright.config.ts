@@ -22,11 +22,10 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    // Astro 7 runs `astro dev` as a detached background daemon in agent- and
-    // CI-like environments (see `astro dev status`/`stop`), which is
-    // incompatible with Playwright's foreground webServer model. Build the site
-    // and serve it with `astro preview` instead: it always stays in the
-    // foreground and exercises the exact production artifact that is deployed.
+    // Preview exercises the production build. Astro also auto-detaches preview
+    // in agent environments; its child-process marker keeps this invocation in
+    // the foreground so Playwright owns startup and cleanup.
+    env: { ASTRO_PREVIEW_BACKGROUND: "1" },
     command: "npm run build && npm run preview -- --host 127.0.0.1 --port 4321",
     url: localSiteUrl,
     reuseExistingServer: !process.env.CI,
