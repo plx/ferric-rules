@@ -440,7 +440,15 @@ impl Engine {
         // Once runtime evaluation is needed, retain source order within each
         // network. Moving later constants ahead of callbacks would hide effects
         // and errors, so the complete local/join groups own those decisions.
-        pattern.constant_tests.clear();
+        // Width belongs to the physical fact shape, before any callback. Keep
+        // the exact ordered count installed by primitive translation (PR351).
+        // Value constants still move into their original runtime source order.
+        pattern.constant_tests.retain(|test| {
+            matches!(
+                test.test_type,
+                ferric_rules_core::ConstantTestType::OrderedFieldCount { .. }
+            )
+        });
         pattern.variable_slots.clear();
         pattern.negated_variable_slots.clear();
         let mut constraints = PatternConstraints {

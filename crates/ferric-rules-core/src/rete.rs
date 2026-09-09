@@ -812,15 +812,12 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         if let Some(BetaNode::Negative {
-            runtime: Some(_),
-            alpha_memory,
-            ..
+            runtime: Some(_), ..
         }) = self.beta.get_node(neg_node_id)
         {
             let first = self
-                .alpha
-                .get_memory(*alpha_memory)
-                .and_then(AlphaMemory::first_fact);
+                .runtime_negative_candidates(neg_node_id, parent_token_id)
+                .and_then(OrderedSet::first);
             self.start_runtime_negative_search(
                 neg_node_id,
                 parent_token_id,
@@ -2078,11 +2075,10 @@ impl ReteNetwork {
                                 facts,
                                 &mut activations,
                             );
-                        } else if let Some(BetaNode::Negative { alpha_memory, .. }) =
-                            self.beta.get_node(pending.node)
-                        {
+                        } else {
                             let next = pending.fact.and_then(|fact| {
-                                self.alpha.get_memory(*alpha_memory)?.successor_fact(fact)
+                                self.runtime_negative_candidates(pending.node, parent)?
+                                    .successor(fact)
                             });
                             self.start_runtime_negative_search(
                                 pending.node,
@@ -2166,6 +2162,39 @@ impl ReteNetwork {
         }
     }
 
+    /// Borrow the chronological equality bucket for this immutable parent.
+    /// An indexed-but-absent key is empty; only an unavailable usable index
+    /// falls back to the whole alpha memory. No candidate vector is allocated.
+    fn runtime_negative_candidates(
+        &self,
+        node: NodeId,
+        parent: TokenId,
+    ) -> Option<&OrderedSet<FactId>> {
+        let BetaNode::Negative {
+            alpha_memory,
+            tests,
+            ..
+        } = self.beta.get_node(node)?
+        else {
+            return None;
+        };
+        let memory = self.alpha.get_memory(*alpha_memory)?;
+        let bindings = &self.token_store.get(parent)?.bindings;
+        for test in tests.iter() {
+            if test.test_type != JoinTestType::Equal || !memory.is_slot_indexed(test.alpha_slot) {
+                continue;
+            }
+            let Some(key) = bindings
+                .get(test.beta_var)
+                .and_then(|value| AtomKey::from_value(value))
+            else {
+                continue;
+            };
+            return memory.slot_indices.get(&test.alpha_slot)?.get(&key);
+        }
+        Some(&memory.facts)
+    }
+
     fn start_runtime_negative_search(
         &mut self,
         node: NodeId,
@@ -2177,7 +2206,6 @@ impl ReteNetwork {
     ) {
         let Some(BetaNode::Negative {
             runtime: Some(condition),
-            alpha_memory,
             tests,
             neg_memory,
             ..
@@ -2186,7 +2214,6 @@ impl ReteNetwork {
             return;
         };
         let condition = condition.clone();
-        let alpha_memory = *alpha_memory;
         let tests = tests.clone();
         if self.is_rule_disabled(condition.rule)
             || self.token_store.get(parent).is_none()
@@ -2200,9 +2227,8 @@ impl ReteNetwork {
         }
         while let Some(fact_id) = candidate {
             let next = self
-                .alpha
-                .get_memory(alpha_memory)
-                .and_then(|memory| memory.successor_fact(fact_id));
+                .runtime_negative_candidates(node, parent)
+                .and_then(|candidates| candidates.successor(fact_id));
             if let (Some(entry), Some(token)) = (facts.get(fact_id), self.token_store.get(parent)) {
                 if evaluate_join(&entry.fact, Some(token), &tests) {
                     self.next_runtime_request = self
@@ -2300,10 +2326,6 @@ impl ReteNetwork {
         facts: &FactBase,
         activations: &mut Vec<ActivationId>,
     ) {
-        let next = self
-            .alpha
-            .get_memory(memory)
-            .and_then(|alpha| alpha.successor_fact(fact));
         // An embedding caller may retract a candidate while its callback is pending.
         // Continue those requests in their original queue order, without invoking stale work.
         let mut pending: Vec<_> = self
@@ -2319,6 +2341,9 @@ impl ReteNetwork {
         pending.sort_unstable_by_key(|(id, _, _, _)| *id);
         for (_, node, parent, replacing) in pending {
             self.runtime_searches.remove(&(node, parent));
+            let next = self
+                .runtime_negative_candidates(node, parent)
+                .and_then(|candidates| candidates.successor(fact));
             self.start_runtime_negative_search(node, parent, next, replacing, facts, activations);
         }
         if let Some(owners) = self.runtime_conflicts.remove(&(memory, fact)) {
@@ -2330,6 +2355,11 @@ impl ReteNetwork {
                     .get_neg_memory_mut(*neg_memory)
                     .expect("negative state")
                     .remove_blocker(parent, fact);
+                // Alpha/index removal follows this function, so the selected
+                // fact still anchors its bucket's successor links here.
+                let next = self
+                    .runtime_negative_candidates(node, parent)
+                    .and_then(|candidates| candidates.successor(fact));
                 self.start_runtime_negative_search(node, parent, next, true, facts, activations);
             }
         }
@@ -6216,5 +6246,263 @@ mod runtime_constraint_tests {
             )
             .is_err());
         assert_eq!(fixture.rete.cardinality(), before);
+    }
+}
+
+#[cfg(test)]
+mod runtime_negative_index_tests {
+    use super::*;
+    use crate::{
+        AlphaEntryType, CompilableCondition, CompilablePattern, CompilableRuntimePattern,
+        ReteCompiler, Salience, Symbol, SymbolTable,
+    };
+
+    struct IndexedFixture {
+        rete: ReteNetwork,
+        facts: FactBase,
+        symbols: SymbolTable,
+        compiler: ReteCompiler,
+        anchor: Symbol,
+        data: Symbol,
+        node: NodeId,
+    }
+
+    impl IndexedFixture {
+        fn new(initial: &[(Value, i64)], role: RuntimeConditionRole) -> Self {
+            let mut symbols = SymbolTable::new();
+            let anchor = Symbol(symbols.intern_utf8("anchor"));
+            let data = Symbol(symbols.intern_utf8("data"));
+            let key = Symbol(symbols.intern_utf8("key"));
+            let value = Symbol(symbols.intern_utf8("value"));
+            let pattern = |relation, slots, negated| CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relation),
+                constant_tests: vec![],
+                variable_slots: slots,
+                negated_variable_slots: vec![],
+                negated,
+                exists: false,
+            };
+            let runtime = CompilableCondition::RuntimePattern(CompilableRuntimePattern {
+                pattern: pattern(
+                    data,
+                    vec![(SlotIndex::Ordered(0), key), (SlotIndex::Ordered(1), value)],
+                    true,
+                ),
+                local_condition: None,
+                local_bindings: vec![],
+                negative_condition: Some(0),
+                join_role: role,
+            });
+            let conditions = [
+                CompilableCondition::Pattern(pattern(
+                    anchor,
+                    vec![(SlotIndex::Ordered(0), key)],
+                    false,
+                )),
+                if role == RuntimeConditionRole::ExistsJoin {
+                    CompilableCondition::Ncc(vec![runtime])
+                } else {
+                    runtime
+                },
+            ];
+            let mut facts = FactBase::new();
+            for (key, value) in initial {
+                facts.assert_ordered(
+                    data,
+                    smallvec::smallvec![key.clone(), Value::Integer(*value)],
+                );
+            }
+            let mut rete = ReteNetwork::new();
+            let mut compiler = ReteCompiler::new();
+            let rule_id = compiler.allocate_rule_id();
+            compiler
+                .compile_conditions(&mut rete, &facts, rule_id, Salience::DEFAULT, &conditions)
+                .unwrap();
+            let node = rete
+                .beta
+                .iter_nodes()
+                .find_map(|(id, node)| {
+                    matches!(
+                        node,
+                        BetaNode::Negative {
+                            runtime: Some(_),
+                            ..
+                        }
+                    )
+                    .then_some(id)
+                })
+                .unwrap();
+            Self {
+                rete,
+                facts,
+                symbols,
+                compiler,
+                anchor,
+                data,
+                node,
+            }
+        }
+
+        fn insert(&mut self, relation: Symbol, fields: smallvec::SmallVec<[Value; 8]>) -> FactId {
+            let id = self.facts.assert_ordered(relation, fields);
+            let fact = self.facts.get(id).unwrap().fact.clone();
+            self.rete.assert_fact(id, &fact, &self.facts);
+            id
+        }
+
+        fn data(&mut self, key: Value, value: i64) -> FactId {
+            self.insert(self.data, smallvec::smallvec![key, Value::Integer(value)])
+        }
+
+        fn anchor(&mut self, key: Value) -> FactId {
+            self.insert(self.anchor, smallvec::smallvec![key])
+        }
+
+        fn parent(&self, anchor: FactId) -> TokenId {
+            let BetaNode::Negative { parent, .. } = self.rete.beta.get_node(self.node).unwrap()
+            else {
+                unreachable!()
+            };
+            self.rete
+                .token_store
+                .tokens_containing(anchor)
+                .find(|id| self.rete.token_store.get(*id).unwrap().owner_node == *parent)
+                .unwrap()
+        }
+
+        fn candidates(&self, anchor: FactId) -> Vec<FactId> {
+            self.rete
+                .runtime_negative_candidates(self.node, self.parent(anchor))
+                .map(|set| set.iter().copied().collect())
+                .unwrap_or_default()
+        }
+
+        fn pending(&mut self) -> PendingRuntimeMatch {
+            self.rete
+                .pop_pending_runtime_match()
+                .expect("expected runtime candidate")
+        }
+
+        fn resolve(&mut self, request: PendingRuntimeMatch, passed: bool) {
+            self.rete
+                .resolve_runtime_match(request, passed, &self.facts);
+        }
+
+        fn retract(&mut self, id: FactId) {
+            let fact = self.facts.retract(id).unwrap().fact;
+            self.rete.retract_fact(id, &fact, &self.facts);
+        }
+
+        fn valid(&self) {
+            self.rete
+                .validate_snapshot(&self.facts, &self.symbols)
+                .unwrap();
+            self.compiler.validate_snapshot(&self.rete).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_index_restricts_initial_rejection_and_both_retraction_continuations() {
+        for role in [
+            RuntimeConditionRole::NegativeJoin,
+            RuntimeConditionRole::ExistsJoin,
+        ] {
+            let mut fixture = IndexedFixture::new(&[], role);
+            let first = fixture.data(Value::Integer(7), 10);
+            for i in 0..48 {
+                fixture.data(Value::Integer(100 + i), i);
+            }
+            let selected = fixture.data(Value::Integer(7), 20);
+            for i in 0..48 {
+                fixture.data(Value::Integer(200 + i), i);
+            }
+            let pending_removed = fixture.data(Value::Integer(7), 30);
+            let outer = fixture.anchor(Value::Integer(7));
+            assert_eq!(
+                fixture.candidates(outer),
+                [first, selected, pending_removed]
+            );
+            let initial = fixture.pending();
+            assert_eq!(initial.fact, Some(first));
+            assert!(!initial.replacing_conflict);
+            fixture.resolve(initial, false);
+            let second = fixture.pending();
+            assert_eq!(second.fact, Some(selected));
+            fixture.resolve(second, true);
+            let final_candidate = fixture.data(Value::Integer(7), 40);
+            assert!(fixture.rete.pop_pending_runtime_match().is_none());
+            fixture.retract(selected);
+            let stale = fixture.pending();
+            assert_eq!(stale.fact, Some(pending_removed));
+            assert!(stale.replacing_conflict);
+            fixture.retract(pending_removed);
+            let replacement = fixture.pending();
+            assert_eq!(replacement.fact, Some(final_candidate));
+            assert!(replacement.replacing_conflict);
+            fixture.resolve(stale, true);
+            fixture.resolve(replacement, true);
+            assert!(fixture.rete.pop_pending_runtime_match().is_none());
+            fixture.valid();
+        }
+    }
+
+    #[test]
+    fn runtime_index_backfill_and_missing_key_do_not_fall_back_to_all_facts() {
+        let initial = (0..40)
+            .map(|i| (Value::Integer(i % 4), i))
+            .collect::<Vec<_>>();
+        let mut fixture = IndexedFixture::new(&initial, RuntimeConditionRole::NegativeJoin);
+        let missing = fixture.anchor(Value::Integer(100));
+        assert!(fixture.candidates(missing).is_empty());
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        let outer = fixture.anchor(Value::Integer(2));
+        let candidates = fixture.candidates(outer);
+        assert_eq!(candidates.len(), 10);
+        let actual = candidates
+            .iter()
+            .map(|id| {
+                let Fact::Ordered(fact) = &fixture.facts.get(*id).unwrap().fact else {
+                    unreachable!()
+                };
+                let Value::Integer(value) = &fact.fields[1] else {
+                    panic!("candidate payload must be INTEGER")
+                };
+                *value
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, (0..10).map(|i| 2 + i * 4).collect::<Vec<i64>>());
+        let request = fixture.pending();
+        assert_eq!(request.fact, candidates.first().copied());
+        fixture.resolve(request, true);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_index_empty_bucket_after_removal_stays_empty_below_scan_threshold() {
+        let mut fixture = IndexedFixture::new(&[], RuntimeConditionRole::NegativeJoin);
+        fixture.data(Value::Integer(99), 1);
+        let matched = fixture.data(Value::Integer(7), 2);
+        let outer = fixture.anchor(Value::Integer(7));
+        assert_eq!(fixture.candidates(outer), [matched]);
+        let request = fixture.pending();
+        fixture.resolve(request, true);
+        fixture.retract(matched);
+        assert!(fixture.candidates(outer).is_empty());
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_unhashable_binding_keeps_full_scan_fallback_and_structural_join() {
+        let key = Value::Multifield(Box::new([Value::Integer(7)].into_iter().collect()));
+        let mut fixture = IndexedFixture::new(&[], RuntimeConditionRole::NegativeJoin);
+        let other = fixture.data(Value::Integer(99), 1);
+        let matched = fixture.data(key.clone(), 2);
+        let outer = fixture.anchor(key);
+        assert_eq!(fixture.candidates(outer), [other, matched]);
+        let request = fixture.pending();
+        assert_eq!(request.fact, Some(matched));
+        fixture.resolve(request, true);
+        fixture.valid();
     }
 }

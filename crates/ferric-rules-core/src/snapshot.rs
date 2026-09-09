@@ -152,13 +152,14 @@ impl FactBase {
     }
 }
 
-use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode};
+use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode, ConstantTestType};
 use crate::beta::{BetaNode, RuleId};
 use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
 use crate::token::NodeId;
 
-// Source compilation allows 64 total condition nodes and 64 alpha tests.
+// Source compilation allows 64 total condition nodes and 64 alpha value tests,
+// with one additional ordered field-count test per alpha path.
 // Each condition contributes at most one node to a beta parent chain; an NCC
 // partner substitutes for its wrapper on a subnetwork path. Include root and
 // terminal. Partner callbacks need their own nesting/cycle bound below.
@@ -230,6 +231,12 @@ fn validate_constant(
 ) -> Result<(), String> {
     use crate::alpha::ConstantTestType as Test;
     match &test.test_type {
+        Test::OrderedFieldCount { min, max } => {
+            require!(
+                max.map_or(true, |max| *min <= max),
+                "invalid ordered field-count bounds"
+            );
+        }
         Test::Equal(value)
         | Test::NotEqual(value)
         | Test::GreaterThan(value)
@@ -774,6 +781,7 @@ impl ReteNetwork {
         let mut owners = rustc_hash::FxHashSet::default();
         let mut incoming = vec![0_usize; self.alpha.nodes.len()];
         let mut depths = vec![0_usize; self.alpha.nodes.len()];
+        let mut field_count_depths = vec![0_usize; self.alpha.nodes.len()];
         for (index, node) in self.alpha.nodes.iter().enumerate() {
             let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
             let (children, memory) = match node {
@@ -835,10 +843,21 @@ impl ReteNetwork {
                     "cyclic or dangling alpha child"
                 );
                 incoming[child.0 as usize] += 1;
-                depths[child.0 as usize] = depths[index] + 1;
+                let field_count_test = matches!(
+                    &self.alpha.nodes[child.0 as usize],
+                    AlphaNode::ConstantTest { test, .. }
+                        if matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                );
+                depths[child.0 as usize] = depths[index] + usize::from(!field_count_test);
+                field_count_depths[child.0 as usize] =
+                    field_count_depths[index] + usize::from(field_count_test);
                 require!(
                     depths[child.0 as usize] <= MAX_ALPHA_DEPTH,
                     "snapshot alpha path exceeds 64 tests"
+                );
+                require!(
+                    field_count_depths[child.0 as usize] <= 1,
+                    "snapshot alpha path exceeds one ordered field-count test"
                 );
             }
             if let Some(memory) = memory {
@@ -1634,5 +1653,27 @@ impl crate::compiler::ReteCompiler {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod composed_count_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_count_bounds_reject_reversed_ranges_but_allow_exact_and_open_ranges() {
+        let symbols = SymbolTable::new();
+        for (min, max, accepted) in [
+            (0, Some(0), true),
+            (1, Some(1), true),
+            (1, None, true),
+            (2, Some(1), false),
+        ] {
+            let test = crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Ordered(0),
+                test_type: ConstantTestType::OrderedFieldCount { min, max },
+            };
+            assert_eq!(validate_constant(&test, &symbols).is_ok(), accepted);
+        }
     }
 }

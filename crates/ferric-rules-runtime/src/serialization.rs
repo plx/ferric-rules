@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 5")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 7")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,7 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 5;
+const SCHEMA_VERSION: u16 = 7;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -1586,7 +1586,7 @@ mod tests {
         let engine = Engine::new(EngineConfig::default());
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
-            for version in 1_u16..=4 {
+            for version in 1_u16..=6 {
                 // An unsupported version takes precedence over the missing
                 // payload and invalid checksum, without invoking its codec.
                 let mut header_only = bytes[..HEADER_LEN].to_vec();
@@ -1607,9 +1607,9 @@ mod tests {
         verify_schema_one_resume(restored);
     }
 
-    fn schema_five_fixture_engine() -> Engine {
+    fn schema_seven_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-5.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-7.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(
             engine.get_global("local-calls"),
@@ -1625,17 +1625,17 @@ mod tests {
 
     /// Explicit fixture maintenance command; ordinary test runs never write it.
     #[test]
-    #[ignore = "regenerates the committed schema-5 snapshot"]
-    fn regenerate_schema_five_fixture() {
-        let bytes = schema_five_fixture_engine()
+    #[ignore = "regenerates the committed schema-7 snapshot"]
+    fn regenerate_schema_seven_fixture() {
+        let bytes = schema_seven_fixture_engine()
             .serialize(SerializationFormat::Cbor)
             .unwrap();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-5.cbor");
+            .join("tests/fixtures/snapshots/schema-7.cbor");
         std::fs::write(path, bytes).unwrap();
     }
 
-    fn schema_five_data(engine: &Engine, value: i64) -> crate::FactHandle {
+    fn schema_seven_data(engine: &Engine, value: i64) -> crate::FactHandle {
         engine
             .find_facts("data")
             .unwrap()
@@ -1650,7 +1650,7 @@ mod tests {
             .expect("expected data fact")
     }
 
-    fn verify_schema_five_pending_resume(mut engine: Engine) -> Engine {
+    fn verify_schema_seven_pending_resume(mut engine: Engine) -> Engine {
         assert_eq!(engine.agenda_len(), 1);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert_eq!(engine.get_output("t"), Some("safe:2\n"));
@@ -1674,7 +1674,7 @@ mod tests {
             engine.get_global("join-calls"),
             Some(Value::Integer(3))
         ));
-        engine.retract(schema_five_data(&engine, 1)).unwrap();
+        engine.retract(schema_seven_data(&engine, 1)).unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert_eq!(engine.get_output("t"), Some("safe:2\nsafe:1\n"));
         // Reasserting invokes the local filter again, now with gate FALSE.
@@ -1697,7 +1697,7 @@ mod tests {
 
     #[test]
     fn runtime_constraint_snapshots_preserve_history_and_resume_in_all_codecs() {
-        let blocked = schema_five_fixture_engine();
+        let blocked = schema_seven_fixture_engine();
         for &format in SerializationFormat::ALL {
             let mut restored =
                 Engine::deserialize(&blocked.serialize(format).unwrap(), format).unwrap();
@@ -1710,10 +1710,10 @@ mod tests {
                 Some(Value::Integer(2))
             ));
             assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
-            restored.retract(schema_five_data(&restored, 2)).unwrap();
+            restored.retract(schema_seven_data(&restored, 2)).unwrap();
             let pending =
                 Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
-            let completed = verify_schema_five_pending_resume(pending);
+            let completed = verify_schema_seven_pending_resume(pending);
             let mut completed =
                 Engine::deserialize(&completed.serialize(format).unwrap(), format).unwrap();
             assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
@@ -1732,9 +1732,13 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_five_snapshot_preserves_runtime_constraint_history() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-5.cbor");
-        let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+    fn committed_schema_seven_snapshot_preserves_runtime_constraint_history() {
+        // Read at test execution so the ignored generator can compile before
+        // this new fixture exists. Missing bytes are an ordinary test failure.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-7.cbor");
+        let bytes = std::fs::read(path).expect("generate the schema-7 fixture explicitly first");
+        let mut engine = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(engine.agenda_len(), 0);
         assert!(matches!(
             engine.get_global("local-calls"),
@@ -1744,14 +1748,14 @@ mod tests {
             engine.get_global("join-calls"),
             Some(Value::Integer(2))
         ));
-        engine.retract(schema_five_data(&engine, 2)).unwrap();
-        let mut completed = verify_schema_five_pending_resume(engine);
+        engine.retract(schema_seven_data(&engine, 2)).unwrap();
+        let mut completed = verify_schema_seven_pending_resume(engine);
         assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
     }
 
     #[test]
     fn runtime_constraint_snapshot_rejects_forged_role_and_binding_scope() {
-        let engine = schema_five_fixture_engine();
+        let engine = schema_seven_fixture_engine();
         let wrong_role = alter_state(&engine, |state| {
             let condition = state["rule_info"]
                 .as_array_mut()
@@ -1813,7 +1817,7 @@ mod tests {
                     Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
                 assert_eq!(restored.get_output("t"), Some(expected));
                 if selected_first {
-                    restored.retract(schema_five_data(&restored, 9)).unwrap();
+                    restored.retract(schema_seven_data(&restored, 9)).unwrap();
                     assert_eq!(restored.get_output("t"), Some("CHECK:9:2\nCHECK:0:2\n"));
                 }
                 assert_eq!(restored.action_diagnostics().len(), 1);
@@ -1833,7 +1837,7 @@ mod tests {
                     before
                 };
                 assert_eq!(restored.get_output("t"), Some(expected.as_str()));
-                restored.retract(schema_five_data(&restored, 0)).unwrap();
+                restored.retract(schema_seven_data(&restored, 0)).unwrap();
                 let mut completed =
                     Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
                 assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
@@ -1889,7 +1893,7 @@ mod tests {
                 restored.get_global("calls"),
                 Some(Value::Integer(1))
             ));
-            restored.retract(schema_five_data(&restored, 0)).unwrap();
+            restored.retract(schema_seven_data(&restored, 0)).unwrap();
             let mut pending =
                 Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
             assert_eq!(pending.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
@@ -1899,6 +1903,69 @@ mod tests {
                 Some(Value::Integer(1))
             ));
             assert_eq!(pending.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        }
+    }
+
+    fn schema_two_cardinality_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
+        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        engine
+    }
+
+    fn verify_schema_two_cardinality_resume(mut engine: Engine) {
+        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        // Restored compiled paths must reject new facts of the wrong width.
+        engine.load_str("(assert (row) (row c d))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.load_str("(assert (row c))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        // Later compilation also preserves the guard while backfilling facts.
+        engine
+            .load_str("(defrule later (row ?x&~z) => (printout t later crlf))")
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+        engine.load_str("(assert (row d e f))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.reset().unwrap();
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 4);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        assert!(engine.action_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn committed_schema_two_and_five_snapshots_are_rejected_before_payload_decode() {
+        for (version, bytes) in [
+            (
+                2,
+                include_bytes!("../tests/fixtures/snapshots/schema-2.cbor").as_slice(),
+            ),
+            (
+                5,
+                include_bytes!("../tests/fixtures/snapshots/schema-5.cbor").as_slice(),
+            ),
+        ] {
+            for input in [bytes, &bytes[..HEADER_LEN]] {
+                assert!(matches!(
+                    Engine::deserialize(input, SerializationFormat::Cbor),
+                    Err(SerializationError::UnsupportedVersion(found)) if found == version
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_cardinality_roundtrips_in_all_snapshot_formats() {
+        let engine = schema_two_cardinality_fixture_engine();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            verify_schema_two_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
         }
     }
 

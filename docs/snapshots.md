@@ -25,22 +25,34 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 5 stores typed runtime pattern filters and negative/existence join constraints,
-including retained pattern decisions and lazy selected-conflict/support state. It also
-distinguishes pattern and join Boolean evaluation. Versions 2–4 are reserved
-for the distinct ordered-cardinality, ordered-multifield, and template-multislot
-compatibility layouts. This build supports only version 5; versions 1–4 are
-explicitly rejected before payload decoding. Use the producing Ferric version
-to export durable application data before upgrading. The original schema-1 fixture
-is retained as a rejection regression, and its source resume behavior remains
-tested under the current schema. Builds supporting a schema must keep its
-meaning and pass the stored schema fixture and resume regressions.
-Changes to the serialized layout or runtime semantics that make an old state
-invalid require a schema-version change, a documented compatibility decision,
-and a fixture regression. Crate version and snapshot schema version are separate.
-Snapshots are not a promise to migrate arbitrary RETE internals forever.
-Combining incompatible layouts from separate compatibility changes requires
-another schema version; reserving distinct versions does not make their states
+Schema 7 combines explicit ordered-pattern field-count tests with typed runtime
+pattern filters and lazy negative/existence join constraints. Physical width is
+checked before runtime callbacks; retained filter decisions and selected
+conflict/support history survive restoration without reevaluation. Pattern and
+join Boolean evaluation remain distinct.
+
+This build supports only version 7. Versions 1–6 are rejected before payload
+decoding. In particular, schema 2 contains the independent ordered-cardinality
+layout and schema 5 contains the independent runtime-constraint layout; neither
+is interchangeable with their composition. Versions 3, 4, and 6 belong to the
+separate sequence, template-multislot, and byte-lexeme layouts. A later composition
+including those layouts requires another version; version 8 is reserved for
+that integration and is not supported by this build.
+
+Use the producing Ferric version to export durable application data before
+upgrading. There is no automatic RETE-state migration. Original schema-1,
+schema-2, and schema-5 fixtures remain unchanged rejection regressions, while
+their source scenarios exercise current-format resume behavior. The current
+fixture captures retained local decisions and a selected negative conflict;
+all-codec tests also cover cardinality, future assertions, later rule compilation,
+reset, and initial versus replacement existence-support errors.
+
+Builds supporting a schema must keep its meaning and pass its stored fixture
+and resume regressions. Changes to the serialized layout or runtime semantics
+that make an old state invalid require a schema-version change, a documented
+compatibility decision, and a fixture regression. Crate version and snapshot
+schema version are separate. Snapshots are not a promise to migrate arbitrary
+RETE internals forever. Reserving distinct versions does not make their states
 interchangeable.
 
 This is an explicit pre-1.0 break from legacy raw snapshots. Unversioned bytes
@@ -65,7 +77,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`5`) |
+| 8–9 | Little-endian schema version (`7`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -82,7 +94,8 @@ Supported persistence bounds are 16 MiB including the envelope, 128 Serde nestin
 levels, and 1,000,000 decoded items across the whole payload. Collection length
 hints are checked before allocation and do not control allocation capacity.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
-16 levels, alpha paths 64 tests, beta parent paths 66 nodes (including root
+16 levels, alpha paths 64 value tests plus one ordered field-count test,
+beta parent paths 66 nodes (including root
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
@@ -107,7 +120,9 @@ ownership; token reverse indexes; activation identity, chronology, recency and
 strategy keys; and compiler-cache references. It rejects unfinished predicate
 work, including unfinished local filters and negative-conflict searches.
 Runtime conditions are checked against their graph-owned roles, physical field
-selectors, and lexical binding scopes. Historical predicate outcomes and local
+selectors, and lexical binding scopes. Each alpha path admits at most one ordered
+field-count test, its bounds must be ordered, and retained runtime-filter facts
+must still pass their static predecessor tests. Historical predicate outcomes and local
 filter membership are retained, since re-evaluating against globals changed
 later would alter refraction and resume behavior. Runtime negative joins retain
 the selected conflict and candidate order; replacement proceeds after that

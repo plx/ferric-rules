@@ -49,6 +49,20 @@ tests/fixtures/core/multi_pattern_exists_nested_join.clp
 tests/fixtures/core/multi_pattern_exists_transitions.clp
 tests/fixtures/core/multi_pattern_join.clp
 tests/fixtures/core/multiple_activations_depth.clp
+tests/fixtures/core/ordered_cardinality_template_control.clp
+tests/fixtures/core/ordered_cardinality_template_control.out
+tests/fixtures/core/ordered_cardinality_transitions.clp
+tests/fixtures/core/ordered_cardinality_transitions.out
+tests/fixtures/core/ordered_empty_pattern_arity.clp
+tests/fixtures/core/ordered_empty_pattern_arity.out
+tests/fixtures/core/ordered_exact_arity.clp
+tests/fixtures/core/ordered_exact_arity.out
+tests/fixtures/core/ordered_multifield_arity.clp
+tests/fixtures/core/ordered_multifield_arity.out
+tests/fixtures/core/ordered_multifield_minimum.clp
+tests/fixtures/core/ordered_multifield_minimum.out
+tests/fixtures/core/ordered_single_wildcard_arity.clp
+tests/fixtures/core/ordered_single_wildcard_arity.out
 tests/fixtures/core/refraction.clp
 tests/fixtures/core/retract_chain.clp
 tests/fixtures/core/retract_cycle.clp
@@ -173,5 +187,6 @@ tests/fixtures/stdlib/type_predicates.clp
 tests/msrv_metadata.rs
 tests/negated_constraints.rs
 tests/numeric_comparison_chains.rs
+tests/ordered_cardinality.rs
 tests/scaling_tests.rs
 tests/sort_predicates.rs

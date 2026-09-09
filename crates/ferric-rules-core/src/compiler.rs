@@ -8,7 +8,9 @@
 use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
-use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
+use crate::alpha::{
+    AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, ConstantTestType, SlotIndex,
+};
 use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
@@ -20,7 +22,7 @@ use crate::validation::{PatternValidationError, PatternViolation, ValidationStag
 /// Maximum condition nodes in one compiled rule, including nested NCC nodes.
 /// This bounds recursive propagation depth without a second execution engine.
 pub const MAX_RULE_CONDITIONS: usize = 64;
-/// Maximum constant tests in one alpha path.
+/// Maximum value tests in one alpha path, plus at most one ordered field-count test.
 pub const MAX_ALPHA_TESTS: usize = 64;
 
 /// A rule ready for compilation into rete structures.
@@ -294,7 +296,7 @@ impl ReteCompiler {
         Self::ensure_non_empty(&rule.patterns)?;
         Self::check_limit("rule conditions", rule.patterns.len(), MAX_RULE_CONDITIONS)?;
         for pattern in &rule.patterns {
-            Self::check_limit("alpha tests", pattern.constant_tests.len(), MAX_ALPHA_TESTS)?;
+            Self::validate_alpha_test_count(&pattern.constant_tests)?;
         }
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
@@ -557,17 +559,21 @@ impl ReteCompiler {
             Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
             match condition {
                 CompilableCondition::Pattern(pattern) => {
-                    Self::check_limit(
-                        "alpha tests",
-                        pattern.constant_tests.len(),
-                        MAX_ALPHA_TESTS,
-                    )?;
+                    Self::validate_alpha_test_count(&pattern.constant_tests)?;
                 }
                 CompilableCondition::RuntimePattern(runtime) => {
+                    Self::validate_alpha_test_count(&runtime.pattern.constant_tests)?;
+                    let value_tests = runtime
+                        .pattern
+                        .constant_tests
+                        .iter()
+                        .filter(|test| {
+                            !matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                        })
+                        .count();
                     Self::check_limit(
                         "alpha tests",
-                        runtime.pattern.constant_tests.len()
-                            + usize::from(runtime.local_condition.is_some()),
+                        value_tests + usize::from(runtime.local_condition.is_some()),
                         MAX_ALPHA_TESTS,
                     )?;
                 }
@@ -611,6 +617,19 @@ impl ReteCompiler {
             }
         }
         Self::finish_validation(errors)
+    }
+
+    fn validate_alpha_test_count(tests: &[ConstantTest]) -> Result<(), CompileError> {
+        let field_count_tests = tests
+            .iter()
+            .filter(|test| matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. }))
+            .count();
+        Self::check_limit("ordered field-count tests", field_count_tests, 1)?;
+        Self::check_limit(
+            "alpha tests",
+            tests.len() - field_count_tests,
+            MAX_ALPHA_TESTS,
+        )
     }
 
     fn check_limit(
@@ -1126,6 +1145,75 @@ mod tests {
         } else {
             panic!("Expected terminal node");
         }
+    }
+
+    fn runtime_counted_pattern(value_tests: usize, local: bool) -> CompilableRuntimePattern {
+        let mut table = new_table();
+        let mut constant_tests = vec![ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::OrderedFieldCount {
+                min: 1,
+                max: Some(1),
+            },
+        }];
+        constant_tests.extend((0..value_tests).map(|_| ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(1)),
+        }));
+        CompilableRuntimePattern {
+            pattern: CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "data")),
+                constant_tests,
+                variable_slots: vec![],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            },
+            local_condition: local.then_some(0),
+            local_bindings: vec![],
+            negative_condition: None,
+            join_role: crate::rete::RuntimeConditionRole::NegativeJoin,
+        }
+    }
+
+    #[test]
+    fn runtime_pattern_count_guard_does_not_consume_value_test_budget() {
+        for local in [false, true] {
+            let value_tests = MAX_ALPHA_TESTS - usize::from(local);
+            let accepted = runtime_counted_pattern(value_tests, local);
+            assert!(
+                ReteCompiler::validate_conditions(&[CompilableCondition::RuntimePattern(accepted)])
+                    .is_ok()
+            );
+            let excessive = runtime_counted_pattern(value_tests + 1, local);
+            assert!(matches!(
+                ReteCompiler::validate_conditions(&[CompilableCondition::RuntimePattern(
+                    excessive
+                )]),
+                Err(CompileError::ResourceLimit {
+                    resource: "alpha tests",
+                    required: 65,
+                    limit: 64,
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_pattern_rejects_multiple_count_guards() {
+        let mut runtime = runtime_counted_pattern(0, true);
+        runtime
+            .pattern
+            .constant_tests
+            .push(runtime.pattern.constant_tests[0].clone());
+        assert!(matches!(
+            ReteCompiler::validate_conditions(&[CompilableCondition::RuntimePattern(runtime)]),
+            Err(CompileError::ResourceLimit {
+                resource: "ordered field-count tests",
+                required: 2,
+                limit: 1,
+            })
+        ));
     }
 
     #[test]
