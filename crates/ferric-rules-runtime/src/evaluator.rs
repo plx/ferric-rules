@@ -29,6 +29,10 @@ use crate::tracing_support::ferric_event;
 #[cfg(feature = "tracing")]
 use crate::tracing_support::ferric_span;
 
+#[path = "evaluator/queued_input.rs"]
+mod queued_input;
+use queued_input::{builtin_read, builtin_readline};
+
 // ---------------------------------------------------------------------------
 // Source span for diagnostics
 // ---------------------------------------------------------------------------
@@ -2313,6 +2317,17 @@ fn from_sexpr_inner(
                     });
                 }
             };
+            if matches!(func_name.as_str(), "read" | "readline") && items.len() > 2 {
+                return Err(EvalError::ArityMismatch {
+                    name: func_name,
+                    expected: "0 or 1".into(),
+                    actual: items.len() - 1,
+                    span: Some(SourceSpan {
+                        line: span.start.line,
+                        column: span.start.column,
+                    }),
+                });
+            }
             let mut args = Vec::with_capacity(items.len() - 1);
             for item in &items[1..] {
                 args.push(from_sexpr_inner(item, symbol_table, config)?);
@@ -6572,144 +6587,6 @@ fn format_value_for_format(value: &Value, symbol_table: &SymbolTable) -> Vec<u8>
             output.push(b')');
             output
         }
-    }
-}
-
-/// Intern the `EOF` symbol — shared helper for `read`/`readline`.
-fn intern_eof_symbol(
-    ctx: &mut EvalContext<'_>,
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    let sym = ctx
-        .symbol_table
-        .intern_symbol("EOF", ctx.config.string_encoding)
-        .map_err(|_| EvalError::TypeError {
-            function: "read".to_string(),
-            expected: "valid string encoding".to_string(),
-            actual: "cannot intern EOF symbol".to_string(),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
-}
-
-/// `read` — read a single atom from the input buffer.
-///
-/// `(read)` or `(read <channel>)`
-///
-/// Pops a line from the input buffer and parses the first whitespace-delimited
-/// token as a typed value (integer, float, quoted string, or symbol).
-/// Returns `Symbol("EOF")` when no input is available.
-fn builtin_read(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    if args.len() > 1 {
-        return Err(EvalError::ArityMismatch {
-            name: "read".to_string(),
-            expected: "0 or 1".to_string(),
-            actual: args.len(),
-            span: span.cloned(),
-        });
-    }
-    // Evaluate channel arg if present (but don't use it)
-    if !args.is_empty() {
-        let _ = eval_inner(ctx, &args[0])?;
-    }
-
-    let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    let Some(line) = buffer.pop_front() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return intern_eof_symbol(ctx, span);
-    }
-
-    // Get first whitespace-delimited token
-    let token_str = trimmed.split_whitespace().next().unwrap_or(trimmed);
-
-    // Try to parse as integer
-    if let Ok(i) = token_str.parse::<i64>() {
-        return Ok(Value::Integer(i));
-    }
-
-    // Try to parse as float
-    if let Ok(f) = token_str.parse::<f64>() {
-        return Ok(Value::Float(f));
-    }
-
-    // If quoted string: "..."
-    if token_str.starts_with('"') && token_str.ends_with('"') && token_str.len() >= 2 {
-        let inner = &token_str[1..token_str.len() - 1];
-        let fs = FerricString::new(inner, ctx.config.string_encoding).map_err(|_| {
-            EvalError::TypeError {
-                function: "read".to_string(),
-                expected: "valid string encoding".to_string(),
-                actual: format!("cannot create string from `{inner}`"),
-                span: span.cloned(),
-            }
-        })?;
-        return Ok(Value::String(fs));
-    }
-
-    // Otherwise it's a symbol
-    let sym = ctx
-        .symbol_table
-        .intern_symbol(token_str, ctx.config.string_encoding)
-        .map_err(|_| EvalError::TypeError {
-            function: "read".to_string(),
-            expected: "valid symbol".to_string(),
-            actual: format!("cannot intern `{token_str}`"),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
-}
-
-/// `readline` — read a complete line from the input buffer as a string.
-///
-/// `(readline)` or `(readline <channel>)`
-///
-/// Returns the complete line as a `STRING` value (without a trailing newline).
-/// Returns `Symbol("EOF")` when no input is available.
-fn builtin_readline(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    if args.len() > 1 {
-        return Err(EvalError::ArityMismatch {
-            name: "readline".to_string(),
-            expected: "0 or 1".to_string(),
-            actual: args.len(),
-            span: span.cloned(),
-        });
-    }
-    if !args.is_empty() {
-        let _ = eval_inner(ctx, &args[0])?;
-    }
-
-    let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    match buffer.pop_front() {
-        Some(line) => {
-            let fs = FerricString::new(&line, ctx.config.string_encoding).map_err(|_| {
-                EvalError::TypeError {
-                    function: "readline".to_string(),
-                    expected: "valid string encoding".to_string(),
-                    actual: "cannot create string from input line".to_string(),
-                    span: span.cloned(),
-                }
-            })?;
-            Ok(Value::String(fs))
-        }
-        None => intern_eof_symbol(ctx, span),
     }
 }
 
@@ -11608,3 +11485,7 @@ mod string_to_field_tests;
 #[cfg(test)]
 #[path = "evaluator/explode_fields_tests.rs"]
 mod explode_fields_tests;
+
+#[cfg(test)]
+#[path = "evaluator/queued_input_tests.rs"]
+mod queued_input_tests;

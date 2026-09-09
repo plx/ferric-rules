@@ -1542,8 +1542,14 @@ impl Engine {
 
     /// Push a line of input for `read`/`readline` to consume.
     ///
-    /// Lines are consumed in FIFO order. Each call to `(read)` or `(readline)`
-    /// in a rule RHS pops one entry from this buffer.
+    /// Entries are already framed by the caller and consumed in FIFO order.
+    /// `read` skips empty or comment-only entries, returns the first scanned
+    /// field, and discards that entry's remaining text. `readline` returns one
+    /// complete entry, including an empty entry. Invalid input names and an
+    /// inherited evaluation halt leave queued entries untouched.
+    ///
+    /// Embedded CR/LF characters are not split here. Reset preserves queued
+    /// input; clear removes it.
     pub fn push_input(&mut self, line: &str) {
         self.input_buffer.push_back(line.to_string());
     }

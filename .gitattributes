@@ -36,3 +36,9 @@ crates/ferric-rules-cli/release-targets.json text eol=lf
 
 # Preserve the literal CRLF inside this CLIPS scanner input.
 crates/ferric-rules/tests/fixtures/stdlib/explode_ordinary_and_empty_fields.clp -text
+
+# Existing generic fixture .clp/.out LF rules remain in force.
+crates/ferric-rules/tests/fixtures/read/*.in text eol=lf
+# Exact CRLF stdin framing and invalid UTF8 golden bytes.
+crates/ferric-rules/tests/fixtures/read/crlf-readline-state.in -text
+crates/ferric-rules/tests/fixtures/read/unterminated-terminal-backslash.out -text

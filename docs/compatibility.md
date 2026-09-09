@@ -944,14 +944,48 @@ full compatibility for every builtin or special form.
 |----------|-------------|
 | `printout` | Write to a named channel |
 | `format` | Printf-style formatting (returns string; does not write to router) |
-| `read` | Read a single value from input |
-| `readline` | Read a line from input |
+| `read` | Scan the first field of a queued input line |
+| `readline` | Return the next queued input line unchanged |
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
 
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
 `(printout t (format nil "n=%d" 42) crlf)` to produce output.
+
+#### Queued input
+
+`read` and `readline` share the lines supplied through `Engine::push_input`.
+Each accepts zero or one input name, evaluated once when present; `t`, `T`,
+and `stdin` select the same queue. `read` skips blank or comment-only lines,
+returns the first token of the selected line, and discards its remaining
+text. `readline` returns the next complete line unchanged, including an
+empty line. The host supplies already-framed lines; `push_input` does not
+split or normalize CR/LF sequences.
+
+`read` preserves INTEGER, FLOAT, STRING, SYMBOL, and INSTANCE-NAME identity.
+For example, input `"two words"` returns the STRING `two words`. Variable
+and punctuation tokens return STRING print forms. An exhausted queue
+returns the SYMBOL `EOF`; an unknown scanner token instead returns the
+STRING `*** READ ERROR ***` without a diagnostic. Integer overflow and
+incomplete quotes return their clamped or partial values with nonfatal
+scanner notices, including through the `werror` channel. Quoted strings
+retain CLIPS escapes and exact bytes, including an invalid UTF-8 `0xff`
+when a trailing escape reaches EOF. Returned bytes follow the configured
+encoding policy.
+
+An unknown or invalid input name returns `*** READ ERROR ***` as a STRING,
+records a diagnostic, and halts following actions without consuming input.
+After resolving a valid input name, an already halted evaluation also
+returns that STRING without consuming a queued line or adding a diagnostic.
+This is Ferric's framed-input policy: CLIPS can consume one byte before
+checking halt, which this line queue cannot represent. An evaluation error
+without a halt does not by itself prevent a read.
+
+Reset preserves unread input; clear discards it. Snapshots preserve the
+remaining queue with the existing schema. Named-file input and `open` are
+unsupported; the queued-line behavior does not imply a persistent named
+stream or a raw stdin API.
 
 ### Agenda / Focus Functions
 

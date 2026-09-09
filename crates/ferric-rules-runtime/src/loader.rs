@@ -321,6 +321,9 @@ pub struct LoadResult {
     pub warnings: Vec<String>,
 }
 
+#[path = "loader/queued_input_validation.rs"]
+mod queued_input_validation;
+
 impl Engine {
     /// Load CLIPS source code from a string.
     ///
@@ -593,6 +596,12 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = func.body.iter().try_for_each(|expression| {
+                            self.validate_queued_input_expression(expression, owning_module)
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
                         if self.generics.contains(owning_module, &func.name) {
@@ -686,6 +695,12 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = method.body.iter().try_for_each(|expression| {
+                            self.validate_queued_input_expression(expression, owning_module)
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
                         // Conflict check: a defmethod that would auto-create a
                         // generic cannot share a name with an existing deffunction.
                         if !self.generics.contains(owning_module, &method.name)
@@ -1388,6 +1403,11 @@ impl Engine {
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
         let current_module = self.module_registry.current_module();
+        // Parse-time arity is checked across the whole declaration before any
+        // initializer side effects or registered global values are published.
+        for definition in &global.globals {
+            self.validate_queued_input_expression(&definition.value, current_module)?;
+        }
         let mut seen_in_construct: HashSet<&str> = HashSet::default();
         for def in &global.globals {
             if !seen_in_construct.insert(def.name.as_str())
@@ -1887,6 +1907,7 @@ impl Engine {
         current_module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
         for action in &rule.actions {
+            self.validate_queued_input_call(&action.call, current_module)?;
             self.validate_rule_action_call(&action.call, current_module, &rule.name)?;
         }
         Ok(())

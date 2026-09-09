@@ -1,0 +1,18 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (floatp ?value) ":"
+ (stringp ?value) ":" (symbolp ?value) ":[" ?value "]" crlf))
+(defrule probe =>
+ (show semi (read))
+ (show paren (read))
+ (show quote (read))
+ (show amp (read))
+ (show module (read))
+ (show colon (read))
+ (show nbsp (read))
+ (show left (read))
+ (show var (read))
+ (show mvar (read))
+ (show global (read))
+ (show and (read))
+ (show arrow (read))
+)

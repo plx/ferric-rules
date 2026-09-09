@@ -1,0 +1,6 @@
+[ARGACCES4] Function read expected no more than 1 argument(s)
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (read a b)

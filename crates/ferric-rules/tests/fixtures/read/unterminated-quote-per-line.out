@@ -1,0 +1,5 @@
+
+[SCANNER1] Encountered End-Of-File while scanning a string
+first:FALSE:FALSE:TRUE:FALSE:[two]
+second:FALSE:FALSE:FALSE:TRUE:[words]
+third:TRUE:FALSE:FALSE:FALSE:[42]

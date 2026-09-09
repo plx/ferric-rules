@@ -1,0 +1,8 @@
+"two words" tail
+"" tail
+"a\"b" tail
+"a\\b" tail
+"a\nb" tail
+"a\qb" tail
+"a	b" tail
+"café 😀" tail
