@@ -293,7 +293,18 @@ impl EngineSnapshotOwned {
             global_modules: self.global_modules,
             generic_modules: self.generic_modules,
             initial_fact_id: self.initial_fact_id,
-            action_diagnostics: self.action_diagnostics,
+            // Accept historical schema-6 snapshots that stored the newly added
+            // scanner payload, but never expose or reserialize that variant.
+            action_diagnostics: self
+                .action_diagnostics
+                .into_iter()
+                .map(|diagnostic| match diagnostic {
+                    ActionError::Evaluator(
+                        error @ crate::evaluator::EvalError::ScannerNotice(_),
+                    ) => ActionError::from(error),
+                    other => other,
+                })
+                .collect(),
             processing_predicates: false,
             halted: self.halted,
             input_buffer: self.input_buffer,
@@ -2307,3 +2318,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "serialization/scanner_notice_tests.rs"]
+mod scanner_notice_tests;
