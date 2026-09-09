@@ -1,0 +1,4 @@
+precision:[A|A|   A|A   ]
+empty:[|   |:end]
+zero:[|   |:end]
+bytes:[Ã|  Ã|ÿ|ÿ]

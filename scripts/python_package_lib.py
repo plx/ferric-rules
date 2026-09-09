@@ -1427,6 +1427,15 @@ def _allowed_sdist_relative_path(relative: PurePosixPath) -> bool:
     if str(tail) in common_files:
         return True
     if tail.parts[0] == "src":
+        if (
+            crate == "ferric-rules-runtime"
+            and tail.parts[:3] == ("src", "formatting", "fixtures")
+        ):
+            # Byte-exact formatter references accompany the Rust unit tests.
+            return len(tail.parts) == 4 and (
+                tail.suffix in {".clp", ".out"}
+                or tail.name in {"README.md", "provenance.json"}
+            )
         return tail.suffix == ".rs"
     if crate == "ferric-rules-python":
         if str(tail) in {

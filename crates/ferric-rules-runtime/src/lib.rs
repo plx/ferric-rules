@@ -57,6 +57,8 @@
 
 mod byte_buffer;
 mod field_scanner;
+
+mod formatting;
 mod tracing_support;
 
 pub mod actions;

@@ -52,3 +52,12 @@ crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.clp
 crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.out -text
 crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.clp -text
 crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.out -text
+
+# Keep format reference bytes exact in runtime and facade tests.
+crates/ferric-rules-runtime/src/formatting/fixtures/*.out text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/*.clp text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/character-empty-nul-byte-width-precision.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/ordinary-directives.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/unicode-width-and-precision.expected.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_ordinary_directives.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_unicode_width_and_precision.out -text

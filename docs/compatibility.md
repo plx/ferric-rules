@@ -1017,10 +1017,6 @@ Typed FACT-ADDRESS print forms remain a representation gap; ordinary INTEGERs
 are never interpreted as addresses while printing. Host ExternalAddress
 values retain Ferric's opaque placeholder.
 
-**format note:** In Ferric, `format` is an evaluator-only function that
-returns a formatted string. It does not write directly to a router. Use
-`(printout t (format nil "n=%d" 42) crlf)` to produce output.
-
 #### Queued input
 
 `read` and `readline` share the lines supplied through `Engine::push_input`.
@@ -1054,6 +1050,83 @@ Reset preserves unread input; clear discards it. Snapshots preserve the
 remaining queue with the existing schema. Named-file input and `open` are
 unsupported; the queued-line behavior does not imply a persistent named
 stream or a raw stdin API.
+
+#### Formatting
+
+`format` returns a STRING and does not write to the requested router. Use
+`(printout t (format nil "n=%d" 42) crlf)` to produce output.
+
+The supported data conversions are lowercase `d`, `o`, `x`, `u`, `f`, `e`,
+`g`, `s`, and `c`. Canonical directives accept leading `-` and `0` flags,
+a decimal minimum width, and optional `.precision`. Width never truncates
+content. `-` selects left alignment with trailing spaces and overrides `0`;
+otherwise numeric zero padding follows any minus sign. Repeated leading
+flags are accepted.
+
+| Conversion       | Operand and rendering                                                                                                                                                                          |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `%d`             | INTEGER or FLOAT, rendered as signed decimal.                                                                                                                                                  |
+| `%o`, `%x`, `%u` | INTEGER or FLOAT, rendered as octal, lowercase hexadecimal, or unsigned decimal using the converted 64-bit integer's bit pattern.                                                              |
+| `%f`             | INTEGER or FLOAT, fixed notation; precision counts fractional digits and defaults to 6.                                                                                                        |
+| `%e`             | INTEGER or FLOAT, scientific notation; precision counts fractional digits and defaults to 6. The lowercase exponent has an explicit sign and at least two digits.                              |
+| `%g`             | INTEGER or FLOAT, significant digits; precision defaults to 6, with explicit zero treated as 1. Rounded exponent selects fixed or scientific notation; trailing fractional zeroes are removed. |
+| `%s`             | STRING, SYMBOL, or INSTANCE-NAME; names render without brackets. Precision limits bytes.                                                                                                       |
+| `%c`             | INTEGER, STRING, or SYMBOL; renders the integer's low byte or the lexeme's first byte. FLOAT and INSTANCE-NAME are not accepted. Precision is ignored.                                         |
+
+For integer conversions, finite in-range FLOAT values truncate toward zero;
+INTEGER values retain their exact digits. Integer precision is a minimum
+digit count and disables width zero padding. Zero precision with zero emits
+no digits. Floating conversions preserve negative zero. `%g` uses fixed
+notation when the rounded exponent is at least -4 and less than the
+significant precision; it does not automatically append `.0`. Infinity and
+NaN render as lowercase `inf` and `nan`, with spaces for width padding even
+when `0` is present. `%s` and `%c` also use spaces for width padding.
+
+Immediately following `%`, the no-data controls `n`, `r`, `t`, `v`, and `%`
+emit newline, carriage return, tab, vertical tab, and a literal percent sign,
+respectively. They consume no operand. An incomplete fragment such as `%12`
+is literal text. A conversion can follow at most 73 modifier bytes; 74
+modifier bytes finish a literal fragment instead.
+
+Control strings stop at their first NUL byte. `%s` also stops at its
+operand's first NUL. Width and string precision count raw bytes, so
+precision and `%c` may return a partial UTF-8 sequence without replacing it.
+An empty lexeme or an integer with a zero low byte gives `%c` a NUL: only
+padding before that NUL survives that conversion, while later format
+fragments still append. The returned bytes remain subject to the engine's
+configured string encoding policy.
+
+`format` requires a router argument and a STRING control argument. It checks
+minimum arity before evaluating arguments, then evaluates router and control
+in order. It validates the complete control prefix and exact data operand
+count before evaluating any data. Each consumed data expression then runs
+once, in order, and is checked before the next expression. Failure returns
+an empty STRING, discards partial formatting, and retains prior operand
+side effects. Invalid flags, argument counts, and control/numeric/`%s` type
+errors record a diagnostic and halt subsequent rule actions. A `%c` type
+error records a nonfatal diagnostic, returns an empty STRING, and skips
+remaining format operands; following actions can run unless an earlier
+error already requested a halt. `%c` preserves an inherited error's state;
+it does not use the numeric/`%s` gate that stops on an existing evaluation
+error.
+
+**Ferric policies.** Each call has a private 16 MiB (16,777,216 byte) ceiling
+for both the control prefix before NUL and the aggregate result. Oversized
+requests fail without constructing the oversized result. FLOAT-to-integer
+conversion follows Rust's saturating conversion: NaN becomes zero, values
+beyond the signed 64-bit range and infinities become the corresponding
+endpoint. These resource and conversion rules are engine policies, not
+claims about undefined behavior in CLIPS's C formatting implementation.
+
+The CLIPS format scanner also admits misplaced dot/minus modifiers that are
+not canonical directives. Ferric still evaluates and checks their operand,
+then emits a deterministic fragment: normalize the valid prefix, preserve
+the remaining modifier bytes, and retain CLIPS's inserted `ll` before an
+integer conversion. For example, `%..d` becomes `%.0.lld`. This algorithm
+matches five pinned reference echoes; its application to other malformed
+fragments is a portable Ferric policy, not universal C library compatibility.
+Other printf extensions, including `+`, `#`, dynamic `*` widths, positional
+arguments, length modifiers, and uppercase conversions, are unsupported.
 
 ### Agenda / Focus Functions
 
