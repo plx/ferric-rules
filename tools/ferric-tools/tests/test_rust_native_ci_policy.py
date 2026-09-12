@@ -372,3 +372,9 @@ def test_release_declaration_bytes_are_stable_across_native_checkouts():
     attributes = GITATTRIBUTES.read_text(encoding="utf-8").splitlines()
 
     assert "crates/ferric-rules-cli/release-targets.json text eol=lf" in attributes
+
+
+def test_compatibility_oracle_bytes_are_stable_across_native_checkouts():
+    attributes = GITATTRIBUTES.read_text(encoding="utf-8").splitlines()
+
+    assert "tests/clips_compat/corpus/** text eol=lf" in attributes

@@ -1,0 +1,1797 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "version": "6.30 (3/17/15)",
+    "image": "ferric-rules/clips-reference:latest",
+    "image_id": "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
+    "ferric_revision": "d428e780894ac87a208475f13354ae68155311ed",
+    "verified_on": "2026-09-07",
+    "discovery_revision": "eb24cc50"
+  },
+  "cases": [
+    {
+      "path": "agenda/001_empty_lhs.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "empty-lhs"
+      ]
+    },
+    {
+      "path": "agenda/002_salience_precedence.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "salience-precedence"
+      ]
+    },
+    {
+      "path": "agenda/003_depth_same_rule_recency.clp",
+      "level": "boundary",
+      "covers": [
+        "agenda",
+        "depth-same-rule-recency"
+      ]
+    },
+    {
+      "path": "agenda/004_refraction.clp",
+      "level": "boundary",
+      "covers": [
+        "agenda",
+        "refraction"
+      ]
+    },
+    {
+      "path": "agenda/005_retract_reassert_refires.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "retract-reassert-refires"
+      ]
+    },
+    {
+      "path": "agenda/006_positive_retract_cancels.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "positive-retract-cancels"
+      ]
+    },
+    {
+      "path": "agenda/007_forward_chain.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "forward-chain"
+      ]
+    },
+    {
+      "path": "agenda/008_halt_finishes_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "halt-finishes-rhs"
+      ]
+    },
+    {
+      "path": "agenda/009_run_from_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "run-from-rhs"
+      ]
+    },
+    {
+      "path": "agenda/010_modify_cancels_old_match.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "modify-cancels-old-match"
+      ]
+    },
+    {
+      "path": "facts/001_ordered_zero_fields.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "ordered-zero-fields"
+      ]
+    },
+    {
+      "path": "facts/002_ordered_scalar_types.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "ordered-scalar-types"
+      ]
+    },
+    {
+      "path": "facts/003_ordered_exact_arity.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "ordered-exact-arity"
+      ]
+    },
+    {
+      "path": "facts/004_template_explicit_defaults.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-explicit-defaults"
+      ]
+    },
+    {
+      "path": "facts/005_template_implicit_defaults.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-implicit-defaults"
+      ]
+    },
+    {
+      "path": "facts/006_template_partial_pattern.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-partial-pattern"
+      ]
+    },
+    {
+      "path": "facts/007_template_slot_order.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-slot-order"
+      ]
+    },
+    {
+      "path": "facts/008_duplicate_ordered_suppressed.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "duplicate-ordered-suppressed"
+      ]
+    },
+    {
+      "path": "facts/009_duplicate_template_defaults.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "duplicate-template-defaults"
+      ]
+    },
+    {
+      "path": "facts/010_fact_types_remain_distinct.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "fact-types-remain-distinct"
+      ]
+    },
+    {
+      "path": "facts/011_retract_address.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "retract-address"
+      ]
+    },
+    {
+      "path": "facts/012_modify_preserves_slots.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "modify-preserves-slots"
+      ]
+    },
+    {
+      "path": "facts/013_duplicate_preserves_original.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "duplicate-preserves-original"
+      ]
+    },
+    {
+      "path": "facts/014_duplicate_existing_suppressed.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "duplicate-existing-suppressed"
+      ]
+    },
+    {
+      "path": "facts/015_multiple_deffacts_groups.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "multiple-deffacts-groups"
+      ]
+    },
+    {
+      "path": "facts/016_ordered_empty_pattern_arity.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "ordered-empty-pattern-arity"
+      ]
+    },
+    {
+      "path": "generics/bare-method-parameter.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "bare-method-parameter"
+      ]
+    },
+    {
+      "path": "generics/explicit-method-indices.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "explicit-method-indices"
+      ]
+    },
+    {
+      "path": "generics/float-dispatch.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "float-dispatch"
+      ]
+    },
+    {
+      "path": "generics/implicit-generic.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "implicit-generic"
+      ]
+    },
+    {
+      "path": "generics/import-generic.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "import-generic"
+      ]
+    },
+    {
+      "path": "generics/integer-dispatch.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "integer-dispatch"
+      ]
+    },
+    {
+      "path": "generics/lexeme-dispatch.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "lexeme-dispatch"
+      ]
+    },
+    {
+      "path": "generics/lexeme-specificity.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "lexeme-specificity"
+      ]
+    },
+    {
+      "path": "generics/multiple-arguments.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "multiple-arguments"
+      ]
+    },
+    {
+      "path": "generics/multiple-type-restrictions.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "multiple-type-restrictions"
+      ]
+    },
+    {
+      "path": "generics/next-method.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "next-method"
+      ]
+    },
+    {
+      "path": "generics/number-specificity.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "number-specificity"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-fallback.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "unrestricted-fallback"
+      ]
+    },
+    {
+      "path": "generics/variadic-method.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "variadic-method"
+      ]
+    },
+    {
+      "path": "io/read-eof.clp",
+      "level": "boundary",
+      "covers": [
+        "read",
+        "EOF"
+      ]
+    },
+    {
+      "path": "io/read-integer.clp",
+      "level": "basic",
+      "covers": [
+        "read",
+        "INTEGER"
+      ]
+    },
+    {
+      "path": "io/read-string.clp",
+      "level": "basic",
+      "covers": [
+        "read",
+        "STRING"
+      ]
+    },
+    {
+      "path": "io/read-symbol.clp",
+      "level": "basic",
+      "covers": [
+        "read",
+        "SYMBOL"
+      ]
+    },
+    {
+      "path": "io/read-two-tokens.clp",
+      "level": "boundary",
+      "covers": [
+        "read",
+        "tokenization"
+      ]
+    },
+    {
+      "path": "io/readline-eof.clp",
+      "level": "boundary",
+      "covers": [
+        "readline",
+        "EOF"
+      ]
+    },
+    {
+      "path": "io/readline-whitespace.clp",
+      "level": "boundary",
+      "covers": [
+        "readline",
+        "whitespace"
+      ]
+    },
+    {
+      "path": "lifecycle/reset-clears-derived-facts.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "assert",
+        "not"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/reset-clears-refraction.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "refraction"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/reset-restores-deffacts.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "deffacts",
+        "retract"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/reset-restores-global.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "defglobal"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "modules/focus-argument-order.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-argument-order"
+      ]
+    },
+    {
+      "path": "modules/focus-default.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-default"
+      ]
+    },
+    {
+      "path": "modules/focus-rhs-observation.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-rhs-observation"
+      ]
+    },
+    {
+      "path": "modules/focus-transfer.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-transfer"
+      ]
+    },
+    {
+      "path": "modules/global-bind.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-bind"
+      ]
+    },
+    {
+      "path": "modules/global-expression-initializer.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-expression-initializer"
+      ]
+    },
+    {
+      "path": "modules/global-function-access.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-function-access"
+      ]
+    },
+    {
+      "path": "modules/global-literal.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-literal"
+      ]
+    },
+    {
+      "path": "modules/global-multifield.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-multifield"
+      ]
+    },
+    {
+      "path": "modules/global-multiple.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-multiple"
+      ]
+    },
+    {
+      "path": "modules/import-all-constructs.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-all-constructs"
+      ]
+    },
+    {
+      "path": "modules/import-function-named.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-function-named"
+      ]
+    },
+    {
+      "path": "modules/import-global-named.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-global-named"
+      ]
+    },
+    {
+      "path": "modules/import-template-named.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-template-named"
+      ]
+    },
+    {
+      "path": "modules/qualified-deffacts.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "qualified-deffacts"
+      ]
+    },
+    {
+      "path": "modules/qualified-function-call.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "qualified-function-call"
+      ]
+    },
+    {
+      "path": "patterns/001_repeated_field_variable.clp",
+      "level": "basic",
+      "covers": [
+        "patterns",
+        "repeated-field-variable"
+      ]
+    },
+    {
+      "path": "patterns/002_join_shared_variable.clp",
+      "level": "basic",
+      "covers": [
+        "patterns",
+        "join-shared-variable"
+      ]
+    },
+    {
+      "path": "patterns/003_join_type_sensitive.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "join-type-sensitive"
+      ]
+    },
+    {
+      "path": "patterns/004_negated_literal.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "negated-literal"
+      ]
+    },
+    {
+      "path": "patterns/005_disjoined_literals.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "disjoined-literals"
+      ]
+    },
+    {
+      "path": "patterns/006_conjoined_negations.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "conjoined-negations"
+      ]
+    },
+    {
+      "path": "patterns/007_anonymous_single_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "anonymous-single-field"
+      ]
+    },
+    {
+      "path": "patterns/008_multifield_empty_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-empty-capture"
+      ]
+    },
+    {
+      "path": "patterns/009_multifield_suffix_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-suffix-capture"
+      ]
+    },
+    {
+      "path": "patterns/010_multifield_middle_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-middle-capture"
+      ]
+    },
+    {
+      "path": "patterns/011_template_multislot_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "template-multislot-capture"
+      ]
+    },
+    {
+      "path": "patterns/012_repeated_template_variable.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "repeated-template-variable"
+      ]
+    },
+    {
+      "path": "patterns/013_predicate_local.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "predicate-local"
+      ]
+    },
+    {
+      "path": "patterns/014_predicate_join.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "predicate-join"
+      ]
+    },
+    {
+      "path": "patterns/015_return_value_constraint.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "return-value-constraint"
+      ]
+    },
+    {
+      "path": "patterns/016_test_ce_join.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "test-ce-join"
+      ]
+    },
+    {
+      "path": "patterns/017_not_absent.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "not-absent"
+      ]
+    },
+    {
+      "path": "patterns/018_not_correlated.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not-correlated"
+      ]
+    },
+    {
+      "path": "patterns/019_not_retract_unblocks.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not-retract-unblocks"
+      ]
+    },
+    {
+      "path": "patterns/020_not_assert_cancels.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not-assert-cancels"
+      ]
+    },
+    {
+      "path": "patterns/021_exists_many_witnesses.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "exists-many-witnesses"
+      ]
+    },
+    {
+      "path": "patterns/022_exists_correlated.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists-correlated"
+      ]
+    },
+    {
+      "path": "patterns/023_exists_last_retraction.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists-last-retraction"
+      ]
+    },
+    {
+      "path": "patterns/024_forall_vacuous.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "forall-vacuous"
+      ]
+    },
+    {
+      "path": "patterns/025_forall_complete.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "forall-complete"
+      ]
+    },
+    {
+      "path": "patterns/026_forall_missing_witness.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "forall-missing-witness"
+      ]
+    },
+    {
+      "path": "patterns/027_forall_witness_added.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "forall-witness-added"
+      ]
+    },
+    {
+      "path": "patterns/028_ncc_join_correlation.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "ncc-join-correlation"
+      ]
+    },
+    {
+      "path": "patterns/029_ncc_retraction_unblocks.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "ncc-retraction-unblocks"
+      ]
+    },
+    {
+      "path": "patterns/030_multifield_prefix_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-prefix-capture"
+      ]
+    },
+    {
+      "path": "patterns/031_multifield_middle_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-middle-empty"
+      ]
+    },
+    {
+      "path": "patterns/032_template_multislot_whole_capture.clp",
+      "level": "basic",
+      "covers": [
+        "patterns",
+        "template-multislot-whole-capture"
+      ]
+    },
+    {
+      "path": "patterns/033_template_multislot_single_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "template-multislot-single-field"
+      ]
+    },
+    {
+      "path": "patterns/034_anonymous_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "anonymous-multifield"
+      ]
+    },
+    {
+      "path": "patterns/035_multifield_split.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-split"
+      ]
+    },
+    {
+      "path": "procedural/001_function_zero_arguments.clp",
+      "level": "boundary",
+      "covers": [
+        "answer",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/002_function_fixed_parameters.clp",
+      "level": "interaction",
+      "covers": [
+        "-",
+        "deffunction",
+        "difference"
+      ]
+    },
+    {
+      "path": "procedural/003_function_expression_sequence.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "+",
+        "calculate",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/004_function_recursion.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "-",
+        "=",
+        "deffunction",
+        "factorial",
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/005_function_empty_variadic.clp",
+      "level": "boundary",
+      "covers": [
+        "count-tail",
+        "deffunction",
+        "length$"
+      ]
+    },
+    {
+      "path": "procedural/006_function_variadic_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "tail"
+      ]
+    },
+    {
+      "path": "procedural/007_function_local_bind.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "calculate",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/008_function_parameter_rebind.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "increment"
+      ]
+    },
+    {
+      "path": "procedural/009_funcall_user_function.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "deffunction",
+        "funcall"
+      ]
+    },
+    {
+      "path": "procedural/010_if_branches.clp",
+      "level": "basic",
+      "covers": [
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/011_if_without_else.clp",
+      "level": "basic",
+      "covers": [
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/012_if_truthiness.clp",
+      "level": "boundary",
+      "covers": [
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/013_logic_short_circuit.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "and",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "or",
+        "touch"
+      ]
+    },
+    {
+      "path": "procedural/014_if_expression_return.clp",
+      "level": "basic",
+      "covers": [
+        "choose",
+        "deffunction",
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/020_while_global_counter.clp",
+      "level": "interaction",
+      "covers": [
+        "-",
+        ">",
+        "bind",
+        "defglobal",
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/021_while_zero_iterations.clp",
+      "level": "boundary",
+      "covers": [
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/022_count_explicit_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/023_count_implicit_start.clp",
+      "level": "basic",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/024_count_empty_range.clp",
+      "level": "boundary",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/025_count_bound_evaluated_once.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "defglobal",
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/026_nested_count_loops.clp",
+      "level": "interaction",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/030_progn_multifield_index.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/031_foreach_multifield.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "foreach"
+      ]
+    },
+    {
+      "path": "procedural/032_multifield_iteration_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "foreach",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/033_switch_matching_case.clp",
+      "level": "basic",
+      "covers": [
+        "case",
+        "default",
+        "switch"
+      ]
+    },
+    {
+      "path": "procedural/034_switch_default.clp",
+      "level": "basic",
+      "covers": [
+        "case",
+        "default",
+        "switch"
+      ]
+    },
+    {
+      "path": "procedural/035_switch_type_sensitive.clp",
+      "level": "boundary",
+      "covers": [
+        "case",
+        "switch"
+      ]
+    },
+    {
+      "path": "procedural/036_function_count_loop.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "loop-for-count",
+        "sum-to"
+      ]
+    },
+    {
+      "path": "queries/any-factp-empty.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "any-factp-empty"
+      ]
+    },
+    {
+      "path": "queries/any-factp-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "any-factp-filter"
+      ]
+    },
+    {
+      "path": "queries/any-factp-match.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "any-factp-match"
+      ]
+    },
+    {
+      "path": "queries/delayed-query-retract.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "delayed-query-retract"
+      ]
+    },
+    {
+      "path": "queries/do-for-all-facts-count.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "do-for-all-facts-count"
+      ]
+    },
+    {
+      "path": "queries/do-for-all-facts-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "do-for-all-facts-filter"
+      ]
+    },
+    {
+      "path": "queries/do-for-all-facts-order.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "do-for-all-facts-order"
+      ]
+    },
+    {
+      "path": "queries/do-for-fact-first.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "do-for-fact-first"
+      ]
+    },
+    {
+      "path": "queries/fact-existence-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "fact-existence-lifecycle"
+      ]
+    },
+    {
+      "path": "queries/fact-index-address.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-index-address"
+      ]
+    },
+    {
+      "path": "queries/fact-relation-ordered.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-relation-ordered"
+      ]
+    },
+    {
+      "path": "queries/fact-relation-template.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-relation-template"
+      ]
+    },
+    {
+      "path": "queries/fact-slot-names-implied.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-names-implied"
+      ]
+    },
+    {
+      "path": "queries/fact-slot-names-template.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-names-template"
+      ]
+    },
+    {
+      "path": "queries/fact-slot-value-implied.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-value-implied"
+      ]
+    },
+    {
+      "path": "queries/fact-slot-value-multislot.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-value-multislot"
+      ]
+    },
+    {
+      "path": "queries/fact-slot-value-single.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-value-single"
+      ]
+    },
+    {
+      "path": "queries/find-all-facts-count.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "find-all-facts-count"
+      ]
+    },
+    {
+      "path": "queries/find-all-facts-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "find-all-facts-filter"
+      ]
+    },
+    {
+      "path": "queries/find-fact-empty.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "find-fact-empty"
+      ]
+    },
+    {
+      "path": "queries/find-fact-first.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "find-fact-first"
+      ]
+    },
+    {
+      "path": "queries/query-cartesian-product.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "query-cartesian-product"
+      ]
+    },
+    {
+      "path": "queries/query-fact-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "query-fact-index"
+      ]
+    },
+    {
+      "path": "stdlib/001_add_integers.clp",
+      "level": "basic",
+      "covers": [
+        "+"
+      ]
+    },
+    {
+      "path": "stdlib/002_add_float_promotion.clp",
+      "level": "basic",
+      "covers": [
+        "+",
+        "floatp"
+      ]
+    },
+    {
+      "path": "stdlib/003_subtract_left_associative.clp",
+      "level": "basic",
+      "covers": [
+        "-"
+      ]
+    },
+    {
+      "path": "stdlib/004_multiply_signs.clp",
+      "level": "boundary",
+      "covers": [
+        "*"
+      ]
+    },
+    {
+      "path": "stdlib/005_division_returns_float.clp",
+      "level": "basic",
+      "covers": [
+        "/",
+        "floatp"
+      ]
+    },
+    {
+      "path": "stdlib/006_integer_division_signs.clp",
+      "level": "boundary",
+      "covers": [
+        "div"
+      ]
+    },
+    {
+      "path": "stdlib/007_modulo_signs.clp",
+      "level": "boundary",
+      "covers": [
+        "mod"
+      ]
+    },
+    {
+      "path": "stdlib/008_absolute_value_types.clp",
+      "level": "boundary",
+      "covers": [
+        "abs",
+        "floatp",
+        "integerp"
+      ]
+    },
+    {
+      "path": "stdlib/009_minimum_mixed_types.clp",
+      "level": "boundary",
+      "covers": [
+        "integerp",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/010_maximum_mixed_types.clp",
+      "level": "boundary",
+      "covers": [
+        "integerp",
+        "max"
+      ]
+    },
+    {
+      "path": "stdlib/011_round_half_boundaries.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/013_power_and_square_root.clp",
+      "level": "basic",
+      "covers": [
+        "**",
+        "sqrt"
+      ]
+    },
+    {
+      "path": "stdlib/014_exponential_and_logs.clp",
+      "level": "basic",
+      "covers": [
+        "exp",
+        "log",
+        "log10"
+      ]
+    },
+    {
+      "path": "stdlib/015_trigonometry_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "cos",
+        "sin",
+        "tan"
+      ]
+    },
+    {
+      "path": "stdlib/016_inverse_trigonometry_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "acos",
+        "asin",
+        "atan"
+      ]
+    },
+    {
+      "path": "stdlib/017_hyperbolic_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "acosh",
+        "asinh",
+        "atanh",
+        "cosh",
+        "sinh",
+        "tanh"
+      ]
+    },
+    {
+      "path": "stdlib/018_angle_conversions.clp",
+      "level": "basic",
+      "covers": [
+        "deg-grad",
+        "deg-rad",
+        "grad-deg",
+        "pi",
+        "rad-deg",
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/019_numeric_conversion.clp",
+      "level": "basic",
+      "covers": [
+        "float",
+        "integer"
+      ]
+    },
+    {
+      "path": "stdlib/020_numeric_binary_comparisons.clp",
+      "level": "basic",
+      "covers": [
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">="
+      ]
+    },
+    {
+      "path": "stdlib/021_value_equality_types.clp",
+      "level": "boundary",
+      "covers": [
+        "eq",
+        "neq"
+      ]
+    },
+    {
+      "path": "stdlib/022_logical_false_symbol.clp",
+      "level": "basic",
+      "covers": [
+        "and",
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "stdlib/023_numeric_type_predicates.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "numberp"
+      ]
+    },
+    {
+      "path": "stdlib/024_lexeme_type_predicates.clp",
+      "level": "boundary",
+      "covers": [
+        "lexemep",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/025_multifield_type_predicate.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "multifieldp"
+      ]
+    },
+    {
+      "path": "stdlib/026_parity_negative_and_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "evenp",
+        "oddp"
+      ]
+    },
+    {
+      "path": "stdlib/030_string_concatenation.clp",
+      "level": "basic",
+      "covers": [
+        "str-cat",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/031_empty_string_concatenation.clp",
+      "level": "boundary",
+      "covers": [
+        "str-cat",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/032_symbol_concatenation.clp",
+      "level": "basic",
+      "covers": [
+        "sym-cat",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/033_string_length_ascii.clp",
+      "level": "basic",
+      "covers": [
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/034_string_length_unicode.clp",
+      "level": "basic",
+      "covers": [
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/035_substring_one_based.clp",
+      "level": "basic",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/036_substring_clipped_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/037_string_index_found_and_missing.clp",
+      "level": "interaction",
+      "covers": [
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/038_string_index_empty_needle.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/039_case_conversion_preserves_types.clp",
+      "level": "boundary",
+      "covers": [
+        "lowcase",
+        "stringp",
+        "symbolp",
+        "upcase"
+      ]
+    },
+    {
+      "path": "stdlib/040_string_comparison.clp",
+      "level": "basic",
+      "covers": [
+        "str-compare"
+      ]
+    },
+    {
+      "path": "stdlib/041_string_to_field_first_token.clp",
+      "level": "basic",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/042_explode_quoted_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "explode$",
+        "integerp",
+        "length$",
+        "nth$",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/043_funcall_builtin.clp",
+      "level": "interaction",
+      "covers": [
+        "funcall"
+      ]
+    },
+    {
+      "path": "stdlib/044_format_nil.clp",
+      "level": "basic",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/045_string_length_symbol.clp",
+      "level": "boundary",
+      "covers": [
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/046_numeric_equal_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "="
+      ]
+    },
+    {
+      "path": "stdlib/047_numeric_less_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "<"
+      ]
+    },
+    {
+      "path": "stdlib/048_numeric_greater_chain.clp",
+      "level": "boundary",
+      "covers": [
+        ">"
+      ]
+    },
+    {
+      "path": "stdlib/049_numeric_inequality_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "<>"
+      ]
+    },
+    {
+      "path": "stdlib/050_create_multifield_flattening.clp",
+      "level": "interaction",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/051_empty_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "length$"
+      ]
+    },
+    {
+      "path": "stdlib/052_nth_one_based.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/053_nth_out_of_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/054_member_scalar_type_sensitive.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "member$"
+      ]
+    },
+    {
+      "path": "stdlib/055_member_subsequence.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "member$"
+      ]
+    },
+    {
+      "path": "stdlib/056_subset_duplicates.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "subsetp"
+      ]
+    },
+    {
+      "path": "stdlib/057_insert_multifield_positions.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "insert$"
+      ]
+    },
+    {
+      "path": "stdlib/058_delete_inclusive_range.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "delete$"
+      ]
+    },
+    {
+      "path": "stdlib/059_replace_multifield_splice.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "replace$"
+      ]
+    },
+    {
+      "path": "stdlib/060_first_and_rest_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "first$",
+        "rest$"
+      ]
+    },
+    {
+      "path": "stdlib/061_sort_comparator_direction.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/062_sort_user_function.clp",
+      "level": "interaction",
+      "covers": [
+        ">",
+        "create$",
+        "deffunction",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/063_implode_preserves_string_quotes.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/064_subsequence_clipped_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "subseq$"
+      ]
+    },
+    {
+      "path": "stdlib/065_numeric_less_equal_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "<="
+      ]
+    },
+    {
+      "path": "stdlib/066_numeric_greater_equal_chain.clp",
+      "level": "boundary",
+      "covers": [
+        ">="
+      ]
+    },
+    {
+      "path": "stdlib/067_format_zero_padding.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/068_printout_multifield_string_quotes.clp",
+      "level": "boundary",
+      "covers": [
+        "printout",
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/069_nth_negative_index.clp",
+      "level": "boundary",
+      "covers": [
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/070_nth_excessive_index.clp",
+      "level": "boundary",
+      "covers": [
+        "nth$"
+      ]
+    }
+  ]
+}
