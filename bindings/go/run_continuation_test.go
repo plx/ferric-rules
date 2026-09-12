@@ -165,12 +165,8 @@ func TestCancelableRunPreservesDiagnosticsAcrossChunks(t *testing.T) {
 		(defrule seed
 			(initial-fact)
 			=>
-			(assert (candidate 1))
+			(sort missing-comparator (create$ 1))
 			(assert (position 0)))
-		(defrule bad-match
-			(candidate ?value&:(/ 1 0))
-			=>
-			(assert (must-not-fire)))
 		(defrule advance
 			?current <- (position ?n&:(< ?n 100))
 			=>
