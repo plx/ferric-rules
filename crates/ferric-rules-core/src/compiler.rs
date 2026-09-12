@@ -8,11 +8,14 @@
 use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
-use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
+use crate::alpha::{
+    AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, ConstantTestType, SlotIndex,
+};
 use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
-use crate::rete::ReteNetwork;
+use crate::rete::{indexable_tests, ReteNetwork};
+use crate::sequence::SequencePattern;
 use crate::symbol::{Symbol, SymbolId};
 use crate::token::NodeId;
 use crate::validation::{PatternValidationError, PatternViolation, ValidationStage};
@@ -20,7 +23,7 @@ use crate::validation::{PatternValidationError, PatternViolation, ValidationStag
 /// Maximum condition nodes in one compiled rule, including nested NCC nodes.
 /// This bounds recursive propagation depth without a second execution engine.
 pub const MAX_RULE_CONDITIONS: usize = 64;
-/// Maximum constant tests in one alpha path.
+/// Maximum value tests in one alpha path, plus at most one ordered field-count test.
 pub const MAX_ALPHA_TESTS: usize = 64;
 
 /// A rule ready for compilation into rete structures.
@@ -37,6 +40,8 @@ pub struct CompilableRule {
 pub struct CompilablePattern {
     pub entry_type: AlphaEntryType,
     pub constant_tests: Vec<ConstantTest>,
+    /// Logical field matching for ordered or template sequence constraints.
+    pub sequence: Option<SequencePattern>,
     /// Variable bindings: (`slot_index`, `variable_symbol`)
     /// The Symbol is the interned variable name (e.g., intern("x") for ?x)
     pub variable_slots: Vec<(SlotIndex, Symbol)>,
@@ -52,6 +57,17 @@ pub struct CompilablePattern {
     pub exists: bool,
 }
 
+/// A scalar pattern with runtime-owned constraint expressions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompilableRuntimePattern {
+    pub pattern: CompilablePattern,
+    pub local_condition: Option<u32>,
+    pub local_bindings: Vec<(SlotIndex, Symbol)>,
+    pub negative_condition: Option<u32>,
+    /// Runtime semantics of the lazy negative node; exists wraps it in NCC inversion.
+    pub join_role: crate::rete::RuntimeConditionRole,
+}
+
 /// A compilable conditional element in rule order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompilableCondition {
@@ -65,6 +81,7 @@ pub enum CompilableCondition {
     /// A negated conjunction CE: `(not (and ...))`.
     /// May contain nested NCCs for deeply nested `not(and(...not(and(...))))`.
     Ncc(Vec<CompilableCondition>),
+    RuntimePattern(CompilableRuntimePattern),
 }
 
 /// Result of compiling a rule.
@@ -109,7 +126,9 @@ fn maximum_new_beta_nodes(conditions: &[CompilableCondition]) -> usize {
     1 + conditions
         .iter()
         .map(|condition| match condition {
-            CompilableCondition::Pattern(_) | CompilableCondition::Predicate { .. } => 1,
+            CompilableCondition::Pattern(_)
+            | CompilableCondition::Predicate { .. }
+            | CompilableCondition::RuntimePattern(_) => 1,
             // The nested count includes a terminal; replace it with the NCC/partner pair.
             CompilableCondition::Ncc(children) => 1 + maximum_new_beta_nodes(children),
         })
@@ -139,6 +158,7 @@ pub enum CompileError {
 pub(crate) struct AlphaPathKey {
     pub(crate) entry_type: AlphaEntryType,
     pub(crate) tests: Vec<ConstantTest>,
+    pub(crate) runtime: Option<crate::rete::RuntimeCondition>,
 }
 
 /// Canonical key for positive join nodes, used for node sharing.
@@ -149,6 +169,7 @@ pub(crate) struct JoinNodeKey {
     pub(crate) alpha_memory: AlphaMemoryId,
     pub(crate) tests: Vec<JoinTest>,
     pub(crate) bindings: Vec<(SlotIndex, VarId)>,
+    pub(crate) sequence: Option<SequencePattern>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -156,6 +177,7 @@ pub(crate) struct JoinNodeKey {
 struct SymbolSet {
     ascii: Vec<u8>,
     utf8: Vec<u8>,
+    bytes: Vec<u8>,
 }
 
 impl SymbolSet {
@@ -167,6 +189,7 @@ impl SymbolSet {
         match key.0 {
             SymbolId::Ascii(idx) => self.ascii.get(idx as usize).copied().unwrap_or(0) != 0,
             SymbolId::Utf8(idx) => self.utf8.get(idx as usize).copied().unwrap_or(0) != 0,
+            SymbolId::Bytes(idx) => self.bytes.get(idx as usize).copied().unwrap_or(0) != 0,
         }
     }
 
@@ -198,6 +221,13 @@ impl SymbolSet {
                     self.utf8.resize(idx + 1, 0);
                 }
                 &mut self.utf8[idx]
+            }
+            SymbolId::Bytes(idx) => {
+                let idx = idx as usize;
+                if idx >= self.bytes.len() {
+                    self.bytes.resize(idx + 1, 0);
+                }
+                &mut self.bytes[idx]
             }
         }
     }
@@ -279,7 +309,7 @@ impl ReteCompiler {
         Self::ensure_non_empty(&rule.patterns)?;
         Self::check_limit("rule conditions", rule.patterns.len(), MAX_RULE_CONDITIONS)?;
         for pattern in &rule.patterns {
-            Self::check_limit("alpha tests", pattern.constant_tests.len(), MAX_ALPHA_TESTS)?;
+            Self::validate_pattern_tests(pattern)?;
         }
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
@@ -391,6 +421,17 @@ impl ReteCompiler {
                             .map_err(|_| CompileError::VarMapOverflow)?;
                     }
                 }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    register_condition(
+                        &CompilableCondition::Pattern(runtime.pattern.clone()),
+                        var_map,
+                    )?;
+                    for &(_, variable) in &runtime.local_bindings {
+                        var_map
+                            .get_or_create(variable)
+                            .map_err(|_| CompileError::VarMapOverflow)?;
+                    }
+                }
                 CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(subconditions) => {
                     for subcondition in subconditions {
@@ -442,6 +483,21 @@ impl ReteCompiler {
                         &mut var_map,
                         &mut bound_vars,
                         &mut alpha_memories,
+                        rule_id,
+                        None,
+                    );
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    current_parent = self.compile_pattern(
+                        rete,
+                        fact_base,
+                        current_parent,
+                        &runtime.pattern,
+                        &mut var_map,
+                        &mut bound_vars,
+                        &mut alpha_memories,
+                        rule_id,
+                        Some(runtime),
                     );
                 }
                 CompilableCondition::Predicate { condition_index } => {
@@ -516,9 +572,21 @@ impl ReteCompiler {
             Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
             match condition {
                 CompilableCondition::Pattern(pattern) => {
+                    Self::validate_pattern_tests(pattern)?;
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    Self::validate_alpha_test_count(&runtime.pattern.constant_tests)?;
+                    let value_tests = runtime
+                        .pattern
+                        .constant_tests
+                        .iter()
+                        .filter(|test| {
+                            !matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                        })
+                        .count();
                     Self::check_limit(
                         "alpha tests",
-                        pattern.constant_tests.len(),
+                        value_tests + usize::from(runtime.local_condition.is_some()),
                         MAX_ALPHA_TESTS,
                     )?;
                 }
@@ -532,6 +600,14 @@ impl ReteCompiler {
                 CompilableCondition::Pattern(pattern) => {
                     let context = format!("condition {condition_idx}");
                     Self::validate_pattern_structure(pattern, &context, true, true, &mut errors);
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    Self::validate_runtime_pattern(
+                        runtime,
+                        &format!("condition {condition_idx}"),
+                        false,
+                        &mut errors,
+                    );
                 }
                 CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(subconditions) => {
@@ -554,6 +630,61 @@ impl ReteCompiler {
             }
         }
         Self::finish_validation(errors)
+    }
+
+    fn validate_pattern_tests(pattern: &CompilablePattern) -> Result<(), CompileError> {
+        Self::validate_alpha_test_count(&pattern.constant_tests)?;
+        if let Some(sequence) = &pattern.sequence {
+            Self::check_limit("sequence tests", sequence.tests.len(), MAX_ALPHA_TESTS)?;
+            let alpha_value_tests = pattern
+                .constant_tests
+                .iter()
+                .filter(|test| {
+                    !matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                })
+                .count();
+            Self::check_limit(
+                "alpha tests",
+                alpha_value_tests + sequence.tests.len(),
+                MAX_ALPHA_TESTS,
+            )?;
+            let valid_slot = sequence.logical_slot_validator();
+            let validation = sequence.validate_entry(&pattern.entry_type).and_then(|()| {
+                if pattern
+                    .variable_slots
+                    .iter()
+                    .any(|(slot, _)| !valid_slot(*slot))
+                    || pattern
+                        .negated_variable_slots
+                        .iter()
+                        .any(|(slot, _, _)| !valid_slot(*slot))
+                {
+                    return Err("sequence binding has an invalid logical field".to_string());
+                }
+                Ok(())
+            });
+            if let Err(description) = validation {
+                return Err(CompileError::Validation(vec![PatternValidationError::new(
+                    PatternViolation::UnsupportedNestingCombination { description },
+                    None,
+                    ValidationStage::ReteCompilation,
+                )]));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_alpha_test_count(tests: &[ConstantTest]) -> Result<(), CompileError> {
+        let field_count_tests = tests
+            .iter()
+            .filter(|test| matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. }))
+            .count();
+        Self::check_limit("ordered field-count tests", field_count_tests, 1)?;
+        Self::check_limit(
+            "alpha tests",
+            tests.len() - field_count_tests,
+            MAX_ALPHA_TESTS,
+        )
     }
 
     fn check_limit(
@@ -587,6 +718,14 @@ impl ReteCompiler {
                         false, errors,
                     );
                 }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    Self::validate_runtime_pattern(
+                        runtime,
+                        &format!("{prefix} NCC subpattern {idx}"),
+                        subconditions.len() == 1,
+                        errors,
+                    );
+                }
                 CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(inner) => {
                     if inner.is_empty() {
@@ -599,6 +738,69 @@ impl ReteCompiler {
                         Self::validate_ncc_conditions(inner, &inner_prefix, errors);
                     }
                 }
+            }
+        }
+    }
+
+    fn validate_runtime_pattern(
+        runtime: &CompilableRuntimePattern,
+        context: &str,
+        is_ncc_inversion: bool,
+        errors: &mut Vec<PatternValidationError>,
+    ) {
+        Self::validate_pattern_structure(&runtime.pattern, context, true, true, errors);
+        // Local runtime filters use physical selectors, and lazy negative
+        // conflicts retain only a physical fact identity, not a projected split.
+        // Earlier sequence patterns may still supply ordinary outer bindings.
+        if runtime.pattern.sequence.is_some() {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} cannot combine runtime constraints with a sequence on the same pattern"),
+            );
+        }
+        if runtime.negative_condition.is_some()
+            && (!runtime.pattern.negated || runtime.pattern.exists)
+        {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} runtime negative condition requires a plain negated pattern"),
+            );
+        }
+        if runtime.local_condition.is_none() && !runtime.local_bindings.is_empty() {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} local bindings lack a runtime pattern condition"),
+            );
+        }
+        if !matches!(
+            runtime.join_role,
+            crate::rete::RuntimeConditionRole::NegativeJoin
+                | crate::rete::RuntimeConditionRole::ExistsJoin
+        ) {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} has invalid lazy join runtime role"),
+            );
+        }
+        if runtime.join_role == crate::rete::RuntimeConditionRole::ExistsJoin && !is_ncc_inversion {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} existential runtime role requires an NCC inversion"),
+            );
+        }
+        let mut seen = rustc_hash::FxHashSet::default();
+        for (slot, variable) in &runtime.local_bindings {
+            if !seen.insert(*variable)
+                || !matches!(
+                    (&runtime.pattern.entry_type, slot),
+                    (AlphaEntryType::OrderedRelation(_), SlotIndex::Ordered(_))
+                        | (AlphaEntryType::Template(_), SlotIndex::Template(_))
+                )
+            {
+                Self::push_unsupported_structure_error(
+                    errors,
+                    format!("{context} has duplicate or invalid local binding selectors"),
+                );
             }
         }
     }
@@ -679,10 +881,12 @@ impl ReteCompiler {
         &mut self,
         alpha: &mut AlphaNetwork,
         pattern: &CompilablePattern,
+        runtime: Option<crate::rete::RuntimeCondition>,
     ) -> (AlphaMemoryId, bool) {
         let key = AlphaPathKey {
             entry_type: pattern.entry_type.clone(),
             tests: pattern.constant_tests.clone(),
+            runtime: runtime.clone(),
         };
 
         if let Some(&mem_id) = self.alpha_path_cache.get(&key) {
@@ -697,6 +901,9 @@ impl ReteCompiler {
             current_node = alpha.create_constant_test_node(current_node, test.clone());
         }
 
+        if let Some(condition) = runtime {
+            current_node = alpha.create_runtime_predicate_node(current_node, condition);
+        }
         let mem_id = alpha.create_memory(current_node);
         self.alpha_path_cache.insert(key, mem_id);
         (mem_id, true)
@@ -710,12 +917,14 @@ impl ReteCompiler {
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
         bindings: Vec<(SlotIndex, VarId)>,
+        sequence: Option<SequencePattern>,
     ) -> NodeId {
         let key = JoinNodeKey {
             parent,
             alpha_memory,
             tests: tests.clone(),
             bindings: bindings.clone(),
+            sequence: sequence.clone(),
         };
 
         if let Some(&join_id) = self.join_node_cache.get(&key) {
@@ -723,11 +932,14 @@ impl ReteCompiler {
         }
 
         let (join_id, _beta_mem) = beta.create_join_node(parent, alpha_memory, tests, bindings);
+        beta.set_sequence(join_id, sequence);
         self.join_node_cache.insert(key, join_id);
         join_id
     }
 
     #[allow(clippy::too_many_arguments)]
+    // Keep alpha admission, extraction, and beta installation in one pattern transaction.
+    #[allow(clippy::too_many_lines)]
     fn compile_pattern(
         &mut self,
         rete: &mut ReteNetwork,
@@ -737,16 +949,53 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
+        rule_id: RuleId,
+        runtime: Option<&CompilableRuntimePattern>,
     ) -> NodeId {
-        let (alpha_mem, alpha_created) = self.ensure_alpha_path(&mut rete.alpha, pattern);
+        let local = runtime.and_then(|runtime| {
+            runtime
+                .local_condition
+                .map(|condition_index| crate::rete::RuntimeCondition {
+                    rule: rule_id,
+                    condition_index,
+                    role: crate::rete::RuntimeConditionRole::PatternFilter,
+                    bindings: runtime
+                        .local_bindings
+                        .iter()
+                        .map(|&(slot, symbol)| {
+                            (
+                                slot,
+                                var_map
+                                    .lookup(symbol)
+                                    .expect("local variables were planned"),
+                            )
+                        })
+                        .collect(),
+                })
+        });
+        let (alpha_mem, alpha_created) =
+            self.ensure_alpha_path(&mut rete.alpha, pattern, local.clone());
         alpha_memories.push(alpha_mem);
         if alpha_created && !fact_base.is_empty() {
-            rete.alpha.backfill_memory(
-                alpha_mem,
-                &pattern.entry_type,
-                &pattern.constant_tests,
-                fact_base,
-            );
+            if local.is_some() {
+                let node = rete.alpha.nodes.iter().enumerate().find_map(|(index, node)|
+                    matches!(node, crate::alpha::AlphaNode::RuntimePredicate { memory: Some(memory), .. } if *memory == alpha_mem)
+                        .then_some(NodeId(u32::try_from(index).expect("bounded alpha graph")))).expect("runtime alpha owner exists");
+                rete.alpha.backfill_runtime_predicate(
+                    node,
+                    &pattern.entry_type,
+                    &pattern.constant_tests,
+                    fact_base,
+                );
+                rete.collect_alpha_runtime_requests(false);
+            } else {
+                rete.alpha.backfill_memory(
+                    alpha_mem,
+                    &pattern.entry_type,
+                    &pattern.constant_tests,
+                    fact_base,
+                );
+            }
         }
 
         let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
@@ -783,25 +1032,20 @@ impl ReteCompiler {
             });
         }
 
-        // Request alpha memory indexing for equality join tests so that
-        // left activations can use O(1) hash lookups instead of full scans.
-        for test in &join_tests {
-            if test.test_type == JoinTestType::Equal {
-                if let Some(mem) = rete.alpha.get_memory_mut(alpha_mem) {
-                    mem.request_index(test.alpha_slot, fact_base);
-                }
+        // Index only equality selectors that identify physical fact fields.
+        // The same selection is used during left and right activation.
+        for (alpha_slot, _) in indexable_tests(&join_tests, pattern.sequence.as_ref()) {
+            if let Some(mem) = rete.alpha.get_memory_mut(alpha_mem) {
+                mem.request_index(alpha_slot, fact_base);
             }
         }
 
-        // Request beta memory indexing on the parent for equality join tests so that
-        // right activations can use O(1) hash lookups instead of full parent-token scans.
+        // Backfill parent indexes too, including when this rule is installed late.
         if current_parent != rete.beta.root_id() {
             if let Some(parent_mem_id) = rete.beta.memory_id_for_node(current_parent) {
-                for test in &join_tests {
-                    if test.test_type == JoinTestType::Equal {
-                        if let Some(parent_mem) = rete.beta.get_memory_mut(parent_mem_id) {
-                            parent_mem.request_var_index(test.beta_var, &rete.token_store);
-                        }
+                for (_, beta_var) in indexable_tests(&join_tests, pattern.sequence.as_ref()) {
+                    if let Some(parent_mem) = rete.beta.get_memory_mut(parent_mem_id) {
+                        parent_mem.request_var_index(beta_var, &rete.token_store);
                     }
                 }
             }
@@ -811,11 +1055,27 @@ impl ReteCompiler {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
                     .create_negative_node(current_parent, alpha_mem, join_tests.into_vec());
+            rete.beta.set_sequence(neg_id, pattern.sequence.clone());
+            if let Some((condition_index, role)) = runtime.and_then(|runtime| {
+                runtime
+                    .negative_condition
+                    .map(|index| (index, runtime.join_role))
+            }) {
+                if let Some(BetaNode::Negative { runtime, .. }) = rete.beta.nodes.get_mut(&neg_id) {
+                    *runtime = Some(crate::rete::RuntimeCondition {
+                        rule: rule_id,
+                        condition_index,
+                        role,
+                        bindings: binding_extractions.into_vec(),
+                    });
+                }
+            }
             neg_id
         } else if pattern.exists {
             let (exists_id, _beta_mem, _exists_mem) =
                 rete.beta
                     .create_exists_node(current_parent, alpha_mem, join_tests.into_vec());
+            rete.beta.set_sequence(exists_id, pattern.sequence.clone());
             exists_id
         } else {
             bound_vars.extend(new_bindings);
@@ -825,6 +1085,7 @@ impl ReteCompiler {
                 alpha_mem,
                 join_tests.into_vec(),
                 binding_extractions.into_vec(),
+                pattern.sequence.clone(),
             )
         }
     }
@@ -867,6 +1128,21 @@ impl ReteCompiler {
                         var_map,
                         &mut sub_bound_vars,
                         alpha_memories,
+                        rule_id,
+                        None,
+                    );
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    sub_parent = self.compile_pattern(
+                        rete,
+                        fact_base,
+                        sub_parent,
+                        &runtime.pattern,
+                        var_map,
+                        &mut sub_bound_vars,
+                        alpha_memories,
+                        rule_id,
+                        Some(runtime),
                     );
                 }
                 CompilableCondition::Predicate { condition_index } => {
@@ -936,6 +1212,130 @@ mod tests {
         }
     }
 
+    fn runtime_counted_pattern(value_tests: usize, local: bool) -> CompilableRuntimePattern {
+        let mut table = new_table();
+        let mut constant_tests = vec![ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::OrderedFieldCount {
+                min: 1,
+                max: Some(1),
+            },
+        }];
+        constant_tests.extend((0..value_tests).map(|_| ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(1)),
+        }));
+        CompilableRuntimePattern {
+            pattern: CompilablePattern {
+                sequence: None,
+                entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "data")),
+                constant_tests,
+                variable_slots: vec![],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            },
+            local_condition: local.then_some(0),
+            local_bindings: vec![],
+            negative_condition: None,
+            join_role: crate::rete::RuntimeConditionRole::NegativeJoin,
+        }
+    }
+
+    #[test]
+    fn runtime_pattern_count_guard_does_not_consume_value_test_budget() {
+        for local in [false, true] {
+            let value_tests = MAX_ALPHA_TESTS - usize::from(local);
+            let accepted = runtime_counted_pattern(value_tests, local);
+            assert!(
+                ReteCompiler::validate_conditions(&[CompilableCondition::RuntimePattern(accepted)])
+                    .is_ok()
+            );
+            let excessive = runtime_counted_pattern(value_tests + 1, local);
+            assert!(matches!(
+                ReteCompiler::validate_conditions(&[CompilableCondition::RuntimePattern(
+                    excessive
+                )]),
+                Err(CompileError::ResourceLimit {
+                    resource: "alpha tests",
+                    required: 65,
+                    limit: 64,
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_pattern_rejects_multiple_count_guards() {
+        let mut runtime = runtime_counted_pattern(0, true);
+        runtime
+            .pattern
+            .constant_tests
+            .push(runtime.pattern.constant_tests[0].clone());
+        assert!(matches!(
+            ReteCompiler::validate_conditions(&[CompilableCondition::RuntimePattern(runtime)]),
+            Err(CompileError::ResourceLimit {
+                resource: "ordered field-count tests",
+                required: 2,
+                limit: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn runtime_sequence_same_pattern_is_rejected_before_network_installation() {
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+        for kind in 0..3 {
+            let mut runtime = runtime_counted_pattern(0, kind == 0);
+            if kind != 0 {
+                runtime.pattern.negated = true;
+                runtime.negative_condition = Some(0);
+            }
+            if kind == 2 {
+                runtime.join_role = crate::rete::RuntimeConditionRole::ExistsJoin;
+            }
+            let condition = |runtime| {
+                let condition = CompilableCondition::RuntimePattern(runtime);
+                if kind == 2 {
+                    CompilableCondition::Ncc(vec![condition])
+                } else {
+                    condition
+                }
+            };
+            assert!(ReteCompiler::validate_conditions(&[condition(runtime.clone())]).is_ok());
+            runtime.pattern.sequence = Some(SequencePattern {
+                segments: vec![SequenceSegment {
+                    source: SequenceSource::Ordered,
+                    fields: vec![SequenceField::Single],
+                }],
+                tests: Vec::new(),
+            });
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let facts = FactBase::new();
+            let rule = compiler.allocate_rule_id();
+            let before = rete.cardinality();
+            let error = compiler
+                .compile_conditions(
+                    &mut rete,
+                    &facts,
+                    rule,
+                    Salience::DEFAULT,
+                    &[condition(runtime)],
+                )
+                .unwrap_err();
+            let CompileError::Validation(errors) = error else {
+                panic!("expected structural rejection: {error:?}");
+            };
+            assert!(errors
+                .iter()
+                .any(|error| error.to_string().contains("on the same pattern")));
+            assert_eq!(rete.cardinality(), before);
+            assert!(compiler.alpha_path_cache.is_empty());
+            assert!(compiler.join_node_cache.is_empty());
+        }
+    }
+
     #[test]
     fn test_allocate_rule_id_sequential() {
         let mut compiler = ReteCompiler::new();
@@ -960,6 +1360,7 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(blocked_relation),
                 constant_tests: vec![],
                 variable_slots: vec![],
@@ -1023,6 +1424,7 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(foo_relation),
                 constant_tests: vec![],
                 variable_slots: vec![],
@@ -1081,6 +1483,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1129,6 +1532,7 @@ mod tests {
         };
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
@@ -1165,6 +1569,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1209,6 +1614,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1218,6 +1624,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1258,6 +1665,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1267,6 +1675,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_y)],
@@ -1297,6 +1706,7 @@ mod tests {
         let relation = intern(&mut table, "person");
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1342,6 +1752,7 @@ mod tests {
         let rel2 = intern(&mut table, "animal");
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1351,6 +1762,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1397,6 +1809,7 @@ mod tests {
         let var_x = intern(&mut table, "x");
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1405,6 +1818,7 @@ mod tests {
             exists: false,
         };
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1479,6 +1893,7 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
                 variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1492,6 +1907,7 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
                 variable_slots: vec![],
@@ -1527,6 +1943,7 @@ mod tests {
         let var_x = intern(&mut table, "x");
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1580,6 +1997,7 @@ mod tests {
         };
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test1, test2],
             variable_slots: vec![],
@@ -1618,6 +2036,7 @@ mod tests {
         };
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
@@ -1654,6 +2073,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1663,6 +2083,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1672,6 +2093,7 @@ mod tests {
         };
 
         let pattern3 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel3),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1711,6 +2133,7 @@ mod tests {
         };
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
@@ -1761,6 +2184,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::Template(template_id),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Template(0), var_x)],
@@ -1770,6 +2194,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::Template(template_id),
             constant_tests: vec![],
             variable_slots: vec![
@@ -1824,6 +2249,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let positive_pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(item_rel),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1833,6 +2259,7 @@ mod tests {
         };
 
         let negated_pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(danger_rel),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1879,6 +2306,7 @@ mod tests {
 
         // (item ?x) (not (exclude ?x))
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(item_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1888,6 +2316,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(exclude_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1935,6 +2364,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(trigger_rel),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1944,6 +2374,7 @@ mod tests {
         };
 
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(person_rel),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1987,6 +2418,7 @@ mod tests {
 
         // (not (a ?x)) (b ?x): ?x should be introduced by the positive pattern only.
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(a_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -1995,6 +2427,7 @@ mod tests {
             exists: false,
         };
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(b_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2033,6 +2466,7 @@ mod tests {
 
         // (exists (a ?x)) (b ?x): ?x should be introduced by the positive pattern only.
         let pattern1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(a_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2041,6 +2475,7 @@ mod tests {
             exists: true,
         };
         let pattern2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(b_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2079,6 +2514,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let positive = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(item_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2087,6 +2523,7 @@ mod tests {
             exists: false,
         };
         let ncc_sub_1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(block_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2095,6 +2532,7 @@ mod tests {
             exists: false,
         };
         let ncc_sub_2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(reason_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2148,6 +2586,7 @@ mod tests {
         let mut table = new_table();
         let rule_id = compiler.allocate_rule_id();
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -2199,6 +2638,7 @@ mod tests {
         let mut table = new_table();
         let baseline = rete.cardinality();
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -2292,6 +2732,7 @@ mod tests {
         let rel = intern(&mut table, "checked");
 
         let ncc_positive = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -2301,6 +2742,7 @@ mod tests {
         };
 
         let ncc_negated = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -2333,6 +2775,7 @@ mod tests {
         let var_x = intern(&mut table, "x");
 
         let invalid_pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(rel),
             constant_tests: vec![],
             variable_slots: vec![
@@ -2395,6 +2838,7 @@ mod tests {
         let var_x = intern(&mut table, "x");
 
         let pattern_1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(person_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2403,6 +2847,7 @@ mod tests {
             exists: false,
         };
         let pattern_2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(age_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2504,6 +2949,7 @@ mod tests {
             variable_slots.push((SlotIndex::Ordered(slot), symbols[sym_idx]));
         }
         CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots,
@@ -2723,7 +3169,8 @@ mod tests {
                     let relation_sym = symbols[i % symbols.len()];
                     let var_sym = symbols[(i + n_patterns) % symbols.len()];
                     CompilablePattern {
-                        entry_type: AlphaEntryType::OrderedRelation(relation_sym),
+                        sequence: None,
+            entry_type: AlphaEntryType::OrderedRelation(relation_sym),
                         constant_tests: vec![],
                         variable_slots: vec![(SlotIndex::Ordered(0), var_sym)],
                         negated_variable_slots: Vec::new(),
@@ -2778,6 +3225,7 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(person_sym),
                 constant_tests: vec![],
                 variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2807,6 +3255,7 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![
                 CompilablePattern {
+                    sequence: None,
                     entry_type: AlphaEntryType::OrderedRelation(shape_sym),
                     constant_tests: vec![],
                     variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -2815,6 +3264,7 @@ mod tests {
                     exists: false,
                 },
                 CompilablePattern {
+                    sequence: None,
                     entry_type: AlphaEntryType::OrderedRelation(person_sym),
                     constant_tests: vec![],
                     variable_slots: vec![(SlotIndex::Ordered(0), var_x)],

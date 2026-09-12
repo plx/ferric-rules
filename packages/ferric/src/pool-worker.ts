@@ -56,7 +56,11 @@ const NativeFerricSymbol = native["FerricSymbol"] as any;
 const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
-const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
+const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol, {
+  FerricStringBytes: native["FerricStringBytes"] as any,
+  FerricSymbolBytes: native["FerricSymbolBytes"] as any,
+  FerricInstanceName: native["FerricInstanceName"] as any,
+});
 
 // ---------------------------------------------------------------------------
 // Spec registry and engine cache
@@ -187,10 +191,15 @@ function handleEvaluate(
 
   // Collect output channels. Map CLIPS channel names to friendly names.
   const output: Record<string, string> = {};
-  const tOutput = engine.getOutput("t");
-  if (tOutput !== null) output["stdout"] = tOutput;
-  const stderrOutput = engine.getOutput("stderr");
-  if (stderrOutput !== null) output["stderr"] = stderrOutput;
+  const outputBytes: Record<string, Uint8Array> = {};
+  for (const [channel, name] of [["t", "stdout"], ["stderr", "stderr"]]) {
+    const bytes = engine.getOutputBytes(channel);
+    if (bytes !== null) {
+      outputBytes[name] = bytes;
+      try { output[name] = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+      catch { /* Exact bytes remain in outputBytes; no replacement text. */ }
+    }
+  }
 
   // Clear output so it doesn't accumulate across calls.
   engine.clearOutput("t");
@@ -200,6 +209,7 @@ function handleEvaluate(
     runResult: { rulesFired: runResult.rulesFired, haltReason: runResult.haltReason },
     facts,
     output,
+    outputBytes,
   };
 }
 
@@ -249,6 +259,8 @@ function handleMethod(specName: string, method: string, args: unknown[]): unknow
     case "clear":
       engine.clear();
       return undefined;
+    case "getOutputBytes":
+      return engine.getOutputBytes(args[0] as string);
     case "getOutput":
       return engine.getOutput(args[0] as string);
     case "clearOutput":

@@ -9,7 +9,10 @@ fn validate_workload(source: &str, n_items: usize) {
     let engine = support::verify_source(source, 2 * n_items + 1);
     assert!(support::template_ids(&engine, "item").is_empty());
     assert_eq!(support::template_symbols(&engine, "phase", "name"), ["run"]);
-    assert_eq!(engine.get_output("t"), Some("All items processed\n"));
+    assert_eq!(
+        engine.get_output("t").expect("fixture output is UTF-8"),
+        Some("All items processed\n")
+    );
 }
 
 /// Fact assert/retract churn benchmark.

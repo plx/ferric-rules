@@ -47,7 +47,10 @@ fn validate_workload(source: &str, n_junctions: usize) {
         assert_eq!(expected.remove(&key), Some(slot("label")));
     }
     assert!(expected.is_empty());
-    assert_eq!(engine.get_output("t"), Some("Labeling complete\n"));
+    assert_eq!(
+        engine.get_output("t").expect("fixture output is UTF-8"),
+        Some("Labeling complete\n")
+    );
 }
 
 /// Generate a Waltz scene with `n_junctions` junctions connected in a mesh.

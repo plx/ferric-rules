@@ -1,0 +1,113 @@
+{
+  "reference_image": "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
+  "cases": [
+    {
+      "expected": "character-empty-nul-byte-width-precision.expected.out",
+      "expected_sha256": "a3db5910ea64c336c9f2fc47603b3c662f990b7c3b2fa99e9b83f67a0c7163de",
+      "source": "character-empty-nul-byte-width-precision.source.clp",
+      "source_sha256": "0ac1f13c31b011035663180cd83a29010be94361b404f3e6745e0ed4c9aa7a31",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "float-zero-and-precision.expected.out",
+      "expected_sha256": "535c4aa70e9c42729d919d686c8e16202cafee9ca3cf306d216647ee17d00edb",
+      "source": "float-zero-and-precision.source.clp",
+      "source_sha256": "f45415e994f72faab566202071f1ef6324a5d8ac9d424c4bc8851dfb8fddd574",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "general-precision-and-cutovers.expected.out",
+      "expected_sha256": "65870861ae7a9bd29879163dc2faab60e22458e1d25cdbfbef90f8cbf71024bd",
+      "source": "general-precision-and-cutovers.source.clp",
+      "source_sha256": "27053bc882dc12cded4a7c457f044d8d2811df3dc67a219c7a85e480512d1ab2",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "integer-boundaries.expected.out",
+      "expected_sha256": "912c38a59723ee841d11beb546782f73158bbca21a7c5eb77fa92dd7e3c4f60b",
+      "source": "integer-boundaries.source.clp",
+      "source_sha256": "62a6b1fb66c004e234740f5190aaf34b41564b4004d98652ccf26d23b4d291e3",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "integer-flags.expected.out",
+      "expected_sha256": "bd6b195ccea0fb6f46340a4d88a300962f58f9d7326f168b1eaf741c3177a33f",
+      "source": "integer-flags.source.clp",
+      "source_sha256": "83ecaddc46b04f168b329966f2743c306becbd224e20ec3117ccf580332afa9a",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "integer-precision.expected.out",
+      "expected_sha256": "d64f5d23ddd7e679743020f6d6c4a55c2eefae8d9b301b48294b73003d374f14",
+      "source": "integer-precision.source.clp",
+      "source_sha256": "436f553af313a23657b0b4d197ee582ef37d811ef6cad48334fffbb047715956",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "max-finite-fixed.expected.out",
+      "expected_sha256": "626be09f33196a3e3c2186f12ea6c7e19755956d04e332d989b049d72bf42d5c",
+      "basis": "exact integer arithmetic, defensive formatter policy check",
+      "definition": "2**1024 - 2**971"
+    },
+    {
+      "expected": "min-subnormal-fixed.expected.out",
+      "expected_sha256": "f45aeb158809dfc2e30ccb794028e77653ebdd39eb58ff0f53a66cf3d2e79438",
+      "basis": "exact integer arithmetic, defensive formatter policy check",
+      "definition": "5**1074 / 10**1074"
+    },
+    {
+      "expected": "nonfinite-format-padding.expected.out",
+      "expected_sha256": "33538ea056094256dce52b406d63719cf62b94b194ff4cbde7c811f8fc20bdda",
+      "source": "nonfinite-format-padding.source.clp",
+      "source_sha256": "86c6ec6b2c19bda8f12725c0440eee84ef4ea17ef65e04868691d10dfd663cec",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "ordinary-directives.expected.out",
+      "expected_sha256": "8a1094f5ca42c09f3504a1a8608e0e69123a27a5e1f212c8e40a759f95125afe",
+      "source": "ordinary-directives.source.clp",
+      "source_sha256": "0cf70f68cc47ffab98aaedf369af42c6d84c3f16955f41ccc429c873fd69c3e9",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "radix-directives.expected.out",
+      "expected_sha256": "7a645b41d2048b85f28d5dca5e26af239b8e135c7b6494b3177b52242ce9ae08",
+      "source": "radix-directives.source.clp",
+      "source_sha256": "a10d72fd9dc7df2f1bbdcc32ec29b2f09d4adb0ef35aabd021317535fd1ec2a6",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "scientific-exponent-and-fixed-ties.expected.out",
+      "expected_sha256": "6906c1776b5739e7798be8f446c6c7f55b0eba90106597a60fd3bd04375b587b",
+      "source": "scientific-exponent-and-fixed-ties.source.clp",
+      "source_sha256": "ec3116655431c7caef6ba2b3e93bcfc4567e9b567c01bf4b940f34b6abfac7c7",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "small-repeated-misordered-modifiers.expected.out",
+      "expected_sha256": "2f39bfd98f69d13562f69bc2ff9655fde0d72a57ba337aea485af58fb8d9c5f4",
+      "source": "small-repeated-misordered-modifiers.source.clp",
+      "source_sha256": "e519c1c692d4e6afaf873828f3351a5eb4ccb9671095cc2208fab923a911211d",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    },
+    {
+      "expected": "unicode-width-and-precision.expected.out",
+      "expected_sha256": "66ecdc8a18726cd56378c4bd81d19c1d20d23a9d78ac1baa16b93782c883d465",
+      "source": "unicode-width-and-precision.source.clp",
+      "source_sha256": "6bf727c3fec2e54e7d887dcfe02fad91bba4ec1fd5c6a63bdd156bb191670da5",
+      "basis": "CLIPS 6.30 pinned reference",
+      "protocol": "load, reset, run in a fresh environment"
+    }
+  ]
+}

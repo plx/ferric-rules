@@ -4,17 +4,16 @@ These issues record the original observations of checkout `eb24cc50`.
 Some issues have since been fixed or consolidated; this index preserves their
 discovery history. Consult [manifest.json](manifest.json) for the current active
 gaps and exact Ferric observations; `.out` always records CLIPS 6.30 behavior.
-A future fix must remove/update its manifest characterization.
+A fix removes its manifest characterization once the exact CLIPS output passes.
 
-On engine snapshot `d428e780`, seven formerly divergent cases now conform to
-CLIPS. Expression fact queries are now explicitly rejected, so their two
-previously matching empty-result controls also carry characterizations under
-[#324](https://github.com/plx/ferric-rules/issues/324). The current totals are
-158 conformance cases and 61 active gap cases. Historical issue descriptions
-below are not a substitute for the updated manifest's exact observations.
+On the current compatibility integration, all 61 formerly active gap cases
+conform to CLIPS. The manifest therefore contains 219 conformance cases and no
+active gap cases. Historical issue descriptions below preserve the discovery
+record; the manifest remains authoritative for current expectations.
 
 27 distinct new issues were opened during this discovery pass; existing tracked
-gaps were linked without opening duplicates. No engine repairs are included.
+gaps were linked without opening duplicates. That discovery pass did not include
+engine repairs.
 
 | Issue | Behavior at discovery | Cases |
 |---|---|---|

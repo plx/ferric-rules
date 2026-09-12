@@ -25,10 +25,30 @@ use crate::symbol::SymbolTable;
 use crate::value::Value;
 
 impl SymbolTable {
+    /// Check interned value spellings against an engine's explicit encoding policy.
+    pub fn validate_encoding(&self, encoding: crate::StringEncoding) -> Result<(), String> {
+        if encoding != crate::StringEncoding::Utf8 {
+            require!(
+                self.bytes_strings.is_empty(),
+                "byte symbols violate strict ASCII symbol policy"
+            );
+            require!(
+                self.utf8_strings.iter().all(|text| text.is_ascii()),
+                "non-ASCII symbol violates encoding policy"
+            );
+        }
+        require!(
+            self.ascii_strings.iter().all(|bytes| bytes.is_ascii()),
+            "invalid ASCII symbol pool"
+        );
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn validate_snapshot(&self) -> Result<(), String> {
         require_eq!(self.ascii_strings.len(), self.ascii_to_id.len());
         require_eq!(self.utf8_strings.len(), self.utf8_to_id.len());
+        require_eq!(self.bytes_strings.len(), self.bytes_to_id.len());
         for (index, text) in self.ascii_strings.iter().enumerate() {
             require!(text.is_ascii(), "non-ASCII entry in ASCII symbol pool");
             require!(
@@ -44,6 +64,18 @@ impl SymbolTable {
                     .get(text)
                     .is_some_and(|id| *id as usize == index),
                 "invalid UTF-8 symbol index"
+            );
+        }
+        for (index, bytes) in self.bytes_strings.iter().enumerate() {
+            require!(
+                std::str::from_utf8(bytes).is_err(),
+                "valid text in byte symbol pool"
+            );
+            require!(
+                self.bytes_to_id
+                    .get(bytes)
+                    .is_some_and(|id| *id as usize == index),
+                "invalid byte symbol index"
             );
         }
         Ok(())
@@ -64,12 +96,14 @@ impl SymbolTable {
                     return Err("snapshot contains unsupported external identity".to_owned())
                 }
                 Value::Symbol(symbol) => require!(
-                    self.resolve_symbol_str(*symbol).is_some(),
+                    self.resolve_symbol_bytes(*symbol).is_some(),
                     "dangling symbol in snapshot value"
                 ),
-                Value::String(crate::string::FerricString::Ascii(bytes)) => {
-                    require!(bytes.is_ascii(), "invalid ASCII string value");
-                }
+                Value::InstanceName(name) => require!(
+                    self.resolve_symbol_bytes(name.as_symbol()).is_some(),
+                    "dangling instance name in snapshot value"
+                ),
+                Value::String(value) => validate_snapshot_string(value)?,
                 Value::Multifield(fields) => {
                     pending.extend(fields.iter().map(|item| (item, depth + 1)));
                 }
@@ -78,6 +112,41 @@ impl SymbolTable {
         }
         Ok(())
     }
+
+    // Derived keys need representation validation before their byte-based
+    // equality can compare them with rebuilt, canonical values.
+    fn validate_snapshot_atom(&self, atom: &crate::value::AtomKey) -> Result<(), String> {
+        use crate::value::AtomKey;
+        match atom {
+            AtomKey::Symbol(symbol) => require!(
+                self.resolve_symbol_bytes(*symbol).is_some(),
+                "dangling symbol in snapshot value"
+            ),
+            AtomKey::InstanceName(name) => require!(
+                self.resolve_symbol_bytes(name.as_symbol()).is_some(),
+                "dangling instance name in snapshot value"
+            ),
+            AtomKey::String(value) => validate_snapshot_string(value)?,
+            AtomKey::ExternalAddress { .. } => {
+                return Err("snapshot contains unsupported external identity".to_owned());
+            }
+            AtomKey::Integer(_) | AtomKey::FloatBits(_) => {}
+        }
+        Ok(())
+    }
+}
+
+fn validate_snapshot_string(value: &crate::string::FerricString) -> Result<(), String> {
+    use crate::string::FerricString;
+    match value {
+        FerricString::Bytes(bytes) => require!(
+            std::str::from_utf8(bytes).is_err(),
+            "valid text in byte string variant"
+        ),
+        FerricString::Ascii(bytes) => require!(bytes.is_ascii(), "invalid ASCII string value"),
+        FerricString::Utf8(_) => {}
+    }
+    Ok(())
 }
 
 impl FactBase {
@@ -102,7 +171,7 @@ impl FactBase {
                 Fact::Ordered(fact) => {
                     require!(
                         symbols.resolve_symbol_str(fact.relation).is_some(),
-                        "dangling ordered relation"
+                        "invalid ordered relation identifier"
                     );
                     by_relation
                         .entry(fact.relation)
@@ -127,17 +196,18 @@ impl FactBase {
             "inconsistent template fact index"
         );
         let mut actual_relations = rustc_hash::FxHashMap::default();
-        for (pool, ascii) in [
-            (&self.by_relation.ascii, true),
-            (&self.by_relation.utf8, false),
+        for (pool, kind) in [
+            (&self.by_relation.ascii, 0),
+            (&self.by_relation.utf8, 1),
+            (&self.by_relation.bytes, 2),
         ] {
             for (index, ids) in pool.iter().enumerate() {
                 if let Some(ids) = ids {
                     let index = u32::try_from(index).map_err(|_| "oversized relation index")?;
-                    let symbol = crate::symbol::Symbol(if ascii {
-                        crate::symbol::SymbolId::Ascii(index)
-                    } else {
-                        crate::symbol::SymbolId::Utf8(index)
+                    let symbol = crate::symbol::Symbol(match kind {
+                        0 => crate::symbol::SymbolId::Ascii(index),
+                        1 => crate::symbol::SymbolId::Utf8(index),
+                        _ => crate::symbol::SymbolId::Bytes(index),
                     });
                     require!(!ids.is_empty(), "empty ordered fact index");
                     actual_relations.insert(symbol, ids.clone());
@@ -152,13 +222,15 @@ impl FactBase {
     }
 }
 
-use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode};
-use crate::beta::{BetaNode, RuleId};
+use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode, ConstantTestType};
+use crate::beta::{BetaNode, JoinTest, RuleId};
 use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
+use crate::sequence::SequencePattern;
 use crate::token::NodeId;
 
-// Source compilation allows 64 total condition nodes and 64 alpha tests.
+// Source compilation allows 64 total condition nodes and 64 alpha value tests,
+// with one additional ordered field-count test per alpha path.
 // Each condition contributes at most one node to a beta parent chain; an NCC
 // partner substitutes for its wrapper on a subnetwork path. Include root and
 // terminal. Partner callbacks need their own nesting/cycle bound below.
@@ -204,6 +276,112 @@ impl Work {
     }
 }
 
+fn visit_join_matches(
+    fact: &Fact,
+    token: &crate::token::Token,
+    tests: &[JoinTest],
+    sequence: Option<&SequencePattern>,
+    binding_cost: usize,
+    work: &mut Work,
+    mut visit: impl FnMut(&Fact, Option<&[usize]>) -> Result<bool, String>,
+) -> Result<(), String> {
+    let Some(sequence) = sequence else {
+        work.spend(tests.len() + binding_cost + 1)?;
+        if crate::rete::evaluate_join(fact, Some(token), tests) {
+            visit(fact, None)?;
+        }
+        return Ok(());
+    };
+    let values = match fact {
+        Fact::Ordered(fact) => fact.fields.as_slice(),
+        Fact::Template(fact) => fact.slots.as_ref(),
+    };
+    // Projection clones physical values, including string bytes and nested
+    // multifields. Counting only top-level fields would undercharge a large
+    // value repeatedly cloned across many rejected split candidates.
+    let mut value_cost = 0_usize;
+    let mut pending = vec![values];
+    while let Some(values) = pending.pop() {
+        for value in values {
+            let cost = match value {
+                Value::String(text) => text.as_bytes().len().saturating_add(1),
+                Value::Multifield(fields) => {
+                    pending.push(fields.as_slice());
+                    1
+                }
+                _ => 1,
+            };
+            work.spend(cost)?;
+            value_cost = value_cost.saturating_add(cost);
+        }
+    }
+    let test_cost =
+        sequence
+            .tests
+            .iter()
+            .fold(tests.len().saturating_mul(value_cost + 1), |cost, test| {
+                cost.saturating_add(match &test.test_type {
+                    ConstantTestType::EqualAny(values) => {
+                        values.len().saturating_mul(value_cost + 1)
+                    }
+                    _ => value_cost + 1,
+                })
+            });
+    let candidate_cost = sequence
+        .logical_width()
+        .saturating_add(sequence.segments.len())
+        .saturating_add(value_cost)
+        .saturating_add(test_cost)
+        .saturating_add(binding_cost.saturating_mul(value_cost + 1))
+        .saturating_add(1);
+    work.spend(sequence.logical_width() + sequence.segments.len() + 1)?;
+    let mut candidates = sequence.candidates(fact);
+    loop {
+        work.spend(candidate_cost)?;
+        let Some(candidate) = candidates.next() else {
+            break;
+        };
+        if sequence.accepts(&candidate.fact)
+            && crate::rete::evaluate_join(&candidate.fact, Some(token), tests)
+            && !visit(&candidate.fact, Some(&candidate.lengths))?
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn validate_sequence_plan(
+    sequence: &SequencePattern,
+    tests: &[JoinTest],
+    bindings: &[(crate::alpha::SlotIndex, crate::binding::VarId)],
+    symbols: &SymbolTable,
+    work: &mut Work,
+) -> Result<(), String> {
+    work.spend(
+        sequence.logical_width()
+            + sequence.segments.len()
+            + sequence.tests.len()
+            + tests.len()
+            + bindings.len()
+            + 1,
+    )?;
+    sequence.validate()?;
+    let valid_slot = sequence.logical_slot_validator();
+    require!(
+        tests.iter().all(|test| valid_slot(test.alpha_slot))
+            && bindings.iter().all(|(slot, _)| valid_slot(*slot)),
+        "sequence join has an invalid logical field"
+    );
+    for test in &sequence.tests {
+        if let ConstantTestType::EqualAny(values) = &test.test_type {
+            work.spend(values.len())?;
+        }
+        validate_constant(test, symbols)?;
+    }
+    Ok(())
+}
+
 fn same_members<T: Eq + std::hash::Hash>(actual: &[T], expected: &[T]) -> bool {
     let unique: rustc_hash::FxHashSet<_> = actual.iter().collect();
     actual.len() == expected.len()
@@ -230,15 +408,21 @@ fn validate_constant(
 ) -> Result<(), String> {
     use crate::alpha::ConstantTestType as Test;
     match &test.test_type {
+        Test::OrderedFieldCount { min, max } => {
+            require!(
+                max.map_or(true, |max| *min <= max),
+                "invalid ordered field-count bounds"
+            );
+        }
         Test::Equal(value)
         | Test::NotEqual(value)
         | Test::GreaterThan(value)
         | Test::LessThan(value)
         | Test::GreaterOrEqual(value)
-        | Test::LessOrEqual(value) => symbols.validate_snapshot_value(&value.to_value())?,
+        | Test::LessOrEqual(value) => symbols.validate_snapshot_atom(value)?,
         Test::EqualAny(values) => {
             for value in values {
-                symbols.validate_snapshot_value(&value.to_value())?;
+                symbols.validate_snapshot_atom(value)?;
             }
         }
         _ => {}
@@ -277,11 +461,14 @@ impl ReteNetwork {
     pub fn validate_snapshot(&self, facts: &FactBase, symbols: &SymbolTable) -> Result<(), String> {
         self.validate_consistency()?;
         require!(
-            self.pending_predicate_matches.is_empty(),
+            self.pending_predicate_matches.is_empty()
+                && self.alpha.pending_runtime.is_empty()
+                && self.runtime_searches.is_empty(),
             "snapshot has unfinished predicate matches"
         );
         let mut work = Work(10_000_000);
         self.validate_alpha_snapshot(facts, symbols, &mut work)?;
+        let alpha_entries = self.alpha_memory_entry_types(&mut work)?;
         // MAX is a valid exhausted sentinel; rule loading checks capacity before
         // reclaiming or installing anything. Existing graph IDs remain below it.
         let root = self.beta.root_id;
@@ -341,6 +528,48 @@ impl ReteNetwork {
                     "beta child has wrong parent"
                 );
             }
+            match node {
+                BetaNode::Join {
+                    sequence: Some(sequence),
+                    alpha_memory,
+                    tests,
+                    bindings,
+                    ..
+                } => {
+                    validate_sequence_plan(sequence, tests, bindings, symbols, &mut work)?;
+                    let entry = alpha_entries
+                        .get(alpha_memory)
+                        .ok_or("sequence plan has no alpha source")?;
+                    require!(
+                        sequence.is_ordered()
+                            == matches!(entry, AlphaEntryType::OrderedRelation(_)),
+                        "sequence plan and alpha source have different fact kinds"
+                    );
+                }
+                BetaNode::Negative {
+                    sequence: Some(sequence),
+                    alpha_memory,
+                    tests,
+                    ..
+                }
+                | BetaNode::Exists {
+                    sequence: Some(sequence),
+                    alpha_memory,
+                    tests,
+                    ..
+                } => {
+                    validate_sequence_plan(sequence, tests, &[], symbols, &mut work)?;
+                    let entry = alpha_entries
+                        .get(alpha_memory)
+                        .ok_or("sequence plan has no alpha source")?;
+                    require!(
+                        sequence.is_ordered()
+                            == matches!(entry, AlphaEntryType::OrderedRelation(_)),
+                        "sequence plan and alpha source have different fact kinds"
+                    );
+                }
+                _ => {}
+            }
             if let Some(memory) = self.beta.memory_id_for_node(id) {
                 require!(
                     owned_memories.insert(memory),
@@ -395,6 +624,8 @@ impl ReteNetwork {
                         .ok_or("unexpected beta variable index")?;
                     require_eq!(keys.len(), expected.len());
                     for (key, ids) in keys {
+                        work.step()?;
+                        symbols.validate_snapshot_atom(key)?;
                         let expected = expected.get(key).ok_or("wrong beta binding key")?;
                         require!(
                             ids == expected,
@@ -487,6 +718,24 @@ impl ReteNetwork {
                     "invalid alpha subscription index"
                 );
             }
+        }
+        for (id, lengths) in &self.token_store.sequence_matches {
+            work.spend(lengths.len() + 1)?;
+            let token = self
+                .token_store
+                .get(id)
+                .ok_or("dangling sequence match token")?;
+            require!(
+                token.fact.is_some()
+                    && matches!(
+                        self.beta.nodes.get(&token.owner_node),
+                        Some(BetaNode::Join {
+                            sequence: Some(_),
+                            ..
+                        })
+                    ),
+                "sequence metadata belongs to a nonsequence token"
+            );
         }
         for (fact, tokens) in &self.token_store.fact_to_tokens {
             for token in tokens {
@@ -620,6 +869,72 @@ impl ReteNetwork {
         }
         self.validate_join_memberships(facts, &mut work)?;
         self.validate_conditional_memories(facts, &mut work)?;
+        self.validate_runtime_conflict_order(&mut work)?;
+        Ok(())
+    }
+
+    fn validate_runtime_conflict_order(&self, work: &mut Work) -> Result<(), String> {
+        let mut expected = 0_usize;
+        for (&node, value) in &self.beta.nodes {
+            work.step()?;
+            if let BetaNode::Negative {
+                alpha_memory,
+                neg_memory,
+                runtime: Some(_),
+                ..
+            } = value
+            {
+                let state = self
+                    .beta
+                    .get_neg_memory(*neg_memory)
+                    .ok_or("missing runtime negative state")?;
+                work.spend(state.blocked.len())?;
+                for (parent, facts) in &state.blocked {
+                    let fact = *facts.iter().next().ok_or("empty selected conflict")?;
+                    require!(
+                        self.runtime_conflicts
+                            .get(&(*alpha_memory, fact))
+                            .is_some_and(|owners| owners.contains(&(node, *parent))),
+                        "selected conflict lacks ordered reverse owner"
+                    );
+                    expected += 1;
+                }
+            }
+        }
+        let mut actual = 0_usize;
+        for (&(memory, fact), owners) in &self.runtime_conflicts {
+            work.spend(owners.len().saturating_add(1))?;
+            require!(!owners.is_empty(), "empty ordered conflict owner list");
+            require!(
+                self.alpha
+                    .get_memory(memory)
+                    .is_some_and(|alpha| alpha.facts.contains(&fact)),
+                "ordered conflict has stale alpha fact"
+            );
+            for &(node, parent) in owners {
+                let Some(BetaNode::Negative {
+                    alpha_memory,
+                    neg_memory,
+                    runtime: Some(_),
+                    ..
+                }) = self.beta.get_node(node)
+                else {
+                    return Err("ordered conflict has invalid node".into());
+                };
+                require_eq!(*alpha_memory, memory);
+                require!(
+                    self.beta
+                        .get_neg_memory(*neg_memory)
+                        .is_some_and(|state| state
+                            .blocked
+                            .get(&parent)
+                            .is_some_and(|facts| facts.contains(&fact))),
+                    "ordered conflict has stale owner"
+                );
+                actual += 1;
+            }
+        }
+        require_eq!(actual, expected);
         Ok(())
     }
 
@@ -706,6 +1021,7 @@ impl ReteNetwork {
         let mut owners = rustc_hash::FxHashSet::default();
         let mut incoming = vec![0_usize; self.alpha.nodes.len()];
         let mut depths = vec![0_usize; self.alpha.nodes.len()];
+        let mut field_count_depths = vec![0_usize; self.alpha.nodes.len()];
         for (index, node) in self.alpha.nodes.iter().enumerate() {
             let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
             let (children, memory) = match node {
@@ -717,7 +1033,7 @@ impl ReteNetwork {
                     if let AlphaEntryType::OrderedRelation(symbol) = entry_type {
                         require!(
                             symbols.resolve_symbol_str(*symbol).is_some(),
-                            "dangling alpha relation"
+                            "invalid alpha relation identifier"
                         );
                     }
                     require!(
@@ -734,6 +1050,32 @@ impl ReteNetwork {
                     validate_constant(test, symbols)?;
                     (children, memory)
                 }
+                AlphaNode::RuntimePredicate {
+                    condition,
+                    children,
+                    memory,
+                } => {
+                    work.spend(condition.bindings.len())?;
+                    require!(
+                        condition.role == crate::rete::RuntimeConditionRole::PatternFilter,
+                        "runtime alpha filter has invalid role"
+                    );
+                    require!(
+                        children.is_empty() && memory.is_some(),
+                        "runtime pattern filter must own a terminal alpha memory"
+                    );
+                    require!(
+                        condition
+                            .bindings
+                            .iter()
+                            .map(|(_, variable)| *variable)
+                            .collect::<rustc_hash::FxHashSet<_>>()
+                            .len()
+                            == condition.bindings.len(),
+                        "duplicate runtime filter binding"
+                    );
+                    (children, memory)
+                }
             };
             for child in children {
                 require!(
@@ -741,10 +1083,21 @@ impl ReteNetwork {
                     "cyclic or dangling alpha child"
                 );
                 incoming[child.0 as usize] += 1;
-                depths[child.0 as usize] = depths[index] + 1;
+                let field_count_test = matches!(
+                    &self.alpha.nodes[child.0 as usize],
+                    AlphaNode::ConstantTest { test, .. }
+                        if matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                );
+                depths[child.0 as usize] = depths[index] + usize::from(!field_count_test);
+                field_count_depths[child.0 as usize] =
+                    field_count_depths[index] + usize::from(field_count_test);
                 require!(
                     depths[child.0 as usize] <= MAX_ALPHA_DEPTH,
                     "snapshot alpha path exceeds 64 tests"
+                );
+                require!(
+                    field_count_depths[child.0 as usize] <= 1,
+                    "snapshot alpha path exceeds one ordered field-count test"
                 );
             }
             if let Some(memory) = memory {
@@ -759,7 +1112,7 @@ impl ReteNetwork {
         for (index, node) in self.alpha.nodes.iter().enumerate() {
             require_eq!(
                 incoming[index],
-                usize::from(matches!(node, AlphaNode::ConstantTest { .. }))
+                usize::from(!matches!(node, AlphaNode::Entry { .. }))
             );
         }
         let mut expected: Vec<AlphaMemory> = self
@@ -807,6 +1160,21 @@ impl ReteNetwork {
                 {
                     work.spend(values.len())?;
                 }
+                if let Some(AlphaNode::RuntimePredicate {
+                    memory: Some(memory),
+                    ..
+                }) = self.alpha.get_node(node)
+                {
+                    if !self
+                        .alpha
+                        .get_memory(*memory)
+                        .ok_or("missing runtime filter memory")?
+                        .facts
+                        .contains(&id)
+                    {
+                        continue;
+                    }
+                }
                 if let Some((memory, children)) = self.alpha.propagation_plan(node, &entry.fact) {
                     if let Some(memory) = memory {
                         work.spend(
@@ -843,6 +1211,8 @@ impl ReteNetwork {
                     .ok_or("unexpected indexed alpha slot")?;
                 require_eq!(keys.len(), expected.len());
                 for (key, ids) in keys {
+                    work.step()?;
+                    symbols.validate_snapshot_atom(key)?;
                     let expected = expected.get(key).ok_or("unexpected alpha binding key")?;
                     require!(
                         ids.iter().eq(expected.iter()),
@@ -869,21 +1239,167 @@ impl ReteNetwork {
         work: &mut Work,
     ) -> Result<(), String> {
         for (&node_id, node) in &self.beta.nodes {
-            let (parent_id, alpha_id, tests, negative, exists) = match node {
+            if let BetaNode::Negative {
+                runtime: Some(condition),
+                parent,
+                alpha_memory,
+                tests,
+                sequence,
+                neg_memory,
+                memory: output_id,
+                ..
+            } = node
+            {
+                require!(
+                    sequence.is_none(),
+                    "runtime negative constraints cannot own a sequence projection"
+                );
+                let state = self
+                    .beta
+                    .get_neg_memory(*neg_memory)
+                    .ok_or("missing runtime negative state")?;
+                let upstream = self
+                    .beta
+                    .memory_id_for_node(*parent)
+                    .and_then(|id| self.beta.get_memory(id))
+                    .ok_or("missing runtime negative parent memory")?;
+                let alpha = self
+                    .alpha
+                    .get_memory(*alpha_memory)
+                    .ok_or("missing runtime negative alpha memory")?;
+                let output = self
+                    .beta
+                    .get_memory(*output_id)
+                    .ok_or("missing runtime negative output memory")?;
+                require!(
+                    matches!(
+                        condition.role,
+                        crate::rete::RuntimeConditionRole::NegativeJoin
+                            | crate::rete::RuntimeConditionRole::ExistsJoin
+                    ),
+                    "runtime negative node has invalid role"
+                );
+                if condition.role == crate::rete::RuntimeConditionRole::ExistsJoin {
+                    let children = children(node);
+                    require_eq!(children.len(), 1);
+                    let partner = children[0];
+                    let Some(BetaNode::NccPartner {
+                        parent: branch,
+                        ncc_node,
+                        ..
+                    }) = self.beta.get_node(partner)
+                    else {
+                        return Err("existential runtime role lacks NCC partner".into());
+                    };
+                    require_eq!(*branch, node_id);
+                    require!(
+                        matches!(self.beta.get_node(*ncc_node), Some(BetaNode::Ncc { parent: prefix, partner: actual_partner, .. }) if prefix == parent && *actual_partner == partner),
+                        "existential runtime role lacks NCC inversion"
+                    );
+                }
+                let disabled = self.is_rule_disabled(condition.rule);
+                if !disabled {
+                    require_eq!(upstream.len(), state.blocked.len() + state.unblocked.len());
+                }
+                require_eq!(output.len(), state.unblocked.len());
+                work.spend(condition.bindings.len())?;
+                let extracted: rustc_hash::FxHashSet<_> = condition
+                    .bindings
+                    .iter()
+                    .map(|(_, variable)| *variable)
+                    .collect();
+                require!(
+                    extracted.len() == condition.bindings.len(),
+                    "duplicate runtime negative extraction"
+                );
+                // Negative pattern locals cannot overwrite their owner's lexical frame,
+                // even when no current token exists to expose a forged extraction.
+                let mut ancestor = Some(*parent);
+                while let Some(id) = ancestor {
+                    work.step()?;
+                    let node = self
+                        .beta
+                        .get_node(id)
+                        .ok_or("runtime negative has dangling ancestor")?;
+                    if let BetaNode::Join { bindings, .. } = node {
+                        work.spend(bindings.len())?;
+                        require!(
+                            !bindings
+                                .iter()
+                                .any(|(_, variable)| extracted.contains(variable)),
+                            "runtime negative extraction overwrites outer binding"
+                        );
+                    }
+                    ancestor = crate::snapshot::parent(node);
+                }
+                for owner in upstream.iter() {
+                    work.step()?;
+                    if let Some(selected) = state.blocked.get(&owner) {
+                        require_eq!(selected.len(), 1);
+                        let fact = *selected.iter().next().ok_or("empty selected conflict")?;
+                        require!(
+                            alpha.facts.contains(&fact),
+                            "selected conflict is not an alpha candidate"
+                        );
+                        let value = &facts
+                            .get(fact)
+                            .ok_or("selected conflict fact is stale")?
+                            .fact;
+                        require!(
+                            crate::rete::evaluate_join(value, self.token_store.get(owner), tests),
+                            "selected conflict fails primitive joins"
+                        );
+                        require!(
+                            !state.unblocked.contains_key(&owner),
+                            "selected conflict owner also has output"
+                        );
+                    } else if !disabled || state.unblocked.contains_key(&owner) {
+                        let passthrough = *state
+                            .unblocked
+                            .get(&owner)
+                            .ok_or("runtime negative owner missing state")?;
+                        self.validate_passthrough(owner, passthrough, node_id)?;
+                    }
+                }
+                for owner in state.blocked.keys().chain(state.unblocked.keys()) {
+                    require!(
+                        upstream.contains(*owner),
+                        "runtime negative state has stale owner"
+                    );
+                }
+                continue;
+            }
+            let (parent_id, alpha_id, tests, sequence, negative, exists) = match node {
                 BetaNode::Negative {
                     parent,
                     alpha_memory,
                     tests,
+                    sequence,
                     neg_memory,
                     ..
-                } => (*parent, *alpha_memory, tests, Some(*neg_memory), None),
+                } => (
+                    *parent,
+                    *alpha_memory,
+                    tests,
+                    sequence,
+                    Some(*neg_memory),
+                    None,
+                ),
                 BetaNode::Exists {
                     parent,
                     alpha_memory,
                     tests,
+                    sequence,
                     exists_memory,
                     ..
-                } => (*parent, *alpha_memory, tests, None, Some(*exists_memory)),
+                } => (
+                    *parent,
+                    *alpha_memory,
+                    tests,
+                    sequence,
+                    None,
+                    Some(*exists_memory),
+                ),
                 BetaNode::Ncc {
                     parent,
                     partner,
@@ -978,12 +1494,30 @@ impl ReteNetwork {
                     .get(parent)
                     .ok_or("missing conditional parent token")?;
                 let mut matches = rustc_hash::FxHashSet::default();
-                for fact in crate::rete::collect_candidate_facts(alpha, tests, &token.bindings) {
-                    work.spend(tests.len() + 1)?;
+                let indexed_tests = if sequence.is_some() {
+                    &[][..]
+                } else {
+                    tests.as_ref()
+                };
+                for fact in crate::rete::collect_candidate_facts(
+                    alpha,
+                    crate::rete::indexable_tests(indexed_tests, None),
+                    &token.bindings,
+                ) {
                     let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
-                    if crate::rete::evaluate_join(fact_value, Some(token), tests) {
-                        matches.insert(fact);
-                    }
+                    visit_join_matches(
+                        fact_value,
+                        token,
+                        tests,
+                        sequence.as_deref(),
+                        0,
+                        work,
+                        |_, _| {
+                            matches.insert(fact);
+                            // A supporting fact is counted once, regardless of cuts.
+                            Ok(false)
+                        },
+                    )?;
                 }
                 if let Some(id) = negative {
                     let memory = self
@@ -1103,12 +1637,13 @@ impl ReteNetwork {
                 tests,
                 bindings,
                 memory,
+                sequence,
                 ..
             } = node
             else {
                 continue;
             };
-            let mut pairs = rustc_hash::FxHashSet::default();
+            let mut matches = rustc_hash::FxHashMap::default();
             for id in self
                 .beta
                 .get_memory(*memory)
@@ -1118,22 +1653,14 @@ impl ReteNetwork {
                 let token = self.token_store.get(id).ok_or("missing join token")?;
                 let parent_id = token.parent.ok_or("join token has no parent")?;
                 let fact_id = token.fact.ok_or("join token has no fact")?;
-                require!(pairs.insert((parent_id, fact_id)), "duplicate join match");
-                let parent_token = self
-                    .token_store
-                    .get(parent_id)
-                    .ok_or("missing join parent")?;
-                let fact = &facts.get(fact_id).ok_or("missing join fact")?.fact;
-                work.spend(bindings.len() + parent_token.bindings.capacity() + 1)?;
-                let mut expected = parent_token.bindings.clone();
-                for &(slot, variable) in bindings.iter() {
-                    if let Some(value) = crate::alpha::get_slot_value(fact, slot) {
-                        expected.set(variable, crate::binding::ValueRef::new(value.clone()));
-                    }
-                }
+                let lengths = self.token_store.match_lengths(id).map(<[usize]>::to_vec);
                 require!(
-                    same_bindings(&token.bindings, &expected),
-                    "inconsistent join token bindings"
+                    sequence.is_some() == lengths.is_some(),
+                    "join token has inconsistent sequence metadata"
+                );
+                require!(
+                    matches.insert((parent_id, fact_id, lengths), id).is_none(),
+                    "duplicate join match"
                 );
             }
             let upstream = self
@@ -1145,27 +1672,132 @@ impl ReteNetwork {
                 .alpha
                 .get_memory(*alpha_memory)
                 .ok_or("missing join alpha memory")?;
+            let indexed_tests = if sequence.is_some() {
+                &[][..]
+            } else {
+                tests.as_ref()
+            };
             for parent_id in upstream.iter() {
                 let parent_token = self
                     .token_store
                     .get(parent_id)
                     .ok_or("missing upstream token")?;
-                for fact_id in
-                    crate::rete::collect_candidate_facts(alpha, tests, &parent_token.bindings)
-                {
-                    work.spend(tests.len() + 1)?;
+                for fact_id in crate::rete::collect_candidate_facts(
+                    alpha,
+                    crate::rete::indexable_tests(indexed_tests, None),
+                    &parent_token.bindings,
+                ) {
                     let fact = &facts.get(fact_id).ok_or("missing alpha fact")?.fact;
-                    if crate::rete::evaluate_join(fact, Some(parent_token), tests) {
-                        require!(
-                            pairs.remove(&(parent_id, fact_id)),
-                            "missing positive join match at {node_id:?}"
-                        );
-                    }
+                    visit_join_matches(
+                        fact,
+                        parent_token,
+                        tests,
+                        sequence.as_deref(),
+                        bindings.len() + parent_token.bindings.capacity(),
+                        work,
+                        |projected, lengths| {
+                            let key = (parent_id, fact_id, lengths.map(<[usize]>::to_vec));
+                            let id = matches.remove(&key).ok_or_else(|| {
+                                format!("missing positive join match at {node_id:?}")
+                            })?;
+                            let token = self.token_store.get(id).ok_or("missing join token")?;
+                            let mut expected = parent_token.bindings.clone();
+                            for &(slot, variable) in bindings.iter() {
+                                if let Some(value) = crate::alpha::get_slot_value(projected, slot) {
+                                    expected.set(
+                                        variable,
+                                        crate::binding::ValueRef::new(value.clone()),
+                                    );
+                                }
+                            }
+                            require!(
+                                same_bindings(&token.bindings, &expected),
+                                "inconsistent join token bindings"
+                            );
+                            Ok(true)
+                        },
+                    )?;
                 }
             }
-            require!(pairs.is_empty(), "unexpected positive join match");
+            require!(matches.is_empty(), "unexpected positive join match");
         }
         Ok(())
+    }
+
+    /// Template projections paired with their original physical template source.
+    /// Runtime validation checks physical slot bounds after core graph validation.
+    #[doc(hidden)]
+    pub fn snapshot_template_sequence_patterns(
+        &self,
+    ) -> Result<Vec<(crate::fact::TemplateId, &SequencePattern)>, String> {
+        let mut work = Work(10_000_000);
+        let entries = self.alpha_memory_entry_types(&mut work)?;
+        let mut plans = Vec::new();
+        for node in self.beta.nodes.values() {
+            work.step()?;
+            if let BetaNode::Join {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            }
+            | BetaNode::Negative {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            }
+            | BetaNode::Exists {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            } = node
+            {
+                if let Some(AlphaEntryType::Template(template)) = entries.get(alpha_memory) {
+                    plans.push((*template, sequence.as_ref()));
+                }
+            }
+        }
+        Ok(plans)
+    }
+
+    fn alpha_memory_entry_types(
+        &self,
+        work: &mut Work,
+    ) -> Result<rustc_hash::FxHashMap<AlphaMemoryId, AlphaEntryType>, String> {
+        let mut paths = vec![None; self.alpha.nodes.len()];
+        let mut memories = rustc_hash::FxHashMap::default();
+        for (index, node) in self.alpha.nodes.iter().enumerate() {
+            work.step()?;
+            let (children, memory) = match node {
+                AlphaNode::Entry {
+                    entry_type,
+                    children,
+                    memory,
+                } => {
+                    paths[index] = Some(entry_type.clone());
+                    (children, memory)
+                }
+                AlphaNode::ConstantTest {
+                    children, memory, ..
+                }
+                | AlphaNode::RuntimePredicate {
+                    children, memory, ..
+                } => (children, memory),
+            };
+            let entry = paths[index]
+                .clone()
+                .ok_or("alpha path has no entry source")?;
+            for child in children {
+                work.step()?;
+                require!(child.0 as usize > index, "cyclic alpha source path");
+                *paths
+                    .get_mut(child.0 as usize)
+                    .ok_or("dangling alpha source child")? = Some(entry.clone());
+            }
+            if let Some(memory) = memory {
+                memories.insert(*memory, entry);
+            }
+        }
+        Ok(memories)
     }
 
     #[doc(hidden)]
@@ -1185,6 +1817,48 @@ impl ReteNetwork {
                 AlphaEntryType::Template(id) => Some(*id),
                 AlphaEntryType::OrderedRelation(_) => None,
             })
+    }
+
+    fn validate_runtime_descriptor_budget(&self) -> Result<(), String> {
+        let mut work = Work(10_000_000);
+        work.spend(self.alpha.nodes.len().saturating_add(self.beta.nodes.len()))?;
+        for node in &self.alpha.nodes {
+            if let AlphaNode::RuntimePredicate { condition, .. } = node {
+                work.spend(condition.bindings.len().saturating_add(1))?;
+            }
+        }
+        for node in self.beta.nodes.values() {
+            let mut current = match node {
+                BetaNode::Predicate { parent, .. } => Some(*parent),
+                BetaNode::Negative {
+                    parent,
+                    runtime: Some(condition),
+                    ..
+                } => {
+                    work.spend(condition.bindings.len())?;
+                    Some(*parent)
+                }
+                _ => None,
+            };
+            let mut depth = 0;
+            while let Some(id) = current {
+                work.step()?;
+                depth += 1;
+                require!(
+                    depth <= MAX_BETA_PATH_NODES,
+                    "runtime condition ancestor path is too deep"
+                );
+                let node = self
+                    .beta
+                    .get_node(id)
+                    .ok_or("runtime condition has dangling ancestor")?;
+                if let BetaNode::Join { bindings, .. } = node {
+                    work.spend(bindings.len())?;
+                }
+                current = parent(node);
+            }
+        }
+        Ok(())
     }
 
     #[doc(hidden)]
@@ -1213,6 +1887,29 @@ impl ReteNetwork {
                 _ => {}
             }
         }
+        self.validate_runtime_descriptor_budget()?;
+        for usage in self.snapshot_runtime_condition_uses() {
+            for (slot, _) in &usage.bindings {
+                require!(
+                    matches!(
+                        (&usage.entry_type, slot),
+                        (
+                            Some(AlphaEntryType::OrderedRelation(_)),
+                            crate::alpha::SlotIndex::Ordered(_)
+                        ) | (
+                            Some(AlphaEntryType::Template(_)),
+                            crate::alpha::SlotIndex::Template(_)
+                        )
+                    ),
+                    "runtime condition physical selector has wrong fact kind"
+                );
+            }
+            let (_, count) = metadata(usage.rule).ok_or("runtime condition lacks rule metadata")?;
+            require!(
+                (usage.condition_index as usize) < count,
+                "dangling runtime condition index"
+            );
+        }
         Ok(())
     }
 }
@@ -1226,7 +1923,13 @@ impl crate::compiler::ReteCompiler {
     }
 
     #[doc(hidden)]
-    pub fn validate_snapshot(&self, rete: &ReteNetwork) -> Result<(), String> {
+    // Cache ownership and graph identity checks form one bounded validation pass.
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_snapshot(
+        &self,
+        rete: &ReteNetwork,
+        symbols: &SymbolTable,
+    ) -> Result<(), String> {
         let mut work = Work(10_000_000);
         require!(
             self.next_rule_id > 0 && self.next_rule_id < u32::MAX,
@@ -1240,6 +1943,13 @@ impl crate::compiler::ReteCompiler {
                 );
             }
         }
+        rete.validate_runtime_descriptor_budget()?;
+        for usage in rete.snapshot_runtime_condition_uses() {
+            require!(
+                usage.rule.0 > 0 && usage.rule.0 < self.next_rule_id,
+                "runtime condition exceeds rule allocator"
+            );
+        }
         require_eq!(self.alpha_path_cache.len(), rete.alpha.memories.len());
         let mut parents = vec![None; rete.alpha.nodes.len()];
         let mut owners = vec![None; rete.alpha.memories.len()];
@@ -1250,6 +1960,9 @@ impl crate::compiler::ReteCompiler {
                     children, memory, ..
                 }
                 | AlphaNode::ConstantTest {
+                    children, memory, ..
+                }
+                | AlphaNode::RuntimePredicate {
                     children, memory, ..
                 } => (children, memory),
             };
@@ -1275,11 +1988,23 @@ impl crate::compiler::ReteCompiler {
                 .copied()
                 .flatten()
                 .ok_or("cached alpha memory lacks owner")?;
+            if let Some(expected) = &key.runtime {
+                require!(
+                    matches!(rete.alpha.get_node(id), Some(AlphaNode::RuntimePredicate { condition, .. }) if condition == expected),
+                    "cached runtime alpha condition mismatch"
+                );
+                id = parents
+                    .get(id.0 as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or("runtime alpha filter lacks parent")?;
+            }
             for expected in key.tests.iter().rev() {
                 work.spend(match &expected.test_type {
                     crate::alpha::ConstantTestType::EqualAny(values) => values.len() + 1,
                     _ => 1,
                 })?;
+                validate_constant(expected, symbols)?;
                 require!(
                     matches!(rete.alpha.nodes.get(id.0 as usize), Some(AlphaNode::ConstantTest { test, .. }) if test == expected),
                     "cached alpha test mismatch"
@@ -1305,12 +2030,903 @@ impl crate::compiler::ReteCompiler {
         );
         let mut cached_joins = rustc_hash::FxHashSet::default();
         for (key, id) in &self.join_node_cache {
+            if let Some(sequence) = &key.sequence {
+                validate_sequence_plan(sequence, &key.tests, &key.bindings, symbols, &mut work)?;
+            }
             require!(cached_joins.insert(*id), "duplicate cached join node");
             require!(
-                matches!(rete.beta.nodes.get(id), Some(BetaNode::Join { parent, alpha_memory, tests, bindings, .. }) if *parent == key.parent && *alpha_memory == key.alpha_memory && tests.as_ref() == key.tests.as_slice() && bindings.as_ref() == key.bindings.as_slice()),
+                matches!(rete.beta.nodes.get(id), Some(BetaNode::Join { parent, alpha_memory, tests, bindings, sequence, .. }) if *parent == key.parent && *alpha_memory == key.alpha_memory && tests.as_ref() == key.tests.as_slice() && bindings.as_ref() == key.bindings.as_slice() && sequence.as_deref() == key.sequence.as_ref()),
                 "cached join node mismatch"
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod composed_count_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_count_bounds_reject_reversed_ranges_but_allow_exact_and_open_ranges() {
+        let symbols = SymbolTable::new();
+        for (min, max, accepted) in [
+            (0, Some(0), true),
+            (1, Some(1), true),
+            (1, None, true),
+            (2, Some(1), false),
+        ] {
+            let test = crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Ordered(0),
+                test_type: ConstantTestType::OrderedFieldCount { min, max },
+            };
+            assert_eq!(validate_constant(&test, &symbols).is_ok(), accepted);
+        }
+    }
+}
+
+#[cfg(test)]
+mod byte_snapshot_tests {
+    use super::*;
+    use crate::alpha::{ConstantTest, ConstantTestType, SlotIndex};
+    use crate::beta::BetaMemoryId;
+    use crate::binding::VarId;
+    use crate::compiler::{CompilablePattern, CompilableRule, ReteCompiler};
+    use crate::symbol::SymbolId;
+    use crate::{AtomKey, FerricString, InstanceName, Salience, StringEncoding, Symbol};
+
+    struct IndexedAtomFixture {
+        symbols: SymbolTable,
+        facts: FactBase,
+        rete: ReteNetwork,
+        compiler: ReteCompiler,
+        alpha: AlphaMemoryId,
+        beta: BetaMemoryId,
+        variable: VarId,
+    }
+
+    impl IndexedAtomFixture {
+        fn new(mut symbols: SymbolTable, value: &Value) -> Self {
+            let row = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+            let key = symbols.intern_symbol("key", StringEncoding::Utf8).unwrap();
+            let name = symbols.intern_symbol("x", StringEncoding::Utf8).unwrap();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            let rule = CompilableRule {
+                rule_id: compiler.allocate_rule_id(),
+                salience: Salience::DEFAULT,
+                patterns: [row, key]
+                    .into_iter()
+                    .map(|relation| CompilablePattern {
+                        entry_type: AlphaEntryType::OrderedRelation(relation),
+                        sequence: None,
+                        constant_tests: if relation == row {
+                            vec![ConstantTest {
+                                slot: SlotIndex::Ordered(0),
+                                test_type: ConstantTestType::Equal(
+                                    AtomKey::from_value(value).unwrap(),
+                                ),
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        variable_slots: vec![(SlotIndex::Ordered(0), name)],
+                        negated_variable_slots: Vec::new(),
+                        negated: false,
+                        exists: false,
+                    })
+                    .collect(),
+            };
+            let rule_network = compiler.compile_rule(&mut rete, &facts, &rule).unwrap();
+            let alpha = rule_network.alpha_memories[0];
+            rete.alpha
+                .get_memory_mut(alpha)
+                .unwrap()
+                .request_index(SlotIndex::Ordered(0), &facts);
+            let variable = rule_network.var_map.lookup(name).unwrap();
+            let beta = rete
+                .beta
+                .nodes
+                .values()
+                .find_map(|node| match node {
+                    BetaNode::Join { parent, memory, .. } if *parent == rete.beta.root_id() => {
+                        Some(*memory)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            for relation in [row, key] {
+                let id = facts.assert_ordered(relation, smallvec::smallvec![value.clone()]);
+                rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+            }
+            assert_eq!(rete.agenda.len(), 1);
+            let fixture = Self {
+                symbols,
+                facts,
+                rete,
+                compiler,
+                alpha,
+                beta,
+                variable,
+            };
+            fixture.validate();
+            fixture
+        }
+
+        fn text() -> Self {
+            Self::new(
+                SymbolTable::new(),
+                &Value::String(FerricString::new("x", StringEncoding::Utf8).unwrap()),
+            )
+        }
+
+        fn validate(&self) {
+            self.symbols.validate_snapshot().unwrap();
+            self.facts.validate_snapshot(&self.symbols).unwrap();
+            self.rete
+                .validate_snapshot(&self.facts, &self.symbols)
+                .unwrap();
+            self.compiler
+                .validate_snapshot(&self.rete, &self.symbols)
+                .unwrap();
+        }
+    }
+
+    fn noncanonical_text_key() -> AtomKey {
+        AtomKey::String(FerricString::Bytes(b"x".as_slice().into()))
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_noncanonical_alpha_index_key() {
+        let mut fixture = IndexedAtomFixture::text();
+        let keys = fixture
+            .rete
+            .alpha
+            .get_memory_mut(fixture.alpha)
+            .unwrap()
+            .slot_indices
+            .get_mut(&SlotIndex::Ordered(0))
+            .unwrap();
+        let bad = noncanonical_text_key();
+        let (canonical, members) = keys.remove_entry(&bad).unwrap();
+        assert_eq!(
+            canonical, bad,
+            "byte equality alone cannot validate representation"
+        );
+        keys.insert(bad, members);
+        assert_eq!(
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_noncanonical_beta_index_key() {
+        let mut fixture = IndexedAtomFixture::text();
+        let keys = fixture
+            .rete
+            .beta
+            .get_memory_mut(fixture.beta)
+            .unwrap()
+            .var_indices
+            .get_mut(&fixture.variable)
+            .unwrap();
+        let bad = noncanonical_text_key();
+        let (canonical, members) = keys.remove_entry(&bad).unwrap();
+        assert_eq!(
+            canonical, bad,
+            "byte equality alone cannot validate representation"
+        );
+        keys.insert(bad, members);
+        assert_eq!(
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_noncanonical_cached_constant() {
+        let mut fixture = IndexedAtomFixture::text();
+        let key = fixture
+            .compiler
+            .alpha_path_cache
+            .keys()
+            .find(|key| !key.tests.is_empty())
+            .unwrap()
+            .clone();
+        let memory = fixture.compiler.alpha_path_cache.remove(&key).unwrap();
+        let mut corrupt = key.clone();
+        corrupt.tests[0].test_type = ConstantTestType::Equal(noncanonical_text_key());
+        assert_eq!(
+            key, corrupt,
+            "byte equality alone cannot validate cached representation"
+        );
+        fixture.compiler.alpha_path_cache.insert(corrupt, memory);
+        fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap();
+        assert_eq!(
+            fixture
+                .compiler
+                .validate_snapshot(&fixture.rete, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_accepts_raw_atoms_in_indices_and_cached_constants() {
+        for kind in ["string", "symbol", "instance-name"] {
+            let mut symbols = SymbolTable::new();
+            let raw = symbols
+                .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+                .unwrap();
+            let value = match kind {
+                "string" => {
+                    Value::String(FerricString::from_bytes(b"\xff", StringEncoding::Utf8).unwrap())
+                }
+                "symbol" => Value::Symbol(raw),
+                _ => Value::InstanceName(InstanceName::from_symbol(raw)),
+            };
+            IndexedAtomFixture::new(symbols, &value).validate();
+        }
+    }
+
+    #[test]
+    fn byte_snapshot_validation_accepts_live_interned_values() {
+        let mut symbols = SymbolTable::new();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let values = Value::Multifield(Box::new(
+            [
+                Value::Symbol(raw),
+                Value::InstanceName(InstanceName::from_symbol(raw)),
+                Value::String(FerricString::from_bytes(b"\xc3", StringEncoding::Utf8).unwrap()),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        assert!(symbols.validate_snapshot().is_ok());
+        assert!(symbols.validate_encoding(StringEncoding::Utf8).is_ok());
+        assert!(symbols.validate_encoding(StringEncoding::Ascii).is_err());
+        assert!(symbols
+            .validate_encoding(StringEncoding::AsciiSymbolsUtf8Strings)
+            .is_err());
+        assert!(symbols.validate_snapshot_value(&values).is_ok());
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let mut facts = FactBase::new();
+        facts.assert_ordered(relation, smallvec::smallvec![values]);
+        assert!(facts.validate_snapshot(&symbols).is_ok());
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_live_raw_ordered_relation_identifier() {
+        let mut symbols = SymbolTable::new();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        // This symbol is a valid data value, not a dangling reference. The
+        // low-level insertion also keeps the fact's derived indexes coherent.
+        assert!(symbols.validate_snapshot().is_ok());
+        assert!(symbols.validate_snapshot_value(&Value::Symbol(raw)).is_ok());
+        let mut facts = FactBase::new();
+        facts.assert_ordered(raw, smallvec::smallvec![Value::Integer(1)]);
+        assert_eq!(
+            facts.validate_snapshot(&symbols).unwrap_err(),
+            "invalid ordered relation identifier"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_live_raw_alpha_relation_identifier() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let facts = FactBase::new();
+        let mut rete = ReteNetwork::new();
+        rete.alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(relation));
+        assert!(rete.validate_snapshot(&facts, &symbols).is_ok());
+        // An unused alpha entry must be rejected too: no live fact is needed
+        // to expose an invalid persisted rule relation.
+        rete.alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(raw));
+        assert_eq!(
+            rete.validate_snapshot(&facts, &symbols).unwrap_err(),
+            "invalid alpha relation identifier"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_raw_compiler_relation_mismatching_valid_alpha_entry() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let raw = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let mut rete = ReteNetwork::new();
+        let entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(relation));
+        let memory = rete.alpha.create_memory(entry);
+        assert!(rete.validate_snapshot(&FactBase::new(), &symbols).is_ok());
+        let mut compiler = crate::compiler::ReteCompiler::new();
+        let mut key = crate::compiler::AlphaPathKey {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            tests: Vec::new(),
+            runtime: None,
+        };
+        compiler.alpha_path_cache.insert(key.clone(), memory);
+        assert!(compiler.validate_snapshot(&rete, &symbols).is_ok());
+        compiler.alpha_path_cache.clear();
+        key.entry_type = AlphaEntryType::OrderedRelation(raw);
+        compiler.alpha_path_cache.insert(key, memory);
+        assert_eq!(
+            compiler.validate_snapshot(&rete, &symbols).unwrap_err(),
+            "cached alpha entry mismatch"
+        );
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_dangling_names_and_noncanonical_storage() {
+        let mut symbols = SymbolTable::new();
+        let dangling = InstanceName::from_symbol(Symbol(SymbolId::Bytes(0)));
+        assert!(symbols
+            .validate_snapshot_value(&Value::InstanceName(dangling))
+            .is_err());
+        assert!(symbols
+            .validate_snapshot_value(&Value::String(FerricString::Bytes(b"valid"[..].into())))
+            .is_err());
+        assert!(symbols
+            .validate_snapshot_value(&Value::String(FerricString::Ascii(b"\xff"[..].into())))
+            .is_err());
+        symbols.bytes_strings.push(b"valid"[..].into());
+        symbols.bytes_to_id.insert(b"valid"[..].into(), 0);
+        assert!(symbols.validate_snapshot().is_err());
+    }
+
+    #[test]
+    fn byte_snapshot_rejects_inconsistent_pool_indexes() {
+        let mut symbols = SymbolTable::new();
+        symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        symbols.bytes_to_id.insert(b"\xff"[..].into(), 2);
+        assert!(symbols.validate_snapshot().is_err());
+    }
+}
+
+#[cfg(test)]
+mod sequence_work_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_sequence_candidates_still_consume_snapshot_work() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("row", crate::StringEncoding::Ascii)
+            .unwrap();
+        let fact = Fact::Ordered(crate::fact::OrderedFact {
+            relation,
+            fields: smallvec::smallvec![Value::Integer(1); 4],
+        });
+        let plan = SequencePattern {
+            segments: vec![crate::sequence::SequenceSegment {
+                source: crate::sequence::SequenceSource::Ordered,
+                fields: vec![crate::sequence::SequenceField::Multi; 3],
+            }],
+            tests: vec![crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
+            }],
+        };
+        let token = crate::token::Token {
+            fact: None,
+            parent: None,
+            owner_node: NodeId(0),
+            bindings: crate::binding::BindingSet::new(),
+        };
+        let mut visited = 0;
+        let result =
+            visit_join_matches(&fact, &token, &[], Some(&plan), 0, &mut Work(50), |_, _| {
+                visited += 1;
+                Ok(true)
+            });
+        assert_eq!(visited, 0);
+        assert_eq!(
+            result.unwrap_err(),
+            "snapshot validation work limit exceeded"
+        );
+    }
+
+    #[test]
+    fn rejected_template_cartesian_candidates_consume_snapshot_work() {
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+        let mut ids: slotmap::SlotMap<crate::fact::TemplateId, ()> = slotmap::SlotMap::with_key();
+        let values = Value::Multifield(Box::new(vec![Value::Integer(1); 4].into_iter().collect()));
+        let fact = Fact::Template(crate::fact::TemplateFact {
+            template_id: ids.insert(()),
+            slots: vec![values.clone(), values].into_boxed_slice(),
+        });
+        let plan = SequencePattern {
+            segments: (0..2)
+                .map(|index| SequenceSegment {
+                    source: SequenceSource::TemplateSlot(index),
+                    fields: vec![SequenceField::Multi; 3],
+                })
+                .collect(),
+            tests: vec![crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Template(0),
+                test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
+            }],
+        };
+        let token = crate::token::Token {
+            fact: None,
+            parent: None,
+            owner_node: NodeId(0),
+            bindings: crate::binding::BindingSet::new(),
+        };
+        let result = visit_join_matches(
+            &fact,
+            &token,
+            &[],
+            Some(&plan),
+            0,
+            &mut Work(100),
+            |_, _| panic!("rejected candidate reached visitor"),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "snapshot validation work limit exceeded"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sequence_byte_union_tests {
+    use super::*;
+    use crate::alpha::{ConstantTest, SlotIndex};
+    use crate::binding::{ValueRef, VarId};
+    use crate::compiler::{CompilablePattern, CompilableRule, ReteCompiler};
+    use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+    use crate::symbol::SymbolId;
+    use crate::token::TokenId;
+    use crate::{AtomKey, FerricString, InstanceName, Salience, StringEncoding, Symbol};
+    use std::sync::Arc;
+
+    struct SequenceFixture {
+        symbols: SymbolTable,
+        facts: FactBase,
+        rete: ReteNetwork,
+        compiler: ReteCompiler,
+        join: NodeId,
+        capture: VarId,
+    }
+
+    impl SequenceFixture {
+        #[allow(clippy::too_many_lines)]
+        fn new(mut symbols: SymbolTable, value: &Value, template: bool) -> Self {
+            let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+            let capture = symbols
+                .intern_symbol("before", StringEncoding::Utf8)
+                .unwrap();
+            let mut ids = slotmap::SlotMap::<crate::fact::TemplateId, ()>::with_key();
+            let template_id = ids.insert(());
+            let slot = |index| {
+                if template {
+                    SlotIndex::Template(index)
+                } else {
+                    SlotIndex::Ordered(index)
+                }
+            };
+            let plan = SequencePattern {
+                segments: vec![SequenceSegment {
+                    source: if template {
+                        SequenceSource::TemplateSlot(0)
+                    } else {
+                        SequenceSource::Ordered
+                    },
+                    fields: vec![
+                        SequenceField::Multi,
+                        SequenceField::Single,
+                        SequenceField::Multi,
+                    ],
+                }],
+                tests: vec![ConstantTest {
+                    slot: slot(1),
+                    test_type: ConstantTestType::Equal(AtomKey::from_value(value).unwrap()),
+                }],
+            };
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            let rule = CompilableRule {
+                rule_id: compiler.allocate_rule_id(),
+                salience: Salience::DEFAULT,
+                patterns: vec![CompilablePattern {
+                    entry_type: if template {
+                        AlphaEntryType::Template(template_id)
+                    } else {
+                        AlphaEntryType::OrderedRelation(relation)
+                    },
+                    constant_tests: if template {
+                        Vec::new()
+                    } else {
+                        vec![ConstantTest {
+                            slot: SlotIndex::Ordered(0),
+                            test_type: ConstantTestType::OrderedFieldCount { min: 1, max: None },
+                        }]
+                    },
+                    sequence: Some(plan),
+                    variable_slots: vec![(slot(0), capture)],
+                    negated_variable_slots: Vec::new(),
+                    negated: false,
+                    exists: false,
+                }],
+            };
+            let installed = compiler.compile_rule(&mut rete, &facts, &rule).unwrap();
+            let capture = installed.var_map.lookup(capture).unwrap();
+            let join = rete
+                .beta
+                .nodes
+                .iter()
+                .find_map(|(&id, node)| {
+                    matches!(
+                        node,
+                        BetaNode::Join {
+                            sequence: Some(_),
+                            ..
+                        }
+                    )
+                    .then_some(id)
+                })
+                .unwrap();
+            let id = if template {
+                let fields = Value::Multifield(Box::new(
+                    [value.clone(), value.clone()].into_iter().collect(),
+                ));
+                facts.assert_template(template_id, vec![fields].into_boxed_slice())
+            } else {
+                facts.assert_ordered(relation, smallvec::smallvec![value.clone(), value.clone()])
+            };
+            rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+            assert_eq!(
+                rete.agenda.len(),
+                2,
+                "two positional matches of the same physical fact"
+            );
+            let fixture = Self {
+                symbols,
+                facts,
+                rete,
+                compiler,
+                join,
+                capture,
+            };
+            fixture.validate();
+            fixture
+        }
+
+        fn text() -> Self {
+            Self::new(
+                SymbolTable::new(),
+                &Value::String(FerricString::new("x", StringEncoding::Utf8).unwrap()),
+                false,
+            )
+        }
+
+        fn validate(&self) {
+            self.symbols.validate_snapshot().unwrap();
+            self.facts.validate_snapshot(&self.symbols).unwrap();
+            self.rete
+                .validate_snapshot(&self.facts, &self.symbols)
+                .unwrap();
+            self.compiler
+                .validate_snapshot(&self.rete, &self.symbols)
+                .unwrap();
+        }
+
+        fn graph_plan_mut(&mut self) -> &mut SequencePattern {
+            match self.rete.beta.nodes.get_mut(&self.join).unwrap() {
+                BetaNode::Join {
+                    sequence: Some(plan),
+                    ..
+                } => Arc::make_mut(plan),
+                _ => panic!("fixture sequence join"),
+            }
+        }
+
+        fn replace_cache_atom(&mut self, atom: AtomKey) {
+            let key = self
+                .compiler
+                .join_node_cache
+                .keys()
+                .find(|key| key.sequence.is_some())
+                .unwrap()
+                .clone();
+            let node = self.compiler.join_node_cache.remove(&key).unwrap();
+            let mut altered = key;
+            altered.sequence.as_mut().unwrap().tests[0].test_type = ConstantTestType::Equal(atom);
+            self.compiler.join_node_cache.insert(altered, node);
+        }
+
+        fn tokens(&self) -> Vec<TokenId> {
+            self.rete
+                .token_store
+                .sequence_matches
+                .iter()
+                .map(|(id, _)| id)
+                .collect()
+        }
+    }
+
+    fn noncanonical_key() -> AtomKey {
+        AtomKey::String(FerricString::Bytes(b"x".as_slice().into()))
+    }
+
+    #[test]
+    fn sequence_byte_union_accepts_raw_atoms_and_distinct_split_identities() {
+        for kind in ["string", "symbol", "instance-name"] {
+            let mut symbols = SymbolTable::new();
+            let name = symbols
+                .intern_symbol_bytes(b"n\xff", StringEncoding::Utf8)
+                .unwrap();
+            let value = match kind {
+                "string" => {
+                    Value::String(FerricString::from_bytes(b"s\xff", StringEncoding::Utf8).unwrap())
+                }
+                "symbol" => Value::Symbol(name),
+                _ => Value::InstanceName(InstanceName::from_symbol(name)),
+            };
+            let fixture = SequenceFixture::new(symbols, &value, false);
+            let lengths: rustc_hash::FxHashSet<_> = fixture
+                .rete
+                .token_store
+                .sequence_matches
+                .iter()
+                .map(|(_, lengths)| lengths.to_vec())
+                .collect();
+            assert_eq!(lengths, [vec![1, 0], vec![0, 1]].into_iter().collect());
+            fixture.validate();
+        }
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_noncanonical_graph_atoms_before_matching() {
+        for many in [false, true] {
+            let mut fixture = SequenceFixture::text();
+            let canonical = AtomKey::from_value(&Value::String(
+                FerricString::new("x", StringEncoding::Utf8).unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(
+                canonical,
+                noncanonical_key(),
+                "byte equality cannot validate representation"
+            );
+            fixture.graph_plan_mut().tests[0].test_type = if many {
+                ConstantTestType::EqualAny(vec![noncanonical_key()])
+            } else {
+                ConstantTestType::Equal(noncanonical_key())
+            };
+            assert_eq!(
+                fixture
+                    .rete
+                    .validate_snapshot(&fixture.facts, &fixture.symbols)
+                    .unwrap_err(),
+                "valid text in byte string variant"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_noncanonical_cached_atoms_before_equality() {
+        for corrupt_graph_too in [false, true] {
+            let mut fixture = SequenceFixture::text();
+            fixture.replace_cache_atom(noncanonical_key());
+            if corrupt_graph_too {
+                fixture.graph_plan_mut().tests[0].test_type =
+                    ConstantTestType::Equal(noncanonical_key());
+            } else {
+                fixture
+                    .rete
+                    .validate_snapshot(&fixture.facts, &fixture.symbols)
+                    .unwrap();
+            }
+            assert_eq!(
+                fixture
+                    .compiler
+                    .validate_snapshot(&fixture.rete, &fixture.symbols)
+                    .unwrap_err(),
+                "valid text in byte string variant"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_dangling_names_in_graph_and_cache() {
+        let dangling = AtomKey::InstanceName(InstanceName::from_symbol(Symbol(SymbolId::Bytes(0))));
+        let mut graph = SequenceFixture::text();
+        graph.graph_plan_mut().tests[0].test_type = ConstantTestType::Equal(dangling.clone());
+        assert_eq!(
+            graph
+                .rete
+                .validate_snapshot(&graph.facts, &graph.symbols)
+                .unwrap_err(),
+            "dangling instance name in snapshot value"
+        );
+        let mut cache = SequenceFixture::text();
+        cache.replace_cache_atom(dangling);
+        assert_eq!(
+            cache
+                .compiler
+                .validate_snapshot(&cache.rete, &cache.symbols)
+                .unwrap_err(),
+            "dangling instance name in snapshot value"
+        );
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_noncanonical_projected_capture_values() {
+        let mut fixture = SequenceFixture::text();
+        let token = fixture.tokens()[0];
+        let bad = Value::Multifield(Box::new(
+            [Value::String(FerricString::Bytes(b"x".as_slice().into()))]
+                .into_iter()
+                .collect(),
+        ));
+        fixture
+            .rete
+            .token_store
+            .tokens
+            .get_mut(token)
+            .unwrap()
+            .bindings
+            .set(fixture.capture, ValueRef::new(bad));
+        assert_eq!(
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap_err(),
+            "valid text in byte string variant"
+        );
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_missing_impossible_and_duplicate_split_metadata() {
+        let mut missing = SequenceFixture::text();
+        let token = missing.tokens()[0];
+        missing.rete.token_store.sequence_matches.remove(token);
+        assert_eq!(
+            missing
+                .rete
+                .validate_snapshot(&missing.facts, &missing.symbols)
+                .unwrap_err(),
+            "join token has inconsistent sequence metadata"
+        );
+
+        let mut impossible = SequenceFixture::text();
+        let token = impossible.tokens()[0];
+        impossible
+            .rete
+            .token_store
+            .sequence_matches
+            .insert(token, smallvec::smallvec![usize::MAX, 0]);
+        assert!(impossible
+            .rete
+            .validate_snapshot(&impossible.facts, &impossible.symbols)
+            .unwrap_err()
+            .contains("missing positive join match"));
+
+        let mut duplicate = SequenceFixture::text();
+        let tokens = duplicate.tokens();
+        let lengths = duplicate.rete.token_store.sequence_matches[tokens[0]].clone();
+        duplicate
+            .rete
+            .token_store
+            .sequence_matches
+            .insert(tokens[1], lengths);
+        assert_eq!(
+            duplicate
+                .rete
+                .validate_snapshot(&duplicate.facts, &duplicate.symbols)
+                .unwrap_err(),
+            "duplicate join match"
+        );
+    }
+
+    #[test]
+    fn sequence_byte_union_keeps_template_physical_source_and_logical_selectors_distinct() {
+        let fixture = SequenceFixture::new(SymbolTable::new(), &Value::Integer(9), true);
+        let plans = fixture.rete.snapshot_template_sequence_patterns().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].1.segments[0].source,
+            SequenceSource::TemplateSlot(0)
+        );
+        assert_eq!(plans[0].1.logical_width(), 3);
+        assert_eq!(plans[0].1.tests[0].slot, SlotIndex::Template(1));
+        // There is only one physical slot, but three logical projected fields.
+        fixture.validate();
+    }
+
+    #[test]
+    fn sequence_byte_union_rejects_runtime_sequence_projection_without_live_owners() {
+        use crate::compiler::{CompilableCondition, CompilableRuntimePattern};
+        let mut symbols = SymbolTable::new();
+        let outer = symbols
+            .intern_symbol("outer", StringEncoding::Utf8)
+            .unwrap();
+        let inner = symbols
+            .intern_symbol("inner", StringEncoding::Utf8)
+            .unwrap();
+        let pattern = |relation, negated| CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: Vec::new(),
+            sequence: None,
+            variable_slots: Vec::new(),
+            negated_variable_slots: Vec::new(),
+            negated,
+            exists: false,
+        };
+        let conditions = [
+            CompilableCondition::Pattern(pattern(outer, false)),
+            CompilableCondition::RuntimePattern(CompilableRuntimePattern {
+                pattern: pattern(inner, true),
+                local_condition: None,
+                local_bindings: Vec::new(),
+                negative_condition: Some(0),
+                join_role: crate::rete::RuntimeConditionRole::NegativeJoin,
+            }),
+        ];
+        let mut rete = ReteNetwork::new();
+        let mut compiler = ReteCompiler::new();
+        let facts = FactBase::new();
+        let rule = compiler.allocate_rule_id();
+        compiler
+            .compile_conditions(&mut rete, &facts, rule, Salience::DEFAULT, &conditions)
+            .unwrap();
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+        compiler.validate_snapshot(&rete, &symbols).unwrap();
+        let (id, parent) = rete
+            .beta
+            .nodes
+            .iter()
+            .find_map(|(&id, node)| match node {
+                BetaNode::Negative {
+                    parent,
+                    runtime: Some(_),
+                    ..
+                } => Some((id, *parent)),
+                _ => None,
+            })
+            .unwrap();
+        let memory = rete.beta.memory_id_for_node(parent).unwrap();
+        assert!(rete.beta.get_memory(memory).unwrap().is_empty());
+        let BetaNode::Negative { sequence, .. } = rete.beta.nodes.get_mut(&id).unwrap() else {
+            panic!("fixture lazy negative node");
+        };
+        *sequence = Some(Arc::new(SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![SequenceField::Single],
+            }],
+            tests: Vec::new(),
+        }));
+        assert_eq!(
+            rete.validate_snapshot(&facts, &symbols).unwrap_err(),
+            "runtime negative constraints cannot own a sequence projection"
+        );
     }
 }

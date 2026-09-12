@@ -192,7 +192,10 @@ fn bench_dormant_focus(c: &mut Criterion) {
                 for id in expected {
                     writeln!(expected_output, "{id}").unwrap();
                 }
-                assert_eq!(engine.get_output("t"), Some(expected_output.as_str()));
+                assert_eq!(
+                    engine.get_output("t").unwrap(),
+                    Some(expected_output.as_str())
+                );
                 assert_eq!(engine.agenda_len(), size);
                 assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
                 b.iter(|| {

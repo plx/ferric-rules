@@ -95,9 +95,12 @@ fn observe(source: &str, resets: usize, input: Option<&str>) -> Observation {
                 observation.diagnostics.push(error.to_string());
             }
         }
-        observation
-            .output
-            .push_str(engine.get_output("t").unwrap_or(""));
+        observation.output.push_str(
+            engine
+                .get_output("t")
+                .expect("compatibility corpus output is UTF-8")
+                .unwrap_or(""),
+        );
         observation
             .diagnostics
             .extend(engine.action_diagnostics().iter().map(ToString::to_string));

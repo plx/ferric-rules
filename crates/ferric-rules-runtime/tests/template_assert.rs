@@ -24,7 +24,7 @@ fn rhs_template_assert_evaluates_named_slots_fills_defaults_and_propagates() {
     assert_eq!(run.rules_fired, 2);
     assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
     assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(engine.get_output("t"), Some("5:ready\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("5:ready\n"));
     assert_eq!(engine.find_facts("result").unwrap().len(), 0);
     let facts = template_facts(&engine, "result");
     assert_eq!(facts.len(), 1);
@@ -173,7 +173,7 @@ fn imported_template_rhs_assert_uses_the_rule_module() {
     let run = engine.run(RunLimit::Unlimited).unwrap();
     assert_eq!(run.rules_fired, 2);
     assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(engine.get_output("t"), Some("7\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("7\n"));
     assert_eq!(template_facts(&engine, "DATA::result").len(), 1);
 }
 
@@ -289,7 +289,10 @@ fn multislot_omits_void_expression_results_and_preserves_effects() {
     assert_eq!(run.rules_fired, 1);
     assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
     assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(engine.get_output("t"), Some("side-effect\nafter-assert\n"));
+    assert_eq!(
+        engine.get_output("t").unwrap(),
+        Some("side-effect\nafter-assert\n")
+    );
     let facts = template_facts(&engine, "item");
     assert_eq!(facts.len(), 1);
     let Value::Multifield(values) = &facts[0].1.slots[0] else {
@@ -328,7 +331,7 @@ fn a_template_multislot_binding_has_both_rhs_variable_spellings() {
         "{:?}",
         engine.action_diagnostics()
     );
-    assert_eq!(engine.get_output("t"), Some("12 3\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("12 3\n"));
     let results = engine.find_facts("result").unwrap();
     assert_eq!(results.len(), 1);
     let Fact::Ordered(result) = results[0].1 else {

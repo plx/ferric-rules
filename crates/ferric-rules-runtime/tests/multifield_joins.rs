@@ -32,7 +32,7 @@ fn run(engine: &mut Engine, expected: usize) {
 fn clips_multislot_join_matches_equal_field_types_and_values() {
     let mut engine = Engine::with_rules(include_str!("fixtures/multifield_join.clp")).unwrap();
     run(&mut engine, 2);
-    assert_eq!(engine.get_output("t"), Some("matched 2\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("matched 2\n"));
     assert_eq!(engine.find_facts("matched").unwrap().len(), 1);
 }
 

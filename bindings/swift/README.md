@@ -82,11 +82,9 @@ symbols and strings are distinct, and nested multifields are supported up to
 `.void`, including nested instances, before allocating C values; it represents
 an absent result rather than durable fact data. Use an application symbol such
 as `.symbol("nil")` for a stored sentinel. External addresses have no Swift
-representation and are rejected explicitly. Embedded NUL text is rejected at C string/value boundaries instead
-of being silently truncated. `FactID` retains the full unsigned 64-bit native ID and belongs to one engine
+representation and are rejected explicitly. Embedded NUL is rejected by ordinary text input constructors and name/source boundaries; explicit byte value constructors and output copies preserve it. `FactID` retains the full unsigned 64-bit native ID and belongs to one engine
 instance. Reset and restore invalidate old IDs; query new IDs and persist
-application keys instead of raw fact IDs. Copied symbol/string values are owned
-text and can be asserted into a different engine after their source closes.
+application keys instead of raw fact IDs. Copied lexeme values own their text or byte payload and can be asserted into a different engine after their source closes.
 
 Snapshots use recommended CBOR through the native versioned snapshot API. They
 preserve engine state and subsequent rule behavior, subject to the native
@@ -118,3 +116,7 @@ swift build --package-path bindings/swift --triple arm64-apple-ios18.0-simulator
 
 The Swift CI job checks all three native slices, both iOS wrapper builds, macOS
 tests, and the external macOS consumer. It does not claim device execution.
+
+Use `Value.stringBytes(Data)`, `.symbolBytes(Data)`, and `.instanceName(Data)` for exact byte lexemes. Text `Value.string`/`.symbol` inputs retain their existing validation. `Engine.outputBytes` returns owned `Data`; `output` checks UTF-8 and throws for invalid bytes instead of replacing them. Embedded NUL is preserved in the byte API and in valid Swift text output.
+
+Instance-name values retain their type and bytes without creating COOL objects. Use `instance-namep` or the binding's distinct value type for classification. `type` and restricted generic dispatch on a missing instance report an action error and stop later actions. The runtime conversions accept either symbol or name values; CLIPS's additional static restriction on certain literal conversion calls is not enforced yet.

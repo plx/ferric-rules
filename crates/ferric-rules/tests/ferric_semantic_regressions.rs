@@ -160,7 +160,11 @@ fn run_ferric_semantic_regression_engine_with_strategy(
         .unwrap_or_else(|_| panic!("{context} reset failed"));
 
     let rules_fired = run_regression_with_guard(&mut engine, context);
-    let output = engine.get_output("t").unwrap_or("").to_string();
+    let output = engine
+        .get_output("t")
+        .expect("fixture output is UTF-8")
+        .unwrap_or("")
+        .to_string();
 
     RegressionEngine {
         engine,
@@ -577,7 +581,10 @@ fn test_semantic_regression_action_loop_budget_preserves_boundary_and_stops_over
     exact.reset().expect("reset exact loop");
     let exact_run = exact.run(RunLimit::Unlimited).expect("run exact loop");
     assert_eq!(exact_run.halt_reason, HaltReason::AgendaEmpty);
-    assert_eq!(exact.get_output("t"), Some("1|2|3|"));
+    assert_eq!(
+        exact.get_output("t").expect("fixture output is UTF-8"),
+        Some("1|2|3|")
+    );
     assert_eq!(
         exact
             .find_facts("completed")
@@ -601,7 +608,10 @@ fn test_semantic_regression_action_loop_budget_preserves_boundary_and_stops_over
     over.reset().expect("reset over-budget loop");
     let over_run = over.run(RunLimit::Unlimited).expect("run over-budget loop");
     assert_eq!(over_run.halt_reason, HaltReason::ActionError);
-    assert_eq!(over.get_output("t"), Some("1|2|3|"));
+    assert_eq!(
+        over.get_output("t").expect("fixture output is UTF-8"),
+        Some("1|2|3|")
+    );
     assert!(over
         .find_facts("completed")
         .expect("completed facts")
@@ -685,7 +695,13 @@ fn test_semantic_regression_rhs_error_stops_run_and_retains_later_activation() {
     let first = engine.run(RunLimit::Unlimited).expect("first run");
     assert_eq!(first.rules_fired, 1);
     assert_eq!(first.halt_reason, HaltReason::ActionError);
-    assert_eq!(engine.get_output("t").unwrap_or(""), "before-error|\n");
+    assert_eq!(
+        engine
+            .get_output("t")
+            .expect("fixture output is UTF-8")
+            .unwrap_or(""),
+        "before-error|\n"
+    );
     assert!(engine
         .find_facts("rhs-after")
         .expect("rhs-after facts")
@@ -705,7 +721,10 @@ fn test_semantic_regression_rhs_error_stops_run_and_retains_later_activation() {
     assert_eq!(second.rules_fired, 1);
     assert_eq!(second.halt_reason, HaltReason::AgendaEmpty);
     assert_eq!(
-        engine.get_output("t").unwrap_or(""),
+        engine
+            .get_output("t")
+            .expect("fixture output is UTF-8")
+            .unwrap_or(""),
         "before-error|\nlater-activation|\n"
     );
     assert_eq!(
@@ -875,7 +894,7 @@ fn fr_rete_003_ferric_regression_staged_late_rule_backfill_fixture() {
 
     assert_eq!(rules_fired, 3);
     assert_eq!(
-        engine.get_output("t"),
+        engine.get_output("t").expect("fixture output is UTF-8"),
         Some("single\njoin 1\nstate alice\n")
     );
 }

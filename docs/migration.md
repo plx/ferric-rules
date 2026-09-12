@@ -182,8 +182,8 @@ Ferric uses byte-equality comparison with no Unicode normalization:
 - ASCII content: behavior identical to CLIPS.
 - Non-ASCII content: ensure inputs are normalized to a consistent form
   (e.g., NFC) before asserting.
-- `sub-string` uses byte indices. For ASCII, this is identical to CLIPS
-  character indices.
+- `sub-string` counts Unicode scalar values with one-based, inclusive positions.
+  It clips starts below one and ends beyond the STRING or SYMBOL text.
 
 ## Step 8: Test Incrementally
 
@@ -242,7 +242,7 @@ engine borrowed inside a manager callback.
 |--------|--------|
 | `=` vs `eq` | `=` is numeric (coerces types); `eq` is value+type sensitive |
 | `format` writes nowhere | `format` returns a string; use `(printout t (format nil ...) crlf)` |
-| `sub-string` byte indices | Byte-based, not codepoint-based; identical for ASCII |
+| `sub-string` positions | One-based, inclusive Unicode scalar positions; bounds clip to the text |
 | Function bodies are evaluator expressions | Put fact mutation and agenda/focus control in rule RHS code |
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
 | `reset`/`clear` are deferred | Flag is set and checked after the current action sequence completes |

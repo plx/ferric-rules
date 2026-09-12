@@ -25,12 +25,39 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 1 is the first versioned snapshot format. Builds supporting schema 1 must
-keep its meaning and pass the stored schema fixture and resume regressions.
-Changes to the serialized layout or runtime semantics that make an old state
-invalid require a schema-version change, a documented compatibility decision,
-and a fixture regression. Crate version and snapshot schema version are separate.
-Snapshots are not a promise to migrate arbitrary RETE internals forever.
+Ferric uses schema 8 for the combined snapshot layout. It brings
+explicit ordered-pattern field-count tests, independent ordered/template
+sequence plans and typed runtime filters together with byte lexeme pools,
+typed instance names, and byte output buffers. Physical
+width is checked before runtime callbacks; retained filter decisions and
+selected conflict/support history survive restoration without reevaluation.
+Pattern and join Boolean evaluation remain distinct.
+
+This build writes and accepts only version 8. Versions 1–7 are rejected
+before payload decoding. Schema 2 contains ordered cardinality, schema 5 runtime
+constraints, schema 6 byte lexemes, and schema 7 the ordered-cardinality/runtime
+composition. Schemas 3 and 4 belong to separate sequence and template-multislot
+layouts. These parallel formats are not interchangeable. The committed schema-8
+fixture and its source scenario exercise the combined layout and resume behavior
+in all five codecs.
+
+Use the producing Ferric version to export durable application data before
+upgrading. There is no automatic RETE-state migration. Original historical
+fixtures remain unchanged rejection regressions, while their source scenarios
+exercise current-format resume behavior in all five codecs. Those regressions
+retain cardinality, ordered/template split identities, future assertions, later
+rule compilation, byte/name identity, reset, and initial versus replacement
+existence-support errors. The combined source also exercises a runtime join
+reading an earlier sequence capture, raw buffered output, queued input, and
+drained scanner notices.
+
+Builds supporting a schema must keep its meaning and pass its stored fixture
+and resume regressions. Changes to the serialized layout or runtime semantics
+that make an old state invalid require a schema-version change, a documented
+compatibility decision, and a fixture regression. Crate version and snapshot
+schema version are separate. Snapshots are not a promise to migrate arbitrary
+RETE internals forever. Reserving distinct versions does not make their states
+interchangeable.
 
 This is an explicit pre-1.0 break from legacy raw snapshots. Unversioned bytes
 return `LegacySnapshot`; Ferric never guesses a codec, rebuilds an empty engine,
@@ -54,7 +81,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`1`) |
+| 8–9 | Little-endian schema version (`8`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -71,12 +98,13 @@ Supported persistence bounds are 16 MiB including the envelope, 128 Serde nestin
 levels, and 1,000,000 decoded items across the whole payload. Collection length
 hints are checked before allocation and do not control allocation capacity.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
-16 levels, alpha paths 64 tests, beta parent paths 66 nodes (including root
+16 levels, alpha paths 64 value tests plus one ordered field-count test,
+beta parent paths 66 nodes (including root
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
-Graph validation has a 10,000,000-operation work allowance and a separate equal
-allowance for compiler-cache validation. It charges cross-products and test/index
+Graph validation has a 10,000,000-operation work allowance and separate equal
+allowances for compiler-cache and runtime-condition validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed
 these persistence bounds; its direct engine API remains usable.
 
@@ -94,8 +122,23 @@ ownership; runtime rule metadata; graph ancestry and memory ownership; exact
 positive joins and their bindings; complete negative/exists support and NCC
 ownership; token reverse indexes; activation identity, chronology, recency and
 strategy keys; and compiler-cache references. It rejects unfinished predicate
-work. Historical predicate outcomes are retained, since re-evaluating a predicate
-against globals changed later would alter refraction and resume behavior.
+work, including unfinished local filters and negative-conflict searches.
+Sequence plans are checked against their physical ordered or template sources;
+flattened logical selectors and persisted capture lengths have separate bounds.
+Runtime conditions are checked against their graph-owned roles, physical local
+field selectors, and lexical binding scopes, including outer sequence captures. Each alpha path admits at most one ordered
+field-count test, its bounds must be ordered, and retained runtime-filter facts
+must still pass their static predecessor tests. Historical predicate outcomes and local
+filter membership are retained, since re-evaluating against globals changed
+later would alter refraction and resume behavior. Runtime negative joins retain
+the selected conflict and candidate order; replacement proceeds after that
+conflict instead of reconsidering rejected predecessors.
+
+Scanner notices retain their public message and router bytes, but diagnostic
+history stores their existing textual error alternative rather than introducing
+a notice-specific wire variant. Other evaluator diagnostics retain their typed
+payloads. Restoring a structured scanner notice normalizes it without replaying
+output or callbacks; this does not bypass envelope version rejection.
 
 These checks run at snapshot boundaries, not on ordinary evaluation paths.
 Decoding creates a separate engine; an error cannot partially replace the caller's

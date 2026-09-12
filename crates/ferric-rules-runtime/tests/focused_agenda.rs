@@ -46,7 +46,7 @@ fn finish(engine: &mut Engine, strategy: ConflictResolutionStrategy, count: usiz
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
     assert_eq!(result.rules_fired, count + 1 - 5);
     let active = expected(strategy, count, "");
-    assert_eq!(engine.get_output("t"), Some(active.as_str()));
+    assert_eq!(engine.get_output("t").unwrap(), Some(active.as_str()));
     assert_eq!(engine.agenda_len(), count);
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
     #[cfg(debug_assertions)]
@@ -57,7 +57,7 @@ fn finish(engine: &mut Engine, strategy: ConflictResolutionStrategy, count: usiz
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
     assert_eq!(result.rules_fired, count + 1);
     let complete = active + &expected(strategy, count, "d");
-    assert_eq!(engine.get_output("t"), Some(complete.as_str()));
+    assert_eq!(engine.get_output("t").unwrap(), Some(complete.as_str()));
     assert_eq!(engine.agenda_len(), 0);
     #[cfg(debug_assertions)]
     engine.debug_assert_consistency();

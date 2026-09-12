@@ -3,15 +3,15 @@
 This is a systematic discovery and characterization suite for Ferric's targeted
 CLIPS subset. Its 219 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 158 clean conformance cases and 61 active
-characterizations of differences on engine snapshot `d428e780`.
+CLIPS-verified output oracle. All 219 currently conform to the pinned CLIPS
+oracle on this integration.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs
-another execution protocol. [GAPS.md](GAPS.md) links the 27 newly filed issues and
-previously tracked defects. Those issues preserve the original discovery on
-`eb24cc50`; the manifest records the refreshed observations. No engine behavior
-is changed by this suite.
+another execution protocol. [GAPS.md](GAPS.md) preserves the discovery history for
+27 newly filed issues and previously tracked defects. Those issues record the
+original observations on `eb24cc50`; the manifest now records every program as a
+conformance case. The suite itself does not change engine behavior.
 
 ## Run
 
@@ -85,10 +85,8 @@ characterization, so moving fixture code requires reviewing those locations.
 Issue state on GitHub is not consulted at test time; the manifest's recorded
 observation determines whether a case is a conformance check or an active gap.
 The issue index also preserves discoveries that subsequent engine changes fix.
-Retained expression fact-query cases (`any-factp`, `find-fact`, and
-`find-all-facts`) characterize explicit rejection by the current supported
-subset, including empty-result controls; they do not imply these forms are
-currently supported.
+Expression and action fact-query cases now run as conformance cases. Their
+empty-result controls remain part of the exact CLIPS behavior asserted here.
 
 ## Oracle provenance and safety
 

@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Read the decision from the printout channel, or inspect working memory
     // for the (show ...) fact.
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     assert_eq!(output, "ACTION: rate-app\n");
 
     Ok(())

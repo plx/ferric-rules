@@ -1,0 +1,13 @@
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)))
+(defrule mutate (declare (salience 100)) =>
+  (do-for-all-facts ((?f item)) TRUE (retract ?f))
+  (assert (done)) (printout t "mutated" crlf))
+(defrule absent (declare (salience 10))
+  (done) (not (item (value ?x))) => (printout t "not" crlf))
+(defrule no_pair (done) (not (and (item (value ?x)) (item (value ?y))))
+  => (printout t "ncc" crlf))
+(defrule canceled_exists (declare (salience -10))
+  (exists (item (value ?x))) => (printout t "unexpected-exists" crlf))
+(defrule canceled_positive (declare (salience -20))
+  (item (value ?x)) => (printout t "unexpected-positive" crlf))

@@ -1,0 +1,13 @@
+red;comment
+red(blue)
+red"blue"
+a&b
+MAIN::name tail
+a:b tail
+ red tail
+(one two)
+?x tail
+$?x tail
+?*x* tail
+& tail
+<- tail

@@ -140,7 +140,7 @@ fn qualified_function_call_resolves() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "7");
 }
 
@@ -166,6 +166,7 @@ fn qualified_function_call_unknown_module() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Multiple public execution-boundary observations.
 fn action_error_stops_current_rhs_and_run_without_discarding_later_activations() {
     let temp = tempfile::NamedTempFile::new().expect("tempfile");
     let path = temp.path().to_string_lossy().replace('\\', "\\\\");
@@ -213,8 +214,11 @@ fn action_error_stops_current_rhs_and_run_without_discarding_later_activations()
     let first = engine.run(crate::RunLimit::Unlimited).expect("first run");
     assert_eq!(first.rules_fired, 1);
     assert_eq!(first.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(engine.get_output("t").unwrap_or(""), "before-error|\n");
-    assert_eq!(engine.get_output("stderr").unwrap_or(""), "");
+    assert_eq!(
+        engine.get_output("t").unwrap().unwrap_or(""),
+        "before-error|\n"
+    );
+    assert_eq!(engine.get_output("stderr").unwrap().unwrap_or(""), "");
     assert_no_fact_with_relation(&engine, "assert-after");
     assert_has_fact_with_relation(&engine, "retractable");
     assert_no_fact_with_relation(&engine, "later-ran");
@@ -249,7 +253,7 @@ fn action_error_stops_current_rhs_and_run_without_discarding_later_activations()
     assert_eq!(second.rules_fired, 1);
     assert_eq!(second.halt_reason, crate::HaltReason::AgendaEmpty);
     assert_eq!(
-        engine.get_output("t").unwrap_or(""),
+        engine.get_output("t").unwrap().unwrap_or(""),
         "before-error|\nlater-activation|\n"
     );
     assert_has_fact_with_relation(&engine, "later-ran");
@@ -264,7 +268,10 @@ fn action_error_stops_current_rhs_and_run_without_discarding_later_activations()
         .expect("run after reset");
     assert_eq!(after_reset.rules_fired, 1);
     assert_eq!(after_reset.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(engine.get_output("t").unwrap_or(""), "before-error|\n");
+    assert_eq!(
+        engine.get_output("t").unwrap().unwrap_or(""),
+        "before-error|\n"
+    );
     assert_eq!(engine.agenda_len(), 1);
     assert!(matches!(
         engine.action_diagnostics(),
@@ -440,7 +447,7 @@ fn qualified_generic_call_resolves() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "105");
 }
 
@@ -476,7 +483,7 @@ fn qualified_global_reference_resolves() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "100");
 }
 
@@ -523,7 +530,7 @@ fn deffacts_can_resolve_global_values() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("3|(a b c)"),
         "expected resolved deffacts global output, got: {output}"
@@ -551,7 +558,7 @@ fn rhs_bind_can_rebind_local_variable() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains('3'),
         "expected local bind-rebind output, got: {output}"
@@ -577,7 +584,7 @@ fn trailing_multivariable_capture_behaves_as_multifield_in_rhs() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("(y z)"),
         "expected subseq$ to see multifield capture, got: {output}"
@@ -651,7 +658,7 @@ fn same_name_functions_can_coexist_across_modules() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "1 2");
 }
 
@@ -701,7 +708,7 @@ fn same_name_globals_can_coexist_across_modules() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "1 2");
 }
 
@@ -720,7 +727,7 @@ fn same_module_function_always_visible() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "10");
 }
 
@@ -740,7 +747,7 @@ fn deffunction_body_can_printout_to_router() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("before"), "missing before marker: {output}");
     assert!(
         output.contains("Passed values: |3|(a b c)|"),
@@ -763,7 +770,7 @@ fn cross_module_function_visible_when_exported_and_imported() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "7");
 }
 
@@ -792,7 +799,7 @@ fn cross_module_function_not_visible_without_export() {
             .rules_fired,
         0
     );
-    assert_eq!(engine.get_output("t"), None);
+    assert_eq!(engine.get_output("t").unwrap(), None);
 }
 
 #[test]
@@ -833,7 +840,7 @@ fn same_module_global_always_visible() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "42");
 }
 
@@ -851,7 +858,7 @@ fn cross_module_global_visible_when_exported_and_imported() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "100");
 }
 
@@ -880,7 +887,7 @@ fn cross_module_global_not_visible_without_export() {
             .rules_fired,
         0
     );
-    assert_eq!(engine.get_output("t"), None);
+    assert_eq!(engine.get_output("t").unwrap(), None);
 }
 
 #[test]
@@ -900,7 +907,7 @@ fn function_body_executes_in_own_module_context() {
     load_ok(&mut engine, source);
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     // add(3, 4) = helper(3) + 4 = 6 + 4 = 10
     assert_eq!(output.trim(), "10");
 }
@@ -964,7 +971,7 @@ fn no_conflict_separate_names_function_and_generic() {
     engine.reset().unwrap();
     load_ok(&mut engine, "(assert (data 5))");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "6");
 }
 
@@ -988,7 +995,7 @@ fn generic_dispatch_prefers_integer_over_number() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "1",
@@ -1011,7 +1018,7 @@ fn generic_dispatch_falls_through_to_number_for_float() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "2",
@@ -1034,7 +1041,7 @@ fn generic_dispatch_prefers_symbol_over_lexeme() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "1",
@@ -1050,14 +1057,14 @@ fn generic_dispatch_unrestricted_is_least_specific() {
         r"
         (defgeneric classify)
         (defmethod classify ((?x INTEGER)) 1)
-        (defmethod classify ((?x))         2)
+        (defmethod classify (?x)          2)
         (defrule test (go) => (printout t (classify 42) crlf))
         (deffacts startup (go))
     ",
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "1",
@@ -1081,7 +1088,7 @@ fn generic_dispatch_wildcard_less_specific_than_fixed() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "1",
@@ -1106,7 +1113,7 @@ fn generic_dispatch_registration_order_irrelevant() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "1",
@@ -1133,7 +1140,7 @@ fn call_next_method_chains_to_less_specific() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "142",
@@ -1150,14 +1157,14 @@ fn call_next_method_three_level_chain() {
         (defgeneric classify)
         (defmethod classify ((?x INTEGER)) (+ 1000 (call-next-method)))
         (defmethod classify ((?x NUMBER))  (+ 100 (call-next-method)))
-        (defmethod classify ((?x))         7)
+        (defmethod classify (?x)          7)
         (defrule test (go) => (printout t (classify 5) crlf))
         (deffacts startup (go))
     ",
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "1107", "Three-level chain: 1000 + 100 + 7");
 }
 
@@ -1178,7 +1185,7 @@ fn call_next_method_no_next_method_produces_error() {
     run_to_completion(&mut engine);
     // The rule fires but the action produces a diagnostic (no next method).
     // The printout won't produce output since the call-next-method errors.
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.trim().is_empty() || !output.contains('5'),
         "call-next-method with no next should produce an error, not output"
@@ -1200,7 +1207,7 @@ fn call_next_method_outside_generic_produces_error() {
     engine.reset().unwrap();
     run_to_completion(&mut engine);
     // The function call should produce an error diagnostic.
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.trim().is_empty(),
         "call-next-method outside generic should produce error, got: {output}"
@@ -1225,7 +1232,7 @@ fn type_predicates_in_rule_rhs() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "TRUE TRUE TRUE TRUE TRUE");
 }
 
@@ -1243,7 +1250,7 @@ fn type_conversion_integer_and_float() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "3 42.0");
 }
 
@@ -1260,7 +1267,7 @@ fn evenp_oddp_in_test_ce() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("4 is even"),
         "4 should be even, got: {output}"
@@ -1286,7 +1293,7 @@ fn multifieldp_false_for_non_multifield() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(
         output.trim(),
         "FALSE",
@@ -1308,7 +1315,7 @@ fn type_conversion_integer_passthrough_and_float_passthrough() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "10 2.5");
 }
 
@@ -1329,7 +1336,7 @@ fn str_cat_basic_concatenation() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "hello world");
 }
 
@@ -1346,7 +1353,7 @@ fn str_cat_mixed_types() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "x=42 y=1.5");
 }
 
@@ -1363,7 +1370,7 @@ fn str_cat_zero_args_returns_empty_string() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "||");
 }
 
@@ -1380,7 +1387,7 @@ fn sym_cat_returns_symbol() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "TRUE");
 }
 
@@ -1397,7 +1404,7 @@ fn sym_cat_content_matches_concatenation() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "foobar");
 }
 
@@ -1416,7 +1423,7 @@ fn gensym_and_setgen_generate_expected_sequence() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "gen10 gen11");
 }
 
@@ -1433,7 +1440,7 @@ fn str_length_of_string() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "5");
 }
 
@@ -1450,7 +1457,7 @@ fn str_length_of_empty_string_is_zero() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "0");
 }
 
@@ -1467,7 +1474,7 @@ fn str_length_counts_utf8_characters() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "1");
 }
 
@@ -1484,7 +1491,7 @@ fn sub_string_extracts_middle() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "ell");
 }
 
@@ -1501,7 +1508,7 @@ fn sub_string_uses_character_positions_for_utf8() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "é");
 }
 
@@ -1518,7 +1525,7 @@ fn sub_string_out_of_range_returns_empty() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "||");
 }
 
@@ -1535,7 +1542,7 @@ fn sub_string_utf8_out_of_range_returns_empty() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "||");
 }
 
@@ -1552,7 +1559,7 @@ fn str_cat_float_always_includes_decimal() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "3.0");
 }
 
@@ -1573,7 +1580,7 @@ fn create_mf_and_length_pipeline() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "3");
 }
 
@@ -1590,7 +1597,7 @@ fn create_mf_empty_has_length_zero() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "0");
 }
 
@@ -1607,7 +1614,7 @@ fn nth_mf_extracts_element() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "20");
 }
 
@@ -1624,7 +1631,7 @@ fn member_mf_found_prints_position() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "3");
 }
 
@@ -1641,7 +1648,7 @@ fn member_mf_not_found_prints_false() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "FALSE");
 }
 
@@ -1658,7 +1665,7 @@ fn subsetp_true_case() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "TRUE");
 }
 
@@ -1675,7 +1682,7 @@ fn subsetp_false_case() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "FALSE");
 }
 
@@ -1692,7 +1699,7 @@ fn multifieldp_true_for_create_mf() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "TRUE");
 }
 
@@ -1710,7 +1717,7 @@ fn create_mf_flattens_nested_multifield_integration() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "4");
 }
 
@@ -1729,7 +1736,7 @@ fn assert_splices_multifield_values_into_ordered_fact() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("(a b c)"),
         "expected spliced multifield assertion output, got: {output:?}"
@@ -1753,7 +1760,7 @@ fn implode_mf_returns_space_separated_string() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "1 2 3");
 }
 
@@ -1770,7 +1777,7 @@ fn subseq_mf_extracts_expected_slice() {
     );
     engine.reset().unwrap();
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "(b c)");
 }
 
@@ -1814,7 +1821,7 @@ fn read_integer_from_input() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "42");
 }
 
@@ -1832,7 +1839,7 @@ fn readline_from_input() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "hello world");
 }
 
@@ -1849,7 +1856,7 @@ fn read_eof_when_no_input() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "EOF");
 }
 
@@ -1914,7 +1921,7 @@ fn printout_special_symbols_crlf_tab() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output, "a\tb\nc");
 }
 
@@ -1932,8 +1939,11 @@ fn printout_to_different_channels() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    assert_eq!(engine.get_output("t").unwrap_or(""), "stdout\n");
-    assert_eq!(engine.get_output("stderr").unwrap_or(""), "error\n");
+    assert_eq!(engine.get_output("t").unwrap().unwrap_or(""), "stdout\n");
+    assert_eq!(
+        engine.get_output("stderr").unwrap().unwrap_or(""),
+        "error\n"
+    );
 }
 
 #[test]
@@ -1949,7 +1959,7 @@ fn printout_mixed_types() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output, "count=42 val=3.5\n");
 }
 
@@ -1966,7 +1976,7 @@ fn println_writes_to_t_with_trailing_newline() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    assert_eq!(engine.get_output("t").unwrap_or(""), "count=42\n");
+    assert_eq!(engine.get_output("t").unwrap().unwrap_or(""), "count=42\n");
 }
 
 #[test]
@@ -1986,7 +1996,7 @@ fn rhs_fact_slot_access_supports_compact_assignment_and_nested_calls() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     let run = run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("").to_string();
+    let output = engine.get_output("t").unwrap().unwrap_or("").to_string();
     let diagnostics = engine.action_diagnostics().to_vec();
     assert_eq!(
         run.rules_fired, 1,
@@ -2024,7 +2034,7 @@ fn get_focus_in_rule_rhs() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "MAIN");
 }
 
@@ -2049,7 +2059,7 @@ fn list_focus_stack_prints_to_stdout() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("MAIN"),
         "should show MAIN in focus stack, got: {output}"
@@ -2075,7 +2085,7 @@ fn agenda_prints_activations() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     // The agenda printout should have mentioned "low-priority"
     // since it was on the agenda when show-agenda fired
     assert!(
@@ -2095,7 +2105,7 @@ fn rules_prints_loaded_rule_names() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("alpha"),
         "rules output missing alpha: {output}"
@@ -2124,7 +2134,7 @@ fn ppdefrule_prints_named_rule_definition() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("(defrule target"),
         "ppdefrule output missing rule header: {output}"
@@ -2151,7 +2161,7 @@ fn ppdefrule_star_prints_all_loaded_definitions() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("(defrule alpha"),
         "ppdefrule * output missing alpha definition: {output}"
@@ -2187,7 +2197,7 @@ fn runtime_load_mutates_rule_set_and_rules_output() {
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.lines().any(|line| line.trim() == "loaded-one"),
         "rules output should include loaded-one after runtime load: {output}"
@@ -2257,7 +2267,7 @@ fn undefrule_star_removes_rules_and_cancels_pending_activations() {
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("(no rules)"),
         "expected empty rules listing after undefrule *, got: {output}"
@@ -2293,7 +2303,7 @@ fn undefrule_by_name_removes_targeted_rule_before_it_fires() {
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         !output.contains("VICTIM-FIRED"),
         "targeted undefrule should cancel victim activation: {output}"
@@ -2325,7 +2335,7 @@ fn run_from_rhs_is_noop() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "survived");
 }
 
@@ -2348,7 +2358,7 @@ fn halt_stops_execution_from_rhs() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "first");
     assert!(engine.is_halted());
 }
@@ -2372,7 +2382,7 @@ fn focus_changes_execution_order() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     // At least the MAIN::kick rule should fire (focus starts on MAIN).
     // After focus SENSOR, SENSOR::sense fires for the second (reading) fact.
     assert!(
@@ -2394,7 +2404,7 @@ fn fixture_phase4_stdlib_math() {
     load_fixture(&mut engine, "phase4_stdlib_math.clp");
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("abs(-5): 5"), "output: {output}");
     assert!(output.contains("min(3,1,2): 1"), "output: {output}");
     assert!(output.contains("max(3,1,2): 3"), "output: {output}");
@@ -2411,7 +2421,7 @@ fn fixture_phase4_stdlib_string() {
     load_fixture(&mut engine, "phase4_stdlib_string.clp");
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("str-cat: hello world"), "output: {output}");
     assert!(output.contains("sym-cat: foobar"), "output: {output}");
     assert!(output.contains("str-length: 5"), "output: {output}");
@@ -2428,7 +2438,7 @@ fn fixture_phase4_stdlib_multifield() {
     load_fixture(&mut engine, "phase4_stdlib_multifield.clp");
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("length$: 4"), "output: {output}");
     assert!(output.contains("member$: 2"), "output: {output}");
     assert!(output.contains("subsetp: TRUE"), "output: {output}");
@@ -2440,7 +2450,7 @@ fn fixture_phase4_stdlib_io() {
     load_fixture(&mut engine, "phase4_stdlib_io.clp");
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("hello\tworld"), "output: {output}");
     assert!(output.contains("focus: MAIN"), "output: {output}");
     assert!(output.contains("stack: (MAIN)"), "output: {output}");
@@ -2452,7 +2462,7 @@ fn fixture_phase4_generic_dispatch() {
     load_fixture(&mut engine, "phase4_generic_dispatch.clp");
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     // classify(42) should dispatch to INTEGER method → 1
     assert!(output.contains("classify(42)=1"), "output: {output}");
     // classify(3.14) should dispatch to FLOAT method → 2
@@ -2467,7 +2477,7 @@ fn fixture_phase4_module_qualified() {
     load_fixture(&mut engine, "phase4_module_qualified.clp");
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("add: 7"), "output: {output}");
     assert!(output.contains("square: 9"), "output: {output}");
 }
@@ -2491,7 +2501,7 @@ fn cross_feature_deffunction_with_stdlib() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "value=4 doubled=8");
 }
 
@@ -2516,7 +2526,7 @@ fn cross_feature_generic_with_multifield() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("mf-count: 3"), "output: {output}");
     assert!(output.contains("int-count: 1"), "output: {output}");
 }
@@ -2538,7 +2548,7 @@ fn cross_feature_globals_with_format() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "counter=1");
 }
 
@@ -2560,7 +2570,7 @@ fn cross_feature_read_and_deffunction() {
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert_eq!(output.trim(), "Hello, hello!");
 }
 
@@ -2787,7 +2797,7 @@ fn if_with_printout_in_branch() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         output.contains("positive"),
         "expected 'positive' in output, got: {output:?}"
@@ -2909,7 +2919,7 @@ fn loop_for_count_runs_correct_iterations() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains('1'), "output: {output:?}");
     assert!(output.contains('2'), "output: {output:?}");
     assert!(output.contains('3'), "output: {output:?}");
@@ -2933,7 +2943,7 @@ fn loop_for_count_default_start_is_one() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     // Should print 1, 2, 3
     assert!(output.contains('1'), "output: {output:?}");
     assert!(output.contains('2'), "output: {output:?}");
@@ -2980,7 +2990,7 @@ fn while_loop_runs_printout() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains('3'), "output: {output:?}");
     assert!(output.contains('2'), "output: {output:?}");
     assert!(output.contains('1'), "output: {output:?}");
@@ -3002,7 +3012,7 @@ fn while_loop_body_never_executes_on_false_condition() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(
         !output.contains("should-not-appear"),
         "output should be empty, got: {output:?}"
@@ -3026,7 +3036,7 @@ fn progn_dollar_iterates_multifield() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains('a'), "output: {output:?}");
     assert!(output.contains('b'), "output: {output:?}");
     assert!(output.contains('c'), "output: {output:?}");
@@ -3049,7 +3059,7 @@ fn progn_dollar_binds_index_variable() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains('1'), "expected index 1: {output:?}");
     assert!(output.contains('2'), "expected index 2: {output:?}");
     assert!(output.contains('3'), "expected index 3: {output:?}");
@@ -3072,7 +3082,7 @@ fn foreach_is_equivalent_to_progn_dollar() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains('x'), "output: {output:?}");
     assert!(output.contains('y'), "output: {output:?}");
     assert!(output.contains('z'), "output: {output:?}");
@@ -3125,7 +3135,11 @@ fn loop_for_count_handles_zero_descending_and_negative_ranges() {
             "{label}: {:?}",
             engine.action_diagnostics()
         );
-        assert_eq!(engine.get_output("t").unwrap_or(""), expected, "{label}");
+        assert_eq!(
+            engine.get_output("t").unwrap().unwrap_or(""),
+            expected,
+            "{label}"
+        );
     }
 }
 
@@ -3140,7 +3154,7 @@ fn loop_for_count_accepts_exact_budget_and_rejects_budget_plus_one() {
 "#;
     let (exact_engine, exact_run) = run_with_action_loop_budget(exact_source, 3);
     assert_eq!(exact_run.halt_reason, crate::HaltReason::AgendaEmpty);
-    assert_eq!(exact_engine.get_output("t"), Some("xxx"));
+    assert_eq!(exact_engine.get_output("t").unwrap(), Some("xxx"));
     assert_has_fact_with_relation(&exact_engine, "after-loop");
 
     let over_source = r#"
@@ -3152,7 +3166,7 @@ fn loop_for_count_accepts_exact_budget_and_rejects_budget_plus_one() {
 "#;
     let (over_engine, over_run) = run_with_action_loop_budget(over_source, 3);
     assert_eq!(over_run.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(over_engine.get_output("t"), Some("xxx"));
+    assert_eq!(over_engine.get_output("t").unwrap(), Some("xxx"));
     assert_no_fact_with_relation(&over_engine, "after-loop");
     assert_action_iteration_limit(&over_engine, "loop-for-count", 3);
 }
@@ -3222,7 +3236,7 @@ fn loop_for_count_full_i64_range_is_overflow_safe() {
         2,
     );
     assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("xx"));
     assert_no_fact_with_relation(&engine, "after-loop");
     assert_action_iteration_limit(&engine, "loop-for-count", 2);
 }
@@ -3241,7 +3255,7 @@ fn nested_while_and_loop_for_count_share_one_budget() {
 "#;
     let (engine, run) = run_with_action_loop_budget(while_outer, 4);
     assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("xx"));
     assert_no_fact_with_relation(&engine, "after-loop");
     assert_action_iteration_limit(&engine, "loop-for-count", 4);
 
@@ -3258,7 +3272,7 @@ fn nested_while_and_loop_for_count_share_one_budget() {
 "#;
     let (engine, run) = run_with_action_loop_budget(count_outer, 4);
     assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("xx"));
     assert_no_fact_with_relation(&engine, "after-loop");
     assert_action_iteration_limit(&engine, "while", 4);
 }
@@ -3319,7 +3333,7 @@ fn rhs_and_deffunction_loops_have_equivalent_budget_errors() {
     ] {
         let (engine, run) = run_with_action_loop_budget(source, 2);
         assert_eq!(run.halt_reason, crate::HaltReason::ActionError, "{label}");
-        assert_eq!(engine.get_output("t"), Some("xx"), "{label}");
+        assert_eq!(engine.get_output("t").unwrap(), Some("xx"), "{label}");
         assert_no_fact_with_relation(&engine, "after-loop");
         assert_action_iteration_limit(&engine, expected_function, 2);
     }
@@ -3341,7 +3355,7 @@ fn rhs_loop_and_nested_deffunction_loop_share_one_budget() {
         3,
     );
     assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
-    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("xx"));
     assert_no_fact_with_relation(&engine, "after-loop");
     assert_action_iteration_limit(&engine, "loop-for-count", 3);
 }
@@ -3361,7 +3375,7 @@ fn action_loop_budget_resets_for_each_activation() {
     );
     assert_eq!(run.halt_reason, crate::HaltReason::AgendaEmpty);
     assert_eq!(run.rules_fired, 2);
-    assert_eq!(engine.get_output("t"), Some("xxxx"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("xxxx"));
     assert!(engine.action_diagnostics().is_empty());
 }
 
@@ -3383,7 +3397,7 @@ fn nested_loops_work_correctly() {
     );
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t").unwrap().unwrap_or("");
     assert!(output.contains("1-1"), "output: {output:?}");
     assert!(output.contains("1-2"), "output: {output:?}");
     assert!(output.contains("2-1"), "output: {output:?}");
@@ -3480,91 +3494,117 @@ fn do_for_fact_stops_after_first_match() {
     );
 }
 
-/// `delayed-do-for-all-facts` loads and parses correctly.
+/// Delayed query members remain usable by fact actions after selection.
 #[test]
-fn load_rule_with_delayed_do_for_all_facts() {
+fn delayed_do_for_all_facts_retracts_each_selected_fact_once() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defglobal ?*count* = 0)
+(defrule probe =>
+    (delayed-do-for-all-facts ((?f item)) TRUE
+        (retract ?f)
+        (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* ":" (any-factp ((?f item)) TRUE) crlf))
+"#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "{:?}",
+        engine.action_diagnostics()
+    );
+    assert_eq!(engine.get_output("t").unwrap(), Some("3:FALSE\n"));
+}
+
+/// `any-factp` evaluates existing template facts inside an `if` condition.
+#[test]
+fn any_factp_in_if_condition_reads_matching_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate flag (slot active))
+(deffacts trigger (go) (flag (active TRUE)))
+(defrule check (go) =>
+    (if (any-factp ((?f flag)) ?f:active)
+        then (printout t "has flags" crlf)
+        else (printout t "no flags" crlf)))
+"#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("has flags\n"));
+}
+
+/// `find-all-facts` returns every matching address in a bind value.
+#[test]
+fn find_all_facts_in_bind_returns_matching_addresses() {
     let mut engine = new_utf8_engine();
     load_ok(
         &mut engine,
         r"
-(deftemplate task (slot id))
-(defrule process
-    (go)
-    =>
-    (delayed-do-for-all-facts ((?t task)) TRUE (printout t ?t crlf)))
-(deffacts trigger (go))
+(deftemplate record (slot id))
+(deffacts trigger (go) (record (id 10)) (record (id 20)))
+(defrule gather (go) =>
+    (bind ?all (find-all-facts ((?r record)) TRUE))
+    (printout t (length$ ?all) crlf))
 ",
     );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("2\n"));
 }
 
-/// `any-factp` used as condition inside `if` rejects the unsupported expression context.
+/// `find-fact` returns the earliest matching address in a bind value.
 #[test]
-fn reject_rule_with_any_factp_in_if_condition() {
+fn find_fact_in_bind_returns_first_matching_address() {
     let mut engine = new_utf8_engine();
-    let errors = engine
-        .load_str(
-            r#"
-(deftemplate flag (slot active))
-(defrule check
-    (go)
-    =>
-    (if (any-factp ((?f flag)) TRUE)
-        then (printout t "has flags" crlf)
-        else (printout t "no flags" crlf)))
-(deffacts trigger (go))
-"#,
-        )
-        .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|error| error.to_string().contains("unsupported")));
-    assert!(engine.rules().is_empty());
-}
-
-/// `find-all-facts` used as the RHS of `bind` rejects the unsupported expression context.
-#[test]
-fn reject_rule_with_find_all_facts_in_bind() {
-    let mut engine = new_utf8_engine();
-    let errors = engine
-        .load_str(
-            r"
-(deftemplate record (slot id))
-(defrule gather
-    (go)
-    =>
-    (bind ?all (find-all-facts ((?r record)) TRUE))
-    (printout t ?all crlf))
-(deffacts trigger (go))
-",
-        )
-        .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|error| error.to_string().contains("unsupported")));
-    assert!(engine.rules().is_empty());
-}
-
-/// `find-fact` used as the RHS of `bind` rejects the unsupported expression context.
-#[test]
-fn reject_rule_with_find_fact_in_bind() {
-    let mut engine = new_utf8_engine();
-    let errors = engine
-        .load_str(
-            r"
+    load_ok(
+        &mut engine,
+        r"
 (deftemplate widget (slot id))
-(defrule get-first
-    (go)
-    =>
+(deffacts trigger (go) (widget (id 30)) (widget (id 10)))
+(defrule get-first (go) =>
     (bind ?w (find-fact ((?r widget)) TRUE))
-    (printout t ?w crlf))
-(deffacts trigger (go))
+    (printout t (fact-slot-value (nth$ 1 ?w) id) crlf))
 ",
-        )
-        .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|error| error.to_string().contains("unsupported")));
-    assert!(engine.rules().is_empty());
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("30\n"));
+}
+
+/// Discarding a result query's return value does not disable early stopping.
+#[test]
+fn standalone_result_queries_keep_predicate_evaluation_counts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defglobal ?*count* = 0)
+(defrule probe =>
+    (any-factp ((?f item)) (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* crlf)
+    (find-fact ((?f item)) (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* crlf)
+    (find-all-facts ((?f item)) (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* crlf))
+",
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t").unwrap(), Some("1\n2\n5\n"));
 }
 
 // ===========================================================================

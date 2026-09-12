@@ -1,0 +1,13 @@
+
+[CSTRCPSR3] Cannot define defmodule MAIN because of an import/export conflict caused by the deftemplate item.
+
+ERROR:
+(defmodule MAIN
+   (import LEFT deftemplate item)
+   (import RIGHT deftemplate item))
+[PRNTUTIL1] Unable to find deftemplate item.
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (printout t (any-factp ((?f item

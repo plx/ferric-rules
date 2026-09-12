@@ -109,7 +109,7 @@ fn prune_cleared_output_snapshots(
 ) {
     output_cstrings.borrow_mut().retain(|channel, _| {
         engine
-            .get_output(channel)
+            .get_output_bytes(channel)
             .is_some_and(|output| !output.is_empty())
     });
 }
@@ -380,6 +380,16 @@ unsafe fn engine_c_str_to_str<'a>(
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
 unsafe fn copy_str_to_buffer(
     s: &str,
+    buf: *mut c_char,
+    buf_len: usize,
+    out_len: *mut usize,
+    diagnostics: &Mutex<EngineDiagnostics>,
+) -> FerricError {
+    copy_bytes_to_buffer(s.as_bytes(), buf, buf_len, out_len, diagnostics)
+}
+
+unsafe fn copy_bytes_to_buffer(
+    s: &[u8],
     buf: *mut c_char,
     buf_len: usize,
     out_len: *mut usize,
@@ -878,8 +888,8 @@ pub unsafe extern "C" fn ferric_engine_retract(
 /// engine never invalidate it. Output written after this call is not reflected
 /// in the snapshot.
 ///
-/// If the captured output contains embedded NUL, this legacy C-string accessor
-/// returns null and records `InvalidArgument`. Use
+/// If the captured output contains embedded NUL or invalid UTF-8, this legacy
+/// text accessor returns null and records `InvalidArgument`. Use
 /// `ferric_engine_get_output_copy` to preserve every byte.
 ///
 /// Prefer `ferric_engine_get_output_copy` when retaining a borrowed pointer
@@ -902,7 +912,19 @@ pub unsafe extern "C" fn ferric_engine_get_output(
         return ptr::null();
     };
 
-    match handle.engine.get_output(channel_str) {
+    let output = match handle.engine.get_output(channel_str) {
+        Ok(output) => output,
+        Err(error) => {
+            handle.output_cstrings.borrow_mut().remove(channel_str);
+            set_engine_error_message(
+                handle.diagnostics,
+                FerricError::InvalidArgument,
+                format!("output is not valid UTF-8: {error}; use ferric_engine_get_output_copy"),
+            );
+            return ptr::null();
+        }
+    };
+    match output {
         Some(output) if !output.is_empty() => {
             use std::collections::hash_map::Entry;
 
@@ -958,7 +980,8 @@ pub unsafe extern "C" fn ferric_engine_get_output(
 /// This is the preferred output accessor for hosts that do not want to retain
 /// an engine-owned pointer. `*out_len` always reports the full required byte
 /// count including the trailing NUL when output exists. The copied payload
-/// preserves embedded NUL; `*out_len`, not C-string scanning, is authoritative.
+/// preserves embedded NUL and invalid UTF-8; `*out_len`, not C-string scanning,
+/// is authoritative.
 ///
 /// ## Contract
 ///
@@ -1012,9 +1035,9 @@ pub unsafe extern "C" fn ferric_engine_get_output_copy(
         Err(code) => return code,
     };
 
-    match handle.engine.get_output(channel_str) {
+    match handle.engine.get_output_bytes(channel_str) {
         Some(output) if !output.is_empty() => {
-            copy_str_to_buffer(output, buf, buf_len, out_len, handle.diagnostics)
+            copy_bytes_to_buffer(output, buf, buf_len, out_len, handle.diagnostics)
         }
         _ => set_engine_error_message(
             handle.diagnostics,

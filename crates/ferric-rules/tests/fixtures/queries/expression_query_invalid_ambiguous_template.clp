@@ -1,0 +1,6 @@
+(defmodule LEFT (export deftemplate item))
+(deftemplate LEFT::item (slot value))
+(defmodule RIGHT (export deftemplate item))
+(deftemplate RIGHT::item (slot value))
+(defmodule MAIN (import LEFT deftemplate item) (import RIGHT deftemplate item))
+(defrule MAIN::probe => (printout t (any-factp ((?f item)) TRUE) crlf))

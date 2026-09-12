@@ -16,14 +16,14 @@ let replacement = engine.assert(copy)?;
 ```
 
 Primitive integers, floats and strings remain ordinary inputs. A raw core
-`Value::Symbol` has no engine provenance and is rejected, including inside a
-multifield. `HostValue::multifield` retains its elements' ownership and rejects
+`Value::Symbol` or `Value::InstanceName` has no engine provenance and is
+rejected, including inside a multifield. `HostValue::multifield` retains its elements' ownership and rejects
 mixed origins. Nested void values and invalid string encodings are rejected
 before assertion. Host values allow 32 multifield levels and one million total
 values per assertion. Opaque external tokens remain valid in memory and are
 explicitly rejected by snapshot serialization.
 
-`SymbolHandle` and `HostValue` can move between threads along with their engine.
+`SymbolHandle`, `InstanceNameHandle`, and `HostValue` can move between threads along with their engine.
 Symbols survive `reset`. They are invalid after `clear` or in a separately
 restored engine. Clone an owned fact value with `HostFact::value` when it needs
 to escape the fact's borrow; ordinary `facts`/`get_fact` queries continue borrowing
@@ -52,3 +52,34 @@ The `core` crate and borrowed RETE inspection remain low-level facilities.
 `resolve_core_symbol` is an explicit adapter for a raw key obtained from the
 same engine's borrowed state. Core keys alone are not portable input values.
 Ordinary symbol lookup uses `resolve_symbol(SymbolHandle)` and checks ownership.
+
+
+## Byte lexemes and checked text access
+
+`FerricString::as_str()` now returns `Result<&str, Utf8Error>`.
+`Engine::get_output()` returns `Result<Option<&str>, Utf8Error>`; use `?` to
+propagate decoding errors. `FerricString::as_bytes()` and
+`Engine::get_output_bytes()` preserve every byte. `AsRef<str>` and `Borrow<str>`
+were removed from `FerricString`; the corresponding byte-slice traits remain.
+This is a deliberate pre-1.0 API migration, with no replacement decoding.
+
+Text constructors retain their input validation. Explicit byte constructors
+are `FerricString::from_bytes(bytes, encoding)`, `engine.create_string_bytes`,
+`engine.symbol_value_bytes`, and `engine.instance_name_value_bytes`. Default
+`Utf8` mode admits byte values through these explicit APIs. Strict `Ascii`
+rejects non-ASCII strings; both strict-symbol modes reject non-ASCII symbols
+and instance names. Equality and indexing compare exact bytes and preserve
+the distinction between STRING, SYMBOL, and INSTANCE-NAME.
+
+`engine.instance_name_value("widget")` creates the same typed name as the
+source literal `[widget]`. It creates no COOL object. Name handles retain
+engine provenance, just like symbols. Use `resolve_symbol_bytes` and
+`resolve_instance_name_bytes` for exact unbracketed names; the checked instance
+text resolver reports invalid UTF-8. Legacy optional symbol text resolvers
+return `None` when a name is not valid UTF-8; byte lookup distinguishes that
+case from an absent or foreign handle.
+
+Captured output, snapshots, and language bindings preserve raw bytes. Display
+formatting used for debugging may escape invalid bytes; it is not a transport
+or a way to reconstruct source. See [byte value migration](byte-values.md) for
+native and language binding APIs.

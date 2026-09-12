@@ -18,6 +18,8 @@ pub enum FerricString {
     Ascii(Box<[u8]>),
     /// UTF-8 string.
     Utf8(Box<str>),
+    /// Byte string whose payload is not valid UTF-8.
+    Bytes(Box<[u8]>),
 }
 
 impl FerricString {
@@ -39,29 +41,30 @@ impl FerricString {
         }
     }
 
+    /// Construct an exact byte string. Strict ASCII mode still rejects non-ASCII.
+    /// Other modes preserve invalid UTF-8 through the explicit byte API.
+    pub fn from_bytes(bytes: &[u8], encoding: StringEncoding) -> Result<Self, EncodingError> {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Self::new(text, encoding),
+            Err(_) if encoding == StringEncoding::Ascii => {
+                Err(EncodingError::NonAsciiStringBytes(bytes.to_vec()))
+            }
+            Err(_) => Ok(Self::Bytes(bytes.into())),
+        }
+    }
+
     /// Returns the string content as a byte slice.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            Self::Ascii(bytes) => bytes,
+            Self::Ascii(bytes) | Self::Bytes(bytes) => bytes,
             Self::Utf8(s) => s.as_bytes(),
         }
     }
 
-    /// Attempts to return the string content as a `&str`.
-    ///
-    /// Always succeeds for `Utf8` variant. For `Ascii` variant, succeeds
-    /// because ASCII is valid UTF-8.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Ascii(bytes) => {
-                // SAFETY: ASCII bytes are always valid UTF-8.
-                // We enforce this invariant in the constructor.
-                std::str::from_utf8(bytes).expect("ASCII bytes should be valid UTF-8")
-            }
-            Self::Utf8(s) => s,
-        }
+    /// Return exact UTF-8 text, or a decoding error for a byte payload.
+    pub fn as_str(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(self.as_bytes())
     }
 
     /// Returns the length in bytes.
@@ -105,21 +108,30 @@ impl std::hash::Hash for FerricString {
     }
 }
 
+/// Diagnostic display: invalid UTF-8 bytes are escaped. Use `as_bytes` for
+/// value transport and CLIPS output; diagnostic spelling is not serialization.
 impl std::fmt::Display for FerricString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        if let Ok(text) = self.as_str() {
+            f.write_str(text)
+        } else {
+            for byte in self.as_bytes().escape_ascii() {
+                write!(f, "{}", char::from(byte))?;
+            }
+            Ok(())
+        }
     }
 }
 
-impl AsRef<str> for FerricString {
-    fn as_ref(&self) -> &str {
-        self.as_str()
+impl AsRef<[u8]> for FerricString {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
     }
 }
 
-impl std::borrow::Borrow<str> for FerricString {
-    fn borrow(&self) -> &str {
-        self.as_str()
+impl std::borrow::Borrow<[u8]> for FerricString {
+    fn borrow(&self) -> &[u8] {
+        self.as_bytes()
     }
 }
 
@@ -130,7 +142,7 @@ mod tests {
     #[test]
     fn ascii_mode_accepts_ascii() {
         let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
-        assert_eq!(s.as_str(), "hello");
+        assert_eq!(s.as_str().unwrap(), "hello");
         assert_eq!(s.len(), 5);
     }
 
@@ -144,13 +156,13 @@ mod tests {
     #[test]
     fn utf8_mode_accepts_unicode() {
         let s = FerricString::new("héllo 世界", StringEncoding::Utf8).unwrap();
-        assert_eq!(s.as_str(), "héllo 世界");
+        assert_eq!(s.as_str().unwrap(), "héllo 世界");
     }
 
     #[test]
     fn mixed_mode_accepts_unicode_strings() {
         let s = FerricString::new("héllo 世界", StringEncoding::AsciiSymbolsUtf8Strings).unwrap();
-        assert_eq!(s.as_str(), "héllo 世界");
+        assert_eq!(s.as_str().unwrap(), "héllo 世界");
     }
 
     #[test]
@@ -210,5 +222,51 @@ mod tests {
             h.finish()
         };
         assert_eq!(hash(&ascii), hash(&utf8));
+    }
+}
+
+#[cfg(test)]
+mod byte_tests {
+    use super::*;
+
+    #[test]
+    fn exact_byte_strings_preserve_invalid_utf8_and_nul() {
+        for bytes in [&b"\xc3"[..], &b"a\xff\0z"[..]] {
+            let string = FerricString::from_bytes(bytes, StringEncoding::Utf8).unwrap();
+            assert_eq!(string.as_bytes(), bytes);
+            assert!(string.as_str().is_err());
+            assert!(matches!(string, FerricString::Bytes(_)));
+        }
+        let nul = FerricString::from_bytes(b"a\0z", StringEncoding::Utf8).unwrap();
+        assert_eq!(nul.as_str().unwrap().as_bytes(), b"a\0z");
+    }
+
+    #[test]
+    fn byte_constructor_preserves_text_and_strict_ascii_policy() {
+        for text in ["", "ASCII", "é"] {
+            let string = FerricString::from_bytes(text.as_bytes(), StringEncoding::Utf8).unwrap();
+            assert!(matches!(string, FerricString::Utf8(_)));
+            assert_eq!(
+                string,
+                FerricString::new(text, StringEncoding::Utf8).unwrap()
+            );
+        }
+        assert!(FerricString::from_bytes(b"\xff", StringEncoding::Ascii).is_err());
+        assert!(FerricString::from_bytes("é".as_bytes(), StringEncoding::Ascii).is_err());
+        assert!(FerricString::from_bytes(b"\xff", StringEncoding::AsciiSymbolsUtf8Strings).is_ok());
+    }
+
+    #[test]
+    fn byte_hash_and_order_use_the_complete_payload() {
+        use std::collections::HashSet;
+        let low = FerricString::from_bytes(b"a\0\xc3", StringEncoding::Utf8).unwrap();
+        let high = FerricString::from_bytes(b"a\0\xff", StringEncoding::Utf8).unwrap();
+        assert!(low < high);
+        let mut values = HashSet::new();
+        values.insert(low.clone());
+        values.insert(high.clone());
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(low.as_bytes()));
+        assert!(values.contains(high.as_bytes()));
     }
 }

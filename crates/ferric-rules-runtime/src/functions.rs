@@ -160,7 +160,18 @@ pub struct GlobalStore {
     )]
     pub(crate) values: ModuleNameMap<Value>,
     pub(crate) gensym_counter: i64,
-    printout_events: Vec<(String, String)>,
+    printout_events: Vec<(String, Vec<u8>)>,
+    /// Deferred diagnostics are drained at engine operation boundaries.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    diagnostics: Vec<crate::evaluator::EvalError>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    evaluation_halted: bool,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    evaluation_error: bool,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    sort_return_requested: bool,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    sort_recovery_depth: usize,
 }
 
 impl Default for GlobalStore {
@@ -169,6 +180,11 @@ impl Default for GlobalStore {
             values: HashMap::default(),
             gensym_counter: 1,
             printout_events: Vec::new(),
+            diagnostics: Vec::new(),
+            evaluation_halted: false,
+            evaluation_error: false,
+            sort_return_requested: false,
+            sort_recovery_depth: 0,
         }
     }
 }
@@ -220,19 +236,107 @@ impl GlobalStore {
     }
 
     /// Queue a deferred `printout` event emitted from expression evaluation.
-    pub fn push_printout_event(&mut self, channel: String, text: String) {
-        self.printout_events.push((channel, text));
+    pub fn push_printout_event(&mut self, channel: String, text: impl AsRef<[u8]>) {
+        self.printout_events.push((channel, text.as_ref().to_vec()));
     }
 
     /// Drain queued deferred `printout` events in FIFO order.
-    pub fn take_printout_events(&mut self) -> Vec<(String, String)> {
+    pub fn take_printout_events(&mut self) -> Vec<(String, Vec<u8>)> {
         std::mem::take(&mut self.printout_events)
+    }
+
+    /// Queue a nonfatal evaluator diagnostic without changing its returned value.
+    pub(crate) fn push_diagnostic(&mut self, diagnostic: crate::evaluator::EvalError) {
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// Queue a diagnostic and stop execution after the current expression returns.
+    pub(crate) fn push_halt_diagnostic(&mut self, diagnostic: crate::evaluator::EvalError) {
+        self.evaluation_halted = true;
+        self.evaluation_error = true;
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// Whether an evaluator failure has requested a deferred halt.
+    #[must_use]
+    pub(crate) fn evaluation_halted(&self) -> bool {
+        self.evaluation_halted
+    }
+
+    /// Consume the deferred halt at an execution boundary.
+    pub(crate) fn take_evaluation_halt(&mut self) -> bool {
+        self.evaluation_error = false;
+        std::mem::take(&mut self.evaluation_halted)
+    }
+
+    /// Whether the most recent evaluation reports an error.
+    #[must_use]
+    pub(crate) fn evaluation_error(&self) -> bool {
+        self.evaluation_error
+    }
+
+    /// Clear the current evaluation error without clearing a sticky halt.
+    pub(crate) fn clear_evaluation_error(&mut self) {
+        self.evaluation_error = false;
+    }
+
+    /// Request a return from the enclosing callable or rule after sort completes.
+    pub(crate) fn request_sort_return(&mut self) {
+        self.sort_return_requested = true;
+    }
+
+    /// Whether a sort comparator requested an enclosing return.
+    #[must_use]
+    pub(crate) fn sort_return_requested(&self) -> bool {
+        self.sort_return_requested
+    }
+
+    /// Consume a sort return at the enclosing callable or rule boundary.
+    pub(crate) fn take_sort_return(&mut self) -> bool {
+        std::mem::take(&mut self.sort_return_requested)
+    }
+
+    /// Enter a sort expression that preserves CLIPS error return values.
+    pub(crate) fn begin_sort_recovery(&mut self) {
+        self.sort_recovery_depth += 1;
+    }
+
+    /// Leave the current sort recovery scope.
+    pub(crate) fn end_sort_recovery(&mut self) {
+        debug_assert!(self.sort_recovery_depth > 0);
+        self.sort_recovery_depth = self.sort_recovery_depth.saturating_sub(1);
+    }
+
+    /// Whether evaluation is inside a sort recovery scope.
+    #[must_use]
+    pub(crate) fn is_sort_recovery_active(&self) -> bool {
+        self.sort_recovery_depth != 0
+    }
+
+    /// Drain evaluator diagnostics in the order they were emitted.
+    /// This does not consume a pending halt.
+    pub(crate) fn take_diagnostics(&mut self) -> Vec<crate::evaluator::EvalError> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn has_pending_diagnostics(&self) -> bool {
+        !self.diagnostics.is_empty()
+            || self.evaluation_halted
+            || self.evaluation_error
+            || self.sort_return_requested
+            || self.is_sort_recovery_active()
     }
 
     /// Clear all global variables (used during engine reset).
     pub fn clear(&mut self) {
         self.values.clear();
         self.printout_events.clear();
+        self.diagnostics.clear();
+        self.evaluation_halted = false;
+        self.evaluation_error = false;
+        self.sort_return_requested = false;
+        self.sort_recovery_depth = 0;
     }
 
     /// Debug-only structural checks for global store bookkeeping.
@@ -645,14 +749,67 @@ mod tests {
     #[test]
     fn global_store_printout_events_roundtrip_and_drain() {
         let mut store = GlobalStore::new();
-        store.push_printout_event("t".to_string(), "hello".to_string());
-        store.push_printout_event("wtrace".to_string(), "trace".to_string());
+        store.push_printout_event("t".to_string(), b"hello");
+        store.push_printout_event("wtrace".to_string(), b"trace");
 
         let events = store.take_printout_events();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], ("t".to_string(), "hello".to_string()));
-        assert_eq!(events[1], ("wtrace".to_string(), "trace".to_string()));
+        assert_eq!(events[0], ("t".to_string(), b"hello".to_vec()));
+        assert_eq!(events[1], ("wtrace".to_string(), b"trace".to_vec()));
         assert!(store.take_printout_events().is_empty());
+    }
+
+    #[test]
+    fn global_store_diagnostics_drain_in_order_and_clear_with_globals() {
+        let diagnostic = |name: &str| crate::evaluator::EvalError::UnknownFunction {
+            name: name.into(),
+            span: None,
+        };
+        let mut store = GlobalStore::new();
+        store.push_diagnostic(diagnostic("first"));
+        store.push_diagnostic(diagnostic("second"));
+        let diagnostics = store.take_diagnostics();
+        assert!(matches!(
+            diagnostics.as_slice(),
+            [crate::evaluator::EvalError::UnknownFunction { name: first, .. },
+             crate::evaluator::EvalError::UnknownFunction { name: second, .. }]
+                if first == "first" && second == "second"
+        ));
+        assert!(store.take_diagnostics().is_empty());
+        store.push_diagnostic(diagnostic("discarded-on-clear"));
+        store.clear();
+        assert!(store.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn deferred_error_halt_and_return_have_distinct_lifetimes() {
+        let mut store = GlobalStore::new();
+        store.push_halt_diagnostic(crate::evaluator::EvalError::UnknownFunction {
+            name: "failed".into(),
+            span: None,
+        });
+        assert!(store.evaluation_halted());
+        assert!(store.evaluation_error());
+        assert_eq!(store.take_diagnostics().len(), 1);
+        assert!(store.evaluation_halted());
+        store.clear_evaluation_error();
+        assert!(!store.evaluation_error());
+        assert!(store.evaluation_halted());
+        store.request_sort_return();
+        store.begin_sort_recovery();
+        store.begin_sort_recovery();
+        store.end_sort_recovery();
+        assert!(store.is_sort_recovery_active());
+        assert!(store.take_evaluation_halt());
+        assert!(!store.take_evaluation_halt());
+        assert!(store.take_sort_return());
+        assert!(!store.take_sort_return());
+        store.request_sort_return();
+        store.clear();
+        assert!(!store.evaluation_halted());
+        assert!(!store.evaluation_error());
+        assert!(!store.sort_return_requested());
+        assert!(!store.is_sort_recovery_active());
     }
 
     // -----------------------------------------------------------------------
@@ -1150,7 +1307,7 @@ mod tests {
                     GlobalOp::TakePrintoutEvents => {
                         let actual_events = store.take_printout_events();
                         // Must match the model queue in FIFO order.
-                        let expected: Vec<_> = model_events.drain(..).collect();
+                        let expected: Vec<_> = model_events.drain(..).map(|(channel, text)| (channel, text.into_bytes())).collect();
                         prop_assert_eq!(
                             actual_events,
                             expected,

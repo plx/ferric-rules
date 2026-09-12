@@ -1,0 +1,5 @@
+multiple:FALSE:TRUE:FALSE:[(2 3)]
+overlap:FALSE:TRUE:FALSE:[(1 2)]
+failed-prefix:FALSE:TRUE:FALSE:[(2 4)]
+scalar-repeat:TRUE:FALSE:FALSE:[2]
+singleton-repeat:TRUE:FALSE:FALSE:[2]

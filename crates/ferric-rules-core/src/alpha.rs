@@ -38,10 +38,11 @@ pub enum AlphaEntryType {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemoryId(pub u32);
 
-/// A constant test applied to a single slot of a fact.
+/// A constant test applied to a fact or one of its slots.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConstantTest {
+    /// Slot inspected by value tests; ignored by ordered field-count tests.
     pub slot: SlotIndex,
     pub test_type: ConstantTestType,
 }
@@ -78,6 +79,12 @@ pub enum ConstantTestType {
     GreaterOrEqualSlotOffset(SlotIndex, i64),
     /// Numeric slot less-or-equal against another slot plus integer offset.
     LessOrEqualSlotOffset(SlotIndex, i64),
+    /// Ordered fact cardinality, independent of any individual slot.
+    /// An absent maximum permits a variable-length multifield match.
+    OrderedFieldCount {
+        min: usize,
+        max: Option<usize>,
+    },
 }
 
 /// An alpha network node.
@@ -97,32 +104,45 @@ pub enum AlphaNode {
         children: Vec<NodeId>,
         memory: Option<AlphaMemoryId>,
     },
+    RuntimePredicate {
+        condition: crate::rete::RuntimeCondition,
+        children: Vec<NodeId>,
+        memory: Option<AlphaMemoryId>,
+    },
 }
 
 impl AlphaNode {
     #[must_use]
     fn memory(&self) -> Option<AlphaMemoryId> {
         match self {
-            Self::Entry { memory, .. } | Self::ConstantTest { memory, .. } => *memory,
+            Self::Entry { memory, .. }
+            | Self::ConstantTest { memory, .. }
+            | Self::RuntimePredicate { memory, .. } => *memory,
         }
     }
 
     fn memory_mut(&mut self) -> &mut Option<AlphaMemoryId> {
         match self {
-            Self::Entry { memory, .. } | Self::ConstantTest { memory, .. } => memory,
+            Self::Entry { memory, .. }
+            | Self::ConstantTest { memory, .. }
+            | Self::RuntimePredicate { memory, .. } => memory,
         }
     }
 
     #[must_use]
     fn children(&self) -> &[NodeId] {
         match self {
-            Self::Entry { children, .. } | Self::ConstantTest { children, .. } => children,
+            Self::Entry { children, .. }
+            | Self::ConstantTest { children, .. }
+            | Self::RuntimePredicate { children, .. } => children,
         }
     }
 
     fn children_mut(&mut self) -> &mut Vec<NodeId> {
         match self {
-            Self::Entry { children, .. } | Self::ConstantTest { children, .. } => children,
+            Self::Entry { children, .. }
+            | Self::ConstantTest { children, .. }
+            | Self::RuntimePredicate { children, .. } => children,
         }
     }
 }
@@ -341,6 +361,8 @@ pub struct AlphaNetwork {
     /// Populated on assertion, pruned on retraction. Eliminates the full
     /// alpha-memory scan in `memories_containing_fact`.
     pub(crate) fact_to_memories: SparseSecondaryMap<FactId, SmallVec<[AlphaMemoryId; 4]>>,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pub(crate) pending_runtime: Vec<(NodeId, FactId)>,
     pub(crate) next_node_id: u32,
     pub(crate) next_memory_id: u32,
 }
@@ -354,9 +376,83 @@ impl AlphaNetwork {
             memories: Vec::new(),
             entry_nodes: HashMap::default(),
             fact_to_memories: SparseSecondaryMap::new(),
+            pending_runtime: Vec::new(),
             next_node_id: 0,
             next_memory_id: 0,
         }
+    }
+
+    pub(crate) fn take_runtime_requests(&mut self) -> Vec<(NodeId, FactId)> {
+        std::mem::take(&mut self.pending_runtime)
+    }
+
+    pub(crate) fn create_runtime_predicate_node(
+        &mut self,
+        parent: NodeId,
+        condition: crate::rete::RuntimeCondition,
+    ) -> NodeId {
+        let id = NodeId(self.next_node_id);
+        self.next_node_id += 1;
+        self.nodes.push(AlphaNode::RuntimePredicate {
+            condition,
+            children: Vec::new(),
+            memory: None,
+        });
+        self.node_mut(parent)
+            .expect("alpha parent exists")
+            .children_mut()
+            .push(id);
+        id
+    }
+
+    pub(crate) fn backfill_runtime_predicate(
+        &mut self,
+        node: NodeId,
+        entry_type: &AlphaEntryType,
+        tests: &[ConstantTest],
+        facts: &FactBase,
+    ) {
+        let mut candidates: Vec<_> = facts
+            .iter()
+            .filter(|(_, entry)| {
+                fact_matches_entry_type(&entry.fact, entry_type)
+                    && tests.iter().all(|test| evaluate_test(&entry.fact, test))
+            })
+            .map(|(id, entry)| (entry.timestamp, id))
+            .collect();
+        candidates.sort_unstable_by_key(|(timestamp, _)| *timestamp);
+        self.pending_runtime
+            .extend(candidates.into_iter().map(|(_, fact)| (node, fact)));
+    }
+
+    pub(crate) fn resolve_runtime_predicate(
+        &mut self,
+        node: NodeId,
+        fact_id: FactId,
+        fact: &Fact,
+        passed: bool,
+    ) -> Option<AlphaMemoryId> {
+        let Some(AlphaNode::RuntimePredicate {
+            memory: Some(memory),
+            ..
+        }) = self.node(node)
+        else {
+            return None;
+        };
+        let memory = *memory;
+        if !passed || self.memory(memory)?.facts.contains(&fact_id) {
+            return None;
+        }
+        self.memory_mut(memory)?.insert(fact_id, fact);
+        if let Some(memories) = self.fact_to_memories.get_mut(fact_id) {
+            if !memories.contains(&memory) {
+                memories.push(memory);
+            }
+        } else {
+            self.fact_to_memories
+                .insert(fact_id, SmallVec::from_slice(&[memory]));
+        }
+        Some(memory)
     }
 
     pub(crate) fn structural_counts(&self) -> (usize, usize) {
@@ -632,6 +728,7 @@ impl AlphaNetwork {
 
     /// Clear all facts from all alpha memories, preserving network structure.
     pub fn clear_all_memories(&mut self) {
+        self.pending_runtime.clear();
         for memory in &mut self.memories {
             memory.clear();
         }
@@ -710,6 +807,10 @@ impl AlphaNetwork {
         fact: &Fact,
         accepted: &mut Vec<AlphaMemoryId>,
     ) {
+        if matches!(self.node(node_id), Some(AlphaNode::RuntimePredicate { .. })) {
+            self.pending_runtime.push((node_id, fact_id));
+            return;
+        }
         let Some((memory_id, children)) = self.propagation_plan(node_id, fact) else {
             return;
         };
@@ -775,81 +876,85 @@ fn fact_matches_entry_type(fact: &Fact, entry_type: &AlphaEntryType) -> bool {
 }
 
 /// Evaluate a constant test against a fact.
-fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
-    let Some(slot_value) = get_slot_value(fact, test.slot) else {
-        return false;
-    };
-
-    match &test.test_type {
-        ConstantTestType::Equal(test_key) => {
+pub(crate) fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
+    match (&test.test_type, get_slot_value(fact, test.slot)) {
+        (ConstantTestType::OrderedFieldCount { min, max }, _) => {
+            matches!(fact, Fact::Ordered(ordered)
+                if ordered.fields.len() >= *min
+                    && max.map_or(true, |max| ordered.fields.len() <= max))
+        }
+        (_, None) => false,
+        (ConstantTestType::Equal(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key == test_key)
         }
-        ConstantTestType::NotEqual(test_key) => {
+        (ConstantTestType::NotEqual(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key != test_key)
         }
-        ConstantTestType::EqualAny(keys) => {
+        (ConstantTestType::EqualAny(keys), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| keys.contains(slot_key))
         }
-        ConstantTestType::GreaterThan(test_key) => {
+        (ConstantTestType::GreaterThan(test_key), Some(slot_value)) => {
             compare_test_key(slot_value, test_key, |ord| matches!(ord, Ordering::Greater))
         }
-        ConstantTestType::LessThan(test_key) => {
+        (ConstantTestType::LessThan(test_key), Some(slot_value)) => {
             compare_test_key(slot_value, test_key, |ord| matches!(ord, Ordering::Less))
         }
-        ConstantTestType::GreaterOrEqual(test_key) => {
+        (ConstantTestType::GreaterOrEqual(test_key), Some(slot_value)) => {
             compare_test_key(slot_value, test_key, |ord| {
                 matches!(ord, Ordering::Greater | Ordering::Equal)
             })
         }
-        ConstantTestType::LessOrEqual(test_key) => compare_test_key(slot_value, test_key, |ord| {
-            matches!(ord, Ordering::Less | Ordering::Equal)
-        }),
-        ConstantTestType::EqualSlot(other_slot) => {
+        (ConstantTestType::LessOrEqual(test_key), Some(slot_value)) => {
+            compare_test_key(slot_value, test_key, |ord| {
+                matches!(ord, Ordering::Less | Ordering::Equal)
+            })
+        }
+        (ConstantTestType::EqualSlot(other_slot), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 slot_value.structural_eq(other_value)
             })
         }
-        ConstantTestType::NotEqualSlot(other_slot) => {
+        (ConstantTestType::NotEqualSlot(other_slot), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 !slot_value.structural_eq(other_value)
             })
         }
-        ConstantTestType::EqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::EqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
-        ConstantTestType::NotEqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::NotEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 !compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
-        ConstantTestType::GreaterThanSlotOffset(other_slot, offset) => {
+        (ConstantTestType::GreaterThanSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater)
                 })
             })
         }
-        ConstantTestType::LessThanSlotOffset(other_slot, offset) => {
+        (ConstantTestType::LessThanSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less)
                 })
             })
         }
-        ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater | Ordering::Equal)
                 })
             })
         }
-        ConstantTestType::LessOrEqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::LessOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less | Ordering::Equal)
@@ -1346,6 +1451,50 @@ mod tests {
     // --- Test constant test evaluation ---
 
     #[test]
+    fn ordered_field_count_tests_enforce_exact_and_minimum_cardinality() {
+        let mut table = SymbolTable::new();
+        let relation = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
+        for field_count in 0..=3 {
+            let fact = Fact::Ordered(OrderedFact {
+                relation,
+                fields: (0..field_count).map(|_| Value::Integer(42)).collect(),
+            });
+            for min in 0..=3 {
+                for max in [Some(min), None] {
+                    let test = ConstantTest {
+                        slot: SlotIndex::Ordered(0),
+                        test_type: ConstantTestType::OrderedFieldCount { min, max },
+                    };
+                    let expected = if max.is_some() {
+                        field_count == min
+                    } else {
+                        field_count >= min
+                    };
+                    assert_eq!(
+                        evaluate_test(&fact, &test),
+                        expected,
+                        "field count {field_count}, bounds {min}..={max:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_field_count_tests_reject_template_facts() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let fact = Fact::Template(crate::fact::TemplateFact {
+            template_id: templates.insert(()),
+            slots: Box::new([Value::Integer(42)]),
+        });
+        let test = ConstantTest {
+            slot: SlotIndex::Template(0),
+            test_type: ConstantTestType::OrderedFieldCount { min: 1, max: None },
+        };
+        assert!(!evaluate_test(&fact, &test));
+    }
+
+    #[test]
     fn constant_test_equal_passes() {
         let mut table = SymbolTable::new();
         let rel = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
@@ -1629,5 +1778,42 @@ mod proptests {
                 prop_assert!(memory.contains(fact_id));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_value_tests {
+    use super::*;
+    use crate::{InstanceName, StringEncoding, SymbolTable};
+
+    #[test]
+    fn instance_names_have_distinct_constant_and_index_identity() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols.intern_symbol("row", StringEncoding::Utf8).unwrap();
+        let symbol = symbols
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        let name = InstanceName::from_symbol(symbol);
+        let mut facts = FactBase::new();
+        let named = facts.assert_ordered(relation, smallvec::smallvec![Value::InstanceName(name)]);
+        let symbolic = facts.assert_ordered(relation, smallvec::smallvec![Value::Symbol(symbol)]);
+        let mut memory = AlphaMemory::new(AlphaMemoryId(0));
+        for id in [named, symbolic] {
+            memory.insert(id, &facts.get(id).unwrap().fact);
+        }
+        memory.request_index(SlotIndex::Ordered(0), &facts);
+        let key = AtomKey::InstanceName(name);
+        let matches = memory.lookup_by_slot(SlotIndex::Ordered(0), &key).unwrap();
+        assert_eq!(matches.collect::<Vec<_>>(), vec![named]);
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Equal(key),
+        };
+        assert!(evaluate_test(&facts.get(named).unwrap().fact, &test));
+        assert!(!evaluate_test(&facts.get(symbolic).unwrap().fact, &test));
+        memory.remove(named, &facts.get(named).unwrap().fact);
+        assert!(memory
+            .lookup_by_slot(SlotIndex::Ordered(0), &AtomKey::InstanceName(name))
+            .is_none());
     }
 }

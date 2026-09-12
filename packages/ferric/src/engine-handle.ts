@@ -27,7 +27,7 @@ import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
 import { normalizeRunLimit } from "./limit-validation";
-import { FerricSymbol } from "./native";
+import { FerricSymbol, byteLexemeConstructors } from "./native";
 import type {
   ClipsValue,
   RunResult,
@@ -140,7 +140,7 @@ export class EngineHandle {
     if ("error" in resp) {
       entry.reject(reconstructError(resp.error));
     } else {
-      entry.resolve(fromWire(resp.result, FerricSymbol));
+      entry.resolve(fromWire(resp.result, FerricSymbol, byteLexemeConstructors));
     }
   };
 
@@ -599,6 +599,11 @@ export class EngineHandle {
    * Get captured output for a named CLIPS channel (e.g. "t" or "stderr").
    * @returns The output string, or null if no output.
    */
+  /** Retrieve exact output bytes; text access remains checked. */
+  async getOutputBytes(channel: string): Promise<Uint8Array | null> {
+    return this.call("getOutputBytes", [channel]) as Promise<Uint8Array | null>;
+  }
+
   async getOutput(channel: string): Promise<string | null> {
     return this.call("getOutput", [channel]) as Promise<string | null>;
   }

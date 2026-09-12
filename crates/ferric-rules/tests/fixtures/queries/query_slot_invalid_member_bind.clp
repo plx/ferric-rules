@@ -1,0 +1,4 @@
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)))
+(defrule probe =>
+  (do-for-all-facts ((?f item)) TRUE (bind ?f 42)))

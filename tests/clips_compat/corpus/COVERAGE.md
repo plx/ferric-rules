@@ -32,9 +32,8 @@ ordered traversal, and mutation during traversal. A passing nearby control is
 useful evidence when a boundary case reveals a gap.
 
 The expression fact-query forms `any-factp`, `find-fact`, and `find-all-facts`
-are explicitly rejected by the current supported subset. Their retained
-programs characterize this boundary against valid CLIPS behavior, including
-empty-result controls. The three action query forms are exercised separately.
+are exercised with empty results, existing matches, and filtering. The three
+action query forms add ordering and mutation coverage.
 
 ## Compatibility reference mapping
 
@@ -65,7 +64,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 | Implicit initial-fact for empty rules | Empty-LHS startup and repeated-reset refraction cases exist; direct initial-fact identity/order still needs coverage. |
 | Explicit `and` CE | NCC uses `not (and ...)`; an independent top-level `and` control is still missing. |
 | `field` slot alias | No dedicated corpus case yet; parser tests exist separately. |
-| Fact query macros | All six CLIPS query forms have focused cases plus empty/filter/order/mutation combinations. Expression forms characterize explicit subset rejection; action forms exercise execution. The cross-product of conditions and mutation behavior remains incomplete. |
+| Fact query macros | All six CLIPS query forms have focused cases plus empty/filter/order/mutation combinations. The cross-product of conditions and mutation behavior remains incomplete. |
 | `if`, loops, foreach/progn$, switch | Basic, empty-range/iteration, truthiness, nested count, expression-return, and function-body cases exist. Early exit and error paths need further probes. |
 | Math, string, multifield, introspection, funcall | Broad ordinary-input coverage with selected boundary controls; function-by-function error matrices and generic funcall still need work. |
 | `load-facts` / `save-facts` | Not represented in this portable program corpus; runtime file-roundtrip tests exist separately. |

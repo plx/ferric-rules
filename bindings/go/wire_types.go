@@ -20,11 +20,18 @@ const (
 	WireValueString WireValueKind = "string"
 	// WireValueMultifield represents a recursive multifield value.
 	WireValueMultifield WireValueKind = "multifield"
+	// WireValueStringBytes represents exact CLIPS STRING bytes.
+	WireValueStringBytes WireValueKind = "string_bytes"
+	// WireValueSymbolBytes represents exact CLIPS SYMBOL bytes.
+	WireValueSymbolBytes WireValueKind = "symbol_bytes"
+	// WireValueInstanceName represents a typed INSTANCE-NAME byte payload.
+	WireValueInstanceName WireValueKind = "instance_name"
 )
 
 // WireValue is a tagged value in the wire format.
 type WireValue struct {
 	Kind       WireValueKind `json:"kind"`
+	Bytes      []byte        `json:"bytes,omitempty"` // base64 in JSON; exact byte lexemes
 	Integer    int64         `json:"integer,omitempty"`
 	Float      float64       `json:"float,omitempty"`
 	Text       string        `json:"text,omitempty"`       // symbol/string payload

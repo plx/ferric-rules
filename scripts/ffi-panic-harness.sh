@@ -23,6 +23,8 @@ audit_symbols() {
     local staticlib="$1"
     local table="$outroot/symbols.txt"
     local expected="$outroot/expected-symbols.txt"
+    local authored="$outroot/authored-symbols.txt"
+    local exported="$outroot/ferric-symbols.txt"
 
     case "$(uname -s)" in
     Darwin)
@@ -36,16 +38,23 @@ audit_symbols() {
 
     sed -nE 's/.*[ *](ferric_[a-z0-9_]+)\(.*/\1/p' \
         crates/ferric-rules-ffi/ferric.h | sort -u >"$expected"
-    if [[ $(wc -l <"$expected") -ne 101 ]]; then
-        echo "ffi-panic-harness: expected 101 header exports" >&2
+    # Derive coverage from the actual authored ABI, not a count that becomes
+    # stale when new functions use an already covered return category.
+    sed -nE 's/^[[:space:]]*pub( unsafe)? extern "C" fn (ferric_[a-z0-9_]+)\(.*/\2/p' \
+        crates/ferric-rules-ffi/src/{engine,error,pinned,types}.rs | sort -u >"$authored"
+    if [[ ! -s "$expected" || ! -s "$authored" ]]; then
+        echo "ffi-panic-harness: header/source export inventory is empty" >&2
         exit 1
     fi
-    while IFS= read -r symbol; do
-        if ! grep -Fxq "$symbol" "$table"; then
-            echo "ffi-panic-harness: missing exported symbol: $symbol" >&2
-            exit 1
-        fi
-    done <"$expected"
+    if ! diff -u "$authored" "$expected"; then
+        echo "ffi-panic-harness: authored/header export coverage differs" >&2
+        exit 1
+    fi
+    awk '/^ferric_[a-z0-9_]+$/ { print }' "$table" >"$exported"
+    if ! diff -u "$expected" "$exported"; then
+        echo "ffi-panic-harness: header/archive export coverage differs" >&2
+        exit 1
+    fi
 }
 
 for profile in ffi-dev ffi-release; do

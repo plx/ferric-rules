@@ -572,7 +572,27 @@ impl Engine {
     /// Returns `null` if the channel has no captured output.
     #[napi]
     pub fn get_output(&self, channel: String) -> Result<Option<String>> {
-        Ok(self.engine()?.get_output(&channel).map(str::to_owned))
+        self.engine()?
+            .get_output(&channel)
+            .map(|text| text.map(str::to_owned))
+            .map_err(|error| {
+                napi::Error::new(
+                    napi::Status::InvalidArg,
+                    format!("FerricEncodingError: {error}"),
+                )
+            })
+    }
+
+    /// Retrieve exact captured bytes without UTF-8 decoding.
+    #[napi]
+    pub fn get_output_bytes(
+        &self,
+        channel: String,
+    ) -> Result<Option<napi::bindgen_prelude::Uint8Array>> {
+        Ok(self
+            .engine()?
+            .get_output_bytes(&channel)
+            .map(|bytes| bytes.to_vec().into()))
     }
 
     /// Clear captured output for a channel.

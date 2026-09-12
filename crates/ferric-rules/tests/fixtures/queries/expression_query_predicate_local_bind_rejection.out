@@ -1,0 +1,9 @@
+[FACTQPSR2] Binds are not allowed in fact-set query in function any-factp.
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (printout t (any-factp ((?f item))
+      (progn
+         (bind ?unrelated 42)
+         TRUE)

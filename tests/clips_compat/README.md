@@ -1,7 +1,7 @@
 # CLIPS compatibility discovery corpus
 
 The [granular corpus](corpus/README.md) provides reference-verified CLIPS programs,
-coverage levels, exact output oracles, and active known-gap characterizations.
+coverage levels, exact output oracles, and conformance assertions.
 Run `just compat-corpus` for Ferric and `just compat-corpus-reference` to recheck
 the CLIPS 6.30 oracles.
 

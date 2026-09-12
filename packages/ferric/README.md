@@ -53,3 +53,7 @@ Repository `just node-package-smoke` creates real tarballs and verifies them in
 an offline temporary consumer, including CJS/ESM/type resolution and the shared
 launch-selection plus snapshot/resume example. Local artifacts are sufficient;
 this project does not require public npm publication for embedding validation.
+
+`FerricStringBytes`, `FerricSymbolBytes`, and `FerricInstanceName` accept and copy a `Uint8Array`. Their `.bytes` getter returns a copy; `.value` and `toString()` check UTF-8 and throw on invalid text. Native, worker, and pool fact transport preserves CLIPS types and bytes. Returned UTF-8 STRING/SYMBOL values keep the existing string/FerricSymbol representation; invalid UTF-8 uses the explicit byte wrappers. `getOutputBytes(channel)` retrieves exact output through `Engine`, `EngineHandle`, and pool proxies. Text `getOutput` remains checked. Pool evaluation returns every captured byte sequence in `outputBytes`, while `output` contains only valid UTF-8 text. Raw fact data and output survive all supported snapshot codecs.
+
+Instance-name values retain their type and bytes without creating COOL objects. Use `instance-namep` or the binding's distinct value type for classification. `type` and restricted generic dispatch on a missing instance report an action error and stop later actions. The runtime conversions accept either symbol or name values; CLIPS's additional static restriction on certain literal conversion calls is not enforced yet.

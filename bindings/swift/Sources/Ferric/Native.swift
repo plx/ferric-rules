@@ -36,20 +36,31 @@ func withCString<Result>(_ text: String, _ body: (UnsafePointer<CChar>) throws -
   return try text.withCString(body)
 }
 
+func copiedBytes(
+  handle: OpaquePointer,
+  optional: Bool = false,
+  _ copy: (UnsafeMutablePointer<CChar>?, UInt, UnsafeMutablePointer<UInt>) -> CFerric.FerricError
+) throws -> Data? {
+  var length: UInt = 0
+  let code = copy(nil, 0, &length)
+  if optional && code == FERRIC_ERROR_NOT_FOUND { return nil }
+  try check(code, handle: handle)
+  guard length > 0 else { return Data() }
+  var bytes = [CChar](repeating: 0, count: try checkedCount(length))
+  try check(copy(&bytes, UInt(bytes.count), &length), handle: handle)
+  return Data(bytes.dropLast().map { UInt8(bitPattern: $0) })
+}
+
 func copiedString(
   handle: OpaquePointer,
   optional: Bool = false,
   _ copy: (UnsafeMutablePointer<CChar>?, UInt, UnsafeMutablePointer<UInt>) -> CFerric.FerricError
 ) throws -> String? {
-  var length: UInt = 0
-  let code = copy(nil, 0, &length)
-  if optional && code == FERRIC_ERROR_NOT_FOUND { return nil }
-  try check(code, handle: handle)
-  guard length > 0 else { return "" }
-  var bytes = [CChar](repeating: 0, count: try checkedCount(length))
-  try check(copy(&bytes, UInt(bytes.count), &length), handle: handle)
-  // Length includes the C terminator. Embedded NUL output remains intact.
-  return String(decoding: bytes.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
+  guard let bytes = try copiedBytes(handle: handle, optional: optional, copy) else { return nil }
+  guard let text = String(data: bytes, encoding: .utf8) else {
+    throw EngineError.unsupportedValue("native output is not valid UTF-8; use outputBytes")
+  }
+  return text
 }
 
 func requiredString(
@@ -128,6 +139,18 @@ private func encode(_ value: Value, depth: Int) throws -> FerricValue {
     }
     try check(code)
     return result
+  case .stringBytes(let bytes), .symbolBytes(let bytes), .instanceName(let bytes):
+    var result = ferric_value_void()
+    let code = bytes.withUnsafeBytes { buffer in
+      let pointer = buffer.bindMemory(to: UInt8.self).baseAddress
+      switch value {
+      case .stringBytes: return ferric_value_string_raw(pointer, UInt(bytes.count), &result)
+      case .symbolBytes: return ferric_value_symbol_raw(pointer, UInt(bytes.count), &result)
+      default: return ferric_value_instance_name(pointer, UInt(bytes.count), &result)
+      }
+    }
+    try check(code)
+    return result
   case .multifield(let values):
     guard depth < 32 else {
       throw EngineError.invalidArgument("multifield nesting exceeds 32 levels")
@@ -149,8 +172,22 @@ func decode(_ value: FerricValue, depth: Int = 0) throws -> Value {
     guard let pointer = value.string_ptr else {
       throw EngineError.unsupportedValue("native string has no data")
     }
-    let string = String(cString: pointer)
+    guard let string = String(validatingCString: pointer) else {
+      throw EngineError.unsupportedValue("native text tag contains invalid UTF-8")
+    }
     return value.value_type == FERRIC_VALUE_TYPE_SYMBOL.rawValue ? .symbol(string) : .string(string)
+  case FERRIC_VALUE_TYPE_STRING_BYTES.rawValue, FERRIC_VALUE_TYPE_SYMBOL_BYTES.rawValue,
+    FERRIC_VALUE_TYPE_INSTANCE_NAME.rawValue:
+    let count = try checkedCount(value.multifield_len)
+    guard count == 0 || value.string_ptr != nil else {
+      throw EngineError.unsupportedValue("native byte lexeme has no data")
+    }
+    let bytes = count == 0 ? Data() : Data(bytes: value.string_ptr!, count: count)
+    switch value.value_type {
+    case FERRIC_VALUE_TYPE_STRING_BYTES.rawValue: return .stringBytes(bytes)
+    case FERRIC_VALUE_TYPE_SYMBOL_BYTES.rawValue: return .symbolBytes(bytes)
+    default: return .instanceName(bytes)
+    }
   case FERRIC_VALUE_TYPE_MULTIFIELD.rawValue:
     guard depth < 32 else {
       throw EngineError.unsupportedValue("native multifield nesting exceeds 32 levels")

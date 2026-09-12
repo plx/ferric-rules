@@ -47,6 +47,7 @@ pub mod fact;
 pub mod ncc;
 pub mod negative;
 pub mod rete;
+pub mod sequence;
 pub mod strategy;
 pub mod string;
 pub mod symbol;
@@ -65,8 +66,8 @@ pub use beta::{
 };
 pub use binding::{BindingSet, VarId, VarMap};
 pub use compiler::{
-    CompilableCondition, CompilablePattern, CompilableRule, CompileError, CompileResult,
-    ConditionCompilationPlan, ReteCompiler,
+    CompilableCondition, CompilablePattern, CompilableRule, CompilableRuntimePattern, CompileError,
+    CompileResult, ConditionCompilationPlan, ReteCompiler,
 };
 pub use encoding::{EncodingError, StringEncoding};
 pub use exists::{ExistsMemory, ExistsMemoryId};
@@ -76,10 +77,16 @@ pub use fact::{
 };
 pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
-pub use rete::{PendingPredicateMatch, ReteCardinality, ReteNetwork};
+pub use rete::{
+    PendingPredicateMatch, PendingRuntimeMatch, ReteCardinality, ReteNetwork, RuntimeCondition,
+    RuntimeConditionRole, RuntimeConditionUse,
+};
+pub use sequence::{
+    SequenceField, SequenceMatch, SequencePattern, SequenceSegment, SequenceSource,
+};
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;
-pub use symbol::{Symbol, SymbolTable};
+pub use symbol::{InstanceName, Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};
 pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage};
 pub use value::{AtomKey, ExternalAddress, ExternalTypeId, IntoFieldValues, Multifield, Value};

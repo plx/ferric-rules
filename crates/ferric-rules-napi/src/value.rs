@@ -13,6 +13,7 @@
 //! | `FerricSymbol`     | Symbol            |
 //! | `Array`            | Multifield        |
 
+use napi::bindgen_prelude::Uint8Array;
 use napi::{
     Env, Error, JsBigInt, JsBoolean, JsNull, JsNumber, JsObject, JsString, JsUnknown,
     KeyCollectionMode, KeyConversion, KeyFilter, Result, Status, ValueType,
@@ -61,6 +62,114 @@ impl FerricSymbol {
     }
 }
 
+/// A typed CLIPS lexeme containing exact bytes.
+#[napi]
+pub struct FerricStringBytes {
+    pub(crate) data: Vec<u8>,
+}
+
+#[napi]
+impl FerricStringBytes {
+    #[napi(constructor)]
+    pub fn new(bytes: Uint8Array) -> Self {
+        Self {
+            data: bytes.to_vec(),
+        }
+    }
+
+    /// A fresh copy of the exact payload.
+    #[napi(getter)]
+    pub fn bytes(&self) -> Uint8Array {
+        self.data.clone().into()
+    }
+
+    /// Checked UTF-8; invalid bytes produce `FerricEncodingError`.
+    #[napi(getter)]
+    pub fn value(&self) -> Result<String> {
+        checked_text(&self.data)
+    }
+
+    #[napi]
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(&self) -> Result<String> {
+        checked_text(&self.data)
+    }
+}
+
+/// A typed CLIPS lexeme containing exact bytes.
+#[napi]
+pub struct FerricSymbolBytes {
+    pub(crate) data: Vec<u8>,
+}
+
+#[napi]
+impl FerricSymbolBytes {
+    #[napi(constructor)]
+    pub fn new(bytes: Uint8Array) -> Self {
+        Self {
+            data: bytes.to_vec(),
+        }
+    }
+
+    /// A fresh copy of the exact payload.
+    #[napi(getter)]
+    pub fn bytes(&self) -> Uint8Array {
+        self.data.clone().into()
+    }
+
+    /// Checked UTF-8; invalid bytes produce `FerricEncodingError`.
+    #[napi(getter)]
+    pub fn value(&self) -> Result<String> {
+        checked_text(&self.data)
+    }
+
+    #[napi]
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(&self) -> Result<String> {
+        checked_text(&self.data)
+    }
+}
+
+/// A typed CLIPS lexeme containing exact bytes.
+#[napi]
+pub struct FerricInstanceName {
+    pub(crate) data: Vec<u8>,
+}
+
+#[napi]
+impl FerricInstanceName {
+    #[napi(constructor)]
+    pub fn new(bytes: Uint8Array) -> Self {
+        Self {
+            data: bytes.to_vec(),
+        }
+    }
+
+    /// A fresh copy of the exact payload.
+    #[napi(getter)]
+    pub fn bytes(&self) -> Uint8Array {
+        self.data.clone().into()
+    }
+
+    /// Checked UTF-8; invalid bytes produce `FerricEncodingError`.
+    #[napi(getter)]
+    pub fn value(&self) -> Result<String> {
+        checked_text(&self.data)
+    }
+
+    #[napi]
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(&self) -> Result<String> {
+        checked_text(&self.data)
+    }
+}
+
+fn checked_text(bytes: &[u8]) -> Result<String> {
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|error| Error::new(Status::InvalidArg, format!("FerricEncodingError: {error}")))
+}
+
 /// Owned input staging: all JavaScript access finishes before a runtime
 /// reference is borrowed. The caller retains the native object's reservation.
 pub enum OwnedValue {
@@ -69,6 +178,9 @@ pub enum OwnedValue {
     Float(f64),
     Symbol(String),
     String(String),
+    StringBytes(Vec<u8>),
+    SymbolBytes(Vec<u8>),
+    InstanceName(Vec<u8>),
     Multifield(Vec<Self>),
 }
 
@@ -85,6 +197,16 @@ impl OwnedValue {
             Self::String(value) => engine
                 .create_string(&value)
                 .map(HostValue::from)
+                .map_err(engine_error_to_napi),
+            Self::StringBytes(value) => engine
+                .create_string_bytes(&value)
+                .map(HostValue::from)
+                .map_err(engine_error_to_napi),
+            Self::SymbolBytes(value) => engine
+                .symbol_value_bytes(&value)
+                .map_err(engine_error_to_napi),
+            Self::InstanceName(value) => engine
+                .instance_name_value_bytes(&value)
                 .map_err(engine_error_to_napi),
             Self::Multifield(values) => {
                 let values = values
@@ -172,6 +294,16 @@ pub fn js_to_owned(
                 }
                 return Ok(OwnedValue::Multifield(values));
             }
+            if obj.has_own_property("__ferric_lexeme")? && obj.has_own_property("bytes")? {
+                let kind: String = obj.get_named_property("__ferric_lexeme")?;
+                let bytes: Uint8Array = obj.get_named_property("bytes")?;
+                return match kind.as_str() {
+                    "FerricStringBytes" => Ok(OwnedValue::StringBytes(bytes.to_vec())),
+                    "FerricSymbolBytes" => Ok(OwnedValue::SymbolBytes(bytes.to_vec())),
+                    "FerricInstanceName" => Ok(OwnedValue::InstanceName(bytes.to_vec())),
+                    _ => Err(Error::new(Status::InvalidArg, "unknown byte lexeme type")),
+                };
+            }
             // The loader marshals FerricSymbol to this private native-call
             // representation. Worker wire symbols are reconstructed first.
             if obj.has_own_property("__ferric_symbol")? && obj.has_own_property("value")? {
@@ -225,7 +357,17 @@ pub fn value_to_js(env: &Env, val: &Value, engine: &Engine) -> Result<JsUnknown>
         Value::Float(f) => env.create_double(*f).map(JsNumber::into_unknown),
 
         Value::Symbol(sym) => {
-            let name = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
+            let bytes = engine
+                .resolve_core_symbol_bytes(*sym)
+                .ok_or_else(|| Error::new(Status::InvalidArg, "unresolved engine symbol"))?;
+            let Ok(name) = std::str::from_utf8(bytes) else {
+                return Ok(FerricSymbolBytes {
+                    data: bytes.to_vec(),
+                }
+                .into_instance(*env)?
+                .as_object(*env)
+                .into_unknown());
+            };
             // Construct a FerricSymbol class instance and return it as JsUnknown.
             let symbol = FerricSymbol {
                 name: name.to_owned(),
@@ -234,7 +376,25 @@ pub fn value_to_js(env: &Env, val: &Value, engine: &Engine) -> Result<JsUnknown>
             Ok(instance.as_object(*env).into_unknown())
         }
 
-        Value::String(s) => env.create_string(s.as_str()).map(JsString::into_unknown),
+        Value::String(s) => match std::str::from_utf8(s.as_bytes()) {
+            Ok(text) => env.create_string(text).map(JsString::into_unknown),
+            Err(_) => Ok(FerricStringBytes {
+                data: s.as_bytes().to_vec(),
+            }
+            .into_instance(*env)?
+            .as_object(*env)
+            .into_unknown()),
+        },
+        Value::InstanceName(name) => {
+            let data = engine
+                .resolve_core_symbol_bytes(name.as_symbol())
+                .ok_or_else(|| Error::new(Status::InvalidArg, "unresolved instance name"))?
+                .to_vec();
+            Ok(FerricInstanceName { data }
+                .into_instance(*env)?
+                .as_object(*env)
+                .into_unknown())
+        }
 
         Value::Multifield(mf) => {
             let mut arr = env.create_array_with_length(mf.len())?;

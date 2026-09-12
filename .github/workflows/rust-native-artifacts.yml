@@ -19,7 +19,7 @@ env:
 jobs:
   native-rust:
     name: Native Rust (${{ matrix.target }})
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

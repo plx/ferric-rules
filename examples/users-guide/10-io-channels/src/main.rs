@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     engine.assert_ordered("prompt-line", ())?;
     engine.run(RunLimit::Unlimited)?;
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     print!("{output}");
 
     assert!(output.contains("n=42"));

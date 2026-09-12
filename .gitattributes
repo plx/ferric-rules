@@ -4,6 +4,16 @@
 *.bat linguist-vendored
 *.tst linguist-vendored
 
+# Preserve exact fixture output and source markers on Windows checkouts.
+crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
+crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
+# These scanner fixtures contain literal CR bytes inside quoted input.
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_whitespace_comments_and_empty.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_ascii_whitespace_controls.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_control_whitespace_edges.clp -text
+crates/ferric-rules-runtime/tests/fixtures/snapshots/*.clp text eol=lf
+crates/ferric-rules-runtime/tests/fixtures/snapshots/*.cbor -text
+
 # Keep checked-in text shipped by the Node package byte-identical on Windows.
 packages/ferric/package.json text eol=lf
 packages/ferric/README.md text eol=lf
@@ -23,6 +33,34 @@ scripts/musl_static_libgcc_linker.py text eol=lf
 
 # Keep native Rust target provenance byte-identical on Windows.
 crates/ferric-rules-cli/release-targets.json text eol=lf
+
+# Preserve the literal CRLF inside this CLIPS scanner input.
+crates/ferric-rules/tests/fixtures/stdlib/explode_ordinary_and_empty_fields.clp -text
+
+# Existing generic fixture .clp/.out LF rules remain in force.
+crates/ferric-rules/tests/fixtures/read/*.in text eol=lf
+# Exact CRLF stdin framing and invalid UTF8 golden bytes.
+crates/ferric-rules/tests/fixtures/read/crlf-readline-state.in -text
+crates/ferric-rules/tests/fixtures/read/unterminated-terminal-backslash.out -text
+
+# Preserve literal CR and CRLF characters inside STRING test data.
+crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.out -text
+
+# Preserve literal CR and CRLF in implode$ STRING fixtures.
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.out -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.out -text
+
+# Keep format reference bytes exact in runtime and facade tests.
+crates/ferric-rules-runtime/src/formatting/fixtures/*.out text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/*.clp text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/character-empty-nul-byte-width-precision.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/ordinary-directives.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/unicode-width-and-precision.expected.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_ordinary_directives.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_unicode_width_and_precision.out -text
 
 # Exact compatibility oracles must be byte-identical on every native runner.
 tests/clips_compat/corpus/** text eol=lf

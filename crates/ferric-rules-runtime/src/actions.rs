@@ -6,6 +6,8 @@
 //! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
 
+use crate::byte_buffer::ByteBuffer;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
@@ -14,15 +16,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ferric_rules_core::beta::{RuleId, Salience};
-use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
+use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::token::Token;
 use ferric_rules_core::{
     EncodingError, Fact, FactBase, FactId, OrderedFact, ReteNetwork, Symbol, SymbolTable,
-    TemplateId, Value,
+    TemplateId, Value, VarId,
 };
 use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 use slotmap::Key as _;
 
+use crate::evaluator::CompactFactBinding;
 use crate::modules::ModuleRegistry;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::router::OutputRouter;
@@ -33,29 +36,82 @@ use crate::Engine;
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
 type RuntimeBindingEnv = HashMap<String, Value>;
 
-/// Internal callable emitted by parser for compact fact-slot references (`?f:slot`).
-const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
-
 pub(crate) struct ActionExecutionContext<'a> {
     pub engine: &'a mut Engine,
     pub current_module: crate::modules::ModuleId,
 }
 
+#[derive(Default)]
 struct ActionEvalEnv {
+    /// Captured once per activation; remains available after supporting facts
+    /// are retracted. Inner token bindings and explicit RHS locals override it.
+    fact_bindings: RuntimeBindingEnv,
+    /// Query membership has lexical scope independent of ordinary loop values.
+    compact_facts: crate::evaluator::CompactFactBindings,
     runtime_bindings: RuntimeBindingEnv,
 }
 
-fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
+fn flush_deferred_evaluation(context: &mut ActionExecutionContext<'_>) {
     for (channel, text) in context.engine.globals.take_printout_events() {
         context.engine.router.write(&channel, &text);
     }
+    context.engine.drain_evaluator_diagnostics();
 }
 
 impl ActionEvalEnv {
+    /// Mask outer RHS locals while query/loop bindings are in scope, then
+    /// restore them even when the body returns an error or a rule return.
+    fn with_local_scope<'a, T>(
+        &mut self,
+        names: impl IntoIterator<Item = &'a str>,
+        execute: impl FnOnce(&mut Self) -> Result<T, ActionError>,
+    ) -> Result<T, ActionError> {
+        let mut saved = HashMap::new();
+        for name in names {
+            let name = name.strip_prefix("$?").unwrap_or(name);
+            saved
+                .entry(name.to_string())
+                .or_insert_with(|| self.runtime_bindings.remove(name));
+        }
+        let result = execute(self);
+        for (name, previous) in saved {
+            if let Some(value) = previous {
+                self.runtime_bindings.insert(name, value);
+            } else {
+                self.runtime_bindings.remove(&name);
+            }
+        }
+        result
+    }
+
+    /// Compact references follow query membership even when a loop reuses the
+    /// ordinary variable name. Nested queries temporarily replace that member.
+    fn with_compact_scope<T>(
+        &mut self,
+        bindings: &[(String, CompactFactBinding)],
+        execute: impl FnOnce(&mut Self) -> Result<T, ActionError>,
+    ) -> Result<T, ActionError> {
+        let mut saved = HashMap::new();
+        for (name, fact_id) in bindings {
+            let previous = self.compact_facts.insert(name.clone(), fact_id.clone());
+            saved.entry(name.clone()).or_insert(previous);
+        }
+        let result = execute(self);
+        for (name, previous) in saved {
+            if let Some(fact_id) = previous {
+                self.compact_facts.insert(name, fact_id);
+            } else {
+                self.compact_facts.remove(&name);
+            }
+        }
+        result
+    }
+
     fn make_eval_context<'ctx>(
         token: &'ctx Token,
         rule_info: &'ctx CompiledRuleInfo,
         context: &'ctx mut ActionExecutionContext<'_>,
+        compact_facts: &'ctx crate::evaluator::CompactFactBindings,
     ) -> crate::evaluator::EvalContext<'ctx> {
         let engine = &mut *context.engine;
         crate::evaluator::EvalContext {
@@ -68,6 +124,7 @@ impl ActionEvalEnv {
             generics: &engine.generics,
             call_depth: 0,
             expression_depth: 0,
+            callable_locals: None,
             current_module: context.current_module,
             module_registry: &engine.module_registry,
             function_modules: &engine.function_modules,
@@ -76,7 +133,14 @@ impl ActionEvalEnv {
             method_chain: None,
             input_buffer: Some(&mut engine.input_buffer),
             fact_base: Some(&engine.fact_base),
+            initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
+            compact_fact_bindings: Some(compact_facts),
+            template_resolver: Some(crate::loader::TemplateResolver {
+                template_local_ids: &engine.template_local_ids,
+                template_modules: &engine.template_modules,
+                module_registry: &engine.module_registry,
+            }),
         }
     }
 
@@ -87,18 +151,24 @@ impl ActionEvalEnv {
         runtime_expr: &crate::evaluator::RuntimeExpr,
         context: &mut ActionExecutionContext<'_>,
     ) -> Result<Value, ActionError> {
-        if !self.runtime_bindings.is_empty() {
-            let (bindings, var_map) =
-                build_runtime_eval_bindings(token, rule_info, &self.runtime_bindings, context)?;
+        if !self.fact_bindings.is_empty() || !self.runtime_bindings.is_empty() {
+            let (bindings, var_map) = build_runtime_eval_bindings(
+                token,
+                rule_info,
+                &self.fact_bindings,
+                &self.runtime_bindings,
+                context,
+            )?;
             return Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
                 &bindings,
                 &var_map,
                 context,
+                &self.compact_facts,
             );
         }
 
-        let mut ctx = Self::make_eval_context(token, rule_info, context);
+        let mut ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
         crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
     }
 
@@ -108,26 +178,7 @@ impl ActionEvalEnv {
         rule_info: &CompiledRuleInfo,
         expr: &ActionExpr,
         context: &mut ActionExecutionContext<'_>,
-        collected_facts: &[FactId],
-    ) -> Result<Value, ActionError> {
-        if matches!(expr, ActionExpr::FunctionCall(_)) && action_expr_contains_fact_slot_ref(expr) {
-            return self.eval_expr_with_fact_slot_refs(
-                token,
-                rule_info,
-                expr,
-                context,
-                collected_facts,
-            );
-        }
-        self.eval_expr_base(token, rule_info, expr, context)
-    }
-
-    fn eval_expr_base(
-        &mut self,
-        token: &Token,
-        rule_info: &CompiledRuleInfo,
-        expr: &ActionExpr,
-        context: &mut ActionExecutionContext<'_>,
+        _collected_facts: &[FactId],
     ) -> Result<Value, ActionError> {
         let runtime_expr = crate::evaluator::from_action_expr(
             expr,
@@ -138,43 +189,12 @@ impl ActionEvalEnv {
         self.eval_runtime_expr(token, rule_info, &runtime_expr, context)
     }
 
-    fn eval_expr_with_fact_slot_refs(
-        &mut self,
-        token: &Token,
-        rule_info: &CompiledRuleInfo,
-        expr: &ActionExpr,
-        context: &mut ActionExecutionContext<'_>,
-        collected_facts: &[FactId],
-    ) -> Result<Value, ActionError> {
-        match expr {
-            ActionExpr::FunctionCall(call) if call.name == FACT_SLOT_REF_FN => {
-                eval_fact_slot_ref_call(collected_facts, rule_info, call, context)
-            }
-            ActionExpr::FunctionCall(call) => {
-                let mut arg_values = Vec::with_capacity(call.args.len());
-                for arg in &call.args {
-                    let value = self.eval_expr(token, rule_info, arg, context, collected_facts)?;
-                    arg_values.push(crate::evaluator::RuntimeExpr::Literal(value));
-                }
-                let runtime_expr = crate::evaluator::RuntimeExpr::Call {
-                    name: call.name.clone(),
-                    args: arg_values,
-                    span: Some(crate::evaluator::SourceSpan {
-                        line: call.span.start.line,
-                        column: call.span.start.column,
-                    }),
-                };
-                self.eval_runtime_expr(token, rule_info, &runtime_expr, context)
-            }
-            _ => self.eval_expr_base(token, rule_info, expr, context),
-        }
-    }
-
     fn eval_runtime_expr_with_bindings(
         runtime_expr: &crate::evaluator::RuntimeExpr,
         bindings: &BindingSet,
         var_map: &VarMap,
         context: &mut ActionExecutionContext<'_>,
+        compact_facts: &crate::evaluator::CompactFactBindings,
     ) -> Result<Value, ActionError> {
         let engine = &mut *context.engine;
         let mut ctx = crate::evaluator::EvalContext {
@@ -187,6 +207,7 @@ impl ActionEvalEnv {
             generics: &engine.generics,
             call_depth: 0,
             expression_depth: 0,
+            callable_locals: None,
             current_module: context.current_module,
             module_registry: &engine.module_registry,
             function_modules: &engine.function_modules,
@@ -195,166 +216,48 @@ impl ActionEvalEnv {
             method_chain: None,
             input_buffer: Some(&mut engine.input_buffer),
             fact_base: Some(&engine.fact_base),
+            initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
+            compact_fact_bindings: Some(compact_facts),
+            template_resolver: Some(crate::loader::TemplateResolver {
+                template_local_ids: &engine.template_local_ids,
+                template_modules: &engine.template_modules,
+                module_registry: &engine.module_registry,
+            }),
         };
         crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
-    }
-}
-
-fn action_expr_contains_fact_slot_ref(expr: &ActionExpr) -> bool {
-    match expr {
-        ActionExpr::FunctionCall(call) => {
-            call.name == FACT_SLOT_REF_FN
-                || call.args.iter().any(action_expr_contains_fact_slot_ref)
-        }
-        ActionExpr::If {
-            condition,
-            then_actions,
-            else_actions,
-            ..
-        } => {
-            action_expr_contains_fact_slot_ref(condition)
-                || then_actions.iter().any(action_expr_contains_fact_slot_ref)
-                || else_actions.iter().any(action_expr_contains_fact_slot_ref)
-        }
-        ActionExpr::While {
-            condition, body, ..
-        } => {
-            action_expr_contains_fact_slot_ref(condition)
-                || body.iter().any(action_expr_contains_fact_slot_ref)
-        }
-        ActionExpr::LoopForCount {
-            start, end, body, ..
-        } => {
-            action_expr_contains_fact_slot_ref(start)
-                || action_expr_contains_fact_slot_ref(end)
-                || body.iter().any(action_expr_contains_fact_slot_ref)
-        }
-        ActionExpr::Progn {
-            list_expr, body, ..
-        } => {
-            action_expr_contains_fact_slot_ref(list_expr)
-                || body.iter().any(action_expr_contains_fact_slot_ref)
-        }
-        ActionExpr::QueryAction { query, body, .. } => {
-            action_expr_contains_fact_slot_ref(query)
-                || body.iter().any(action_expr_contains_fact_slot_ref)
-        }
-        ActionExpr::Switch {
-            expr,
-            cases,
-            default,
-            ..
-        } => {
-            action_expr_contains_fact_slot_ref(expr)
-                || cases.iter().any(|(case_expr, actions)| {
-                    action_expr_contains_fact_slot_ref(case_expr)
-                        || actions.iter().any(action_expr_contains_fact_slot_ref)
-                })
-                || default
-                    .as_ref()
-                    .is_some_and(|actions| actions.iter().any(action_expr_contains_fact_slot_ref))
-        }
-        ActionExpr::Literal(..) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {
-            false
-        }
-    }
-}
-
-fn eval_fact_slot_ref_call(
-    collected_facts: &[FactId],
-    rule_info: &CompiledRuleInfo,
-    call: &FunctionCall,
-    context: &mut ActionExecutionContext<'_>,
-) -> Result<Value, ActionError> {
-    if call.args.len() != 2 {
-        return Err(ActionError::EvalError(format!(
-            "{FACT_SLOT_REF_FN}: expected 2 arguments"
-        )));
-    }
-
-    let var_name = match &call.args[0] {
-        ActionExpr::Variable(name, _) => name.as_str(),
-        _ => {
-            return Err(ActionError::EvalError(format!(
-                "{FACT_SLOT_REF_FN}: first argument must be a fact-address variable"
-            )))
-        }
-    };
-
-    let slot_name = match &call.args[1] {
-        ActionExpr::Literal(lit) => match &lit.value {
-            LiteralKind::Symbol(s) => s.as_str(),
-            _ => {
-                return Err(ActionError::EvalError(format!(
-                    "{FACT_SLOT_REF_FN}: second argument must be a slot symbol"
-                )))
-            }
-        },
-        _ => {
-            return Err(ActionError::EvalError(format!(
-                "{FACT_SLOT_REF_FN}: second argument must be a slot symbol"
-            )))
-        }
-    };
-
-    let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
-    let fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
-    match fact {
-        Fact::Template(template_fact) => {
-            let registered = context
-                .engine
-                .template_defs
-                .get(template_fact.template_id)
-                .ok_or_else(|| {
-                    ActionError::EvalError(format!(
-                        "{FACT_SLOT_REF_FN}: unknown template id {}",
-                        template_fact.template_id.data().as_ffi()
-                    ))
-                })?;
-
-            let slot_idx = registered
-                .slot_index
-                .get(slot_name)
-                .copied()
-                .ok_or_else(|| {
-                    ActionError::EvalError(format!(
-                        "unknown slot `{slot_name}` in template `{}`",
-                        registered.name
-                    ))
-                })?;
-
-            template_fact.slots.get(slot_idx).cloned().ok_or_else(|| {
-                ActionError::EvalError(format!(
-                    "{FACT_SLOT_REF_FN}: slot index {slot_idx} out of bounds for template `{}`",
-                    registered.name
-                ))
-            })
-        }
-        Fact::Ordered(_) => Err(ActionError::EvalError(format!(
-            "fact-slot access `{var_name}:{slot_name}` requires a template fact"
-        ))),
     }
 }
 
 /// A compiled condition evaluated when a partial match reaches its predicate node.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) enum CompiledTestCondition {
-    Expr(crate::evaluator::RuntimeExpr),
+pub(crate) struct CompiledTestCondition {
+    pub role: ferric_rules_core::RuntimeConditionRole,
+    pub expr: crate::evaluator::RuntimeExpr,
 }
 
-/// Runtime hint for trailing ordered multi-variable captures (`$?var`).
-///
-/// The rete compiler currently approximates ordered multi-variable constraints
-/// as single-slot bindings. This hint allows action-time evaluation to restore
-/// CLIPS-style trailing multifield capture semantics for RHS expressions.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct MultifieldTailBindingHint {
-    pub name: String,
-    pub fact_index: usize,
-    pub start_slot: usize,
+impl CompiledTestCondition {
+    pub(crate) fn join(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::PositiveJoin,
+            expr,
+        }
+    }
+
+    pub(crate) fn pattern(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::PatternFilter,
+            expr,
+        }
+    }
+
+    pub(crate) fn negative_join(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::NegativeJoin,
+            expr,
+        }
+    }
 }
 
 /// Compiled rule metadata stored for action execution.
@@ -380,8 +283,6 @@ pub(crate) struct CompiledRuleInfo {
     pub test_conditions: Vec<CompiledTestCondition>,
     /// Pre-translated RHS action call expressions.
     pub runtime_actions: Vec<Option<crate::evaluator::RuntimeExpr>>,
-    /// Trailing ordered multifield capture hints for action-time evaluation.
-    pub multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
 }
 
 /// Errors that can occur during action execution.
@@ -403,29 +304,44 @@ pub enum ActionError {
     #[error("expression evaluation error: {0}")]
     EvalError(String),
     #[error("expression evaluation error: {0}")]
-    Evaluator(#[from] crate::evaluator::EvalError),
+    Evaluator(#[source] crate::evaluator::EvalError),
     /// Internal non-error signal used to unwind the current rule RHS.
     #[doc(hidden)]
     #[error("internal rule return control escaped the action sequence")]
     RuleReturn,
 }
 
+impl From<crate::evaluator::EvalError> for ActionError {
+    fn from(error: crate::evaluator::EvalError) -> Self {
+        match error {
+            // Scanner metadata is transient. Persist its unchanged public
+            // message using the existing string diagnostic variant.
+            crate::evaluator::EvalError::ScannerNotice(notice) => {
+                Self::EvalError(notice.to_string())
+            }
+            other => Self::Evaluator(other),
+        }
+    }
+}
+
 /// Execute actions for a fired rule.
 ///
 /// This is called with all the data needed pre-extracted to avoid borrow issues.
 ///
-/// Returns `(fired, reset_requested, clear_requested, errors)` where:
+/// Returns `(fired, reset_requested, clear_requested, evaluation_halted, errors)` where:
 /// - `fired` is `true` once the already-matched activation reaches execution.
 /// - `reset_requested` is `true` if a `(reset)` action was executed.
 /// - `clear_requested` is `true` if a `(clear)` action was executed.
-/// - `errors` is a list of non-fatal action errors that occurred during execution.
+/// - `evaluation_halted` records a deferred failure after its value was consumed.
+/// - `errors` contains failures that stopped the remaining RHS actions.
+///   Nonfatal evaluator diagnostics are recorded separately on the engine.
 #[allow(clippy::too_many_lines)] // Sequential action/test evaluation flow with explicit error branches.
 pub(crate) fn execute_actions(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     collected_facts: &[FactId],
-) -> (bool, bool, bool, Vec<ActionError>) {
+) -> (bool, bool, bool, bool, Vec<ActionError>) {
     context.engine.config.begin_action_loop_budget();
     ferric_span!(
         debug_span,
@@ -437,18 +353,19 @@ pub(crate) fn execute_actions(
     let mut errors = Vec::new();
     let mut reset_requested = false;
     let mut clear_requested = false;
-    let mut eval_env = ActionEvalEnv {
-        runtime_bindings: RuntimeBindingEnv::new(),
-    };
+    let mut eval_env = ActionEvalEnv::default();
     // Defensive: clear any stale deferred events that might have accumulated
     // in non-action evaluation contexts.
     let _ = context.engine.globals.take_printout_events();
-    seed_multifield_tail_bindings(
-        &context.engine.fact_base,
+    if let Err(error) = seed_fact_address_bindings(
         collected_facts,
-        &rule_info.multifield_tail_bindings,
-        &mut eval_env.runtime_bindings,
-    );
+        &rule_info.fact_address_vars,
+        &mut eval_env.fact_bindings,
+        &mut eval_env.compact_facts,
+    ) {
+        context.engine.config.end_action_loop_budget();
+        return (true, false, false, false, vec![error]);
+    }
 
     for (index, action) in rule_info.actions.iter().enumerate() {
         let runtime_call = rule_info
@@ -475,7 +392,7 @@ pub(crate) fn execute_actions(
                     action_index = index,
                     "rule_action_return"
                 );
-                flush_deferred_printout(context);
+                flush_deferred_evaluation(context);
                 break;
             }
             Err(e) => {
@@ -488,13 +405,17 @@ pub(crate) fn execute_actions(
                     "rule_action_error"
                 );
                 errors.push(e);
-                flush_deferred_printout(context);
+                flush_deferred_evaluation(context);
                 break;
             }
         }
-        flush_deferred_printout(context);
-        // Stop executing further actions if clear/reset was requested.
-        if clear_requested || reset_requested {
+        flush_deferred_evaluation(context);
+        // Preserve the completed expression value before honoring deferred failure.
+        if clear_requested
+            || reset_requested
+            || context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+        {
             ferric_event!(
                 debug,
                 rule = %rule_info.name,
@@ -516,33 +437,112 @@ pub(crate) fn execute_actions(
         "execute_actions_complete"
     );
     context.engine.config.end_action_loop_budget();
-    (true, reset_requested, clear_requested, errors)
+    let evaluation_halted = context.engine.globals.take_evaluation_halt();
+    let _ = context.engine.globals.take_sort_return();
+    (
+        true,
+        reset_requested,
+        clear_requested,
+        evaluation_halted,
+        errors,
+    )
 }
 
-/// Evaluate one rule-local predicate for an incoming partial match.
-pub(crate) fn evaluate_test_condition(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    test_condition: &CompiledTestCondition,
-    collected_facts: &[FactId],
+/// Evaluate a verified graph-owned condition against its isolated binding frame.
+/// Negative joins convert errors into conflicts. Exists joins do so only while
+/// replacing a selected support; an initial search rejects an erroneous support.
+pub(crate) fn evaluate_runtime_condition(
+    bindings: &BindingSet,
+    var_map: &VarMap,
+    condition: &CompiledTestCondition,
+    replacing_conflict: bool,
     context: &mut ActionExecutionContext<'_>,
-) -> Result<bool, ActionError> {
-    let mut eval_env = ActionEvalEnv {
-        runtime_bindings: RuntimeBindingEnv::new(),
+) -> bool {
+    use crate::evaluator::{eval_lhs, LhsEvaluationMode};
+    use ferric_rules_core::RuntimeConditionRole;
+    let mode = match condition.role {
+        RuntimeConditionRole::PatternFilter => LhsEvaluationMode::Pattern,
+        RuntimeConditionRole::PositiveJoin
+        | RuntimeConditionRole::NegativeJoin
+        | RuntimeConditionRole::ExistsJoin => LhsEvaluationMode::Join,
     };
-    seed_multifield_tail_bindings(
-        &context.engine.fact_base,
-        collected_facts,
-        &rule_info.multifield_tail_bindings,
-        &mut eval_env.runtime_bindings,
+    let engine = &mut *context.engine;
+    let evaluation = eval_lhs(
+        &mut crate::evaluator::EvalContext {
+            bindings,
+            var_map,
+            symbol_table: &mut engine.symbol_table,
+            config: &engine.config,
+            functions: &engine.functions,
+            globals: &mut engine.globals,
+            generics: &engine.generics,
+            call_depth: 0,
+            expression_depth: 0,
+            callable_locals: None,
+            current_module: context.current_module,
+            module_registry: &engine.module_registry,
+            function_modules: &engine.function_modules,
+            global_modules: &engine.global_modules,
+            generic_modules: &engine.generic_modules,
+            method_chain: None,
+            input_buffer: Some(&mut engine.input_buffer),
+            fact_base: Some(&engine.fact_base),
+            initial_fact_id: engine.initial_fact_id,
+            compact_fact_bindings: None,
+            template_resolver: Some(crate::loader::TemplateResolver {
+                template_local_ids: &engine.template_local_ids,
+                template_modules: &engine.template_modules,
+                module_registry: &engine.module_registry,
+            }),
+            template_defs: Some(&engine.template_defs),
+        },
+        &condition.expr,
+        mode,
     );
+    let error_conflicts = condition.role == RuntimeConditionRole::NegativeJoin
+        || (condition.role == RuntimeConditionRole::ExistsJoin && replacing_conflict);
+    let passed = match evaluation {
+        Ok(passed) if !engine.globals.evaluation_error() => passed,
+        Ok(_) => error_conflicts,
+        Err(error) => {
+            // Ordinary evaluator errors have not entered the deferred queue.
+            // Preserve their diagnostic and the halt needed by an enclosing RHS.
+            engine.globals.push_halt_diagnostic(error);
+            error_conflicts
+        }
+    };
+    // Capture this whole condition's verdict before clearing its transient
+    // error. A later candidate must not inherit it; sticky halt stays intact.
+    engine.globals.clear_evaluation_error();
+    flush_deferred_evaluation(context);
+    passed
+}
 
-    let CompiledTestCondition::Expr(test_expr) = test_condition;
-    let result = eval_env
-        .eval_runtime_expr(token, rule_info, test_expr, context)
-        .map(|value| crate::evaluator::is_truthy(&value, &context.engine.symbol_table));
-    flush_deferred_printout(context);
-    result
+fn seed_fact_address_bindings(
+    collected_facts: &[FactId],
+    addresses: &HashMap<String, usize>,
+    env: &mut RuntimeBindingEnv,
+    compact_facts: &mut crate::evaluator::CompactFactBindings,
+) -> Result<(), ActionError> {
+    if addresses.len() > ferric_rules_core::compiler::MAX_RULE_CONDITIONS {
+        return Err(ActionError::EvalError(
+            "too many fact-address bindings for one rule".to_string(),
+        ));
+    }
+    for (name, index) in addresses {
+        let fact_id = collected_facts.get(*index).ok_or_else(|| {
+            ActionError::EvalError(format!(
+                "fact-address binding ?{name} references missing fact at position {index}"
+            ))
+        })?;
+        let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
+        insert_runtime_binding(env, name, Value::Integer(encoded));
+        compact_facts.insert(
+            name.strip_prefix("$?").unwrap_or(name).to_string(),
+            CompactFactBinding::live(*fact_id),
+        );
+    }
+    Ok(())
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
@@ -550,37 +550,17 @@ fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value)
     env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
 }
 
-fn seed_multifield_tail_bindings(
-    fact_base: &FactBase,
-    collected_facts: &[FactId],
-    hints: &[MultifieldTailBindingHint],
-    env: &mut RuntimeBindingEnv,
-) {
-    for hint in hints {
-        let Some(&fact_id) = collected_facts.get(hint.fact_index) else {
-            continue;
-        };
-        let Some(entry) = fact_base.get(fact_id) else {
-            continue;
-        };
-        let Fact::Ordered(ordered) = &entry.fact else {
-            continue;
-        };
-
-        let mut captured = ferric_rules_core::Multifield::new();
-        captured.extend(ordered.fields.iter().skip(hint.start_slot).cloned());
-        insert_runtime_binding(env, &hint.name, Value::Multifield(Box::new(captured)));
-    }
-}
-
 fn build_runtime_eval_bindings(
     token: &Token,
     rule_info: &CompiledRuleInfo,
-    env: &RuntimeBindingEnv,
+    fact_bindings: &RuntimeBindingEnv,
+    runtime_bindings: &RuntimeBindingEnv,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<(BindingSet, VarMap), ActionError> {
-    let mut var_map = VarMap::new();
-    let mut bindings = BindingSet::new();
+    // ValueRef clones share strings/multifields. Adding an address must not
+    // deep-copy all ordinary values for every expression in the RHS.
+    let mut var_map = rule_info.var_map.clone();
+    let mut bindings = token.bindings.clone();
 
     // Preserve outer VarId order: when both spellings exist, the later
     // `$?name`/`name` alias wins, just as in the former merged map.
@@ -591,9 +571,11 @@ fn build_runtime_eval_bindings(
             continue;
         };
         let original = rule_info.var_map.name(outer_id);
-        let Some(name) = context.engine.symbol_table.resolve_symbol_str(original) else {
-            continue;
-        };
+        let name = context
+            .engine
+            .symbol_table
+            .resolve_symbol_str(original)
+            .ok_or_else(|| ActionError::EvalError("binding name is not valid UTF-8 text".into()))?;
         let name = name.strip_prefix("$?").unwrap_or(name);
         // Reuse the interned canonical name when present, while retaining the
         // current encoding's lookup/intern behavior for aliases and mixed tables.
@@ -616,19 +598,21 @@ fn build_runtime_eval_bindings(
             .map_err(|error| ActionError::EvalError(error.to_string()))?;
         bindings.set(id, value.clone());
     }
-    // Runtime locals override outer aliases. Clone their values once, directly
-    // into the evaluation frame, without an intermediate owned-value map.
-    for (name, value) in env {
-        let name = name.strip_prefix("$?").unwrap_or(name);
-        let symbol = context
-            .engine
-            .symbol_table
-            .intern_symbol(name, context.engine.config.string_encoding)
-            .map_err(ActionError::Encoding)?;
-        let id = var_map
-            .get_or_create(symbol)
-            .map_err(|error| ActionError::EvalError(error.to_string()))?;
-        bindings.set(id, ValueRef::new(value.clone()));
+    for (env, overwrite) in [(fact_bindings, false), (runtime_bindings, true)] {
+        for (name, value) in env {
+            let name = name.strip_prefix("$?").unwrap_or(name);
+            let symbol = context
+                .engine
+                .symbol_table
+                .intern_symbol(name, context.engine.config.string_encoding)
+                .map_err(ActionError::Encoding)?;
+            let id = var_map
+                .get_or_create(symbol)
+                .map_err(|error| ActionError::EvalError(error.to_string()))?;
+            if overwrite || bindings.get(id).is_none() {
+                bindings.set(id, ValueRef::new(value.clone()));
+            }
+        }
     }
     Ok((bindings, var_map))
 }
@@ -655,7 +639,14 @@ fn execute_single_action(
             eval_env,
             collected_facts,
         ),
-        "retract" => execute_retract(context, collected_facts, rule_info, &call.args),
+        "retract" => execute_retract(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
         "modify" => execute_modify(
             token,
             rule_info,
@@ -844,108 +835,24 @@ fn execute_single_action(
                 ..
             }) = if_runtime
             {
-                let cond_value = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
-                };
+                let cond_value =
+                    eval_env.eval_runtime_expr(token, rule_info, condition, context)?;
                 let branch =
                     if crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
                         then_branch
                     } else {
                         else_branch
                     };
-                for (action_expr, rt_expr) in branch {
-                    // Reconstruct a FunctionCall from the ActionExpr so we can
-                    // route through execute_single_action normally.
-                    let (branch_call, branch_runtime): (
-                        Cow<'_, FunctionCall>,
-                        Option<&crate::evaluator::RuntimeExpr>,
-                    ) = match action_expr {
-                        ActionExpr::FunctionCall(fc) => {
-                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (Cow::Borrowed(fc), rt)
-                        }
-                        ActionExpr::If { span, .. } => {
-                            // Nested if: create a synthetic call with name "if"
-                            // so the recursive execute_single_action picks it up.
-                            let synthetic = FunctionCall {
-                                name: "if".to_string(),
-                                args: vec![],
-                                span: *span,
-                            };
-                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (Cow::Owned(synthetic), rt)
-                        }
-                        ActionExpr::Switch { span, .. } => {
-                            let synthetic = FunctionCall {
-                                name: "switch".to_string(),
-                                args: vec![],
-                                span: *span,
-                            };
-                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (Cow::Owned(synthetic), rt)
-                        }
-                        ActionExpr::While { span, .. } => {
-                            let synthetic = FunctionCall {
-                                name: "while".to_string(),
-                                args: vec![],
-                                span: *span,
-                            };
-                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (Cow::Owned(synthetic), rt)
-                        }
-                        ActionExpr::LoopForCount { span, .. } => {
-                            let synthetic = FunctionCall {
-                                name: "loop-for-count".to_string(),
-                                args: vec![],
-                                span: *span,
-                            };
-                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (Cow::Owned(synthetic), rt)
-                        }
-                        ActionExpr::Progn { span, .. } => {
-                            let synthetic = FunctionCall {
-                                name: "progn$".to_string(),
-                                args: vec![],
-                                span: *span,
-                            };
-                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (Cow::Owned(synthetic), rt)
-                        }
-                        _ => {
-                            // Literal/variable — evaluate as expression; not an
-                            // action but valid in CLIPS (result is discarded).
-                            if let Some(rt) = rt_expr {
-                                let _ = eval_env.eval_runtime_expr(token, rule_info, rt, context);
-                            } else {
-                                let _ = eval_env.eval_expr(
-                                    token,
-                                    rule_info,
-                                    action_expr,
-                                    context,
-                                    collected_facts,
-                                );
-                            }
-                            continue;
-                        }
-                    };
-                    execute_single_action(
-                        reset_requested,
-                        clear_requested,
-                        token,
-                        rule_info,
-                        &branch_call,
-                        branch_runtime,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
-                    // Propagate early-exit flags.
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
-                        break;
-                    }
-                }
-                Ok(())
+                execute_loop_body(
+                    reset_requested,
+                    clear_requested,
+                    token,
+                    rule_info,
+                    branch,
+                    context,
+                    eval_env,
+                    collected_facts,
+                )
             } else {
                 // Fallback: evaluate as expression (no-op if void).
                 if let Some(runtime_expr) = runtime_call {
@@ -975,11 +882,12 @@ fn execute_single_action(
             {
                 loop {
                     // Evaluate condition.
-                    let cond_value = {
-                        let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                        crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
-                    };
-                    if !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
+                    let cond_value =
+                        eval_env.eval_runtime_expr(token, rule_info, condition, context)?;
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table)
+                    {
                         break;
                     }
                     crate::evaluator::consume_action_loop_iteration(
@@ -999,7 +907,12 @@ fn execute_single_action(
                         eval_env,
                         collected_facts,
                     )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
+                    if context.engine.is_halted()
+                        || context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                        || *reset_requested
+                        || *clear_requested
+                    {
                         break;
                     }
                 }
@@ -1032,9 +945,18 @@ fn execute_single_action(
             }) = lfc_runtime
             {
                 let (start_int, end_int) = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    let sv = crate::evaluator::eval(&mut ctx, start).map_err(ActionError::from)?;
-                    let ev = crate::evaluator::eval(&mut ctx, end).map_err(ActionError::from)?;
+                    let sv = eval_env.eval_runtime_expr(token, rule_info, start, context)?;
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                    {
+                        return Ok(());
+                    }
+                    let ev = eval_env.eval_runtime_expr(token, rule_info, end, context)?;
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                    {
+                        return Ok(());
+                    }
                     let si = match &sv {
                         Value::Integer(n) => *n,
                         #[allow(clippy::cast_possible_truncation)]
@@ -1058,52 +980,60 @@ fn execute_single_action(
                     (si, ei)
                 };
 
-                let mut loop_frame: Option<(Token, CompiledRuleInfo, VarId)> = None;
-                for counter in start_int..=end_int {
-                    crate::evaluator::consume_action_loop_iteration(
-                        &context.engine.config,
-                        "loop-for-count",
-                        span.clone(),
-                    )
-                    .map_err(ActionError::from)?;
-                    // Initialize after the first budget check: empty ranges and
-                    // exhausted budgets must not introduce a variable early.
-                    let (loop_token, loop_rule_info) = if let Some(var) = var_name {
-                        if let Some((frame_token, _, id)) = &mut loop_frame {
-                            frame_token
-                                .bindings
-                                .set(*id, ValueRef::new(Value::Integer(counter)));
+                // A loop owns one lexical scope; RHS overrides survive its iterations.
+                eval_env.with_local_scope(var_name.as_deref(), |eval_env| {
+                    let mut loop_frame: Option<(Token, CompiledRuleInfo, VarId)> = None;
+                    for counter in start_int..=end_int {
+                        crate::evaluator::consume_action_loop_iteration(
+                            &context.engine.config,
+                            "loop-for-count",
+                            span.clone(),
+                        )
+                        .map_err(ActionError::from)?;
+                        // Initialize after the first budget check: empty ranges and
+                        // exhausted budgets must not introduce a variable early.
+                        let (loop_token, loop_rule_info) = if let Some(var) = var_name {
+                            if let Some((frame_token, _, id)) = &mut loop_frame {
+                                frame_token
+                                    .bindings
+                                    .set(*id, ValueRef::new(Value::Integer(counter)));
+                            } else {
+                                loop_frame = Some(augment_bindings_with_var(
+                                    token,
+                                    rule_info,
+                                    var,
+                                    Value::Integer(counter),
+                                    &mut context.engine.symbol_table,
+                                    &context.engine.config,
+                                )?);
+                            }
+                            let (frame_token, frame_info, _) = loop_frame.as_ref().unwrap();
+                            (frame_token, frame_info)
                         } else {
-                            loop_frame = Some(augment_bindings_with_var(
-                                token,
-                                rule_info,
-                                var,
-                                Value::Integer(counter),
-                                &mut context.engine.symbol_table,
-                                &context.engine.config,
-                            )?);
-                        }
-                        let (frame_token, frame_info, _) = loop_frame.as_ref().unwrap();
-                        (frame_token, frame_info)
-                    } else {
-                        (token, rule_info)
-                    };
+                            (token, rule_info)
+                        };
 
-                    execute_loop_body(
-                        reset_requested,
-                        clear_requested,
-                        loop_token,
-                        loop_rule_info,
-                        body,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
-                        break;
+                        execute_loop_body(
+                            reset_requested,
+                            clear_requested,
+                            loop_token,
+                            loop_rule_info,
+                            body,
+                            context,
+                            eval_env,
+                            collected_facts,
+                        )?;
+                        if context.engine.is_halted()
+                            || context.engine.globals.evaluation_halted()
+                            || context.engine.globals.sort_return_requested()
+                            || *reset_requested
+                            || *clear_requested
+                        {
+                            break;
+                        }
                     }
-                }
-                Ok(())
+                    Ok(())
+                })
             } else if let Some(runtime_expr) = runtime_call {
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
@@ -1131,19 +1061,24 @@ fn execute_single_action(
             }) = switch_runtime
             {
                 // Evaluate the discriminant expression.
-                let disc_value = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    crate::evaluator::eval(&mut ctx, expr).map_err(ActionError::from)?
-                };
+                let disc_value = eval_env.eval_runtime_expr(token, rule_info, expr, context)?;
+
+                if context.engine.globals.evaluation_halted()
+                    || context.engine.globals.sort_return_requested()
+                {
+                    return Ok(());
+                }
 
                 // Find first matching case.
                 let mut matched_body = None;
                 for (test_val_expr, case_body) in cases {
-                    let test_value = {
-                        let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                        crate::evaluator::eval(&mut ctx, test_val_expr)
-                            .map_err(ActionError::from)?
-                    };
+                    let test_value =
+                        eval_env.eval_runtime_expr(token, rule_info, test_val_expr, context)?;
+                    if context.engine.globals.evaluation_halted()
+                        || context.engine.globals.sort_return_requested()
+                    {
+                        return Ok(());
+                    }
                     if disc_value.structural_eq(&test_value) {
                         matched_body = Some(case_body);
                         break;
@@ -1197,67 +1132,75 @@ fn execute_single_action(
                 ..
             }) = progn_runtime
             {
-                // Keep the evaluated list owned locally, so RHS mutation cannot
-                // change traversal, without copying it into a second vector.
-                let list_value = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    crate::evaluator::eval(&mut ctx, list_expr).map_err(ActionError::from)?
-                };
+                // Keep the evaluated list owned locally while iterating borrowed fields.
+                let list_value =
+                    eval_env.eval_runtime_expr(token, rule_info, list_expr, context)?;
                 let elements = match &list_value {
                     Value::Multifield(values) => values.as_slice(),
                     other => std::slice::from_ref(other),
                 };
 
                 let index_var_name = format!("{var_name}-index");
-                let mut loop_frame: Option<(Token, CompiledRuleInfo, VarId, VarId)> = None;
-                for (idx, element) in elements.iter().enumerate() {
-                    #[allow(clippy::cast_possible_wrap)]
-                    // usize→i64: element counts can't exceed i64
-                    let one_based = idx as i64 + 1;
+                eval_env.with_local_scope(
+                    [var_name.as_str(), index_var_name.as_str()],
+                    |eval_env| {
+                        let mut loop_frame: Option<(Token, CompiledRuleInfo, VarId, VarId)> = None;
+                        for (idx, element) in elements.iter().enumerate() {
+                            #[allow(clippy::cast_possible_wrap)]
+                            // usize→i64: element counts can't exceed i64
+                            let one_based = idx as i64 + 1;
 
-                    if let Some((frame_token, _, value_id, index_id)) = &mut loop_frame {
-                        frame_token
-                            .bindings
-                            .set(*value_id, ValueRef::new(element.clone()));
-                        frame_token
-                            .bindings
-                            .set(*index_id, ValueRef::new(Value::Integer(one_based)));
-                    } else {
-                        let (token1, info1, value_id) = augment_bindings_with_var(
-                            token,
-                            rule_info,
-                            var_name,
-                            element.clone(),
-                            &mut context.engine.symbol_table,
-                            &context.engine.config,
-                        )?;
-                        let (frame_token, frame_info, index_id) = augment_bindings_with_var(
-                            &token1,
-                            &info1,
-                            &index_var_name,
-                            Value::Integer(one_based),
-                            &mut context.engine.symbol_table,
-                            &context.engine.config,
-                        )?;
-                        loop_frame = Some((frame_token, frame_info, value_id, index_id));
-                    }
-                    let (loop_token, loop_rule_info, _, _) = loop_frame.as_ref().unwrap();
+                            if let Some((frame_token, _, value_id, index_id)) = &mut loop_frame {
+                                frame_token
+                                    .bindings
+                                    .set(*value_id, ValueRef::new(element.clone()));
+                                frame_token
+                                    .bindings
+                                    .set(*index_id, ValueRef::new(Value::Integer(one_based)));
+                            } else {
+                                let (token1, info1, value_id) = augment_bindings_with_var(
+                                    token,
+                                    rule_info,
+                                    var_name,
+                                    element.clone(),
+                                    &mut context.engine.symbol_table,
+                                    &context.engine.config,
+                                )?;
+                                let (frame_token, frame_info, index_id) =
+                                    augment_bindings_with_var(
+                                        &token1,
+                                        &info1,
+                                        &index_var_name,
+                                        Value::Integer(one_based),
+                                        &mut context.engine.symbol_table,
+                                        &context.engine.config,
+                                    )?;
+                                loop_frame = Some((frame_token, frame_info, value_id, index_id));
+                            }
+                            let (loop_token, loop_rule_info, _, _) = loop_frame.as_ref().unwrap();
 
-                    execute_loop_body(
-                        reset_requested,
-                        clear_requested,
-                        loop_token,
-                        loop_rule_info,
-                        body,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
-                        break;
-                    }
-                }
-                Ok(())
+                            execute_loop_body(
+                                reset_requested,
+                                clear_requested,
+                                loop_token,
+                                loop_rule_info,
+                                body,
+                                context,
+                                eval_env,
+                                collected_facts,
+                            )?;
+                            if context.engine.is_halted()
+                                || context.engine.globals.evaluation_halted()
+                                || context.engine.globals.sort_return_requested()
+                                || *reset_requested
+                                || *clear_requested
+                            {
+                                break;
+                            }
+                        }
+                        Ok(())
+                    },
+                )
             } else if let Some(runtime_expr) = runtime_call {
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
@@ -1283,6 +1226,18 @@ fn execute_single_action(
                 Some(rt @ crate::evaluator::RuntimeExpr::QueryAction { .. }) => Some(rt),
                 _ => None,
             };
+
+            // Result forms retain their evaluation and early-stop semantics
+            // even when the enclosing action discards the returned value.
+            if let Some(rt @ crate::evaluator::RuntimeExpr::QueryAction { name, .. }) =
+                query_runtime
+            {
+                if matches!(name.as_str(), "any-factp" | "find-fact" | "find-all-facts") {
+                    return eval_env
+                        .eval_runtime_expr(token, rule_info, rt, context)
+                        .map(|_| ());
+                }
+            }
 
             if let Some(crate::evaluator::RuntimeExpr::QueryAction {
                 name,
@@ -1344,7 +1299,6 @@ fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
         salience: rule_info.salience,
         test_conditions: Vec::new(),
         runtime_actions: Vec::new(),
-        multifield_tail_bindings: rule_info.multifield_tail_bindings.clone(),
     }
 }
 
@@ -1401,6 +1355,11 @@ fn execute_loop_body(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     for (action_expr, rt_expr) in body {
+        if context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+        {
+            break;
+        }
         let (branch_call, branch_runtime): (
             Cow<'_, ferric_rules_parser::FunctionCall>,
             Option<&crate::evaluator::RuntimeExpr>,
@@ -1466,10 +1425,9 @@ fn execute_loop_body(
             _ => {
                 // Literal/variable — evaluate as expression; result is discarded.
                 if let Some(rt) = rt_expr {
-                    let _ = eval_env.eval_runtime_expr(token, rule_info, rt, context);
+                    eval_env.eval_runtime_expr(token, rule_info, rt, context)?;
                 } else {
-                    let _ =
-                        eval_env.eval_expr(token, rule_info, action_expr, context, collected_facts);
+                    eval_env.eval_expr(token, rule_info, action_expr, context, collected_facts)?;
                 }
                 continue;
             }
@@ -1485,22 +1443,183 @@ fn execute_loop_body(
             eval_env,
             collected_facts,
         )?;
-        if context.engine.is_halted() || *reset_requested || *clear_requested {
+        if context.engine.is_halted()
+            || context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+            || *reset_requested
+            || *clear_requested
+        {
             break;
         }
     }
     Ok(())
 }
 
-/// Execute a fact-query macro action.
-///
-/// Handles `do-for-fact`, `do-for-all-facts`, `delayed-do-for-all-facts`,
-/// `any-factp`, `find-fact`, and `find-all-facts`.
-///
-/// For action forms (`do-for-*`), executes `body` for each matching fact and
-/// returns `Ok(())`. For expression forms (`any-factp`, `find-*`), the return
-/// value is discarded here. Fact queries used as expressions are explicitly
-/// unsupported because the pure evaluator has no fact-base access.
+type QueryCandidate = Vec<(String, CompactFactBinding)>;
+
+/// A live, iterative nested-loop cursor. Each level remembers chronology,
+/// rather than an arena slot, so removal/reuse cannot revive an old member.
+/// Outer members remain selected while their inner levels advance.
+struct ActionQueryCursor {
+    members: Vec<(String, TemplateId)>,
+    after: Vec<Option<u64>>,
+    current: Vec<Option<CompactFactBinding>>,
+    retained: HashMap<FactId, Arc<Fact>>,
+    level: usize,
+    finished: bool,
+}
+
+impl ActionQueryCursor {
+    fn new(
+        bindings: &[(String, String)],
+        context: &mut ActionExecutionContext<'_>,
+    ) -> Result<Self, ActionError> {
+        if bindings.is_empty() {
+            return Err(ActionError::EvalError(
+                "query requires at least one member".into(),
+            ));
+        }
+        let resolver = crate::loader::TemplateResolver {
+            template_local_ids: &context.engine.template_local_ids,
+            template_modules: &context.engine.template_modules,
+            module_registry: &context.engine.module_registry,
+        };
+        let mut names = HashSet::new();
+        let mut members = Vec::with_capacity(bindings.len());
+        for (name, template) in bindings {
+            if !crate::evaluator::valid_query_member(name) || !names.insert(name) {
+                return Err(ActionError::EvalError(
+                    "invalid or duplicate query member".into(),
+                ));
+            }
+            let template = resolver
+                .resolve_query_reference(template, context.current_module)
+                .map_err(ActionError::EvalError)?;
+            members.push((name.clone(), template));
+        }
+        // Resolve every declaration before recognizing an empty product.
+        let finished = members.iter().any(|(_, template)| {
+            context
+                .engine
+                .fact_base
+                .next_template_fact_after(*template, None)
+                .is_none()
+        });
+        Ok(Self {
+            after: vec![None; members.len()],
+            current: vec![None; members.len()],
+            members,
+            retained: HashMap::new(),
+            level: 0,
+            finished,
+        })
+    }
+
+    fn next(
+        &mut self,
+        context: &mut ActionExecutionContext<'_>,
+        query_name: &str,
+    ) -> Result<Option<QueryCandidate>, ActionError> {
+        while !self.finished {
+            let next = context
+                .engine
+                .fact_base
+                .next_template_fact_after(self.members[self.level].1, self.after[self.level]);
+            // Charge traversal as well as predicates: mutation can empty an
+            // inner set while many outer prefixes remain to be visited.
+            if let Some((fact_id, timestamp)) = next {
+                crate::evaluator::consume_action_loop_iteration(
+                    &context.engine.config,
+                    query_name,
+                    None,
+                )
+                .map_err(ActionError::from)?;
+                self.after[self.level] = Some(timestamp);
+                let retained = self.retained.entry(fact_id).or_insert_with(|| {
+                    Arc::new(
+                        context
+                            .engine
+                            .fact_base
+                            .get(fact_id)
+                            .expect("chronological index only yields live facts")
+                            .fact
+                            .clone(),
+                    )
+                });
+                self.current[self.level] =
+                    Some(CompactFactBinding::retained(fact_id, retained.clone()));
+                if self.level + 1 == self.members.len() {
+                    let candidate = self
+                        .members
+                        .iter()
+                        .zip(&self.current)
+                        .map(|((name, _), member)| {
+                            (
+                                name.clone(),
+                                member.as_ref().expect("complete query tuple").clone(),
+                            )
+                        })
+                        .collect();
+                    return Ok(Some(candidate));
+                }
+                self.level += 1;
+                self.after[self.level] = None;
+            } else if self.level == 0 {
+                self.finished = true;
+            } else {
+                self.current[self.level] = None;
+                self.after[self.level] = None;
+                self.level -= 1;
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Install both ordinary and compact member scopes once for a predicate/body.
+/// Retained records follow compact members; ordinary aliases remain addresses.
+fn with_query_candidate<T>(
+    candidate: &QueryCandidate,
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    execute: impl FnOnce(
+        &Token,
+        &CompiledRuleInfo,
+        &mut ActionExecutionContext<'_>,
+        &mut ActionEvalEnv,
+    ) -> Result<T, ActionError>,
+) -> Result<T, ActionError> {
+    let mut aug_token = token.clone();
+    let mut aug_rule_info = rule_info_clone_light(rule_info);
+    for (name, member) in candidate {
+        let value = Value::Integer(i64::from_ne_bytes(
+            member.fact_id().data().as_ffi().to_ne_bytes(),
+        ));
+        let (next_token, next_rule, _) = augment_bindings_with_var(
+            &aug_token,
+            &aug_rule_info,
+            name,
+            value,
+            &mut context.engine.symbol_table,
+            &context.engine.config,
+        )?;
+        aug_token = next_token;
+        aug_rule_info = next_rule;
+    }
+    eval_env.with_local_scope(
+        candidate.iter().map(|(name, _)| name.as_str()),
+        |eval_env| {
+            eval_env.with_compact_scope(candidate, |eval_env| {
+                execute(&aug_token, &aug_rule_info, context, eval_env)
+            })
+        },
+    )
+}
+
+/// Delayed queries select every matching tuple before their first body.
+/// Immediate queries resume their chronological cursor after each body.
 #[allow(clippy::too_many_arguments)]
 fn execute_query_action(
     reset_requested: &mut bool,
@@ -1510,125 +1629,100 @@ fn execute_query_action(
     name: &str,
     bindings: &[(String, String)],
     query: &crate::evaluator::RuntimeExpr,
-    body: &[(
-        ferric_rules_parser::ActionExpr,
-        Option<Box<crate::evaluator::RuntimeExpr>>,
-    )],
+    body: &[(ActionExpr, Option<Box<crate::evaluator::RuntimeExpr>>)],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    // Collect matching fact IDs.
-    //
-    // For multi-binding forms (e.g. `(do-for-all-facts ((?a T1) (?b T2)) ...)`),
-    // we iterate the cross-product of each binding's fact set.  For the common
-    // single-binding case this degenerates to a simple loop.
-    //
-    // We collect all IDs first to avoid borrow issues when executing the body
-    // (body actions may assert/retract facts, which would mutate the fact base
-    // while we're iterating it).  This also serves as the snapshot required by
-    // `delayed-do-for-all-facts`.
-
-    // Resolve each binding to (variable_name, Vec<FactId>).
-    let mut binding_fact_ids: Vec<(String, Vec<FactId>)> = Vec::with_capacity(bindings.len());
-    for (var_name, template_name) in bindings {
-        let Some(&tid) = context.engine.template_ids.get(template_name.as_str()) else {
-            // Unknown template — no facts match; result is empty / FALSE.
-            return Ok(());
-        };
-        let ids: Vec<FactId> = context.engine.fact_base.facts_by_template(tid).collect();
-        binding_fact_ids.push((var_name.clone(), ids));
-    }
-
-    if binding_fact_ids.is_empty() {
-        return Ok(());
-    }
-
-    // For simplicity, implement the cross-product as a recursive-style iteration
-    // over the bindings list. We build candidate tuples iteratively.
-    // A "candidate" is a Vec of (var_name, FactId) assignments — one per binding.
-
-    // Seed with single-element tuples for the first binding.
-    let (first_var, first_ids) = &binding_fact_ids[0];
-    let mut candidates: Vec<Vec<(String, FactId)>> = first_ids
-        .iter()
-        .map(|&id| vec![(first_var.clone(), id)])
-        .collect();
-
-    // Extend with remaining bindings.
-    for (var_name, ids) in &binding_fact_ids[1..] {
-        let mut next = Vec::with_capacity(candidates.len() * ids.len());
-        for candidate in &candidates {
-            for &id in ids {
-                let mut extended = candidate.clone();
-                extended.push((var_name.clone(), id));
-                next.push(extended);
-            }
-        }
-        candidates = next;
-    }
-
-    // Now iterate candidates, filter by query, execute body as appropriate.
+    let delayed = name == "delayed-do-for-all-facts";
     let stop_after_first = name == "do-for-fact";
-    let is_action_form = matches!(
-        name,
-        "do-for-fact" | "do-for-all-facts" | "delayed-do-for-all-facts"
-    );
-
-    for candidate in &candidates {
-        // Build augmented (token, rule_info) with all binding variables set.
-        let mut aug_token = token.clone();
-        let mut aug_rule_info = rule_info_clone_light(rule_info);
-
-        for (var_name, fact_id) in candidate {
-            // Represent the FactId as an integer value.
-            #[allow(clippy::cast_possible_wrap)] // FactId ffi is u64; wrap is acceptable here
-            let fact_val = Value::Integer(fact_id.data().as_ffi() as i64);
-            let (new_token, new_rule_info, _) = augment_bindings_with_var(
-                &aug_token,
-                &aug_rule_info,
-                var_name,
-                fact_val,
-                &mut context.engine.symbol_table,
-                &context.engine.config,
-            )?;
-            aug_token = new_token;
-            aug_rule_info = new_rule_info;
-        }
-
-        // Evaluate the query expression.
-        let query_val = {
-            let mut ctx = ActionEvalEnv::make_eval_context(&aug_token, &aug_rule_info, context);
-            crate::evaluator::eval(&mut ctx, query).map_err(ActionError::from)?
-        };
-
-        if !crate::evaluator::is_truthy(&query_val, &context.engine.symbol_table) {
-            continue;
-        }
-
-        if is_action_form {
-            execute_loop_body(
-                reset_requested,
-                clear_requested,
-                &aug_token,
-                &aug_rule_info,
-                body,
-                context,
-                eval_env,
-                collected_facts,
-            )?;
-            if context.engine.is_halted() || *reset_requested || *clear_requested {
-                break;
-            }
-            if stop_after_first {
-                break;
-            }
-        }
-        // For expression forms (any-factp, find-fact, find-all-facts) we
-        // can't return the value from this action-execution path; callers
-        // that need a return value should use the eval() path instead.
+    if !delayed && !stop_after_first && name != "do-for-all-facts" {
+        return Err(ActionError::UnknownAction(name.into()));
     }
-
+    crate::evaluator::validate_query_predicate(
+        &mut ActionEvalEnv::make_eval_context(token, rule_info, context, &eval_env.compact_facts),
+        query,
+        name,
+        None,
+        0,
+    )
+    .map_err(ActionError::from)?;
+    let mut cursor = ActionQueryCursor::new(bindings, context)?;
+    let mut selected = Vec::new();
+    while let Some(candidate) = cursor.next(context, name)? {
+        let matched = with_query_candidate(
+            &candidate,
+            token,
+            rule_info,
+            context,
+            eval_env,
+            |token, rule_info, context, eval_env| {
+                let value = eval_env.eval_runtime_expr(token, rule_info, query, context)?;
+                if context.engine.globals.evaluation_halted()
+                    || context.engine.globals.sort_return_requested()
+                {
+                    return Ok(false);
+                }
+                let matched = crate::evaluator::is_truthy(&value, &context.engine.symbol_table);
+                if matched && !delayed {
+                    execute_loop_body(
+                        reset_requested,
+                        clear_requested,
+                        token,
+                        rule_info,
+                        body,
+                        context,
+                        eval_env,
+                        collected_facts,
+                    )?;
+                }
+                Ok(matched)
+            },
+        )?;
+        if matched && delayed {
+            selected.push(candidate);
+        }
+        if context.engine.is_halted()
+            || context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+            || *reset_requested
+            || *clear_requested
+            || (matched && stop_after_first)
+        {
+            return Ok(());
+        }
+    }
+    for candidate in selected {
+        crate::evaluator::consume_action_loop_iteration(&context.engine.config, name, None)
+            .map_err(ActionError::from)?;
+        with_query_candidate(
+            &candidate,
+            token,
+            rule_info,
+            context,
+            eval_env,
+            |token, rule_info, context, eval_env| {
+                execute_loop_body(
+                    reset_requested,
+                    clear_requested,
+                    token,
+                    rule_info,
+                    body,
+                    context,
+                    eval_env,
+                    collected_facts,
+                )
+            },
+        )?;
+        if context.engine.is_halted()
+            || context.engine.globals.evaluation_halted()
+            || context.engine.globals.sort_return_requested()
+            || *reset_requested
+            || *clear_requested
+        {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -1974,21 +2068,7 @@ fn execute_load(
     }
 
     let selector = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
-    let path_text = match selector {
-        Value::String(s) => s.as_str().to_string(),
-        Value::Symbol(sym) => context
-            .engine
-            .symbol_table
-            .resolve_symbol_str(sym)
-            .unwrap_or("???")
-            .to_string(),
-        other => {
-            return Err(ActionError::EvalError(format!(
-                "load: expected STRING or SYMBOL, got {}",
-                runtime_value_type_name(&other)
-            )))
-        }
-    };
+    let path_text = action_lexeme_text(&selector, &context.engine.symbol_table, "load")?;
 
     let path = Path::new(&path_text);
     let saved_module = context.engine.module_registry.current_module();
@@ -2016,7 +2096,7 @@ fn execute_load(
 /// Format a `Value` as it should appear inside a `.fct` file (CLIPS s-expression syntax).
 ///
 /// Strings are quoted; symbols, integers, floats, and multifields render as CLIPS expects.
-fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
+fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut ByteBuffer) {
     match value {
         Value::Integer(n) => output.push_str(&n.to_string()),
         Value::Float(f) => {
@@ -2026,19 +2106,27 @@ fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut 
                 output.push_str(&f.to_string());
             }
         }
-        Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
-                output.push_str(name);
-            }
+        Value::Symbol(sym) => output.push_bytes(
+            symbol_table
+                .resolve_symbol_bytes(*sym)
+                .expect("validated symbol"),
+        ),
+        Value::InstanceName(name) => {
+            output.push('[');
+            output.push_bytes(
+                symbol_table
+                    .resolve_symbol_bytes(name.as_symbol())
+                    .expect("validated instance name"),
+            );
+            output.push(']');
         }
         Value::String(s) => {
             output.push('"');
-            for ch in s.as_str().chars() {
-                match ch {
-                    '\\' => output.push_str("\\\\"),
-                    '"' => output.push_str("\\\""),
-                    _ => output.push(ch),
+            for byte in s.as_bytes() {
+                if matches!(*byte, b'\\' | b'"') {
+                    output.push('\\');
                 }
+                output.push_bytes(std::slice::from_ref(byte));
             }
             output.push('"');
         }
@@ -2062,13 +2150,13 @@ fn format_fact_for_fct(
     fact: &Fact,
     symbol_table: &SymbolTable,
     template_defs: &slotmap::SlotMap<TemplateId, Arc<crate::templates::RegisteredTemplate>>,
-) -> String {
-    let mut out = String::new();
+) -> ByteBuffer {
+    let mut out = ByteBuffer::new();
     match fact {
         Fact::Ordered(o) => {
             out.push('(');
-            if let Some(rel) = symbol_table.resolve_symbol_str(o.relation) {
-                out.push_str(rel);
+            if let Some(rel) = symbol_table.resolve_symbol_bytes(o.relation) {
+                out.push_bytes(rel);
             }
             for field in &o.fields {
                 out.push(' ');
@@ -2098,6 +2186,29 @@ fn format_fact_for_fct(
     out
 }
 
+/// Names used by the text parser and registry must decode without replacement.
+fn action_lexeme_text(
+    value: &Value,
+    symbols: &SymbolTable,
+    command: &str,
+) -> Result<String, ActionError> {
+    let bytes = match value {
+        Value::String(string) => string.as_bytes(),
+        Value::Symbol(symbol) => symbols
+            .resolve_symbol_bytes(*symbol)
+            .ok_or_else(|| ActionError::EvalError(format!("{command}: dangling symbol")))?,
+        other => {
+            return Err(ActionError::EvalError(format!(
+                "{command}: expected STRING or SYMBOL, got {}",
+                runtime_value_type_name(other)
+            )))
+        }
+    };
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|error| ActionError::EvalError(format!("{command}: expected UTF-8 text: {error}")))
+}
+
 /// Evaluate the first argument of `load-facts` or `save-facts` as a filename string.
 fn eval_filename_arg(
     token: &Token,
@@ -2115,19 +2226,7 @@ fn eval_filename_arg(
         )));
     }
     let val = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
-    match val {
-        Value::String(s) => Ok(s.as_str().to_string()),
-        Value::Symbol(sym) => Ok(context
-            .engine
-            .symbol_table
-            .resolve_symbol_str(sym)
-            .unwrap_or("???")
-            .to_string()),
-        other => Err(ActionError::EvalError(format!(
-            "{command_name}: expected STRING or SYMBOL filename, got {}",
-            runtime_value_type_name(&other)
-        ))),
-    }
+    action_lexeme_text(&val, &context.engine.symbol_table, command_name)
 }
 
 /// `(save-facts <filename>)` — write all current facts to a file in `.fct` format.
@@ -2196,7 +2295,8 @@ fn do_save_facts(
             &context.engine.symbol_table,
             &context.engine.template_defs,
         );
-        writeln!(writer, "{line}")?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
         count += 1;
     }
 
@@ -2255,21 +2355,7 @@ fn evaluated_rule_selectors(
     let mut selectors = Vec::with_capacity(args.len());
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        let selector = match value {
-            Value::Symbol(symbol) => context
-                .engine
-                .symbol_table
-                .resolve_symbol_str(symbol)
-                .unwrap_or("???")
-                .to_string(),
-            Value::String(s) => s.as_str().to_string(),
-            other => {
-                return Err(ActionError::EvalError(format!(
-                    "{command_name}: expected SYMBOL or STRING, got {}",
-                    runtime_value_type_name(&other)
-                )))
-            }
-        };
+        let selector = action_lexeme_text(&value, &context.engine.symbol_table, command_name)?;
         selectors.push(selector);
     }
     Ok(selectors)
@@ -2367,6 +2453,7 @@ fn runtime_value_type_name(value: &Value) -> &'static str {
         Value::Integer(_) => "INTEGER",
         Value::Float(_) => "FLOAT",
         Value::Symbol(_) => "SYMBOL",
+        Value::InstanceName(_) => "INSTANCE-NAME",
         Value::String(_) => "STRING",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
@@ -2378,7 +2465,7 @@ fn runtime_value_type_name(value: &Value) -> &'static str {
 ///
 /// The first argument is the channel name (typically `t`) and must be a literal.
 /// Remaining arguments are evaluated and formatted, with the special symbols
-/// `crlf`, `tab`, and `ff` producing `\n`, `\t`, and `\x0C` respectively.
+/// `crlf`, `tab`, `vtab`, and `ff` producing `\n`, `\t`, `\x0B`, and `\x0C` respectively.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 fn execute_printout(
     token: &Token,
@@ -2397,7 +2484,9 @@ fn execute_printout(
     // First argument is the channel name and must be a literal token.
     let channel = match &args[0] {
         ActionExpr::Literal(lit) => match &lit.value {
-            LiteralKind::Symbol(s) | LiteralKind::String(s) => s.clone(),
+            LiteralKind::Symbol(s) | LiteralKind::String(s) | LiteralKind::InstanceName(s) => {
+                s.clone()
+            }
             LiteralKind::Integer(n) => n.to_string(),
             LiteralKind::Float(f) => f.to_string(),
         },
@@ -2409,11 +2498,19 @@ fn execute_printout(
     };
 
     // Evaluate and format remaining arguments.
-    let mut output = String::new();
+    let mut output = ByteBuffer::new();
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
-        format_printout_value(&value, &context.engine.symbol_table, &mut output);
+        flush_deferred_evaluation(context);
+        if context.engine.globals.evaluation_halted() {
+            context.engine.router.write(&channel, &output);
+            return Ok(());
+        }
+        crate::value_print::append_printout_value(
+            &value,
+            &context.engine.symbol_table,
+            &mut output,
+        );
     }
 
     context.engine.router.write(&channel, &output);
@@ -2434,59 +2531,23 @@ fn execute_println(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    let mut output = String::new();
+    let mut output = ByteBuffer::new();
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
-        format_printout_value(&value, &context.engine.symbol_table, &mut output);
+        flush_deferred_evaluation(context);
+        if context.engine.globals.evaluation_halted() {
+            context.engine.router.write("t", &output);
+            return Ok(());
+        }
+        crate::value_print::append_printout_value(
+            &value,
+            &context.engine.symbol_table,
+            &mut output,
+        );
     }
     output.push('\n');
     context.engine.router.write("t", &output);
     Ok(())
-}
-
-/// Format a `Value` for `printout` output.
-///
-/// Special symbols `crlf`, `tab`, and `ff` are expanded to their control
-/// characters. All other values are formatted as their display string.
-/// Strings are written without surrounding quotes.
-fn format_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
-    match value {
-        Value::Integer(n) => output.push_str(&n.to_string()),
-        Value::Float(f) => {
-            // CLIPS always shows a decimal point: 3.0 not 3.
-            if f.fract() == 0.0 {
-                // Use write! to avoid the intermediate String allocation
-                // that clippy::format_push_string warns about.
-                let _ = write!(output, "{f:.1}");
-            } else {
-                output.push_str(&f.to_string());
-            }
-        }
-        Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
-                match name {
-                    "crlf" => output.push('\n'),
-                    "tab" => output.push('\t'),
-                    "ff" => output.push('\x0C'),
-                    other => output.push_str(other),
-                }
-            }
-        }
-        Value::String(s) => output.push_str(s.as_str()),
-        Value::Void => {}
-        Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
-        Value::Multifield(mf) => {
-            output.push('(');
-            for (i, v) in mf.as_slice().iter().enumerate() {
-                if i > 0 {
-                    output.push(' ');
-                }
-                format_printout_value(v, symbol_table, output);
-            }
-            output.push(')');
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
@@ -2514,6 +2575,7 @@ fn execute_assert(
                         &mut slots,
                         &fact_pattern.args,
                         &registered,
+                        false,
                         token,
                         rule_info,
                         context,
@@ -2545,6 +2607,12 @@ fn execute_assert(
                         context,
                         collected_facts,
                     )?;
+                    // StoreInMultifield discards the whole collected sequence
+                    // on EvaluationError, but the assertion itself still occurs.
+                    if context.engine.globals.evaluation_error() {
+                        fields.clear();
+                        break;
+                    }
                     match value {
                         // CLIPS splices multifield values into ordered assertions.
                         Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
@@ -2561,34 +2629,42 @@ fn execute_assert(
 }
 
 fn execute_retract(
-    context: &mut ActionExecutionContext<'_>,
-    collected_facts: &[FactId],
+    token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     for arg in args {
-        match arg {
-            ActionExpr::Variable(var_name, _) => {
-                let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
-                if Some(fact_id) == context.engine.initial_fact_id {
-                    return Err(ActionError::EvalError(
-                        "the internal initial-fact is protected and cannot be retracted"
-                            .to_string(),
-                    ));
-                }
-                let fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
-                context
-                    .engine
-                    .rete
-                    .retract_fact(fact_id, fact, &context.engine.fact_base);
-                context.engine.fact_base.retract(fact_id);
-            }
-            _ => return Err(ActionError::InvalidRetract),
+        let fact_id = resolve_target_fact_id(
+            "retract",
+            arg,
+            token,
+            rule_info,
+            context,
+            eval_env,
+            collected_facts,
+        )?;
+        if Some(fact_id) == context.engine.initial_fact_id {
+            return Err(ActionError::EvalError(
+                "the internal initial-fact is protected and cannot be retracted".to_string(),
+            ));
+        }
+        // A retained query member may already have been retracted by an
+        // earlier body. Repeated retraction of the same address is a no-op.
+        if let Some(entry) = context.engine.fact_base.get(fact_id) {
+            let fact = entry.fact.clone();
+            context
+                .engine
+                .rete
+                .retract_fact(fact_id, &fact, &context.engine.fact_base);
+            context.engine.fact_base.retract(fact_id);
+            // Each removal is a matching boundary. A later target expression
+            // may change globals used by predicates unblocked by this fact.
+            context.engine.drain_pending_predicate_matches();
         }
     }
-    // A retract action is a matching boundary: evaluate any candidates it
-    // unblocked before a later RHS action can mutate globals or working memory.
-    context.engine.drain_pending_predicate_matches();
     Ok(())
 }
 
@@ -2654,7 +2730,20 @@ fn execute_fact_mutation(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    let fact_id = resolve_target_fact_id(args, collected_facts, rule_info)?;
+    let target = args.first().ok_or(ActionError::InvalidRetract)?;
+    let fact_id = resolve_target_fact_id(
+        if mode.retract_original() {
+            "modify"
+        } else {
+            "duplicate"
+        },
+        target,
+        token,
+        rule_info,
+        context,
+        eval_env,
+        collected_facts,
+    )?;
     if Some(fact_id) == context.engine.initial_fact_id {
         return Err(ActionError::EvalError(
             "the internal initial-fact is protected and cannot be modified or duplicated"
@@ -2708,6 +2797,7 @@ fn execute_fact_mutation(
                 &mut slots,
                 &args[1..],
                 &registered,
+                true,
                 token,
                 rule_info,
                 context,
@@ -2781,21 +2871,21 @@ fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<&Fact, Act
         .ok_or(ActionError::FactNotFound(fact_id))
 }
 
+/// Fact actions use the current ordinary frame, including query members,
+/// aliases, and inner loop shadowing. Compact slot bindings have a separate
+/// lexical purpose and must not override these ordinary values.
 fn resolve_target_fact_id(
-    args: &[ActionExpr],
-    collected_facts: &[FactId],
+    action: &str,
+    target: &ActionExpr,
+    token: &Token,
     rule_info: &CompiledRuleInfo,
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<FactId, ActionError> {
-    if args.is_empty() {
-        return Err(ActionError::InvalidRetract);
-    }
-
-    match &args[0] {
-        ActionExpr::Variable(var_name, _) => {
-            resolve_fact_address(collected_facts, rule_info, var_name)
-        }
-        _ => Err(ActionError::InvalidRetract),
-    }
+    let value = eval_env.eval_expr(token, rule_info, target, context, collected_facts)?;
+    crate::evaluator::checked_fact_address(&value)
+        .ok_or_else(|| ActionError::EvalError(format!("{action}: target must be a fact-address")))
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
@@ -2842,6 +2932,7 @@ fn apply_template_slot_overrides(
     slots: &mut [Value],
     slot_overrides: &[ActionExpr],
     registered: &RegisteredTemplate,
+    clear_slot_evaluation_error: bool,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
@@ -2879,13 +2970,18 @@ fn apply_template_slot_overrides(
             ferric_rules_parser::SlotType::Multi => {
                 let mut values = ferric_rules_core::Multifield::new();
                 for expression in &call.args {
-                    match eval_env.eval_expr(
+                    let value = eval_env.eval_expr(
                         token,
                         rule_info,
                         expression,
                         context,
                         collected_facts,
-                    )? {
+                    )?;
+                    if context.engine.globals.evaluation_error() {
+                        values = ferric_rules_core::Multifield::new();
+                        break;
+                    }
+                    match value {
                         Value::Multifield(fields) => {
                             values.extend(fields.as_slice().iter().cloned());
                         }
@@ -2898,25 +2994,14 @@ fn apply_template_slot_overrides(
                 Value::Multifield(Box::new(values))
             }
         };
+        // Modify/duplicate finish each slot evaluation independently. The
+        // deferred halt survives, while later overrides receive a clear error.
+        if clear_slot_evaluation_error {
+            context.engine.globals.clear_evaluation_error();
+        }
     }
 
     Ok(())
-}
-
-/// Resolve a fact-address variable to a `FactId`.
-fn resolve_fact_address(
-    collected_facts: &[FactId],
-    rule_info: &CompiledRuleInfo,
-    var_name: &str,
-) -> Result<FactId, ActionError> {
-    if let Some(&fact_index) = rule_info.fact_address_vars.get(var_name) {
-        collected_facts
-            .get(fact_index)
-            .copied()
-            .ok_or_else(|| ActionError::UnboundVariable(var_name.to_string()))
-    } else {
-        Err(ActionError::UnboundVariable(var_name.to_string()))
-    }
 }
 
 #[cfg(test)]
@@ -2924,6 +3009,66 @@ mod tests {
     use super::*;
 
     use proptest::prelude::*;
+
+    const EXISTS_PHASE_SOURCE: &str = r#"
+        (deffunction qualifies (?x ?a)
+          (printout t "CHECK:" ?x ":" ?a crlf) (> (/ ?a ?x) 0))
+        (defrule r (anchor ?a) (exists (data ?x&:(qualifies ?x ?a)))
+          (later) => (printout t "EXISTS" crlf))
+    "#;
+
+    #[test]
+    fn runtime_exists_initial_error_rejects_support() {
+        let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
+        assert_eq!(engine.get_output("t").unwrap(), Some("CHECK:0:2\n"));
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+        engine.retract(bad).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+        assert_eq!(engine.get_output("t").unwrap(), Some("CHECK:0:2\n"));
+    }
+
+    #[test]
+    fn runtime_exists_skips_later_candidates_and_retains_replacement_error_support() {
+        let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        let selected = engine.assert_ordered("data", vec![9_i64]).unwrap();
+        let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
+        assert_eq!(engine.get_output("t").unwrap(), Some("CHECK:9:2\n"));
+        assert!(engine.action_diagnostics().is_empty());
+        engine.retract(selected).unwrap();
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("CHECK:9:2\nCHECK:0:2\n")
+        );
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        // A later CE distinguishes retained support from an already fired rule.
+        let later = engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            1
+        );
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("CHECK:9:2\nCHECK:0:2\nEXISTS\n")
+        );
+        engine.retract(bad).unwrap();
+        engine.retract(later).unwrap();
+        engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+    }
 
     proptest! {
         #[test]
@@ -2962,7 +3107,7 @@ mod tests {
             let id = info.var_map.get_or_create(symbol).unwrap();
             token.bindings.set(id, ValueRef::new(expected_tail.clone()));
             let symbol = engine.symbol_table.intern_symbol("unbound", encoding).unwrap();
-            info.var_map.get_or_create(symbol).unwrap();
+            let unbound_id = info.var_map.get_or_create(symbol).unwrap();
 
             let mut locals = RuntimeBindingEnv::from([("local".to_owned(), Value::Integer(0))]);
             if let Some(value) = local {
@@ -2970,10 +3115,16 @@ mod tests {
             }
             let module = engine.module_registry.current_module();
             let (bindings, names) = build_runtime_eval_bindings(
-                &token, &info, &locals,
+                &token, &info, &RuntimeBindingEnv::new(), &locals,
                 &mut ActionExecutionContext { engine: &mut engine, current_module: module },
             ).unwrap();
-            prop_assert_eq!(names.len(), 3);
+            // The shared frame retains original IDs, including unused slots.
+            // Adding locals must not assign a value to an unbound variable.
+            for index in 0..info.var_map.len() {
+                let id = VarId(u16::try_from(index).unwrap());
+                prop_assert_eq!(names.lookup(info.var_map.name(id)), Some(id));
+            }
+            prop_assert!(bindings.get(unbound_id).is_none());
             for (name, expected) in [
                 ("x", Value::Integer(local.unwrap_or(second))),
                 ("tail", expected_tail),
@@ -2996,5 +3147,426 @@ mod tests {
     fn action_error_unbound_variable() {
         let err = ActionError::UnboundVariable("x".to_string());
         assert!(format!("{err}").contains('x'));
+    }
+
+    #[test]
+    fn local_scope_restores_bindings_after_error_and_rule_return() {
+        for error in [
+            ActionError::EvalError("stopped".into()),
+            ActionError::RuleReturn,
+        ] {
+            let mut env = ActionEvalEnv::default();
+            insert_runtime_binding(&mut env.runtime_bindings, "f", Value::Integer(42));
+            insert_runtime_binding(&mut env.runtime_bindings, "outside", Value::Integer(5));
+
+            let result: Result<(), ActionError> =
+                env.with_local_scope(["$?f", "f", "temporary"], |inner| {
+                    assert!(!inner.runtime_bindings.contains_key("f"));
+                    assert!(!inner.runtime_bindings.contains_key("temporary"));
+                    insert_runtime_binding(&mut inner.runtime_bindings, "f", Value::Integer(7));
+                    insert_runtime_binding(
+                        &mut inner.runtime_bindings,
+                        "temporary",
+                        Value::Integer(8),
+                    );
+                    insert_runtime_binding(
+                        &mut inner.runtime_bindings,
+                        "outside",
+                        Value::Integer(6),
+                    );
+                    Err(error.clone())
+                });
+
+            assert_eq!(result.unwrap_err().to_string(), error.to_string());
+            assert!(matches!(
+                env.runtime_bindings.get("f"),
+                Some(Value::Integer(42))
+            ));
+            assert!(!env.runtime_bindings.contains_key("temporary"));
+            assert!(matches!(
+                env.runtime_bindings.get("outside"),
+                Some(Value::Integer(6))
+            ));
+        }
+    }
+
+    #[test]
+    fn compact_query_scope_restores_after_nested_error_and_rule_return() {
+        let outer = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
+        let inner = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0002));
+        let nested = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0003));
+        for error in [
+            ActionError::EvalError("stopped".into()),
+            ActionError::RuleReturn,
+        ] {
+            let mut env = ActionEvalEnv::default();
+            env.compact_facts
+                .insert("f".into(), CompactFactBinding::live(outer));
+            insert_runtime_binding(&mut env.runtime_bindings, "f", Value::Integer(42));
+            let result: Result<(), ActionError> = env.with_compact_scope(
+                &[
+                    ("f".into(), CompactFactBinding::live(inner)),
+                    ("temporary".into(), CompactFactBinding::live(inner)),
+                ],
+                |env| {
+                    assert_eq!(
+                        env.compact_facts.get("f").map(CompactFactBinding::fact_id),
+                        Some(inner)
+                    );
+                    env.with_local_scope(["f"], |env| {
+                        insert_runtime_binding(&mut env.runtime_bindings, "f", Value::Integer(7));
+                        assert_eq!(
+                            env.compact_facts.get("f").map(CompactFactBinding::fact_id),
+                            Some(inner)
+                        );
+                        Ok(())
+                    })?;
+                    assert!(matches!(
+                        env.runtime_bindings.get("f"),
+                        Some(Value::Integer(42))
+                    ));
+                    let nested_result: Result<(), ActionError> = env.with_compact_scope(
+                        &[("f".into(), CompactFactBinding::live(nested))],
+                        |env| {
+                            assert_eq!(
+                                env.compact_facts.get("f").map(CompactFactBinding::fact_id),
+                                Some(nested)
+                            );
+                            Err(error.clone())
+                        },
+                    );
+                    assert_eq!(
+                        env.compact_facts.get("f").map(CompactFactBinding::fact_id),
+                        Some(inner)
+                    );
+                    nested_result
+                },
+            );
+            assert_eq!(result.unwrap_err().to_string(), error.to_string());
+            assert_eq!(
+                env.compact_facts.get("f").map(CompactFactBinding::fact_id),
+                Some(outer)
+            );
+            assert!(!env.compact_facts.contains_key("temporary"));
+        }
+    }
+
+    #[test]
+    fn compact_query_scope_does_not_leak_into_the_next_query() {
+        let fact = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
+        let mut env = ActionEvalEnv::default();
+        for name in ["f", "g"] {
+            env.with_compact_scope(&[(name.into(), CompactFactBinding::live(fact))], |env| {
+                assert_eq!(env.compact_facts.len(), 1);
+                assert_eq!(
+                    env.compact_facts.get(name).map(CompactFactBinding::fact_id),
+                    Some(fact)
+                );
+                Ok(())
+            })
+            .unwrap();
+            assert!(env.compact_facts.is_empty());
+        }
+    }
+
+    #[test]
+    fn runtime_eval_bindings_preserve_shared_values_and_precedence() {
+        let mut engine = Engine::new(crate::EngineConfig::utf8());
+        let mut rule_info = CompiledRuleInfo {
+            name: "binding-test".into(),
+            source_definition: None,
+            actions: Vec::new(),
+            var_map: VarMap::new(),
+            fact_address_vars: HashMap::new(),
+            salience: Salience::new(0),
+            test_conditions: Vec::new(),
+            runtime_actions: Vec::new(),
+        };
+        let mut multifield = ferric_rules_core::Multifield::new();
+        multifield.push(Value::Integer(7));
+        multifield.push(Value::Integer(8));
+        let shared = Arc::new(Value::Multifield(Box::new(multifield)));
+        let mut token = Token {
+            fact: None,
+            bindings: BindingSet::new(),
+            parent: None,
+            owner_node: ferric_rules_core::token::NodeId(0),
+        };
+        for (name, value) in [
+            ("ordinary", ValueRef::Shared(Arc::clone(&shared))),
+            ("shadow", ValueRef::new(Value::Integer(2))),
+            ("local", ValueRef::new(Value::Integer(20))),
+        ] {
+            let symbol = engine
+                .symbol_table
+                .intern_symbol(name, engine.config.string_encoding)
+                .unwrap();
+            let id = rule_info.var_map.get_or_create(symbol).unwrap();
+            token.bindings.set(id, value);
+        }
+        let fact_bindings = HashMap::from([
+            ("shadow".into(), Value::Integer(1)),
+            ("only_fact".into(), Value::Integer(3)),
+            ("local".into(), Value::Integer(10)),
+        ]);
+        let runtime_bindings = HashMap::from([("local".into(), Value::Integer(30))]);
+        let current_module = engine.module_registry.current_module();
+        let (bindings, var_map) = build_runtime_eval_bindings(
+            &token,
+            &rule_info,
+            &fact_bindings,
+            &runtime_bindings,
+            &mut ActionExecutionContext {
+                engine: &mut engine,
+                current_module,
+            },
+        )
+        .unwrap();
+
+        for (name, expected) in [("shadow", 2), ("only_fact", 3), ("local", 30)] {
+            let symbol = engine
+                .symbol_table
+                .intern_symbol(name, engine.config.string_encoding)
+                .unwrap();
+            let id = var_map.lookup(symbol).unwrap();
+            assert!(bindings
+                .get(id)
+                .unwrap()
+                .structural_eq(&Value::Integer(expected)));
+        }
+        let symbol = engine
+            .symbol_table
+            .intern_symbol("ordinary", engine.config.string_encoding)
+            .unwrap();
+        let id = var_map.lookup(symbol).unwrap();
+        let ValueRef::Shared(merged) = bindings.get(id).unwrap() else {
+            panic!("ordinary multifield must retain shared storage");
+        };
+        assert!(Arc::ptr_eq(&shared, merged));
+        assert_eq!(rule_info.var_map.len(), 3);
+        assert_eq!(token.bindings.bound_count(), 3);
+        let local_symbol = engine
+            .symbol_table
+            .intern_symbol("local", engine.config.string_encoding)
+            .unwrap();
+        let local_id = rule_info.var_map.lookup(local_symbol).unwrap();
+        assert!(token
+            .bindings
+            .get(local_id)
+            .unwrap()
+            .structural_eq(&Value::Integer(20)));
+    }
+
+    #[test]
+    fn fact_address_seed_rejects_oversized_mapping() {
+        let addresses = (0..=ferric_rules_core::compiler::MAX_RULE_CONDITIONS)
+            .map(|index| (format!("f{index}"), 0))
+            .collect();
+        let mut env = RuntimeBindingEnv::new();
+        let error =
+            seed_fact_address_bindings(&[], &addresses, &mut env, &mut HashMap::new()).unwrap_err();
+        assert!(error.to_string().contains("too many fact-address bindings"));
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn fact_address_seed_rejects_out_of_range_mapping_without_indexing() {
+        let fact_id = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
+        let addresses = HashMap::from([("f".into(), usize::MAX)]);
+        let mut env = RuntimeBindingEnv::new();
+        let error =
+            seed_fact_address_bindings(&[fact_id], &addresses, &mut env, &mut HashMap::new())
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("references missing fact at position"));
+        assert!(env.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod action_query_validation_tests {
+    use super::*;
+    use crate::evaluator::RuntimeExpr;
+    use ferric_rules_parser::{FileId, Position, Span};
+
+    fn query(name: &str, bindings: Vec<(String, String)>, predicate: RuntimeExpr) -> RuntimeExpr {
+        let span = Span::new(Position::new(), Position::new(), FileId(0));
+        RuntimeExpr::QueryAction {
+            name: name.into(),
+            bindings,
+            query: Box::new(predicate),
+            body: vec![(
+                ActionExpr::FunctionCall(FunctionCall {
+                    name: "assert".into(),
+                    args: vec![ActionExpr::FunctionCall(FunctionCall {
+                        name: "leaked".into(),
+                        args: Vec::new(),
+                        span,
+                    })],
+                    span,
+                }),
+                None,
+            )],
+            span: None,
+        }
+    }
+
+    fn run_empty_query(runtime: &RuntimeExpr) -> Result<(), ActionError> {
+        let mut engine = Engine::new(crate::EngineConfig::utf8());
+        engine
+            .load_str("(deftemplate item (slot value)) (defglobal ?*hits* = 0)")
+            .unwrap();
+        engine.config.max_action_loop_iterations = 0;
+        let initial_count = engine.fact_base.len();
+        let token = Token {
+            fact: None,
+            bindings: BindingSet::new(),
+            parent: None,
+            owner_node: ferric_rules_core::token::NodeId(0),
+        };
+        let info = CompiledRuleInfo {
+            name: "saved-query".into(),
+            source_definition: None,
+            actions: Vec::new(),
+            var_map: VarMap::new(),
+            fact_address_vars: HashMap::new(),
+            salience: Salience::new(0),
+            test_conditions: Vec::new(),
+            runtime_actions: Vec::new(),
+        };
+        let mut env = ActionEvalEnv::default();
+        insert_runtime_binding(&mut env.runtime_bindings, "outside", Value::Integer(7));
+        let mut context = ActionExecutionContext {
+            current_module: engine.module_registry.current_module(),
+            engine: &mut engine,
+        };
+        let action = FunctionCall {
+            name: "do-for-all-facts".into(),
+            args: Vec::new(),
+            span: Span::new(Position::new(), Position::new(), FileId(0)),
+        };
+        let mut reset = false;
+        let mut clear = false;
+        context.engine.config.begin_action_loop_budget();
+        let result = execute_single_action(
+            &mut reset,
+            &mut clear,
+            &token,
+            &info,
+            &action,
+            Some(runtime),
+            &mut context,
+            &mut env,
+            &[],
+        );
+        context.engine.config.end_action_loop_budget();
+        assert!(!reset && !clear);
+        assert_eq!(context.engine.fact_base.len(), initial_count);
+        assert!(matches!(
+            context.engine.globals.get(context.current_module, "hits"),
+            Some(Value::Integer(0))
+        ));
+        assert!(context.engine.get_output("t").unwrap().is_none());
+        assert!(env.compact_facts.is_empty());
+        assert_eq!(env.runtime_bindings.len(), 1);
+        assert!(matches!(env.runtime_bindings["outside"], Value::Integer(7)));
+        result
+    }
+
+    #[test]
+    fn restored_empty_action_queries_reject_malformed_headers_before_effects() {
+        let mut bindings = vec![
+            Vec::new(),
+            vec![("f".into(), "item".into()), ("f".into(), "item".into())],
+            vec![("f".into(), "item".into()), ("g".into(), "missing".into())],
+        ];
+        for member in ["", "?f", "$?f", "f:slot", "bad member"] {
+            bindings.push(vec![(member.into(), "item".into())]);
+        }
+        for members in bindings {
+            let expr = query(
+                "do-for-all-facts",
+                members,
+                RuntimeExpr::Literal(Value::Integer(1)),
+            );
+            assert!(run_empty_query(&expr).is_err(), "{expr:?}");
+        }
+        let unknown = query(
+            "forged-query",
+            vec![("f".into(), "item".into())],
+            RuntimeExpr::Literal(Value::Integer(1)),
+        );
+        assert!(matches!(
+            run_empty_query(&unknown),
+            Err(ActionError::UnknownAction(_))
+        ));
+    }
+
+    #[test]
+    fn restored_empty_action_queries_reject_invalid_predicates_before_effects() {
+        let predicates = [
+            RuntimeExpr::Call {
+                name: "bind".into(),
+                args: vec![
+                    RuntimeExpr::BoundVar {
+                        name: "temporary".into(),
+                        span: None,
+                    },
+                    RuntimeExpr::Literal(Value::Integer(1)),
+                ],
+                span: None,
+            },
+            RuntimeExpr::Call {
+                name: "and".into(),
+                args: vec![
+                    RuntimeExpr::Call {
+                        name: "bind".into(),
+                        args: vec![
+                            RuntimeExpr::GlobalVar {
+                                name: "hits".into(),
+                                span: None,
+                            },
+                            RuntimeExpr::Literal(Value::Integer(1)),
+                        ],
+                        span: None,
+                    },
+                    RuntimeExpr::Call {
+                        name: "absent-predicate".into(),
+                        args: Vec::new(),
+                        span: None,
+                    },
+                ],
+                span: None,
+            },
+        ];
+        for predicate in predicates {
+            let expr = query(
+                "delayed-do-for-all-facts",
+                vec![("f".into(), "item".into())],
+                predicate,
+            );
+            let error = run_empty_query(&expr).unwrap_err();
+            assert!(
+                error.to_string().contains("FACTQPSR2")
+                    || error.to_string().contains("absent-predicate")
+            );
+        }
+    }
+
+    #[test]
+    fn valid_empty_action_queries_need_no_iteration_budget_or_body_effects() {
+        for name in [
+            "do-for-fact",
+            "do-for-all-facts",
+            "delayed-do-for-all-facts",
+        ] {
+            let expr = query(
+                name,
+                vec![("f".into(), "item".into())],
+                RuntimeExpr::Literal(Value::Integer(1)),
+            );
+            run_empty_query(&expr).unwrap();
+        }
     }
 }

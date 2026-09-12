@@ -110,11 +110,14 @@
  *    the first NUL. Hosts starting from length-bearing strings
  *    must reject embedded NUL before calling those entry points;
  *    ferric_value_symbol_bytes() and ferric_value_string_bytes()
- *    provide checked value construction. Legacy FerricValue
- *    egress rejects unrepresentable Symbol/String data with
- *    FERRIC_ERROR_INVALID_ARGUMENT. Borrowed output returns NULL
- *    and records that error; ferric_engine_get_output_copy()
- *    preserves all bytes and reports an authoritative length.
+ *    provide checked text construction. The explicit _raw
+ *    constructors preserve arbitrary bytes. FerricValue egress
+ *    uses STRING_BYTES/SYMBOL_BYTES for non-text data, and the
+ *    distinct INSTANCE_NAME tag for unbracketed name bytes.
+ *    These tags use string_ptr with multifield_len as byte count.
+ *    Free them only with ferric_value_free(), not ferric_string_free().
+ *    Borrowed output rejects embedded NUL and invalid UTF-8;
+ *    ferric_engine_get_output_copy() preserves every byte.
  *
  * 10. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
@@ -372,7 +375,13 @@ typedef enum FerricValueType {
     FERRIC_VALUE_TYPE_SYMBOL = 3,
     FERRIC_VALUE_TYPE_STRING = 4,
     FERRIC_VALUE_TYPE_MULTIFIELD = 5,
-    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6
+    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
+    // Byte-preserving STRING transport; `string_ptr` has `multifield_len` bytes.
+    FERRIC_VALUE_TYPE_STRING_BYTES = 7,
+    // Byte-preserving SYMBOL transport; `string_ptr` has `multifield_len` bytes.
+    FERRIC_VALUE_TYPE_SYMBOL_BYTES = 8,
+    // INSTANCE-NAME transport; unbracketed bytes in `string_ptr`/`multifield_len`.
+    FERRIC_VALUE_TYPE_INSTANCE_NAME = 9
 } FerricValueType;
 
 // Opaque engine handle exposed to C.
@@ -432,7 +441,15 @@ typedef struct FerricConfig {
 // | Symbol | `string_ptr` |
 // | String | `string_ptr` |
 // | Multifield | `multifield_ptr`, `multifield_len` |
-// | ExternalAddress | `external_type_id`, `external_pointer` |
+// | `ExternalAddress` | `external_type_id`, `external_pointer` |
+// | `StringBytes` / `SymbolBytes` / `InstanceName` | `string_ptr`, `multifield_len` (byte count) |
+//
+// The byte transport tags preserve the existing structure layout. Their
+// `string_ptr` is a byte span, with no trailing NUL requirement; a zero-length
+// span may have a null pointer. `multifield_ptr` is inactive for these tags.
+// `StringBytes` and `SymbolBytes` retain CLIPS STRING and SYMBOL semantics.
+// Only `ferric_value_free` may release an owned byte span: do not pass it to
+// `ferric_string_free`, which requires a NUL-terminated allocation.
 typedef struct FerricValue {
     // Raw `FerricValueType` discriminant.
     //
@@ -443,8 +460,8 @@ typedef struct FerricValue {
     uint32_t value_type;
     int64_t integer;
     double float_;
-    char * FERRIC_NULL_TERMINATED string_ptr;
-    struct FerricValue *multifield_ptr FERRIC_COUNTED_BY(multifield_len);
+    char *string_ptr;
+    struct FerricValue *multifield_ptr FERRIC_COUNTED_BY(value_type == FERRIC_VALUE_TYPE_MULTIFIELD ? multifield_len : 0);
     uintptr_t multifield_len;
     uint32_t external_type_id;
     void *external_pointer;
@@ -668,8 +685,8 @@ enum FerricError ferric_engine_retract(struct FerricEngine *engine, uint64_t fac
 // engine never invalidate it. Output written after this call is not reflected
 // in the snapshot.
 //
-// If the captured output contains embedded NUL, this legacy C-string accessor
-// returns null and records `InvalidArgument`. Use
+// If the captured output contains embedded NUL or invalid UTF-8, this legacy
+// text accessor returns null and records `InvalidArgument`. Use
 // `ferric_engine_get_output_copy` to preserve every byte.
 //
 // Prefer `ferric_engine_get_output_copy` when retaining a borrowed pointer
@@ -686,7 +703,8 @@ const char * FERRIC_NULL_TERMINATED ferric_engine_get_output(const struct Ferric
 // This is the preferred output accessor for hosts that do not want to retain
 // an engine-owned pointer. `*out_len` always reports the full required byte
 // count including the trailing NUL when output exists. The copied payload
-// preserves embedded NUL; `*out_len`, not C-string scanning, is authoritative.
+// preserves embedded NUL and invalid UTF-8; `*out_len`, not C-string scanning,
+// is authoritative.
 //
 // ## Contract
 //
@@ -1869,6 +1887,66 @@ enum FerricError ferric_value_string_bytes(const uint8_t *data FERRIC_SIZED_BY(l
                                            uintptr_t len,
                                            struct FerricValue *out_value);
 
+// Copy an arbitrary byte span into an owned STRING value.
+//
+// The result uses `FerricValueType::StringBytes`: `string_ptr` points to
+// exactly `multifield_len` bytes, with no trailing NUL requirement. Embedded
+// NUL and invalid UTF-8 are preserved. Instance-name bytes exclude brackets.
+// Release the result with `ferric_value_free`, never `ferric_string_free`.
+// Engine encoding constraints are checked when the value is asserted.
+//
+// Null `data` is accepted only with zero length. On failure, `*out_value`
+// is Void; a null `out_value` returns `NullPointer` without writing.
+//
+// # Safety
+//
+// - `out_value` must point to writable, resource-free `FerricValue` storage.
+// - For nonzero `len`, `data` must point to `len` readable bytes.
+// - The input span must not overlap `out_value`.
+enum FerricError ferric_value_string_raw(const uint8_t *data FERRIC_SIZED_BY(len),
+                                         uintptr_t len,
+                                         struct FerricValue *out_value);
+
+// Copy an arbitrary byte span into an owned SYMBOL value.
+//
+// The result uses `FerricValueType::SymbolBytes`: `string_ptr` points to
+// exactly `multifield_len` bytes, with no trailing NUL requirement. Embedded
+// NUL and invalid UTF-8 are preserved. Instance-name bytes exclude brackets.
+// Release the result with `ferric_value_free`, never `ferric_string_free`.
+// Engine encoding constraints are checked when the value is asserted.
+//
+// Null `data` is accepted only with zero length. On failure, `*out_value`
+// is Void; a null `out_value` returns `NullPointer` without writing.
+//
+// # Safety
+//
+// - `out_value` must point to writable, resource-free `FerricValue` storage.
+// - For nonzero `len`, `data` must point to `len` readable bytes.
+// - The input span must not overlap `out_value`.
+enum FerricError ferric_value_symbol_raw(const uint8_t *data FERRIC_SIZED_BY(len),
+                                         uintptr_t len,
+                                         struct FerricValue *out_value);
+
+// Copy an arbitrary byte span into an owned INSTANCE-NAME value.
+//
+// The result uses `FerricValueType::InstanceName`: `string_ptr` points to
+// exactly `multifield_len` bytes, with no trailing NUL requirement. Embedded
+// NUL and invalid UTF-8 are preserved. Instance-name bytes exclude brackets.
+// Release the result with `ferric_value_free`, never `ferric_string_free`.
+// Engine encoding constraints are checked when the value is asserted.
+//
+// Null `data` is accepted only with zero length. On failure, `*out_value`
+// is Void; a null `out_value` returns `NullPointer` without writing.
+//
+// # Safety
+//
+// - `out_value` must point to writable, resource-free `FerricValue` storage.
+// - For nonzero `len`, `data` must point to `len` readable bytes.
+// - The input span must not overlap `out_value`.
+enum FerricError ferric_value_instance_name(const uint8_t *data FERRIC_SIZED_BY(len),
+                                            uintptr_t len,
+                                            struct FerricValue *out_value);
+
 // Create a void `FerricValue` with all fields zeroed/null.
 struct FerricValue ferric_value_void(void);
 
@@ -2017,6 +2095,9 @@ FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING == 4, "FERRIC_VALUE_TYPE_STRING mu
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_MULTIFIELD == 5, "FERRIC_VALUE_TYPE_MULTIFIELD must be 5");
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6,
                      "FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS must be 6");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING_BYTES == 7, "StringBytes tag must be 7");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_SYMBOL_BYTES == 8, "SymbolBytes tag must be 8");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_INSTANCE_NAME == 9, "InstanceName tag must be 9");
 
 /* FerricStringEncoding: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0, "FERRIC_STRING_ENCODING_ASCII must be 0");

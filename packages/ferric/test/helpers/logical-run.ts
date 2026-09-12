@@ -57,12 +57,8 @@ export const HALT_WITH_DIAGNOSTIC_SOURCE = `
   (declare (salience 100))
   (initial-fact)
   =>
-  (assert (candidate 1))
+  (sort missing-comparator (create$ 1))
   (halt))
-(defrule bad-match
-  (candidate ?value&:(/ 1 0))
-  =>
-  (assert (must-not-fire)))
 (defrule after-halt
   (declare (salience -100))
   (initial-fact)

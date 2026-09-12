@@ -49,11 +49,20 @@
 //! - No truth maintenance / logical support.
 //! - `defclass`/`definstances`/`defmessage-handler` not implemented.
 //! - `if`/`then`/`else` expression form not supported.
-//! - `sub-string` uses Unicode scalar value positions (not grapheme clusters).
+//! - For valid UTF-8, `sub-string` uses Unicode scalar positions, not grapheme
+//!   clusters. Explicit raw-byte values use byte positions.
+//! - `INSTANCE-NAME` is a distinct name value; this does not add COOL instances.
+//! - `string-to-field` and `explode$` scan byte values; source loading still
+//!   requires UTF-8 text.
 
+mod byte_buffer;
+mod field_scanner;
+
+mod formatting;
 mod tracing_support;
 
 pub mod actions;
+mod callable_validation;
 pub mod config;
 pub mod engine;
 pub mod evaluator;
@@ -63,6 +72,7 @@ pub mod host;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
+mod query_validation;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;
@@ -70,6 +80,7 @@ mod source_limits;
 mod template_identity;
 mod template_reload;
 pub(crate) mod templates;
+mod value_print;
 
 #[cfg(test)]
 mod integration_tests;
@@ -89,14 +100,15 @@ pub use ferric_rules_core::{
 };
 
 // Re-export primary types at crate root for convenience.
+
 pub use actions::ActionError;
 pub use config::EngineConfig;
 pub use engine::{Engine, EngineError, FactAssertionResult, InitError};
 pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
 pub use host::{
-    FactHandle, HostFact, HostValue, IntoHostFields, SymbolHandle, HOST_VALUE_MAX_DEPTH,
-    HOST_VALUE_MAX_ITEMS,
+    FactHandle, HostFact, HostValue, InstanceNameHandle, IntoHostFields, SymbolHandle,
+    HOST_VALUE_MAX_DEPTH, HOST_VALUE_MAX_ITEMS,
 };
 pub use loader::{LoadError, LoadResult, RuleDef};
 pub use modules::{ModuleId, ModuleRegistry};
