@@ -114,13 +114,13 @@ fn fixture_files(directory: &Path, root: &Path, paths: &mut BTreeSet<String>) {
         if path.is_dir() {
             fixture_files(&path, root, paths);
         } else if path.extension().is_some_and(|ext| ext == "clp") {
-            paths.insert(
-                path.strip_prefix(root)
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_owned(),
-            );
+            let relative = path.strip_prefix(root).unwrap();
+            let manifest_path = relative
+                .components()
+                .map(|component| component.as_os_str().to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join("/");
+            paths.insert(manifest_path);
         }
     }
 }

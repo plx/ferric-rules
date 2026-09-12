@@ -23,3 +23,6 @@ scripts/musl_static_libgcc_linker.py text eol=lf
 
 # Keep native Rust target provenance byte-identical on Windows.
 crates/ferric-rules-cli/release-targets.json text eol=lf
+
+# Exact compatibility oracles must be byte-identical on every native runner.
+tests/clips_compat/corpus/** text eol=lf

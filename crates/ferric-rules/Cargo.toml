@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-exclude = ["tests/tracing_ci_contract.rs"]
+exclude = ["tests/compat_corpus.rs", "tests/tracing_ci_contract.rs"]
 
 [features]
 serde = ["ferric-rules-runtime/serde"]
