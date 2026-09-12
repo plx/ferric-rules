@@ -1,7 +1,12 @@
 """Guard against vacuous, partial, and noisy CLIPS reference captures."""
 
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
+from ferric_tools.compat import corpus
 from ferric_tools.compat.corpus import (
     ReferenceFailure,
     batch_source,
@@ -101,3 +106,40 @@ def test_rejects_input_replay_without_starting_reference(tmp_path):
     input_path.write_text("hello\n")
     with pytest.raises(ReferenceFailure, match="exactly one reset"):
         run_reference(tmp_path, {"path": "io/read.clp", "resets": 2}, "unused", 1)
+
+
+def test_reference_container_is_isolated_and_can_read_generated_batch(tmp_path, monkeypatch):
+    token = "a" * 32
+    monkeypatch.setattr(corpus.uuid, "uuid4", lambda: SimpleNamespace(hex=token))
+    commands = []
+    batch_modes = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        batch_modes.append((tmp_path / Path(command[-1])).stat().st_mode & 0o777)
+        begin = f"CORPUS_BEGIN_{token}"
+        end = f"CORPUS_END_{token}"
+        framed = framed_run("", index=0).replace("BEGIN", begin).replace("END", end)
+        stdout = f"{begin}\n{framed}{end}\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(corpus.subprocess, "run", run)
+
+    assert run_reference(tmp_path, {"path": "facts/basic.clp"}, "clips-image", 1) == ""
+    command = commands[0]
+    assert command[:4] == ["docker", "run", "--rm", "-i"]
+    assert command[command.index("--network") : command.index("--network") + 2] == [
+        "--network",
+        "none",
+    ]
+    assert "--read-only" in command
+    assert command[command.index("--cap-drop") : command.index("--cap-drop") + 2] == [
+        "--cap-drop",
+        "ALL",
+    ]
+    assert command[command.index("--security-opt") : command.index("--security-opt") + 2] == [
+        "--security-opt",
+        "no-new-privileges",
+    ]
+    assert command[command.index("-v") + 1].endswith(":/workspace:ro")
+    assert batch_modes == [0o444]

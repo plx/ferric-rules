@@ -117,11 +117,22 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
     with tempfile.NamedTemporaryFile(mode="w", suffix=".clp", dir=scratch) as batch:
         batch.write(source)
         batch.flush()
+        # NamedTemporaryFile defaults to 0600. Once every container capability
+        # is dropped, root cannot read a native Linux bind mount owned by the
+        # host runner. Expose only this generated control file, read-only.
+        Path(batch.name).chmod(0o444)
         command = [
             "docker",
             "run",
             "--rm",
             "-i",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
             "--name",
             name,
             "-v",
