@@ -1,0 +1,431 @@
+.compatibility-probes {
+  --probe-border: var(--sl-color-gray-5);
+  --probe-surface: var(--sl-color-gray-6);
+  font-size: 0.9375rem;
+}
+
+.compatibility-probes [hidden] {
+  display: none !important;
+}
+
+.compatibility-probes .probe-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-block: 1.5rem;
+}
+
+/* Grid and flex gaps own spacing here, rather than Markdown sibling margins. */
+.compatibility-probes .probe-stats > div,
+.compatibility-probes .probe-outputs > div,
+.compatibility-probes .probe-filters > *,
+.compatibility-probes .probe-filter-footer > * {
+  margin: 0;
+}
+
+.probe-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  border: 1px solid var(--probe-border);
+  border-radius: 0.375rem;
+  padding: 1rem;
+}
+
+.probe-stats strong {
+  color: var(--sl-color-white);
+  font-size: 1.8rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.probe-stats span {
+  overflow-wrap: anywhere;
+}
+
+.probe-stats span,
+.probe-group-description,
+.probe-context {
+  color: var(--sl-color-gray-2);
+}
+
+.compatibility-probes .probe-provenance {
+  border-block: 1px solid var(--probe-border);
+  padding-block: 0.75rem;
+}
+
+.probe-provenance summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.probe-provenance dl > div {
+  margin-block: 0.8rem;
+}
+
+.probe-workspace-note {
+  color: var(--sl-color-gray-2);
+  font-size: 0.8125rem;
+}
+
+.probe-provenance dt {
+  color: var(--sl-color-gray-2);
+  font-size: 0.85rem;
+}
+
+.probe-provenance dd {
+  margin: 0.15rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.probe-provenance code {
+  font-size: 0.8rem;
+}
+
+.probe-groups-nav {
+  margin-block: 1.5rem;
+}
+
+.probe-groups-nav > p {
+  margin-block: 0 0.5rem;
+  font-weight: 600;
+}
+
+.compatibility-probes .probe-groups-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.compatibility-probes .probe-groups-nav li {
+  margin: 0;
+}
+
+.probe-groups-nav span {
+  color: var(--sl-color-gray-2);
+  font-weight: normal;
+}
+
+.compatibility-probes .probe-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  border: 1px solid var(--probe-border);
+  border-radius: 0.375rem;
+  background: var(--probe-surface);
+  padding: 1rem;
+  margin-block: 1.5rem;
+}
+
+.probe-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.probe-search {
+  grid-column: 1 / -1;
+}
+
+.probe-filters input,
+.probe-filters select,
+.probe-filters button {
+  min-height: 2.75rem;
+  border: 1px solid var(--sl-color-gray-3);
+  border-radius: 0.25rem;
+  background: var(--sl-color-bg);
+  color: var(--sl-color-text);
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+}
+
+.probe-filters select {
+  width: 100%;
+}
+
+.probe-filters input::placeholder {
+  color: var(--sl-color-gray-3);
+}
+
+.probe-filters button {
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+}
+
+.probe-filters button:hover {
+  border-color: var(--sl-color-text-accent);
+}
+
+.compatibility-probes
+  :is(input, select, button, summary, a, pre):focus-visible {
+  outline: 2px solid var(--sl-color-text-accent);
+  outline-offset: 3px;
+}
+
+.probe-filter-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.probe-filter-footer p {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.probe-empty {
+  border-inline-start: 3px solid var(--sl-color-text-accent);
+  padding: 0.75rem 1rem;
+}
+
+.probe-group,
+.probe {
+  scroll-margin-top: 6rem;
+}
+
+.compatibility-probes .probe-group h2 {
+  margin-block: 2.5rem 0.5rem;
+}
+
+.compatibility-probes .probe-group-description {
+  margin-block: 0 1rem;
+}
+
+.compatibility-probes .probe-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.compatibility-probes .probe {
+  min-width: 0;
+  border: 1px solid var(--probe-border);
+  border-radius: 0.375rem;
+  margin: 0;
+}
+
+.probe > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.probe > summary::-webkit-details-marker {
+  display: none;
+}
+
+.probe > summary::before {
+  content: "+";
+  flex-shrink: 0;
+  width: 0.8rem;
+  color: var(--sl-color-text-accent);
+  font-size: 1.15rem;
+  line-height: 1;
+  text-align: center;
+}
+
+.probe[open] > summary::before {
+  content: "−";
+}
+
+.probe > summary:hover,
+.probe[open] > summary {
+  background: var(--probe-surface);
+}
+
+.probe-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.probe-title {
+  color: var(--sl-color-white);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.probe-path {
+  color: var(--sl-color-gray-2);
+  font-family: var(--sl-font-mono);
+  font-size: 0.6875rem;
+  overflow-wrap: anywhere;
+}
+
+.probe-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  max-width: 10rem;
+}
+
+.probe-badge {
+  border: 1px solid var(--probe-border);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.probe-match {
+  border-color: var(--color-palette-success-500);
+  background: var(--color-palette-success-100);
+  color: var(--color-palette-success-700);
+}
+
+.probe-difference {
+  border-color: var(--color-palette-warning-500);
+  background: var(--color-palette-warning-100);
+  color: var(--color-palette-warning-700);
+}
+
+:root[data-theme="dark"] .probe-match {
+  border-color: var(--color-palette-success-300);
+  background: var(--color-palette-success-700);
+  color: var(--color-palette-success-100);
+}
+
+:root[data-theme="dark"] .probe-difference {
+  border-color: var(--color-palette-warning-300);
+  background: var(--color-palette-warning-700);
+  color: var(--color-palette-warning-100);
+}
+
+.probe-body {
+  border-top: 1px solid var(--probe-border);
+  padding: 1rem;
+  min-width: 0;
+}
+
+.probe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  font-size: 0.75rem;
+}
+
+.probe-disposition,
+.probe-covers,
+.probe-protocol,
+.probe-phase,
+.probe-input > p {
+  font-size: 0.8125rem;
+}
+
+.compatibility-probes .probe-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.compatibility-probes .probe-issues li {
+  margin: 0;
+}
+
+.probe-covers {
+  overflow-wrap: anywhere;
+}
+
+.compatibility-probes .probe-body h3 {
+  margin-block: 1.25rem 0.5rem;
+  font-size: 0.875rem;
+}
+
+.compatibility-probes .probe-code {
+  max-width: 100%;
+  margin: 0;
+  border: 1px solid var(--probe-border);
+  border-radius: 0.25rem;
+  background: var(--probe-surface);
+  color: var(--sl-color-text);
+  padding: 0.8rem;
+  overflow-x: auto;
+  font-size: 0.75rem;
+  line-height: 1.65;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.compatibility-probes .probe-code code {
+  all: unset;
+  font-family: var(--sl-font-mono);
+}
+
+.probe-outputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.probe-output {
+  min-width: 0;
+}
+
+.compatibility-probes .probe-no-output {
+  margin: 0;
+  border: 1px dashed var(--probe-border);
+  border-radius: 0.25rem;
+  padding: 0.8rem;
+  color: var(--sl-color-gray-2);
+  font-size: 0.8125rem;
+}
+
+.probe-diagnostics > p {
+  font-size: 0.8125rem;
+}
+
+.compatibility-probes .probe-diagnostics ul {
+  padding: 0;
+  list-style: none;
+}
+
+@media (max-width: 40rem) {
+  .probe-stats > div {
+    padding: 0.75rem 0.5rem;
+  }
+
+  .probe-stats span {
+    font-size: 0.75rem;
+  }
+
+  .compatibility-probes .probe-filters,
+  .probe-outputs {
+    grid-template-columns: 1fr;
+  }
+
+  .probe > summary {
+    flex-wrap: wrap;
+  }
+
+  .probe-heading {
+    flex-basis: calc(100% - 1.5rem);
+  }
+
+  .probe-badges {
+    justify-content: flex-start;
+    max-width: none;
+    margin-inline-start: 1.45rem;
+  }
+
+  .probe-body {
+    padding: 0.75rem;
+  }
+}

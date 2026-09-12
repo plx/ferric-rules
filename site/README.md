@@ -17,6 +17,33 @@ The site is configured for `https://plx.github.io/ferric-rules/` with the GitHub
 The generated Playwright suite runs against mobile, tablet, and desktop projects.
 Use `just install-browsers` once locally before `just test`.
 
+## Generated compatibility reference
+
+The compatibility probe page is generated from live executions of the entire
+granular corpus. Site builds, Astro checks, and development startup first compile
+and run Ferric, run every probe against the CLIPS Docker reference, and write
+`src/generated/compatibility.json`. This file is ignored by Git; a failed probe or
+reference check stops the build instead of publishing old results.
+
+In addition to Node, install the repository's Rust toolchain, `uv` with Python
+3.12 or newer, and Docker. From the repository root, prepare the reference once:
+
+```sh
+docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+just compat-docs
+```
+
+Then use the normal site commands. `npm run build` always regenerates the data.
+After changing engine code or probes while a development server is running, run
+`npm run compatibility:generate` again. The page includes the source revision,
+input digest, generation time, CLIPS version, and immutable reference image ID.
+CI checks and publishing rebuild the reference image and regenerate the page
+when the engine, corpus, generator, reference image, or site changes.
+
+Mismatch policy lives in `tests/clips_compat/corpus/dispositions.json`; probe
+source, expected reference output, and characterization assertions remain in the
+corpus. A fix requires updating its characterization before the site can build.
+
 ## Toolchain notes
 
 - **Astro 7 / Starlight 0.41 / TypeScript 7.** The site targets Node 24 (Active

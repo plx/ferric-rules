@@ -8,7 +8,7 @@ type DocsPage = {
   href: string;
 };
 
-const origin = "http://127.0.0.1:4321";
+const origin = `http://127.0.0.1:${process.env.SITE_TEST_PORT ?? "4321"}`;
 const projectTitle = "ferric-rules";
 const projectDescription =
   "A mostly CLIPS-compatible forward-chaining rules engine written in Rust. Designed for embedding as independent engine instances in modern applications.";

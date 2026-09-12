@@ -72,9 +72,11 @@
     "Waltz",
     "withastro",
     "worktree",
-    "worktrees"
+    "worktrees",
+    "nums"
   ],
   "ignorePaths": [
+    "src/generated/**",
     ".astro",
     ".playwright-browsers",
     "dist",

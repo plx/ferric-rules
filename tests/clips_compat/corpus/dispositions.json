@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "issues": {
+    "https://github.com/plx/ferric-rules/issues/320": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS requires an ordered pattern without multifield wildcards to match exactly its declared number of fields. Ferric also activates these rules for facts with other field counts, producing extra firings and, when a required field is absent, an unbound-variable diagnostic. This changes rule selection and side effects; it is a compatibility defect, not harmless extra output. The linked issue tracks enforcing field cardinality."
+    },
+    "https://github.com/plx/ferric-rules/issues/321": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS can bind an ordered-pattern multifield variable before a fixed field, including an empty capture and captures on both sides of a delimiter. Ferric does not correctly match and bind these layouts: the probes either never fire or receive a scalar where a multifield is required. Rules depending on these captures therefore miss facts or fail during their actions. The linked issue tracks ordered multifield matching beyond the supported trailing-capture cases."
+    },
+    "https://github.com/plx/ferric-rules/issues/322": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS applies field-pattern semantics inside a template multislot: fixed fields constrain the sequence, a multifield variable captures the remaining sequence, and a single-field variable matches exactly one element. Ferric's remaining failures either leave a suffix variable unbound at load time or bind the whole multislot to a single-field variable and accept the wrong cardinality. This affects both which facts match and the types supplied to rule actions. Whole-multislot capture has a separate passing control; the linked issue tracks these remaining mixed and single-field patterns."
+    },
+    "https://github.com/plx/ferric-rules/issues/323": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS accepts a bare variable in a defmethod parameter list as an unrestricted argument. Ferric requires a parenthesized restriction and rejects the entire construct before execution. This prevents the demonstrated unrestricted method and generic fallback from loading, even though explicitly restricted method parameters have passing probes. The linked issue tracks accepting the CLIPS unrestricted-parameter syntax."
+    },
+    "https://github.com/plx/ferric-rules/issues/324": {
+      "kind": "deliberate-boundary",
+      "label": "Deliberate subset boundary",
+      "explanation": "CLIPS evaluates any-factp, find-fact, and find-all-facts as expressions and returns a Boolean or matching fact sequence. Ferric's documented subset explicitly rejects these expression forms, including queries whose result would be empty; older empty defaults were misleading. Use host fact inspection, or restructure applicable work into rule RHS do-for-* actions while accounting for their separately documented limitations. These retained probes document the unsupported boundary and its diagnostics; they are not a commitment to implement expression queries."
+    },
+    "https://github.com/plx/ferric-rules/issues/325": {
+      "kind": "deliberate-boundary",
+      "label": "Deliberate subset boundary",
+      "explanation": "CLIPS evaluates query predicates against each bound fact's ?fact:slot values, including tuples of multiple facts. Ferric's current compatibility contract explicitly excludes query-bound slot expressions; these predicates stop with an unknown-comparison-function diagnostic instead of producing the CLIPS count. The diagnostic does not mean ordinary numeric comparisons are unsupported. Use normal rule LHS joins or host-side typed fact inspection for this filtering. The issue preserves the discovery, while the documented subset currently treats this query form as unsupported."
+    },
+    "https://github.com/plx/ferric-rules/issues/326": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "In these action-query probes, CLIPS visits facts in assertion order. Ferric visits the same facts in a different order, so do-for-all-facts prints a different sequence and do-for-fact chooses a different first result. Query traversal can therefore change both observable ordering and which fact an action processes. The linked issue tracks query iteration order; applications should not use Ferric's current first result as a portable substitute for CLIPS assertion order."
+    },
+    "https://github.com/plx/ferric-rules/issues/327": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS makes the delayed query's bound fact address available to retract in the query body and completes all three retractions in this probe. Ferric reports the query variable as unbound, preventing the intended mutation and subsequent count output. This is a failure of the action-query mutation path, rather than the deliberately unsupported expression-query syntax. The linked issue tracks passing query-bound fact addresses to body actions."
+    },
+    "https://github.com/plx/ferric-rules/issues/328": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS passes a rule LHS fact-address binding to fact-index, fact-existp, fact-relation, fact-slot-value, and fact-slot-names expressions. Ferric matches the rule but reports that same fact-address variable as unbound when these introspection expressions evaluate. The probes consequently cannot inspect identity, lifecycle, relation, slot values, or slot names through this path. The linked issue tracks exposing LHS fact addresses to expression evaluation; ordinary slot-variable matching and host fact inspection are separate supported paths."
+    },
+    "https://github.com/plx/ferric-rules/issues/329": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS fact-index returns the fact's small assertion index (1 in this probe). Through Ferric's query binding, the same function exposes an encoded internal fact identity (4294967298 here). Programs comparing or displaying CLIPS assertion indices therefore observe a different value; this is not just formatting. The linked issue tracks separating the CLIPS-visible assertion index from internal identity. Do not decode or rely on the observed internal number as a portable fact index."
+    },
+    "https://github.com/plx/ferric-rules/issues/330": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS bind can create a local variable or rebind a parameter inside a deffunction. Ferric sends these forms through a binding path that accepts only global-variable references, so the function fails before returning its expected value. Local computation in otherwise supported deffunctions is affected; using a global instead would also change scope and is not an equivalent replacement. The linked issue tracks function-local binding and parameter rebinding."
+    },
+    "https://github.com/plx/ferric-rules/issues/331": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS treats case clauses as syntax within switch, selects the matching branch with type-sensitive comparison, and falls back to default when needed. Ferric's loader validates case as if it were a standalone function and rejects these rules before any branch can run. All three probes are blocked by the same load-time defect, so their outputs do not establish later switch behavior. The linked issue tracks accepting switch case clauses."
+    },
+    "https://github.com/plx/ferric-rules/issues/332": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS min and max preserve the numeric type of the selected operand. When mixed numeric arguments select an integer in these probes, Ferric returns the same magnitude as a float. The integerp result changes as well as the printed value, so type-sensitive rules and subsequent operations can behave differently. The linked issue tracks preserving the selected operand's type."
+    },
+    "https://github.com/plx/ferric-rules/issues/333": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS rounds the demonstrated exact half-integer ties toward negative infinity: round 2.5 is 2 and round -2.5 is -3. Ferric rounds the positive tie to 3; the negative tie and nearby non-tie controls agree. This changes a numeric result at a precise boundary and may affect threshold decisions. The linked issue tracks CLIPS-compatible tie handling."
+    },
+    "https://github.com/plx/ferric-rules/issues/334": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS accepts three or more operands for the numeric comparison functions exercised here. Ferric restricts them to two operands and emits an argument-count diagnostic, so none of these three-operand comparisons returns the expected Boolean. Binary comparisons have separate passing probes. The linked issue tracks variadic numeric comparisons, including their function-specific equality, ordering, and inequality semantics."
+    },
+    "https://github.com/plx/ferric-rules/issues/335": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS str-length accepts both STRING and SYMBOL lexemes. Ferric accepts a string but raises a type error for the symbol in this probe, preventing its length from being printed. Symbol-valued data therefore needs explicit conversion before this function can be used with Ferric; the linked issue tracks accepting symbols directly with CLIPS semantics."
+    },
+    "https://github.com/plx/ferric-rules/issues/336": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS clamps a sub-string start index below 1 to the beginning of the string. Ferric returns an empty string for that case, while the excessive-end and reversed-range controls in the same probe agree. Code that relies on clipped bounds loses otherwise valid characters. The linked issue tracks the lower-bound behavior; explicitly clamping a computed start to at least 1 avoids this demonstrated boundary difference."
+    },
+    "https://github.com/plx/ferric-rules/issues/337": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "For an empty search string, CLIPS str-index reports the position just after the last character (4 for abc). Ferric returns 1, the beginning position; both return 1 for an empty target. This boundary can alter offsets and slicing logic even though ordinary found and missing searches have passing controls. The linked issue tracks CLIPS's empty-search convention."
+    },
+    "https://github.com/plx/ferric-rules/issues/338": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS string-to-field reads only the first token, so the input 42 trailing yields 42. Ferric retains the trailing text in the returned value instead of producing that parsed first field. The single-token integer, float, and symbol controls agree, but multi-token input is not compatible. The linked issue tracks first-token parsing."
+    },
+    "https://github.com/plx/ferric-rules/issues/339": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS explode$ recognizes quoted text containing spaces as one STRING field. Ferric splits that text at whitespace, producing an extra field and different type results at the inspected positions. This changes sequence length, field boundaries, and types, so it is not a display-only discrepancy. The linked issue tracks tokenizing quoted fields correctly."
+    },
+    "https://github.com/plx/ferric-rules/issues/340": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS format honors the zero-padding flag in the demonstrated integer directive and emits 0007. Ferric emits three spaces followed by 7, preserving width but changing the requested bytes. This matters for formatted identifiers, generated files, and exact output consumers. The linked issue tracks zero padding; this corpus intentionally preserves the whitespace difference."
+    },
+    "https://github.com/plx/ferric-rules/issues/341": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS nth$ returns the symbol nil for an index below 1 or beyond the multifield length. Ferric emits a range/type diagnostic instead and stops the current action before printing a result. Code that uses nil to detect a missing element therefore cannot handle the boundary in the same way. The linked issue tracks returning CLIPS's sentinel; a bounds check before nth$ can avoid this demonstrated error."
+    },
+    "https://github.com/plx/ferric-rules/issues/342": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS member$ accepts a multifield search value and returns the inclusive start/end positions of a matching subsequence, (2 3) in this probe. Ferric returns FALSE even when that subsequence is present; the absent-subsequence control agrees. Scalar membership has a separate passing probe. The linked issue tracks subsequence search and its multifield result."
+    },
+    "https://github.com/plx/ferric-rules/issues/343": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS interprets a sort predicate as indicating when two values should be exchanged. Ferric's built-in < and > predicate paths produce the reverse of CLIPS's demonstrated order, so both sorted sequences differ. The separate user-function comparator probe agrees with CLIPS, narrowing this discovery to the built-in comparator path. The linked issue tracks applying the same comparator convention consistently."
+    },
+    "https://github.com/plx/ferric-rules/issues/344": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS implode$ retains quotation marks around STRING fields in the resulting text. Ferric omits those quotes, making a string containing spaces look like several unquoted fields. Consumers that parse the result cannot preserve the same field boundaries and types from Ferric's output. The linked issue tracks quoted STRING serialization; this is meaningful output data, not ignorable decoration."
+    },
+    "https://github.com/plx/ferric-rules/issues/345": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS printout includes quotation marks around STRING elements inside a multifield. Ferric prints those elements without quotes, losing the visible distinction from symbols and obscuring the boundaries of strings containing spaces. Exact output consumers and data inspection can therefore see different representations. The linked issue tracks multifield string quoting; direct scalar-string printing is a separate behavior."
+    },
+    "https://github.com/plx/ferric-rules/issues/346": {
+      "kind": "tracked-defect",
+      "label": "Tracked for correction",
+      "explanation": "CLIPS read consumes the complete quoted input two words as one STRING value. Ferric stops at the internal whitespace and returns the opening quote plus the first word as a non-string value. Both the data and stringp result differ, so rules reading quoted tokens cannot recover the intended input through this path. The linked issue tracks quote-aware input tokenization."
+    }
+  },
+  "overrides": {}
+}

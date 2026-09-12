@@ -2,7 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 const basePath: string = "/ferric-rules";
 const normalizedBasePath = basePath === "/" ? "" : basePath;
-const localSiteUrl = `http://127.0.0.1:4321${normalizedBasePath}/`;
+const port = process.env.SITE_TEST_PORT ?? "4321";
+const origin = `http://127.0.0.1:${port}`;
+const localSiteUrl = `${origin}${normalizedBasePath}/`;
 const dotReporter = ["dot"] as const;
 const htmlReporter = ["html", { open: "never" }] as const;
 const listReporter = ["list"] as const;
@@ -18,7 +20,7 @@ export default defineConfig({
     ? [dotReporter, htmlReporter]
     : [listReporter, htmlReporter],
   use: {
-    baseURL: "http://127.0.0.1:4321",
+    baseURL: origin,
     trace: "on-first-retry",
   },
   webServer: {
@@ -26,10 +28,11 @@ export default defineConfig({
     // CI-like environments, but Playwright requires this child process to stay
     // attached. The preview script uses Vite's foreground server for the exact
     // production artifact that is deployed.
-    command: "npm run build && npm run preview -- --host 127.0.0.1 --port 4321",
+    command: `npm run build && npm run preview -- --host 127.0.0.1 --port ${port}`,
     url: localSiteUrl,
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    // A clean build compiles Ferric and runs every probe in both engines.
+    timeout: 900_000,
   },
   projects: [
     {
