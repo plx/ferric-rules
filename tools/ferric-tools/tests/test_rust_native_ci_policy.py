@@ -210,7 +210,7 @@ def test_workflow_matrix_exactly_matches_the_release_declaration():
 
     assert "    runs-on: ${{ matrix.runner }}\n" in job
     assert "      fail-fast: false\n" in job
-    assert "    timeout-minutes: 45\n" in job
+    assert "    timeout-minutes: 75\n" in job
     assert "continue-on-error" not in workflow
     assert "cross-compile" not in job.lower()
     _assert_direct_candidate_checkout(job)
