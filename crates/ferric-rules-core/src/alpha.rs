@@ -783,13 +783,22 @@ fn fact_matches_entry_type(fact: &Fact, entry_type: &AlphaEntryType) -> bool {
 
 /// Evaluate a constant test against a fact.
 pub(crate) fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
-    match (&test.test_type, get_slot_value(fact, test.slot)) {
-        (ConstantTestType::OrderedFieldCount { min, max }, _) => {
-            matches!(fact, Fact::Ordered(ordered)
-                if ordered.fields.len() >= *min
-                    && max.map_or(true, |max| ordered.fields.len() <= max))
-        }
-        (_, None) => false,
+    if let ConstantTestType::OrderedFieldCount { min, max } = &test.test_type {
+        return matches!(fact, Fact::Ordered(ordered)
+            if ordered.fields.len() >= *min
+                && max.map_or(true, |max| ordered.fields.len() <= max));
+    }
+    evaluate_field_test(test, |slot| get_slot_value(fact, slot))
+}
+
+/// Evaluate a field test, reading each selected field through `field`.
+/// Field-count tests need the whole fact and never match here.
+pub(crate) fn evaluate_field_test<'v>(
+    test: &ConstantTest,
+    field: impl Fn(SlotIndex) -> Option<&'v Value>,
+) -> bool {
+    match (&test.test_type, field(test.slot)) {
+        (ConstantTestType::OrderedFieldCount { .. }, _) | (_, None) => false,
         (ConstantTestType::Equal(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key == test_key)
         }
@@ -816,52 +825,52 @@ pub(crate) fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
             })
         }
         (ConstantTestType::EqualSlot(other_slot), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 slot_value.structural_eq(other_value)
             })
         }
         (ConstantTestType::NotEqualSlot(other_slot), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 !slot_value.structural_eq(other_value)
             })
         }
         (ConstantTestType::EqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
         (ConstantTestType::NotEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 !compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
         (ConstantTestType::GreaterThanSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater)
                 })
             })
         }
         (ConstantTestType::LessThanSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less)
                 })
             })
         }
         (ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater | Ordering::Equal)
                 })
             })
         }
         (ConstantTestType::LessOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(fact, *other_slot, |other_value| {
+            compare_other_slot(&field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less | Ordering::Equal)
                 })
@@ -888,14 +897,15 @@ where
     numeric_compare_matches(slot_value, &rhs, predicate)
 }
 
-fn compare_other_slot<F>(fact: &Fact, other_slot: SlotIndex, predicate: F) -> bool
+fn compare_other_slot<'v, F>(
+    field: &impl Fn(SlotIndex) -> Option<&'v Value>,
+    other_slot: SlotIndex,
+    predicate: F,
+) -> bool
 where
     F: FnOnce(&Value) -> bool,
 {
-    let Some(other_value) = get_slot_value(fact, other_slot) else {
-        return false;
-    };
-    predicate(other_value)
+    field(other_slot).is_some_and(predicate)
 }
 
 fn compare_offset<F>(lhs: &Value, rhs: &Value, offset: i64, predicate: F) -> bool

@@ -16,7 +16,7 @@ use crate::beta::{
 };
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
-use crate::sequence::SequencePattern;
+use crate::sequence::{SequencePattern, SplitView};
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -603,7 +603,7 @@ impl ReteNetwork {
         let Some(parent_token) = self.token_store.get(parent) else {
             return;
         };
-        if sequence.is_none() {
+        let Some(sequence) = sequence.as_deref() else {
             // Ordinary joins reject before copying bindings and copy exactly
             // once for a successful match, as in the scalar-only network.
             if !evaluate_join(fact, Some(parent_token), tests) {
@@ -625,16 +625,12 @@ impl ReteNetwork {
                 new_activations,
             );
             return;
-        }
-        let (tests, bindings, sequence) = (tests.clone(), bindings.clone(), sequence.clone());
-        let parent_bindings = parent_token.bindings.clone();
-        for (bindings, lengths) in matching_bindings(
-            fact,
-            &parent_bindings,
-            &tests,
-            &bindings,
-            sequence.as_deref(),
-        ) {
+        };
+        // Matching reads only the fact and parent bindings, so collect every
+        // split before emission mutates the network.
+        let matches: SmallVec<[_; 2]> =
+            sequence_matches(fact, &parent_token.bindings, tests, bindings, sequence).collect();
+        for (bindings, lengths) in matches {
             if self.token_store.get(parent).is_none() {
                 break;
             }
@@ -643,7 +639,7 @@ impl ReteNetwork {
                 parent,
                 fact_id,
                 bindings,
-                lengths,
+                Some(lengths),
                 fact_base,
                 new_activations,
             );
@@ -1829,12 +1825,21 @@ fn collect_candidate_parent_tokens(
 ///
 /// If `token` is `None`, treats this as a root-level match (no bindings to check).
 pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool {
-    evaluate_join_bindings(fact, token.map(|token| &token.bindings), tests)
+    evaluate_join_fields(
+        |slot| get_slot_value(fact, slot),
+        token.map(|token| &token.bindings),
+        tests,
+    )
 }
 
-fn evaluate_join_bindings(fact: &Fact, bindings: Option<&BindingSet>, tests: &[JoinTest]) -> bool {
+/// Join tests against fields read through `field`, such as a split view.
+pub(crate) fn evaluate_join_fields<'v>(
+    field: impl Fn(SlotIndex) -> Option<&'v Value>,
+    bindings: Option<&BindingSet>,
+    tests: &[JoinTest],
+) -> bool {
     for test in tests {
-        let Some(fact_value) = get_slot_value(fact, test.alpha_slot) else {
+        let Some(fact_value) = field(test.alpha_slot) else {
             return false;
         };
 
@@ -1949,41 +1954,44 @@ pub(crate) fn evaluate_pattern(
 ) -> bool {
     if let Some(sequence) = sequence {
         sequence
-            .matches(fact)
-            .any(|matched| evaluate_join(&matched.fact, Some(token), tests))
+            .candidates(fact)
+            .any(|split| split_matches(&split, &token.bindings, tests, sequence))
     } else {
         evaluate_join(fact, Some(token), tests)
     }
 }
 
-fn matching_bindings<'a>(
+/// Whether a candidate split passes the plan's constant tests and the join tests.
+pub(crate) fn split_matches(
+    split: &SplitView<'_>,
+    parent_bindings: &BindingSet,
+    tests: &[JoinTest],
+    sequence: &SequencePattern,
+) -> bool {
+    sequence.accepts(split)
+        && evaluate_join_fields(|slot| split.get(slot), Some(parent_bindings), tests)
+}
+
+/// Bindings and capture lengths for every split of `fact` that matches.
+fn sequence_matches<'a>(
     fact: &'a Fact,
     parent_bindings: &'a BindingSet,
     tests: &'a [JoinTest],
     bindings: &'a [(SlotIndex, VarId)],
-    sequence: Option<&'a SequencePattern>,
-) -> impl Iterator<Item = (BindingSet, Option<SmallVec<[usize; 2]>>)> + 'a {
-    std::iter::once(None)
-        .take(usize::from(sequence.is_none()))
-        .chain(
-            sequence
-                .into_iter()
-                .flat_map(move |sequence| sequence.matches(fact))
-                .map(Some),
-        )
-        .filter_map(move |matched| {
-            let projected = matched.as_ref().map_or(fact, |matched| &matched.fact);
-            if !evaluate_join_bindings(projected, Some(parent_bindings), tests) {
-                return None;
+    sequence: &'a SequencePattern,
+) -> impl Iterator<Item = (BindingSet, SmallVec<[usize; 2]>)> + 'a {
+    sequence.candidates(fact).filter_map(move |split| {
+        if !split_matches(&split, parent_bindings, tests, sequence) {
+            return None;
+        }
+        let mut extracted = parent_bindings.clone();
+        for &(slot, variable) in bindings {
+            if let Some(value) = split.get(slot) {
+                extracted.set(variable, ValueRef::new(value.clone()));
             }
-            let mut extracted = parent_bindings.clone();
-            for &(slot, variable) in bindings {
-                if let Some(value) = get_slot_value(projected, slot) {
-                    extracted.set(variable, ValueRef::new(value.clone()));
-                }
-            }
-            Some((extracted, matched.map(|matched| matched.lengths)))
-        })
+        }
+        Some((extracted, split.lengths))
+    })
 }
 
 /// Equality for join values, including complete multifield slot values.

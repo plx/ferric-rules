@@ -206,16 +206,9 @@ impl Work {
     }
 }
 
-/// Work to project and test one split of `fact`. A projection clones physical
-/// values, including string bytes and nested multifields, so counting only
-/// top-level fields would undercharge large values.
-fn sequence_candidate_cost(
-    fact: &Fact,
-    sequence: &SequencePattern,
-    tests: &[JoinTest],
-    binding_cost: usize,
-    work: &mut Work,
-) -> Result<usize, String> {
+/// Work to copy every value of `fact`, counting string bytes and nested
+/// multifields. It bounds copying or comparing any capture of the fact.
+fn fact_value_cost(fact: &Fact, work: &mut Work) -> Result<usize, String> {
     let values = match fact {
         Fact::Ordered(fact) => fact.fields.as_slice(),
         Fact::Template(fact) => fact.slots.as_ref(),
@@ -236,30 +229,26 @@ fn sequence_candidate_cost(
             value_cost = value_cost.saturating_add(cost);
         }
     }
-    let test_cost =
-        sequence
-            .tests
-            .iter()
-            .fold(tests.len().saturating_mul(value_cost + 1), |cost, test| {
-                cost.saturating_add(match &test.test_type {
-                    ConstantTestType::EqualAny(values) => {
-                        values.len().saturating_mul(value_cost + 1)
-                    }
-                    _ => value_cost + 1,
-                })
-            });
-    Ok(sequence
-        .logical_width()
-        .saturating_add(sequence.segments.len())
-        .saturating_add(value_cost)
-        .saturating_add(test_cost)
-        .saturating_add(binding_cost.saturating_mul(value_cost + 1))
-        .saturating_add(1))
+    Ok(value_cost)
+}
+
+/// Work to view one split and run its tests, before any capture is copied.
+fn split_cost(sequence: &SequencePattern, tests: &[JoinTest]) -> usize {
+    sequence.tests.iter().fold(
+        sequence.logical_width() + sequence.segments.len() + tests.len() + 1,
+        |cost, test| {
+            cost.saturating_add(match &test.test_type {
+                ConstantTestType::EqualAny(values) => values.len(),
+                _ => 1,
+            })
+        },
+    )
 }
 
 /// Whether some split of `fact` satisfies the plan and the join tests.
 /// Enumeration is combinatorial, so each candidate, including rejected
-/// ones, is charged before the iterator advances.
+/// ones, is charged before the iterator advances; a candidate whose tests
+/// read a capture is charged for copying and comparing it.
 fn any_sequence_match(
     fact: &Fact,
     token: &crate::token::Token,
@@ -267,30 +256,33 @@ fn any_sequence_match(
     sequence: &SequencePattern,
     work: &mut Work,
 ) -> Result<bool, String> {
-    let candidate_cost = sequence_candidate_cost(fact, sequence, tests, 0, work)?;
+    let value_cost = fact_value_cost(fact, work)?;
+    let split_cost = split_cost(sequence, tests);
     let mut candidates = sequence.candidates(fact);
     loop {
-        work.spend(candidate_cost)?;
-        let Some(candidate) = candidates.next() else {
+        work.spend(split_cost)?;
+        let Some(split) = candidates.next() else {
             return Ok(false);
         };
-        if sequence.accepts(&candidate.fact)
-            && crate::rete::evaluate_join(&candidate.fact, Some(token), tests)
-        {
+        let matched = crate::rete::split_matches(&split, &token.bindings, tests, sequence);
+        if split.copied_capture() {
+            work.spend(value_cost.saturating_mul(2))?;
+        }
+        if matched {
             return Ok(true);
         }
     }
 }
 
-/// Bindings a join token must carry for `fact` (or its projected split).
-fn join_bindings(
+/// Bindings a join token must carry for the fields of its fact or split.
+fn join_bindings<'v>(
     parent: &crate::token::Token,
-    fact: &Fact,
+    field: impl Fn(crate::alpha::SlotIndex) -> Option<&'v Value>,
     bindings: &[(crate::alpha::SlotIndex, crate::binding::VarId)],
 ) -> crate::binding::BindingSet {
     let mut expected = parent.bindings.clone();
     for &(slot, variable) in bindings {
-        if let Some(value) = crate::alpha::get_slot_value(fact, slot) {
+        if let Some(value) = field(slot) {
             expected.set(variable, crate::binding::ValueRef::new(value.clone()));
         }
     }
@@ -1381,7 +1373,11 @@ impl ReteNetwork {
                 require!(
                     same_bindings(
                         &token.bindings,
-                        &join_bindings(parent_token, fact, bindings)
+                        &join_bindings(
+                            parent_token,
+                            |slot| crate::alpha::get_slot_value(fact, slot),
+                            bindings
+                        )
                     ),
                     "inconsistent join token bindings"
                 );
@@ -1417,7 +1413,7 @@ impl ReteNetwork {
     }
 
     /// Sequence tokens record their split, so each one is checked for
-    /// soundness by rebuilding that single projection in `O(width)`.
+    /// soundness by rebuilding that single split in `O(width)`.
     /// Completeness is not re-enumerated: every split of every parent and
     /// alpha fact pair is combinatorial and would not fit the work budget.
     #[allow(clippy::too_many_arguments)]
@@ -1453,21 +1449,24 @@ impl ReteNetwork {
                 .get(parent_id)
                 .ok_or("missing join parent")?;
             let fact = &facts.get(fact_id).ok_or("missing join fact")?.fact;
-            let binding_cost = bindings.len() + parent_token.bindings.capacity();
-            let cost = sequence_candidate_cost(fact, sequence, tests, binding_cost, work)?;
-            work.spend(cost)?;
-            let projected = sequence
+            // Tests and bindings may copy and compare every capture.
+            let value_cost = fact_value_cost(fact, work)?;
+            let binding_cost = bindings.len() + parent_token.bindings.capacity() + 2;
+            work.spend(
+                split_cost(sequence, tests)
+                    .saturating_add(binding_cost.saturating_mul(value_cost + 1)),
+            )?;
+            let split = sequence
                 .project(fact, lengths)
                 .ok_or("invalid sequence capture lengths")?;
             require!(
-                sequence.accepts(&projected.fact)
-                    && crate::rete::evaluate_join(&projected.fact, Some(parent_token), tests),
+                crate::rete::split_matches(&split, &parent_token.bindings, tests, sequence),
                 "unexpected positive join match"
             );
             require!(
                 same_bindings(
                     &token.bindings,
-                    &join_bindings(parent_token, &projected.fact, bindings)
+                    &join_bindings(parent_token, |slot| split.get(slot), bindings)
                 ),
                 "inconsistent join token bindings"
             );

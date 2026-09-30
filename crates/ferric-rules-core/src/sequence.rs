@@ -1,8 +1,12 @@
 //! Sequence matching with independent zero-or-more captures in ordered facts and template slots.
 
+use std::cell::OnceCell;
+
 use smallvec::SmallVec;
 
-use crate::alpha::{evaluate_test, AlphaEntryType, ConstantTest, ConstantTestType, SlotIndex};
+use crate::alpha::{
+    evaluate_field_test, AlphaEntryType, ConstantTest, ConstantTestType, SlotIndex,
+};
 use crate::fact::{Fact, OrderedFact, TemplateFact};
 use crate::value::Value;
 
@@ -238,10 +242,10 @@ impl SequencePattern {
         }
     }
 
-    /// Rebuild the projection of one recorded split in `O(width)`.
+    /// Rebuild the view of one recorded split in `O(width)`.
     /// Returns `None` when `lengths` is not a valid split of `fact`.
     #[must_use]
-    pub fn project(&self, fact: &Fact, lengths: &[usize]) -> Option<SequenceMatch> {
+    pub fn project<'a>(&'a self, fact: &'a Fact, lengths: &[usize]) -> Option<SplitView<'a>> {
         let mut remaining = lengths;
         let mut cursors = Vec::with_capacity(self.segments.len());
         for segment in &self.segments {
@@ -273,17 +277,88 @@ impl SequencePattern {
         .current()
     }
 
-    /// Evaluate constant constraints against an already projected candidate.
+    /// Evaluate constant constraints against a candidate split.
     #[must_use]
-    pub fn accepts(&self, fact: &Fact) -> bool {
-        self.tests.iter().all(|test| evaluate_test(fact, test))
+    pub fn accepts(&self, split: &SplitView<'_>) -> bool {
+        self.tests
+            .iter()
+            .all(|test| evaluate_field_test(test, |slot| split.get(slot)))
     }
 
     /// Enumerate every matching split, including empty and anonymous captures.
     pub fn matches<'a>(&'a self, fact: &'a Fact) -> impl Iterator<Item = SequenceMatch> + 'a {
         self.candidates(fact)
-            .filter(|candidate| self.accepts(&candidate.fact))
+            .filter(|split| self.accepts(split))
+            .map(SplitView::into_match)
     }
+}
+
+/// One logical field of a split, borrowed from the physical fact.
+#[derive(Clone, Copy, Debug)]
+enum FieldRef<'a> {
+    Single(&'a Value),
+    Multi(&'a [Value]),
+}
+
+/// A candidate split that borrows the physical fact. Tests and bindings
+/// read logical fields through [`SplitView::get`]; a capture is copied into
+/// a multifield value only when something reads it.
+#[derive(Debug)]
+pub struct SplitView<'a> {
+    fact: &'a Fact,
+    fields: SmallVec<[(FieldRef<'a>, OnceCell<Value>); 8]>,
+    /// Capture lengths, which identify this split among those of the fact.
+    pub lengths: SmallVec<[usize; 2]>,
+}
+
+impl SplitView<'_> {
+    /// The value of a logical field, as the projected fact would hold it.
+    #[must_use]
+    pub fn get(&self, slot: SlotIndex) -> Option<&Value> {
+        let ((SlotIndex::Ordered(index), Fact::Ordered(_))
+        | (SlotIndex::Template(index), Fact::Template(_))) = (slot, self.fact)
+        else {
+            return None;
+        };
+        let (field, copy) = self.fields.get(index)?;
+        Some(match *field {
+            FieldRef::Single(value) => value,
+            FieldRef::Multi(values) => copy.get_or_init(|| capture(values)),
+        })
+    }
+
+    /// Whether `get` has copied any capture of this split.
+    #[must_use]
+    pub fn copied_capture(&self) -> bool {
+        self.fields.iter().any(|(_, copy)| copy.get().is_some())
+    }
+
+    /// Materialize the projected fact.
+    #[must_use]
+    pub fn into_match(self) -> SequenceMatch {
+        let fields = self.fields.into_iter().map(|(field, copy)| match field {
+            FieldRef::Single(value) => value.clone(),
+            FieldRef::Multi(values) => copy.into_inner().unwrap_or_else(|| capture(values)),
+        });
+        let fact = match self.fact {
+            Fact::Ordered(original) => Fact::Ordered(OrderedFact {
+                relation: original.relation,
+                fields: fields.collect(),
+            }),
+            Fact::Template(original) => Fact::Template(TemplateFact {
+                template_id: original.template_id,
+                slots: fields.collect(),
+            }),
+        };
+        SequenceMatch {
+            fact,
+            lengths: self.lengths,
+        }
+    }
+}
+
+fn capture(values: &[Value]) -> Value {
+    Value::Multifield(Box::new(values.iter().cloned().collect()))
 }
 
 fn segment_values(source: SequenceSource, fact: &Fact) -> Option<&[Value]> {
@@ -361,57 +436,48 @@ impl<'a> SegmentCursor<'a> {
         false
     }
 
-    fn append_fields(&self, output: &mut SmallVec<[Value; 8]>) {
+    fn push_fields(&self, output: &mut SmallVec<[(FieldRef<'a>, OnceCell<Value>); 8]>) {
         let mut offset = 0;
         let mut ranges = self.lengths.iter();
         for field in self.fields {
-            match field {
+            let field = match field {
                 SequenceField::Single => {
-                    output.push(self.values[offset].clone());
                     offset += 1;
+                    FieldRef::Single(&self.values[offset - 1])
                 }
                 SequenceField::Multi => {
                     let length = *ranges.next().expect("one length for every capture");
-                    let captured = self.values[offset..offset + length]
-                        .iter()
-                        .cloned()
-                        .collect();
-                    output.push(Value::Multifield(Box::new(captured)));
                     offset += length;
+                    FieldRef::Multi(&self.values[offset - length..offset])
                 }
-            }
+            };
+            output.push((field, OnceCell::new()));
         }
     }
 }
 
-impl SequenceCandidates<'_> {
-    /// Project the split the cursors currently describe.
-    fn current(&self) -> Option<SequenceMatch> {
+impl<'a> SequenceCandidates<'a> {
+    /// View the split the cursors currently describe.
+    fn current(&self) -> Option<SplitView<'a>> {
         if self.done {
             return None;
         }
         let mut fields = SmallVec::with_capacity(self.width);
         let mut lengths = SmallVec::new();
         for cursor in &self.cursors {
-            cursor.append_fields(&mut fields);
+            cursor.push_fields(&mut fields);
             lengths.extend_from_slice(&cursor.lengths);
         }
-        let fact = match self.fact {
-            Fact::Ordered(original) => Fact::Ordered(OrderedFact {
-                relation: original.relation,
-                fields,
-            }),
-            Fact::Template(original) => Fact::Template(TemplateFact {
-                template_id: original.template_id,
-                slots: fields.into_vec().into_boxed_slice(),
-            }),
-        };
-        Some(SequenceMatch { fact, lengths })
+        Some(SplitView {
+            fact: self.fact,
+            fields,
+            lengths,
+        })
     }
 }
 
-impl Iterator for SequenceCandidates<'_> {
-    type Item = SequenceMatch;
+impl<'a> Iterator for SequenceCandidates<'a> {
+    type Item = SplitView<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.current()?;
@@ -619,6 +685,36 @@ mod tests {
     }
 
     #[test]
+    fn split_views_copy_captures_only_when_read() {
+        let source = fact(4);
+        let plan = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![
+                    SequenceField::Multi,
+                    SequenceField::Single,
+                    SequenceField::Multi,
+                ],
+            }],
+            tests: vec![ConstantTest {
+                slot: SlotIndex::Ordered(1),
+                test_type: ConstantTestType::Equal(AtomKey::Integer(2)),
+            }],
+        };
+        let split = plan
+            .candidates(&source)
+            .find(|split| plan.accepts(split))
+            .unwrap();
+        assert_eq!(split.lengths.as_slice(), &[2, 1]);
+        assert!(!split.copied_capture());
+        let captured = split.get(SlotIndex::Ordered(0)).unwrap();
+        assert!(captured.structural_eq(&multifield(&[0, 1])));
+        assert!(split.copied_capture());
+        assert!(split.get(SlotIndex::Template(0)).is_none());
+        assert!(split.get(SlotIndex::Ordered(3)).is_none());
+    }
+
+    #[test]
     fn recorded_splits_project_without_enumeration() {
         let source = template(vec![multifield(&[1, 2, 3]), multifield(&[4])]);
         let plan = SequencePattern {
@@ -640,7 +736,10 @@ mod tests {
         };
         let mut count = 0;
         for matched in plan.matches(&source) {
-            let projected = plan.project(&source, &matched.lengths).unwrap();
+            let projected = plan
+                .project(&source, &matched.lengths)
+                .unwrap()
+                .into_match();
             let (Fact::Template(expected), Fact::Template(actual)) =
                 (&matched.fact, &projected.fact)
             else {
