@@ -886,8 +886,8 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 - **Swift**: `bindings/swift` is a local Swift 6 package over the C ABI for
   macOS 15 and iOS 18 or newer. See
   [its README](../bindings/swift/README.md) for building and use.
-- **Go**: `bindings/go` provides an idiomatic façade (`Engine`,
-  `Coordinator`, `Manager`) plus a Temporal activity wrapper.
+- **Go**: `bindings/go` provides an idiomatic `Engine` façade; see its
+  [README](../bindings/go/README.md).
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through
   `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.13. Python 3.14,
   free-threaded CPython, subinterpreters, and other interpreters are not

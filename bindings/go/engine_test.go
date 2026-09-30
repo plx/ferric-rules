@@ -535,7 +535,7 @@ func TestStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fired == nil {
+	if !fired {
 		t.Fatal("expected rule to fire")
 	}
 
@@ -544,8 +544,8 @@ func TestStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fired != nil {
-		t.Fatal("expected nil (empty agenda)")
+	if fired {
+		t.Fatal("expected no firing (empty agenda)")
 	}
 }
 
@@ -618,7 +618,9 @@ func TestClear(t *testing.T) {
 		t.Fatalf("expected 1 rule, got %d", len(rules))
 	}
 
-	e.Clear()
+	if err := e.Clear(); err != nil {
+		t.Fatal(err)
+	}
 
 	rules = e.Rules()
 	if len(rules) != 0 {

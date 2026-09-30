@@ -488,19 +488,16 @@ func executionStep() (any, error) {
 		return nil, err
 	}
 	defer func() { _ = engine.Close() }()
-	first, err := engine.Step()
+	if _, err = engine.Step(); err != nil {
+		return nil, err
+	}
+	secondFired, err := engine.Step()
 	if err != nil {
 		return nil, err
 	}
-	second, err := engine.Step()
-	if err != nil {
-		return nil, err
-	}
-	var firstRule any
-	if first != nil && first.RuleName != "" {
-		firstRule = first.RuleName
-	}
-	return map[string]any{"first_rule": firstRule, "empty": second == nil}, nil
+	// Step reports only whether a rule fired; the C ABI does not return the
+	// fired rule's name (see the corpus deviation for execution.step).
+	return map[string]any{"first_rule": nil, "empty": !secondFired}, nil
 }
 
 func executionDiagnostic() (any, error) {

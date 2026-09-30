@@ -2,6 +2,7 @@ package ferric
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +12,10 @@ import (
 	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
 )
 
-var errIntOverflow = fmt.Errorf("ferric: integer overflow")
+var (
+	errIntOverflow = errors.New("ferric: integer overflow")
+	errNilContext  = errors.New("ferric: nil context")
+)
 
 func validateCStringArgument(argument, value string) error {
 	if err := ffi.ValidateCString(argument, value); err != nil {
@@ -31,14 +35,13 @@ func validateRunLimit(limit int) error {
 }
 
 // runBatchSize bounds the number of rule firings between host-side
-// cancellation or interruption checks in a chunked run.
+// cancellation checks in a chunked run.
 const runBatchSize = 100
 
 // Engine wraps a single ferric rules engine instance.
 //
 // Methods serialize native access and may be called from different goroutines.
 // Close waits for an admitted operation and destroys native state exactly once.
-// Coordinator, Manager, and PinnedEngine retain their pool and queue semantics.
 //
 // Engine implements io.Closer. Always defer Close() after creation.
 // An Engine must not be copied after first use.
@@ -134,7 +137,7 @@ func finalizeEngine(e *Engine) {
 
 // NewEngineFromFile creates a new engine by deserializing a snapshot from the
 // given file path. The format must match the one used during serialization.
-// Additional options (e.g., WithMaxCallDepth) are applied after restoration.
+// The same restrictions as WithSnapshot apply to additional options.
 func NewEngineFromFile(path string, format Format, opts ...EngineOption) (*Engine, error) {
 	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- caller-controlled path
 	if err != nil {
@@ -478,18 +481,6 @@ func (e *Engine) Run(ctx context.Context) (*RunResult, error) {
 // error wrapping ctx.Err(); an engine-requested halt returns HaltRequested with
 // a nil error.
 func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
-	return e.runWithLimit(ctx, limit, nil)
-}
-
-// runWithLimit is the shared raw-engine run implementation. A non-nil
-// shouldInterrupt predicate forces chunked execution even when ctx itself is
-// not cancelable. The predicate is evaluated by the admitted call before the
-// first chunk and between continuation chunks.
-func (e *Engine) runWithLimit(
-	ctx context.Context,
-	limit int,
-	shouldInterrupt func() bool,
-) (*RunResult, error) {
 	if err := validateRunLimit(limit); err != nil {
 		return nil, err
 	}
@@ -503,31 +494,23 @@ func (e *Engine) runWithLimit(
 		return nil, errNilContext
 	}
 
-	// Preserve the raw Engine fast path when no host-side polling is needed.
-	if ctx.Done() == nil && shouldInterrupt == nil {
+	// Use one direct native call when there is no cancellation to poll.
+	if ctx.Done() == nil {
 		ffiLimit := int64(-1)
 		if limit > 0 {
 			ffiLimit = int64(limit)
 		}
 		return e.runDirect(handle, ffiLimit)
 	}
-	return e.runChunked(ctx, handle, limit, shouldInterrupt)
+	return e.runChunked(ctx, handle, limit)
 }
 
-func (e *Engine) runChunked(
-	ctx context.Context,
-	handle ffi.EngineHandle,
-	limit int,
-	shouldInterrupt func() bool,
-) (*RunResult, error) {
+func (e *Engine) runChunked(ctx context.Context, handle ffi.EngineHandle, limit int) (*RunResult, error) {
 	totalFired := 0
 	runChunk := ffiEngineRunEx
 	for {
 		if err := ctx.Err(); err != nil {
 			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, fmt.Errorf("ferric: run canceled: %w", err)
-		}
-		if shouldInterrupt != nil && shouldInterrupt() {
-			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, nil
 		}
 
 		// Compute batch limit.
@@ -604,29 +587,24 @@ func (e *Engine) runDirect(handle ffi.EngineHandle, limit int64) (*RunResult, er
 	return &RunResult{RulesFired: firedCount, HaltReason: hr}, nil
 }
 
-// Step executes a single rule firing.
-// Returns nil if the agenda is empty.
-func (e *Engine) Step() (*FiredRule, error) {
+// Step fires at most one activation. It reports true when a rule fired and
+// false when no rule fired (agenda empty or engine halted).
+func (e *Engine) Step() (bool, error) {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	defer release()
 
 	status, rc := ffiEngineStep(handle)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, handle)
+		return false, errorFromFFI(rc, handle)
 	}
-	if status != 1 {
-		return nil, nil //nolint:nilnil // nil indicates agenda empty and is part of Step's public contract.
-	}
-	// The C FFI doesn't currently return the rule name from step.
-	return &FiredRule{}, nil
+	return status == 1, nil
 }
 
 // Halt requests a halt after any currently admitted operation finishes. It is
-// a no-op after Close. To interrupt an active Run, cancel its context or use
-// PinnedEngine.Halt.
+// a no-op after Close. To interrupt an active Run, cancel its context.
 func (e *Engine) Halt() {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
@@ -652,16 +630,20 @@ func (e *Engine) Reset() error {
 	return nil
 }
 
-// Clear removes all rules, facts, templates, etc. from the engine. It is a
-// no-op after Close.
-func (e *Engine) Clear() {
+// Clear removes all rules, facts, templates, etc. from the engine. It returns
+// ErrEngineClosed after Close.
+func (e *Engine) Clear() error {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
-		return
+		return err
 	}
 	defer release()
 
-	ffiEngineClear(handle)
+	rc := ffiEngineClear(handle)
+	if rc != ffi.ErrOK {
+		return errorFromFFI(rc, handle)
+	}
+	return nil
 }
 
 // Serialize produces a snapshot of the engine's current state using the
