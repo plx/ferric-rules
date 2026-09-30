@@ -404,8 +404,8 @@ fn ordinary_binding(ctx: &mut EvalContext<'_>, name: &str) -> Option<Value> {
     // Single-field and multifield spellings refer to the same binding.
     let name = name.strip_prefix("$?").unwrap_or(name);
     if let Some(locals) = ctx.callable_locals.as_deref() {
-        if !locals.lexical_names.contains(name) {
-            if let Some(value) = locals.values.get(name) {
+        if let Some(value) = locals.values.get(name) {
+            if !locals.lexical_names.contains(name) {
                 return Some(value.clone());
             }
         }
@@ -855,14 +855,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 return Ok(false_val);
             }
 
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
-            for counter in start_int..=end_int {
-                consume_action_loop_iteration(ctx.config, "loop-for-count", span.clone())?;
-                // Build a binding frame for this iteration.
-                let mut iter_var_map = ctx.var_map.clone();
-                let mut iter_bindings = ctx.bindings.clone();
-
-                if let Some(var) = var_name {
+            // The frame layout is the same for every iteration, and the body
+            // cannot change it, so only the counter binding is replaced.
+            let mut iter_var_map = ctx.var_map.clone();
+            let mut iter_bindings = ctx.bindings.clone();
+            let counter_var = match var_name {
+                Some(var) => {
                     let sym = ctx
                         .symbol_table
                         .intern_symbol(var, ctx.config.string_encoding)
@@ -872,7 +870,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             actual: var.clone(),
                             span: span.clone(),
                         })?;
-                    let var_id =
+                    Some(
                         iter_var_map
                             .get_or_create(sym)
                             .map_err(|_| EvalError::TypeError {
@@ -880,11 +878,19 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                                 expected: "bindable variable".to_string(),
                                 actual: var.clone(),
                                 span: span.clone(),
-                            })?;
-                    iter_bindings.set(var_id, ValueRef::new(Value::Integer(counter)));
+                            })?,
+                    )
                 }
+                None => None,
+            };
 
-                with_callable_local_scope(ctx, var_name.as_deref(), var_name.as_deref(), |ctx| {
+            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            with_callable_local_scope(ctx, var_name.as_deref(), var_name.as_deref(), |ctx| {
+                for counter in start_int..=end_int {
+                    consume_action_loop_iteration(ctx.config, "loop-for-count", span.clone())?;
+                    if let Some(var_id) = counter_var {
+                        iter_bindings.set(var_id, ValueRef::new(Value::Integer(counter)));
+                    }
                     let mut iter_ctx = EvalContext {
                         bindings: &iter_bindings,
                         var_map: &iter_var_map,
@@ -922,9 +928,9 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             result = eval_inner(&mut iter_ctx, &rt)?;
                         }
                     }
-                    Ok(())
-                })?;
-            }
+                }
+                Ok(())
+            })?;
             Ok(result)
         }
         RuntimeExpr::Progn {
@@ -947,62 +953,59 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
 
             let index_var_name = format!("{var_name}-index");
 
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
-            for (idx, element) in elements.iter().enumerate() {
-                #[allow(clippy::cast_possible_wrap)] // usize→i64: element counts can't exceed i64
-                let one_based = idx as i64 + 1;
-
-                // Build a binding frame for this iteration.
-                let mut iter_var_map = ctx.var_map.clone();
-                let mut iter_bindings = ctx.bindings.clone();
-
-                // Bind the element variable.
-                let elem_sym = ctx
-                    .symbol_table
-                    .intern_symbol(var_name, ctx.config.string_encoding)
+            // One frame serves every iteration; only the two bindings change.
+            let mut iter_var_map = ctx.var_map.clone();
+            let mut iter_bindings = ctx.bindings.clone();
+            let elem_sym = ctx
+                .symbol_table
+                .intern_symbol(var_name, ctx.config.string_encoding)
+                .map_err(|_| EvalError::TypeError {
+                    function: "progn$".to_string(),
+                    expected: "valid loop variable name".to_string(),
+                    actual: var_name.clone(),
+                    span: span.clone(),
+                })?;
+            let elem_var_id =
+                iter_var_map
+                    .get_or_create(elem_sym)
                     .map_err(|_| EvalError::TypeError {
                         function: "progn$".to_string(),
-                        expected: "valid loop variable name".to_string(),
+                        expected: "bindable variable".to_string(),
                         actual: var_name.clone(),
                         span: span.clone(),
                     })?;
-                let elem_var_id =
-                    iter_var_map
-                        .get_or_create(elem_sym)
-                        .map_err(|_| EvalError::TypeError {
-                            function: "progn$".to_string(),
-                            expected: "bindable variable".to_string(),
-                            actual: var_name.clone(),
-                            span: span.clone(),
-                        })?;
-                iter_bindings.set(elem_var_id, ValueRef::new(element.clone()));
-
-                // Bind the index variable (<var>-index).
-                let idx_sym = ctx
-                    .symbol_table
-                    .intern_symbol(&index_var_name, ctx.config.string_encoding)
+            let idx_sym = ctx
+                .symbol_table
+                .intern_symbol(&index_var_name, ctx.config.string_encoding)
+                .map_err(|_| EvalError::TypeError {
+                    function: "progn$".to_string(),
+                    expected: "valid index variable name".to_string(),
+                    actual: index_var_name.clone(),
+                    span: span.clone(),
+                })?;
+            let idx_var_id =
+                iter_var_map
+                    .get_or_create(idx_sym)
                     .map_err(|_| EvalError::TypeError {
                         function: "progn$".to_string(),
-                        expected: "valid index variable name".to_string(),
+                        expected: "bindable index variable".to_string(),
                         actual: index_var_name.clone(),
                         span: span.clone(),
                     })?;
-                let idx_var_id =
-                    iter_var_map
-                        .get_or_create(idx_sym)
-                        .map_err(|_| EvalError::TypeError {
-                            function: "progn$".to_string(),
-                            expected: "bindable index variable".to_string(),
-                            actual: index_var_name.clone(),
-                            span: span.clone(),
-                        })?;
-                iter_bindings.set(idx_var_id, ValueRef::new(Value::Integer(one_based)));
 
-                with_callable_local_scope(
-                    ctx,
-                    [var_name.as_str(), index_var_name.as_str()],
-                    Some(var_name),
-                    |ctx| {
+            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            with_callable_local_scope(
+                ctx,
+                [var_name.as_str(), index_var_name.as_str()],
+                Some(var_name),
+                |ctx| {
+                    for (idx, element) in elements.into_iter().enumerate() {
+                        #[allow(clippy::cast_possible_wrap)]
+                        // usize→i64: element counts can't exceed i64
+                        let one_based = idx as i64 + 1;
+                        iter_bindings.set(elem_var_id, ValueRef::new(element));
+                        iter_bindings.set(idx_var_id, ValueRef::new(Value::Integer(one_based)));
+
                         let mut iter_ctx = EvalContext {
                             bindings: &iter_bindings,
                             var_map: &iter_var_map,
@@ -1040,10 +1043,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                                 result = eval_inner(&mut iter_ctx, &rt)?;
                             }
                         }
-                        Ok(())
-                    },
-                )?;
-            }
+                    }
+                    Ok(())
+                },
+            )?;
             Ok(result)
         }
         RuntimeExpr::Switch {
