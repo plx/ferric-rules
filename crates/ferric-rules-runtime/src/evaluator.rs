@@ -4432,9 +4432,7 @@ fn builtin_unwatch(
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
-/// `str-length` — return the character length of a STRING or SYMBOL.
-///
-/// Takes 1 argument (must be STRING or SYMBOL). Returns an INTEGER.
+/// `str-length` — the character length of a STRING, SYMBOL or INSTANCE-NAME.
 fn builtin_str_length(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -4442,25 +4440,15 @@ fn builtin_str_length(
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-length", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
-    let lexeme = match &val {
-        Value::String(s) => s.as_str(),
-        Value::Symbol(s) => ctx.symbol_table.resolve_symbol_str(*s).unwrap_or("???"),
-        _ => {
-            return Err(EvalError::TypeError {
-                function: "str-length".to_string(),
-                expected: "STRING or SYMBOL".to_string(),
-                actual: generic_value_type_name(&val).to_string(),
-                span: span.cloned(),
-            })
-        }
-    };
+    let lexeme = lexeme_text(&val, ctx.symbol_table, "str-length", span)?;
     let char_len = i64::try_from(lexeme.chars().count()).unwrap_or(i64::MAX);
     Ok(Value::Integer(char_len))
 }
 
 /// `sub-string` — extract a substring by 1-indexed inclusive position.
 ///
-/// `(sub-string <start> <end> <lexeme>)` accepts STRING or SYMBOL text.
+/// `(sub-string <start> <end> <lexeme>)` accepts STRING, SYMBOL or
+/// INSTANCE-NAME text.
 /// Bounds are inclusive, with starts below one and ends beyond the text clipped.
 /// An end below one returns an empty STRING without evaluating the text;
 /// positive ends evaluate the text even for reversed or out-of-range starts.
@@ -4507,18 +4495,7 @@ fn builtin_sub_string(
     }
 
     let text = eval_inner(ctx, &args[2])?;
-    let s = match &text {
-        Value::String(s) => s.as_str(),
-        Value::Symbol(s) => ctx.symbol_table.resolve_symbol_str(*s).unwrap_or("???"),
-        _ => {
-            return Err(EvalError::TypeError {
-                function: "sub-string".to_string(),
-                expected: "STRING or SYMBOL".to_string(),
-                actual: generic_value_type_name(&text).to_string(),
-                span: span.cloned(),
-            })
-        }
-    };
+    let s = lexeme_text(&text, ctx.symbol_table, "sub-string", span)?;
 
     // CLIPS uses 1-indexed inclusive bounds. Convert to Rust 0-indexed.
     let char_len = s.chars().count();
@@ -4563,26 +4540,38 @@ fn builtin_sub_string(
 // String search/transform built-ins
 // ---------------------------------------------------------------------------
 
-/// Extract the string content from a STRING or SYMBOL value.
+/// The text of a STRING, SYMBOL or INSTANCE-NAME, as CLIPS's string
+/// functions see it: an instance name contributes its unbracketed name.
+fn lexeme_text<'a>(
+    v: &'a Value,
+    symbol_table: &'a SymbolTable,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<&'a str, EvalError> {
+    let symbol = match v {
+        Value::String(s) => return Ok(s.as_str()),
+        Value::Symbol(s) => *s,
+        Value::InstanceName(name) => name.as_symbol(),
+        _ => {
+            return Err(EvalError::TypeError {
+                function: function.to_string(),
+                expected: "STRING, SYMBOL, or INSTANCE-NAME".to_string(),
+                actual: generic_value_type_name(v).to_string(),
+                span: span.cloned(),
+            })
+        }
+    };
+    Ok(symbol_table.resolve_symbol_str(symbol).unwrap_or("???"))
+}
+
+/// Owned [`lexeme_text`].
 fn as_lexeme_str(
     v: &Value,
     symbol_table: &SymbolTable,
     function: &str,
     span: Option<&SourceSpan>,
 ) -> Result<String, EvalError> {
-    match v {
-        Value::String(s) => Ok(s.as_str().to_string()),
-        Value::Symbol(s) => Ok(symbol_table
-            .resolve_symbol_str(*s)
-            .unwrap_or("???")
-            .to_string()),
-        _ => Err(EvalError::TypeError {
-            function: function.to_string(),
-            expected: "STRING or SYMBOL".to_string(),
-            actual: generic_value_type_name(v).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    lexeme_text(v, symbol_table, function, span).map(str::to_string)
 }
 
 /// `str-index` — find substring, return 1-based position or FALSE.
@@ -4616,90 +4605,56 @@ fn builtin_str_index(
     }
 }
 
-/// `upcase` — convert STRING or SYMBOL to uppercase, preserving type.
+/// `upcase`/`lowcase` — convert the text of a STRING, SYMBOL or
+/// INSTANCE-NAME, preserving its type.
+fn convert_case(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    function: &str,
+    convert: fn(&str) -> String,
+) -> Result<Value, EvalError> {
+    check_arity_exact(function, args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let converted = convert(lexeme_text(&val, ctx.symbol_table, function, span)?);
+    let encoding_error = |expected: &str, error: String| EvalError::TypeError {
+        function: function.to_string(),
+        expected: expected.to_string(),
+        actual: error,
+        span: span.cloned(),
+    };
+    if matches!(val, Value::String(_)) {
+        return FerricString::new(&converted, ctx.config.string_encoding)
+            .map(Value::String)
+            .map_err(|e| encoding_error("encodable string", e.to_string()));
+    }
+    let symbol = ctx
+        .symbol_table
+        .intern_symbol(&converted, ctx.config.string_encoding)
+        .map_err(|e| encoding_error("encodable symbol", e.to_string()))?;
+    Ok(if matches!(val, Value::InstanceName(_)) {
+        Value::InstanceName(InstanceName::from_symbol(symbol))
+    } else {
+        Value::Symbol(symbol)
+    })
+}
+
+/// `upcase` — uppercase a STRING, SYMBOL or INSTANCE-NAME.
 fn builtin_upcase(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("upcase", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        Value::String(s) => {
-            let upper = s.as_str().to_uppercase();
-            let fs = FerricString::new(&upper, ctx.config.string_encoding).map_err(|e| {
-                EvalError::TypeError {
-                    function: "upcase".to_string(),
-                    expected: "encodable string".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                }
-            })?;
-            Ok(Value::String(fs))
-        }
-        Value::Symbol(_s) => {
-            let upper = as_lexeme_str(&val, ctx.symbol_table, "upcase", span)?.to_uppercase();
-            let sym = ctx
-                .symbol_table
-                .intern_symbol(&upper, ctx.config.string_encoding)
-                .map_err(|e| EvalError::TypeError {
-                    function: "upcase".to_string(),
-                    expected: "encodable symbol".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                })?;
-            Ok(Value::Symbol(sym))
-        }
-        _ => Err(EvalError::TypeError {
-            function: "upcase".to_string(),
-            expected: "STRING or SYMBOL".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    convert_case(ctx, args, span, "upcase", str::to_uppercase)
 }
 
-/// `lowcase` — convert STRING or SYMBOL to lowercase, preserving type.
+/// `lowcase` — lowercase a STRING, SYMBOL or INSTANCE-NAME.
 fn builtin_lowcase(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("lowcase", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        Value::String(s) => {
-            let lower = s.as_str().to_lowercase();
-            let fs = FerricString::new(&lower, ctx.config.string_encoding).map_err(|e| {
-                EvalError::TypeError {
-                    function: "lowcase".to_string(),
-                    expected: "encodable string".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                }
-            })?;
-            Ok(Value::String(fs))
-        }
-        Value::Symbol(_s) => {
-            let lower = as_lexeme_str(&val, ctx.symbol_table, "lowcase", span)?.to_lowercase();
-            let sym = ctx
-                .symbol_table
-                .intern_symbol(&lower, ctx.config.string_encoding)
-                .map_err(|e| EvalError::TypeError {
-                    function: "lowcase".to_string(),
-                    expected: "encodable symbol".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                })?;
-            Ok(Value::Symbol(sym))
-        }
-        _ => Err(EvalError::TypeError {
-            function: "lowcase".to_string(),
-            expected: "STRING or SYMBOL".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    convert_case(ctx, args, span, "lowcase", str::to_lowercase)
 }
 
 /// `str-compare` — lexicographic comparison, returns -1, 0, or 1.

@@ -115,7 +115,7 @@ fn positive_ends_reach_invalid_text_even_for_reversed_or_out_of_range_bounds() {
         for invalid_text in ["42", "1.5", "(create$ 1 2)"] {
             let arguments = format!("(mark 1 {start}) (mark 2 {end}) (mark 3 {invalid_text})");
             let mut engine = substring_engine(&arguments);
-            assert_failure(&mut engine, "STRING or SYMBOL");
+            assert_failure(&mut engine, "STRING, SYMBOL, or INSTANCE-NAME");
             assert_trace(&engine, 123);
         }
     }

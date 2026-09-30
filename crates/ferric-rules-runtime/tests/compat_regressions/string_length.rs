@@ -96,9 +96,13 @@ fn string_and_symbol_arguments_are_each_evaluated_once() {
 #[test]
 fn nonlexeme_types_and_wrong_arities_keep_evaluation_boundaries() {
     for (arguments, calls, expected_error) in [
-        ("(mark 42)", 1, "STRING or SYMBOL"),
-        ("(mark 2.5)", 1, "STRING or SYMBOL"),
-        ("(mark (create$ a b))", 1, "STRING or SYMBOL"),
+        ("(mark 42)", 1, "STRING, SYMBOL, or INSTANCE-NAME"),
+        ("(mark 2.5)", 1, "STRING, SYMBOL, or INSTANCE-NAME"),
+        (
+            "(mark (create$ a b))",
+            1,
+            "STRING, SYMBOL, or INSTANCE-NAME",
+        ),
         ("", 0, "expected 1, got 0"),
         ("(mark abc) (mark \"def\")", 0, "expected 1, got 2"),
     ] {

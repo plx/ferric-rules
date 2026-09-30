@@ -124,7 +124,7 @@ fn first_lexeme_is_validated_before_evaluating_the_second() {
         for second_argument in ["(mark 2 \"abc\")", "(fail 2)"] {
             let arguments = format!("(mark 1 {invalid_needle}) {second_argument}");
             let mut engine = string_index_engine(&arguments);
-            assert_failure(&mut engine, "STRING or SYMBOL");
+            assert_failure(&mut engine, "STRING, SYMBOL, or INSTANCE-NAME");
             assert_trace(&engine, 1);
         }
     }
@@ -136,7 +136,7 @@ fn an_empty_needle_still_evaluates_and_validates_the_second_lexeme() {
         for invalid_haystack in ["42", "1.5", "(create$ a b)"] {
             let arguments = format!("(mark 1 {needle}) (mark 2 {invalid_haystack})");
             let mut engine = string_index_engine(&arguments);
-            assert_failure(&mut engine, "STRING or SYMBOL");
+            assert_failure(&mut engine, "STRING, SYMBOL, or INSTANCE-NAME");
             assert_trace(&engine, 12);
         }
     }
