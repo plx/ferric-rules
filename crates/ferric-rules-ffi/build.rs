@@ -264,6 +264,8 @@ FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING == 4, "FERRIC_VALUE_TYPE_STRING mu
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_MULTIFIELD == 5, "FERRIC_VALUE_TYPE_MULTIFIELD must be 5");
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6,
                      "FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS must be 6");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_INSTANCE_NAME == 7,
+                     "FERRIC_VALUE_TYPE_INSTANCE_NAME must be 7");
 
 /* FerricStringEncoding: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0, "FERRIC_STRING_ENCODING_ASCII must be 0");
@@ -454,6 +456,11 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "ferric_value_string_bytes(const uint8_t *data,\n                                           uintptr_t len,",
         "ferric_value_string_bytes(const uint8_t *data FERRIC_SIZED_BY(len),\n                                           uintptr_t len,",
+    ),
+    // ferric_value_instance_name_bytes: data is a byte span of len bytes.
+    (
+        "ferric_value_instance_name_bytes(const uint8_t *data,\n                                                  uintptr_t len,",
+        "ferric_value_instance_name_bytes(const uint8_t *data FERRIC_SIZED_BY(len),\n                                                  uintptr_t len,",
     ),
     // ferric_last_error_global_copy: buf is a byte buffer of buf_len bytes.
     (

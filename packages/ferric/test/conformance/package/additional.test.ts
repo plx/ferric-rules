@@ -125,6 +125,17 @@ test("G-004 toWire/fromWire round-trip preserves FerricSymbol identity", async (
   assert.ok(isWireSymbol(asPlain), "without ctor, fromWire returns the wire object unchanged");
 });
 
+test("toWire/fromWire round-trip preserves FerricInstanceName identity", async () => {
+  const { FerricInstanceName, FerricSymbol, toWire, fromWire, isWireInstanceName, isWireSymbol } =
+    await import("../../../dist/index");
+  const wire = toWire([new FerricInstanceName("widget")]) as unknown[];
+  assert.ok(isWireInstanceName(wire[0]));
+  assert.ok(!isWireSymbol(wire[0]));
+  const restored = fromWire(wire, FerricSymbol as any, FerricInstanceName as any) as unknown[];
+  assert.ok(restored[0] instanceof FerricInstanceName);
+  assert.strictEqual((restored[0] as any).value, "widget");
+});
+
 // ---------------------------------------------------------------------------
 // G-004: toWire/fromWire preserves primitive JS values
 // ---------------------------------------------------------------------------

@@ -226,6 +226,37 @@ func TestRetract(t *testing.T) {
 	}
 }
 
+func TestInstanceNameRoundTrip(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Load("(deffacts names (tag [widget]))"))
+	mustNoError(t, e.Reset())
+
+	id, err := e.AssertFact("probe", InstanceName("gadget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fact.Fields[0]; got != InstanceName("gadget") {
+		t.Fatalf("expected InstanceName(gadget), got %T %v", got, got)
+	}
+	facts, err := e.FindFacts("tag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 || facts[0].Fields[0] != InstanceName("widget") {
+		t.Fatalf("expected source [widget] as InstanceName, got %#v", facts)
+	}
+}
+
 func TestFindFacts(t *testing.T) {
 	lockThread(t)
 

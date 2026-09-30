@@ -32,6 +32,18 @@ export interface NativeFerricSymbol {
   valueOf(): string;
 }
 
+/** Native FerricInstanceName constructor interface. */
+export interface NativeFerricInstanceNameConstructor {
+  new (value: string): NativeFerricInstanceName;
+}
+
+/** A native FerricInstanceName instance; `value` omits the brackets. */
+export interface NativeFerricInstanceName {
+  readonly value: string;
+  toString(): string;
+  valueOf(): string;
+}
+
 /** Native Engine constructor interface. */
 export interface NativeEngineConstructor {
   new (options?: { strategy?: number; encoding?: number; maxCallDepth?: number }): NativeEngine;
@@ -224,3 +236,13 @@ export const Engine = wrapEngineWithErrorConversion(
  * Plain strings are mapped to CLIPS *strings* (quoted), not symbols.
  */
 export const FerricSymbol = nativeModule["FerricSymbol"] as NativeFerricSymbolConstructor;
+
+/**
+ * The native FerricInstanceName class exported by the napi-rs addon.
+ *
+ * `new FerricInstanceName("widget")` is the CLIPS instance name `[widget]`.
+ * Ferric has no object system, so no instance needs to exist.
+ */
+export const FerricInstanceName = nativeModule[
+  "FerricInstanceName"
+] as NativeFerricInstanceNameConstructor;

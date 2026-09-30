@@ -67,6 +67,10 @@ impl SymbolTable {
                     self.resolve_symbol_str(*symbol).is_some(),
                     "dangling symbol in snapshot value"
                 ),
+                Value::InstanceName(name) => require!(
+                    self.resolve_symbol_str(name.as_symbol()).is_some(),
+                    "dangling instance name in snapshot value"
+                ),
                 Value::String(crate::string::FerricString::Ascii(bytes)) => {
                     require!(bytes.is_ascii(), "invalid ASCII string value");
                 }

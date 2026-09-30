@@ -77,6 +77,28 @@ class TestSymbolType:
         assert fact.fields[0] == ferric.Symbol("hello")
 
 
+class TestInstanceNameType:
+    def test_instance_name_prints_with_brackets(self):
+        name = ferric.InstanceName("widget")
+        assert name.value == "widget"
+        assert str(name) == "[widget]"
+        assert repr(name) == 'InstanceName("widget")'
+        assert name == ferric.InstanceName("widget")
+        assert hash(name) == hash(ferric.InstanceName("widget"))
+        assert name != ferric.Symbol("widget")
+
+    def test_instance_name_roundtrip_stays_distinct_from_symbol(self, engine):
+        engine.load(
+            "(defrule typed (tag ?x&:(instance-namep ?x)) => (assert (seen ?x)))"
+        )
+        engine.reset()
+        fid = engine.assert_fact("tag", ferric.InstanceName("widget"))
+        assert engine.get_fact(fid).fields[0] == ferric.InstanceName("widget")
+        assert engine.run().rules_fired == 1
+        seen = [f for f in engine.facts() if f.relation == "seen"]
+        assert seen[0].fields == [ferric.InstanceName("widget")]
+
+
 class TestClipsStringType:
     def test_string_constructor(self):
         s = ferric.String("hello")

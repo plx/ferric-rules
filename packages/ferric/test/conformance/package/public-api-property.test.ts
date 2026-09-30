@@ -16,6 +16,7 @@ test("A-001 A-002 A-004 A-005 A-006 G-001 G-003 N-06 table-driven public API exp
   const classExports = [
     ["Engine", ferric.Engine],
     ["FerricSymbol", ferric.FerricSymbol],
+    ["FerricInstanceName", ferric.FerricInstanceName],
     ["EngineHandle", ferric.EngineHandle],
     ["EnginePool", ferric.EnginePool],
   ] as const;

@@ -676,6 +676,19 @@ func ValueSymbol(name string) Value {
 	return value
 }
 
+// ValueInstanceNameBytes creates an instance-name FerricValue from the
+// spelling without brackets.
+func ValueInstanceNameBytes(name string) (Value, ErrorCode) {
+	var value C.struct_FerricValue
+	var data *C.uint8_t
+	if len(name) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(name)))
+	}
+	//nolint:gocritic // dupSubExpr false positive in cgo-generated code.
+	rc := ErrorCode(C.ferric_value_instance_name_bytes(data, C.uintptr_t(len(name)), &value))
+	return Value(value), rc
+}
+
 // ValueStringBytes creates a string FerricValue from an explicit byte span.
 func ValueStringBytes(s string) (Value, ErrorCode) {
 	var value C.struct_FerricValue

@@ -19,6 +19,10 @@ const maxMultifieldNestingDepth = 128
 // opposed to quoted string literals.
 type Symbol string
 
+// InstanceName is a CLIPS instance name such as [widget], held without
+// brackets. It is distinct from Symbol; Ferric has no object system.
+type InstanceName string
+
 // goToFFIValue converts a Go value to a Ferric-owned C FerricValue for passing
 // to the FFI layer. Recursive multifields are constructed through Ferric's
 // copy API; no Go- or C-allocated value array is transferred to Rust cleanup.
@@ -38,15 +42,8 @@ func goToFFIValueAtPath(v any, path string, depth int) (ffi.Value, error) {
 		return ffi.ValueFloat(val), nil
 	case float32:
 		return ffi.ValueFloat(float64(val)), nil
-	case Symbol:
-		return goStringToFFIValue(path, string(val), ffiValueSymbolBytes)
-	case string:
-		return goStringToFFIValue(path, val, ffiValueStringBytes)
-	case bool:
-		if val {
-			return goStringToFFIValue(path, "TRUE", ffiValueSymbolBytes)
-		}
-		return goStringToFFIValue(path, "FALSE", ffiValueSymbolBytes)
+	case Symbol, InstanceName, string, bool:
+		return textToFFIValue(path, val)
 	case nil:
 		return ffi.ValueVoid(), nil
 	case []any:
@@ -80,6 +77,26 @@ func goToFFIValueAtPath(v any, path string, depth int) (ffi.Value, error) {
 			return ffi.Value{}, copyErr
 		}
 		return result, nil
+	default:
+		return ffi.Value{}, fmt.Errorf("%w at %s: %T", errUnsupportedGoTypeForFFI, path, v)
+	}
+}
+
+// textToFFIValue converts the Go types that become CLIPS text values:
+// symbols, instance names, strings, and booleans (the symbols TRUE/FALSE).
+func textToFFIValue(path string, v any) (ffi.Value, error) {
+	switch val := v.(type) {
+	case Symbol:
+		return goStringToFFIValue(path, string(val), ffiValueSymbolBytes)
+	case InstanceName:
+		return goStringToFFIValue(path, string(val), ffiValueInstanceNameBytes)
+	case bool:
+		if val {
+			return goStringToFFIValue(path, "TRUE", ffiValueSymbolBytes)
+		}
+		return goStringToFFIValue(path, "FALSE", ffiValueSymbolBytes)
+	case string:
+		return goStringToFFIValue(path, val, ffiValueStringBytes)
 	default:
 		return ffi.Value{}, fmt.Errorf("%w at %s: %T", errUnsupportedGoTypeForFFI, path, v)
 	}
@@ -127,6 +144,8 @@ func ffiValueToGo(v *ffi.Value) any {
 		return Symbol(ffi.ValueGetStringPtr(v))
 	case ffi.ValueTypeString:
 		return ffi.ValueGetStringPtr(v)
+	case ffi.ValueTypeInstanceName:
+		return InstanceName(ffi.ValueGetStringPtr(v))
 	case ffi.ValueTypeMultifield:
 		n := ffi.ValueGetMultifieldLen(v)
 		result := make([]any, n)

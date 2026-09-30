@@ -72,8 +72,8 @@ pub(crate) mod test_helpers;
 
 // Re-export types from ferric-rules-core for convenience.
 pub use ferric_rules_core::{
-    AtomKey, EncodingError, ExternalAddress, ExternalTypeId, FerricString, IntoFieldValues,
-    Multifield, StringEncoding, Symbol, Value,
+    AtomKey, EncodingError, ExternalAddress, ExternalTypeId, FerricString, InstanceName,
+    IntoFieldValues, Multifield, StringEncoding, Symbol, Value,
 };
 
 // Re-export primary types at crate root for convenience.

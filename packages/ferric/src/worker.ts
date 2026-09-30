@@ -51,10 +51,12 @@ const native = loadNative();
 const NativeEngine = native["Engine"] as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NativeFerricSymbol = native["FerricSymbol"] as any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const NativeFerricInstanceName = native["FerricInstanceName"] as any;
 const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
-const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
+const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol, NativeFerricInstanceName);
 
 // ---------------------------------------------------------------------------
 // Engine state

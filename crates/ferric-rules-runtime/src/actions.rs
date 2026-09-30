@@ -2055,6 +2055,11 @@ fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut 
                 output.push_str(name);
             }
         }
+        Value::InstanceName(name) => {
+            if let Some(name) = symbol_table.resolve_symbol_str(name.as_symbol()) {
+                let _ = write!(output, "[{name}]");
+            }
+        }
         Value::String(s) => {
             output.push('"');
             for ch in s.as_str().chars() {
@@ -2392,6 +2397,7 @@ fn runtime_value_type_name(value: &Value) -> &'static str {
         Value::Float(_) => "FLOAT",
         Value::Symbol(_) => "SYMBOL",
         Value::String(_) => "STRING",
+        Value::InstanceName(_) => "INSTANCE-NAME",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
         Value::Void => "VOID",
@@ -2421,7 +2427,9 @@ fn execute_printout(
     // First argument is the channel name and must be a literal token.
     let channel = match &args[0] {
         ActionExpr::Literal(lit) => match &lit.value {
-            LiteralKind::Symbol(s) | LiteralKind::String(s) => s.clone(),
+            LiteralKind::Symbol(s) | LiteralKind::String(s) | LiteralKind::InstanceName(s) => {
+                s.clone()
+            }
             LiteralKind::Integer(n) => n.to_string(),
             LiteralKind::Float(f) => f.to_string(),
         },

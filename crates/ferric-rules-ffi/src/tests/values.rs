@@ -4,13 +4,15 @@ use std::ffi::{CStr, CString};
 use std::ptr;
 
 use crate::engine::{
-    ferric_engine_fact_count, ferric_engine_free, ferric_engine_get_fact_field,
-    ferric_engine_get_fact_field_count, ferric_engine_get_global, ferric_engine_load_string,
-    ferric_engine_new, ferric_engine_reset, ferric_engine_retract, FerricEngine,
+    ferric_engine_assert_ordered, ferric_engine_fact_count, ferric_engine_free,
+    ferric_engine_get_fact_field, ferric_engine_get_fact_field_count, ferric_engine_get_global,
+    ferric_engine_load_string, ferric_engine_new, ferric_engine_reset, ferric_engine_retract,
+    FerricEngine,
 };
 use crate::error::FerricError;
 use crate::types::{
-    ferric_string_free, ferric_value_array_free, ferric_value_free, FerricValue, FerricValueType,
+    ferric_string_free, ferric_value_array_free, ferric_value_free,
+    ferric_value_instance_name_bytes, FerricValue, FerricValueType,
 };
 
 // ---------------------------------------------------------------------------
@@ -168,6 +170,50 @@ fn value_symbol_conversion() {
         assert_eq!(s, "red");
 
         ferric_string_free(out.string_ptr);
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn value_instance_name_round_trip() {
+    unsafe {
+        let engine = ferric_engine_new();
+        ferric_engine_reset(engine);
+        let source = CString::new("(assert (tag [widget]))").unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        let fid = first_fact_id(&*engine);
+        let mut out = FerricValue::void();
+        assert_eq!(
+            ferric_engine_get_fact_field(engine, fid, 0, &mut out),
+            FerricError::Ok
+        );
+        assert_eq!(out.value_type, FerricValueType::InstanceName.as_raw());
+        assert_eq!(CStr::from_ptr(out.string_ptr).to_str().unwrap(), "widget");
+        assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
+
+        // A host-built instance name is stored with its type, not as a SYMBOL.
+        let mut name = FerricValue::void();
+        assert_eq!(
+            ferric_value_instance_name_bytes(b"gadget".as_ptr(), 6, &mut name),
+            FerricError::Ok
+        );
+        let relation = CString::new("probe").unwrap();
+        let mut asserted = 0_u64;
+        assert_eq!(
+            ferric_engine_assert_ordered(engine, relation.as_ptr(), &name, 1, &mut asserted),
+            FerricError::Ok
+        );
+        assert_eq!(ferric_value_free(&mut name), FerricError::Ok);
+        assert_eq!(
+            ferric_engine_get_fact_field(engine, asserted, 0, &mut out),
+            FerricError::Ok
+        );
+        assert_eq!(out.value_type, FerricValueType::InstanceName.as_raw());
+        assert_eq!(CStr::from_ptr(out.string_ptr).to_str().unwrap(), "gadget");
+        assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
         ferric_engine_free(engine);
     }
 }

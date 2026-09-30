@@ -1021,6 +1021,14 @@ fn observe_value(engine: &Engine, value: &Value) -> Result<ValueObservation, Str
                 value: value.to_string(),
             })
         }
+        Value::InstanceName(name) => {
+            let value = engine
+                .resolve_core_symbol(name.as_symbol())
+                .ok_or_else(|| "fact value has an unresolved instance name".to_string())?;
+            Ok(ValueObservation::InstanceName {
+                value: value.to_string(),
+            })
+        }
         Value::String(value) => Ok(ValueObservation::String {
             value: value.as_str().to_string(),
         }),
@@ -1276,6 +1284,7 @@ struct SlotObservation {
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ValueObservation {
     Symbol { value: String },
+    InstanceName { value: String },
     String { value: String },
     Integer { value: String },
     Float { value: String, bits: String },

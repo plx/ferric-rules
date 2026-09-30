@@ -196,6 +196,8 @@ pub enum FerricValueType {
     String = 4,
     Multifield = 5,
     ExternalAddress = 6,
+    /// A CLIPS instance name; `string_ptr` holds the spelling without brackets.
+    InstanceName = 7,
 }
 
 impl FerricValueType {
@@ -215,6 +217,7 @@ impl FerricValueType {
             4 => Some(Self::String),
             5 => Some(Self::Multifield),
             6 => Some(Self::ExternalAddress),
+            7 => Some(Self::InstanceName),
             _ => None,
         }
     }
@@ -225,7 +228,7 @@ impl TryFrom<u32> for FerricValueType {
 
     fn try_from(raw: u32) -> Result<Self, Self::Error> {
         Self::from_raw(raw)
-            .ok_or_else(|| format!("invalid value_type discriminant: {raw} (expected 0..=6)"))
+            .ok_or_else(|| format!("invalid value_type discriminant: {raw} (expected 0..=7)"))
     }
 }
 
@@ -254,6 +257,7 @@ impl TryFrom<u32> for FerricValueType {
 /// | Float | `float` |
 /// | Symbol | `string_ptr` |
 /// | String | `string_ptr` |
+/// | InstanceName | `string_ptr` (spelling without brackets) |
 /// | Multifield | `multifield_ptr`, `multifield_len` |
 /// | ExternalAddress | `external_type_id`, `external_pointer` |
 #[repr(C)]
@@ -382,20 +386,9 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
             float: *f,
             ..FerricValue::void()
         }),
-        Value::Symbol(sym) => {
-            let name = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
-            let cstring = CString::new(name).map_err(|error| {
-                format!(
-                    "symbol contains embedded NUL at byte {}; legacy FerricValue \
-                     C-string egress cannot represent it",
-                    error.nul_position()
-                )
-            })?;
-            Ok(FerricValue {
-                value_type: FerricValueType::Symbol.as_raw(),
-                string_ptr: cstring.into_raw(),
-                ..FerricValue::void()
-            })
+        Value::Symbol(sym) => symbol_to_ferric(*sym, FerricValueType::Symbol, engine),
+        Value::InstanceName(name) => {
+            symbol_to_ferric(name.as_symbol(), FerricValueType::InstanceName, engine)
         }
         Value::String(s) => {
             let cstring = CString::new(s.as_str()).map_err(|error| {
@@ -423,6 +416,26 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
         ),
         Value::Void => Ok(FerricValue::void()),
     }
+}
+
+fn symbol_to_ferric(
+    symbol: ferric_rules_core::Symbol,
+    value_type: FerricValueType,
+    engine: &Engine,
+) -> Result<FerricValue, String> {
+    let name = engine.resolve_core_symbol(symbol).unwrap_or("<unknown>");
+    let cstring = CString::new(name).map_err(|error| {
+        format!(
+            "symbol contains embedded NUL at byte {}; legacy FerricValue \
+             C-string egress cannot represent it",
+            error.nul_position()
+        )
+    })?;
+    Ok(FerricValue {
+        value_type: value_type.as_raw(),
+        string_ptr: cstring.into_raw(),
+        ..FerricValue::void()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -456,14 +469,19 @@ pub(crate) unsafe fn ferric_to_value(
         FerricValueType::Void => Err("void cannot be stored in a fact".into()),
         FerricValueType::Integer => Ok(fv.integer.into()),
         FerricValueType::Float => Ok(fv.float.into()),
-        FerricValueType::Symbol => {
+        kind @ (FerricValueType::Symbol | FerricValueType::InstanceName) => {
             if fv.string_ptr.is_null() {
                 return Err("symbol string_ptr is null".into());
             }
             let name = CStr::from_ptr(fv.string_ptr)
                 .to_str()
                 .map_err(|error| format!("symbol is not valid UTF-8: {error}"))?;
-            engine.symbol_value(name).map_err(|error| error.to_string())
+            if kind == FerricValueType::InstanceName {
+                engine.instance_name_value(name)
+            } else {
+                engine.symbol_value(name)
+            }
+            .map_err(|error| error.to_string())
         }
         FerricValueType::String => {
             if fv.string_ptr.is_null() {
@@ -707,6 +725,35 @@ unsafe fn ferric_value_from_bytes(
     FerricError::Ok
 }
 
+/// Create an instance name from a pointer-plus-length UTF-8 span holding its
+/// spelling without brackets (`widget` for `[widget]`).
+///
+/// Validation, ownership and failure behavior match
+/// `ferric_value_symbol_bytes`.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable storage for one `FerricValue`.
+/// - `out_value` must not currently contain live Ferric-owned resources.
+/// - If `len > 0`, `data` must point to `len` readable bytes.
+/// - The `data` span must not overlap `out_value`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_instance_name_bytes(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    ferric_value_from_bytes(
+        data,
+        len,
+        out_value,
+        FerricValueType::InstanceName,
+        "ferric_value_instance_name_bytes",
+        "instance name",
+    )
+}
+
 /// Create a void `FerricValue` with all fields zeroed/null.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
@@ -827,14 +874,16 @@ unsafe fn copy_borrowed_ferric_value(
             float: value.float,
             ..FerricValue::void()
         }),
-        FerricValueType::Symbol | FerricValueType::String => {
+        kind @ (FerricValueType::Symbol
+        | FerricValueType::String
+        | FerricValueType::InstanceName) => {
             if value.string_ptr.is_null() {
                 return Err(format!(
                     "{} string_ptr is null",
-                    if value.value_type == FerricValueType::Symbol.as_raw() {
-                        "symbol"
-                    } else {
-                        "string"
+                    match kind {
+                        FerricValueType::Symbol => "symbol",
+                        FerricValueType::InstanceName => "instance name",
+                        _ => "string",
                     }
                 ));
             }
@@ -1017,7 +1066,7 @@ fn report_free_result(result: Result<(), String>) -> FerricError {
 /// - Any owned resources referenced by `val` must not have been freed already.
 unsafe fn free_value_resources(val: &FerricValue) -> Result<(), String> {
     match FerricValueType::from_raw(val.value_type) {
-        Some(FerricValueType::Symbol | FerricValueType::String) => {
+        Some(FerricValueType::Symbol | FerricValueType::String | FerricValueType::InstanceName) => {
             if !val.string_ptr.is_null() {
                 drop(CString::from_raw(val.string_ptr));
             }
@@ -1045,7 +1094,7 @@ unsafe fn free_value_resources(val: &FerricValue) -> Result<(), String> {
             | FerricValueType::ExternalAddress,
         ) => Ok(()),
         None => Err(format!(
-            "cannot free value: invalid value_type discriminant: {} (expected 0..=6); \
+            "cannot free value: invalid value_type discriminant: {} (expected 0..=7); \
              its owned resources were not freed",
             val.value_type
         )),

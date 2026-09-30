@@ -8,6 +8,8 @@ public indirect enum Value: Sendable, Equatable {
   case float(Double)
   case symbol(String)
   case string(String)
+  /// A CLIPS instance name such as `[widget]`, spelled here without brackets.
+  case instanceName(String)
   case multifield([Value])
 }
 

@@ -39,7 +39,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
-import { FerricSymbol } from "./native";
+import { FerricInstanceName, FerricSymbol } from "./native";
 import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 import type {
   ClipsValue,
@@ -448,7 +448,7 @@ export class EnginePool {
         if ("error" in resp) {
           entry.reject(reconstructError(resp.error));
         } else {
-          entry.resolve(fromWire(resp.result, FerricSymbol));
+          entry.resolve(fromWire(resp.result, FerricSymbol, FerricInstanceName));
         }
 
         EnginePool.notifyPendingDrained(slot);

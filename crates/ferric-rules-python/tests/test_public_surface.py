@@ -46,6 +46,7 @@ _TOP_LEVEL = {
     "FerricTemplateNotFoundError",
     "FiredRule",
     "HaltReason",
+    "InstanceName",
     "RunResult",
     "Strategy",
     "String",
@@ -120,6 +121,7 @@ _CLASS_MEMBERS = {
     },
     "Symbol": {"value"},
     "String": {"value"},
+    "InstanceName": {"value"},
     "RunResult": {"halt_reason", "rules_fired"},
     "FiredRule": {"rule_name"},
 }
@@ -148,6 +150,7 @@ _PROTOCOLS = {
     "Fact": {"__eq__", "__hash__", "__repr__"},
     "Symbol": {"__eq__", "__hash__", "__init__", "__repr__", "__str__"},
     "String": {"__eq__", "__hash__", "__init__", "__repr__", "__str__"},
+    "InstanceName": {"__eq__", "__hash__", "__init__", "__repr__", "__str__"},
     "RunResult": {"__repr__"},
     "FiredRule": {"__repr__"},
 }

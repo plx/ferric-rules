@@ -45,6 +45,13 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
                 }
             }
         }
+        Value::InstanceName(name) => {
+            if let Some(name) = symbols.resolve_symbol_str(name.as_symbol()) {
+                output.push('[');
+                output.push_str(name);
+                output.push(']');
+            }
+        }
         Value::String(string) => {
             if context != Context::TopLevel {
                 output.push('"');

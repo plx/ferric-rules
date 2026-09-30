@@ -114,6 +114,8 @@ pub enum LiteralKind {
     Float(f64),
     String(String),
     Symbol(String),
+    /// Instance name, stored without brackets.
+    InstanceName(String),
 }
 
 // ============================================================================
@@ -240,6 +242,7 @@ pub enum SlotValueType {
     String,
     Integer,
     Float,
+    InstanceName,
     ExternalAddress,
 }
 
@@ -2008,6 +2011,10 @@ fn interpret_constraint(expr: &SExpr) -> Result<Constraint, InterpretError> {
             value: LiteralKind::Symbol(s.clone()),
             span: expr.span(),
         })),
+        Atom::InstanceName(name) => Ok(Constraint::Literal(LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
+            span: expr.span(),
+        })),
         Atom::SingleVar(name) => {
             if name.is_empty() {
                 // Just "?" without a name
@@ -2824,6 +2831,10 @@ fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
             value: LiteralKind::Symbol(s.clone()),
             span: expr.span(),
         })),
+        Atom::InstanceName(name) => Ok(ActionExpr::Literal(LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
+            span: expr.span(),
+        })),
         Atom::SingleVar(name) => Ok(ActionExpr::Variable(name.clone(), expr.span())),
         Atom::MultiVar(name) => Ok(ActionExpr::Variable(format!("$?{name}"), expr.span())),
         Atom::GlobalVar(name) => Ok(ActionExpr::GlobalVariable(name.clone(), expr.span())),
@@ -2944,7 +2955,7 @@ fn interpret_slot_types(
     }
     let mut types = Vec::new();
     for value in values {
-        use SlotValueType::{ExternalAddress, Float, Integer, String, Symbol};
+        use SlotValueType::{ExternalAddress, Float, InstanceName, Integer, String, Symbol};
         let kinds: &[_] = match value.as_symbol() {
             Some("SYMBOL") => &[Symbol],
             Some("STRING") => &[String],
@@ -2953,7 +2964,8 @@ fn interpret_slot_types(
             Some("NUMBER") => &[Integer, Float],
             Some("LEXEME") => &[Symbol, String],
             Some("EXTERNAL-ADDRESS") => &[ExternalAddress],
-            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, or EXTERNAL-ADDRESS", value.span())),
+            Some("INSTANCE-NAME") => &[InstanceName],
+            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, INSTANCE-NAME, or EXTERNAL-ADDRESS", value.span())),
         };
         types.extend_from_slice(kinds);
     }
@@ -3016,6 +3028,10 @@ fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError>
         },
         Atom::Symbol(s) => LiteralValue {
             value: LiteralKind::Symbol(s.clone()),
+            span: expr.span(),
+        },
+        Atom::InstanceName(name) => LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
             span: expr.span(),
         },
         _ => {
@@ -3141,6 +3157,10 @@ fn interpret_fact_value(expr: &SExpr) -> Result<FactValue, InterpretError> {
         })),
         Atom::Symbol(s) => Ok(FactValue::Literal(LiteralValue {
             value: LiteralKind::Symbol(s.clone()),
+            span: expr.span(),
+        })),
+        Atom::InstanceName(name) => Ok(FactValue::Literal(LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
             span: expr.span(),
         })),
         Atom::SingleVar(name) => Ok(FactValue::Variable(name.clone(), expr.span())),

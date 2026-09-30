@@ -17,6 +17,27 @@ use crate::encoding::{EncodingError, StringEncoding};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Symbol(pub(crate) SymbolId);
 
+/// A CLIPS INSTANCE-NAME value: an interned, unbracketed spelling that is
+/// distinct from a SYMBOL with the same text. It does not imply that a COOL
+/// object exists; Ferric has no object system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InstanceName(Symbol);
+
+impl InstanceName {
+    /// Wrap an interned spelling (without brackets) as an instance name.
+    #[must_use]
+    pub const fn from_symbol(symbol: Symbol) -> Self {
+        Self(symbol)
+    }
+
+    /// The interned, unbracketed spelling.
+    #[must_use]
+    pub const fn as_symbol(self) -> Symbol {
+        self.0
+    }
+}
+
 /// Internal symbol identifier, distinguishing ASCII and UTF-8 interning pools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

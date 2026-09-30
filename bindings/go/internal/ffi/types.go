@@ -41,6 +41,7 @@ const (
 	ValueTypeString          ValueType = C.FERRIC_VALUE_TYPE_STRING
 	ValueTypeMultifield      ValueType = C.FERRIC_VALUE_TYPE_MULTIFIELD
 	ValueTypeExternalAddress ValueType = C.FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS
+	ValueTypeInstanceName    ValueType = C.FERRIC_VALUE_TYPE_INSTANCE_NAME
 )
 
 // FactType mirrors the C FerricFactType enum.

@@ -114,8 +114,8 @@ impl HostValue {
                 EngineError::InvalidHostValue("too many values in one assertion".into())
             })?;
             match value {
-                Value::Symbol(_) if self.owner.is_none() => return Err(EngineError::InvalidHostValue(
-                    "raw core symbols have no host provenance; use engine.symbol_value or an owned fact value".into())),
+                Value::Symbol(_) | Value::InstanceName(_) if self.owner.is_none() => return Err(EngineError::InvalidHostValue(
+                    "raw core symbols have no host provenance; use engine.symbol_value, engine.instance_name_value, or an owned fact value".into())),
                 Value::Void => return Err(EngineError::InvalidHostValue(
                     "void cannot be stored in a fact, including inside a multifield".into())),
                 Value::String(value) => {
@@ -230,7 +230,7 @@ impl HostFact {
 
 fn contains_symbol(value: &Value) -> bool {
     let Value::Multifield(values) = value else {
-        return matches!(value, Value::Symbol(_));
+        return matches!(value, Value::Symbol(_) | Value::InstanceName(_));
     };
     // Stored values already satisfy the engine's depth/item limits. Keep one
     // iterator per nesting level, rather than collecting every pending sibling.
@@ -238,7 +238,7 @@ fn contains_symbol(value: &Value) -> bool {
     let mut current = values.iter();
     loop {
         match current.next() {
-            Some(Value::Symbol(_)) => return true,
+            Some(Value::Symbol(_) | Value::InstanceName(_)) => return true,
             Some(Value::Multifield(values)) => {
                 parents.push(current);
                 current = values.iter();

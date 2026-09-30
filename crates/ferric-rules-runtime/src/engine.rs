@@ -886,6 +886,23 @@ impl Engine {
         Ok(self.intern_symbol(s)?.into())
     }
 
+    /// Intern an instance name (spelled without brackets) as a host value
+    /// retaining this engine's ownership. Read one back with
+    /// [`Engine::resolve_core_symbol`] on [`InstanceName::as_symbol`].
+    ///
+    /// [`InstanceName::as_symbol`]: ferric_rules_core::InstanceName::as_symbol
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name violates encoding constraints.
+    pub fn instance_name_value(&mut self, name: &str) -> Result<HostValue, EngineError> {
+        let symbol = self.intern_symbol(name)?;
+        Ok(HostValue {
+            owner: Some(symbol.owner),
+            value: Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol.symbol)),
+        })
+    }
+
     /// Assert a single-field ordered fact whose value is a symbol.
     ///
     /// Combines symbol interning and fact assertion into one call. Equivalent to:

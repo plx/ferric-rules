@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
-use ferric_rules_core::symbol::SymbolTable;
+use ferric_rules_core::symbol::{InstanceName, SymbolTable};
 use ferric_rules_core::value::Value;
 use ferric_rules_core::{Fact, FactBase, FactId, StringEncoding, TemplateId};
 
@@ -1700,6 +1700,7 @@ fn value_matches_type(value: &Value, type_name: &str) -> bool {
         "SYMBOL" => matches!(value, Value::Symbol(_)),
         "STRING" => matches!(value, Value::String(_)),
         "LEXEME" => matches!(value, Value::Symbol(_) | Value::String(_)),
+        "INSTANCE-NAME" => matches!(value, Value::InstanceName(_)),
         "MULTIFIELD" => matches!(value, Value::Multifield(_)),
         "EXTERNAL-ADDRESS" => matches!(value, Value::ExternalAddress(_)),
         _ => false,
@@ -1713,6 +1714,7 @@ fn generic_value_type_name(value: &Value) -> &'static str {
         Value::Float(_) => "FLOAT",
         Value::Symbol(_) => "SYMBOL",
         Value::String(_) => "STRING",
+        Value::InstanceName(_) => "INSTANCE-NAME",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
         Value::Void => "VOID",
@@ -1732,8 +1734,9 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
     }
     let mut count = 0usize;
     // Tracks whether each concrete type has been counted:
-    // 0=INTEGER, 1=FLOAT, 2=SYMBOL, 3=STRING, 4=MULTIFIELD, 5=EXTERNAL-ADDRESS
-    let mut seen = [false; 6];
+    // 0=INTEGER, 1=FLOAT, 2=SYMBOL, 3=STRING, 4=MULTIFIELD, 5=EXTERNAL-ADDRESS,
+    // 6=INSTANCE-NAME
+    let mut seen = [false; 7];
     for t in restrictions {
         match t.as_str() {
             "INTEGER" if !seen[0] => {
@@ -1778,6 +1781,10 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
             }
             "EXTERNAL-ADDRESS" if !seen[5] => {
                 seen[5] = true;
+                count += 1;
+            }
+            "INSTANCE-NAME" if !seen[6] => {
+                seen[6] = true;
                 count += 1;
             }
             _ => {}
@@ -2494,7 +2501,7 @@ fn sexpr_atom_to_runtime(
                 })?;
             Ok(RuntimeExpr::Literal(Value::String(fs)))
         }
-        ferric_rules_parser::Atom::Symbol(s) => {
+        ferric_rules_parser::Atom::Symbol(s) | ferric_rules_parser::Atom::InstanceName(s) => {
             let sym = symbol_table
                 .intern_symbol(s, config.string_encoding)
                 .map_err(|_| EvalError::TypeError {
@@ -2506,7 +2513,13 @@ fn sexpr_atom_to_runtime(
                         column: span.start.column,
                     }),
                 })?;
-            Ok(RuntimeExpr::Literal(Value::Symbol(sym)))
+            Ok(RuntimeExpr::Literal(
+                if matches!(atom, ferric_rules_parser::Atom::InstanceName(_)) {
+                    Value::InstanceName(InstanceName::from_symbol(sym))
+                } else {
+                    Value::Symbol(sym)
+                },
+            ))
         }
         ferric_rules_parser::Atom::SingleVar(name) => Ok(RuntimeExpr::BoundVar {
             name: name.clone(),
@@ -2574,7 +2587,8 @@ fn literal_to_value(
                 })?;
             Ok(Value::String(fs))
         }
-        ferric_rules_parser::LiteralKind::Symbol(s) => {
+        ferric_rules_parser::LiteralKind::Symbol(s)
+        | ferric_rules_parser::LiteralKind::InstanceName(s) => {
             let sym = symbol_table
                 .intern_symbol(s, config.string_encoding)
                 .map_err(|_| EvalError::TypeError {
@@ -2583,7 +2597,13 @@ fn literal_to_value(
                     actual: format!("encoding error for {s:?}"),
                     span: None,
                 })?;
-            Ok(Value::Symbol(sym))
+            Ok(
+                if matches!(lit, ferric_rules_parser::LiteralKind::InstanceName(_)) {
+                    Value::InstanceName(InstanceName::from_symbol(sym))
+                } else {
+                    Value::Symbol(sym)
+                },
+            )
         }
     }
 }
@@ -2715,6 +2735,9 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "symbolp"
             | "stringp"
             | "lexemep"
+            | "instance-namep"
+            | "symbol-to-instance-name"
+            | "instance-name-to-symbol"
             | "multifieldp"
             | "evenp"
             | "oddp"
@@ -2878,6 +2901,9 @@ fn dispatch_builtin(
         "stringp" => builtin_stringp(ctx, args, span_ref),
         "lexemep" => builtin_lexemep(ctx, args, span_ref),
         "multifieldp" => builtin_multifieldp(ctx, args, span_ref),
+        "instance-namep" | "symbol-to-instance-name" | "instance-name-to-symbol" => {
+            builtin_instance_name(ctx, name, args, span_ref)
+        }
         "evenp" => builtin_evenp(ctx, args, span_ref),
         "oddp" => builtin_oddp(ctx, args, span_ref),
 
@@ -4009,6 +4035,44 @@ fn builtin_symbolp(
     ))
 }
 
+/// `instance-namep` and the SYMBOL/INSTANCE-NAME conversions. Ferric has no
+/// object system, so these only change the value's type tag. As in CLIPS,
+/// `symbol-to-instance-name` takes a SYMBOL and `instance-name-to-symbol`
+/// takes an INSTANCE-NAME or a SYMBOL.
+fn builtin_instance_name(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact(name, args, 1, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    let expected = match (name, &value) {
+        ("instance-namep", _) => {
+            return Ok(clips_bool(
+                matches!(value, Value::InstanceName(_)),
+                ctx.symbol_table,
+                ctx.config.string_encoding,
+            ))
+        }
+        ("symbol-to-instance-name", Value::Symbol(symbol)) => {
+            return Ok(Value::InstanceName(InstanceName::from_symbol(*symbol)))
+        }
+        ("instance-name-to-symbol", Value::InstanceName(instance)) => {
+            return Ok(Value::Symbol(instance.as_symbol()))
+        }
+        ("instance-name-to-symbol", Value::Symbol(symbol)) => return Ok(Value::Symbol(*symbol)),
+        ("symbol-to-instance-name", _) => "SYMBOL",
+        _ => "INSTANCE-NAME or SYMBOL",
+    };
+    Err(EvalError::TypeError {
+        function: name.to_string(),
+        expected: expected.to_string(),
+        actual: generic_value_type_name(&value).to_string(),
+        span: span.cloned(),
+    })
+}
+
 fn builtin_stringp(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -4167,6 +4231,12 @@ fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mu
             Value::Float(f) => buf.push_str(&format_float_for_str_cat(*f)),
             Value::Symbol(sym) => {
                 if let Some(name) = ctx.symbol_table.resolve_symbol_str(*sym) {
+                    buf.push_str(name);
+                }
+            }
+            // CLIPS concatenates an instance name's spelling without brackets.
+            Value::InstanceName(name) => {
+                if let Some(name) = ctx.symbol_table.resolve_symbol_str(name.as_symbol()) {
                     buf.push_str(name);
                 }
             }
@@ -5950,6 +6020,10 @@ fn format_value_for_format(value: &Value, symbol_table: &SymbolTable) -> String 
         }
         Value::Symbol(sym) => symbol_table
             .resolve_symbol_str(*sym)
+            .unwrap_or("???")
+            .to_string(),
+        Value::InstanceName(name) => symbol_table
+            .resolve_symbol_str(name.as_symbol())
             .unwrap_or("???")
             .to_string(),
         Value::String(s) => s.as_str().to_string(),

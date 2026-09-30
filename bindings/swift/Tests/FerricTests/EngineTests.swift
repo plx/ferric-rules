@@ -11,7 +11,7 @@ struct EngineTests {
     let engine = try await Task.detached { try await Engine.create() }.value
     let values: [Value] = [
       .integer(.max), .integer(.min), .float(1.25), .symbol("symbol"), .string("résumé 🦀"),
-      .string(""),
+      .string(""), .instanceName("widget"),
       .multifield([.integer(7), .multifield([.string("nested")])]),
     ]
     let id = try await Task.detached { try await engine.assertFact("typed", fields: values) }.value

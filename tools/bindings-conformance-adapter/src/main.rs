@@ -57,6 +57,10 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
             "type": "symbol",
             "value": engine.resolve_core_symbol(*symbol).unwrap_or("<unknown>")
         }),
+        Value::InstanceName(name) => json!({
+            "type": "instance_name",
+            "value": engine.resolve_core_symbol(name.as_symbol()).unwrap_or("<unknown>")
+        }),
         Value::String(value) => json!({"type": "string", "value": value.as_str()}),
         Value::Multifield(values) => json!({
             "type": "multifield",

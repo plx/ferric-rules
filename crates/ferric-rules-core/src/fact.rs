@@ -307,6 +307,10 @@ fn hash_value_structurally(value: &Value, hasher: &mut FxHasher) {
         Value::Void => {
             6_u8.hash(hasher);
         }
+        Value::InstanceName(name) => {
+            7_u8.hash(hasher);
+            name.hash(hasher);
+        }
     }
 }
 

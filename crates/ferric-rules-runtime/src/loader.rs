@@ -16,8 +16,8 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
     ConditionCompilationPlan, ConstantTest, ConstantTestType, Fact, FactId, FerricString,
-    JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment, SequenceSource,
-    SlotIndex, TemplateFact, Value,
+    InstanceName, JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment,
+    SequenceSource, SlotIndex, TemplateFact, Value,
 };
 use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
@@ -1414,6 +1414,7 @@ impl Engine {
                     Some(SlotValueType::String) => Value::String(self.compile_string("")?),
                     Some(SlotValueType::Integer) => Value::Integer(0),
                     Some(SlotValueType::Float) => Value::Float(0.0),
+                    Some(SlotValueType::InstanceName) => Value::InstanceName(InstanceName::from_symbol(self.compile_symbol("nil")?)),
                     Some(SlotValueType::ExternalAddress) => return Err(Self::compile_error_at(&slot_def.span, "an external-address slot requires (default ?NONE); Ferric cannot derive a host-owned token")),
                 }
                 }
@@ -1690,6 +1691,7 @@ impl Engine {
             LiteralKind::Float(f) => Some(Value::Float(*f)),
             LiteralKind::String(s) => self.warned_string_value(s, line, result),
             LiteralKind::Symbol(s) => self.warned_symbol_value(s, line, result),
+            LiteralKind::InstanceName(s) => self.warned_instance_name_value(s, line, result),
         }
     }
 
@@ -1857,6 +1859,7 @@ impl Engine {
             Atom::Float(f) => Some(Value::Float(*f)),
             Atom::String(s) => self.warned_string_value(s, line, result),
             Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
+            Atom::InstanceName(s) => self.warned_instance_name_value(s, line, result),
             // Variables and connectives are not valid fact values
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
@@ -1894,6 +1897,18 @@ impl Engine {
                 Self::warn_with_detail(result, line, "symbol encoding error", &error);
                 None
             }
+        }
+    }
+
+    fn warned_instance_name_value(
+        &mut self,
+        name: &str,
+        line: u32,
+        result: &mut LoadResult,
+    ) -> Option<Value> {
+        match self.warned_symbol_value(name, line, result)? {
+            Value::Symbol(symbol) => Some(Value::InstanceName(InstanceName::from_symbol(symbol))),
+            _ => None,
         }
     }
 
@@ -5345,6 +5360,9 @@ impl Engine {
                 Atom::Float(f) => Some(PredicateOperand::Literal(LiteralKind::Float(*f))),
                 Atom::String(s) => Some(PredicateOperand::Literal(LiteralKind::String(s.clone()))),
                 Atom::Symbol(s) => Some(PredicateOperand::Literal(LiteralKind::Symbol(s.clone()))),
+                Atom::InstanceName(s) => Some(PredicateOperand::Literal(
+                    LiteralKind::InstanceName(s.clone()),
+                )),
                 Atom::SingleVar(name) | Atom::MultiVar(name) => {
                     Some(PredicateOperand::Variable(name.clone()))
                 }
@@ -5484,6 +5502,10 @@ impl Engine {
             LiteralKind::Symbol(s) => {
                 let sym = self.compile_symbol(s)?;
                 Ok(Some(AtomKey::Symbol(sym)))
+            }
+            LiteralKind::InstanceName(s) => {
+                let sym = self.compile_symbol(s)?;
+                Ok(Some(AtomKey::InstanceName(InstanceName::from_symbol(sym))))
             }
             LiteralKind::String(s) => {
                 let fs = self.compile_string(s)?;

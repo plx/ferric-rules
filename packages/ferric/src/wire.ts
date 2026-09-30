@@ -180,14 +180,34 @@ export interface WireSymbol {
   value: string;
 }
 
+/** Wire representation of a FerricInstanceName (spelling without brackets). */
+export interface WireInstanceName {
+  __type: "FerricInstanceName";
+  value: string;
+}
+
+/** Native constructor for a tagged CLIPS name class. */
+type NameCtor = new (value: string) => unknown;
+
+function hasWireTag(val: unknown, name: string): boolean {
+  if (typeof val !== "object" || val === null) return false;
+  const tag = Object.getOwnPropertyDescriptor(val, "__type");
+  const value = Object.getOwnPropertyDescriptor(val, "value");
+  return tag?.value === name && typeof value?.value === "string";
+}
+
 /**
  * Type guard: returns true if `val` is a wire-format FerricSymbol.
  */
 export function isWireSymbol(val: unknown): val is WireSymbol {
-  if (typeof val !== "object" || val === null) return false;
-  const tag = Object.getOwnPropertyDescriptor(val, "__type");
-  const value = Object.getOwnPropertyDescriptor(val, "value");
-  return tag?.value === "FerricSymbol" && typeof value?.value === "string";
+  return hasWireTag(val, "FerricSymbol");
+}
+
+/**
+ * Type guard: returns true if `val` is a wire-format FerricInstanceName.
+ */
+export function isWireInstanceName(val: unknown): val is WireInstanceName {
+  return hasWireTag(val, "FerricInstanceName");
 }
 
 // ---------------------------------------------------------------------------
@@ -227,15 +247,18 @@ export function toWire(val: unknown): unknown {
     // This avoids importing the native addon here (which may not exist at
     // type-check time) while still correctly identifying the class.
     const ctorName = (val as object).constructor?.name;
-    if (ctorName === "FerricSymbol" && typeof (val as { value?: unknown }).value === "string") {
+    if (
+      (ctorName === "FerricSymbol" || ctorName === "FerricInstanceName") &&
+      typeof (val as { value?: unknown }).value === "string"
+    ) {
       return {
-        __type: "FerricSymbol",
+        __type: ctorName,
         value: (val as { value: string }).value,
-      } satisfies WireSymbol;
+      } satisfies WireSymbol | WireInstanceName;
     }
 
-    // Already a wire symbol — pass through unchanged.
-    if (isWireSymbol(val)) {
+    // Already a wire name — pass through unchanged.
+    if (isWireSymbol(val) || isWireInstanceName(val)) {
       return val;
     }
 
@@ -264,7 +287,8 @@ export function toWire(val: unknown): unknown {
  */
 export function fromWireToNative(
   val: unknown,
-  FerricSymbolCtor: new (value: string) => unknown,
+  FerricSymbolCtor: NameCtor,
+  FerricInstanceNameCtor?: NameCtor,
 ): unknown {
   if (val === null || val === undefined) return val;
   if (typeof val !== "object") return val;
@@ -272,14 +296,17 @@ export function fromWireToNative(
   if (isWireSymbol(val)) {
     return new FerricSymbolCtor(val.value);
   }
+  if (isWireInstanceName(val) && FerricInstanceNameCtor) {
+    return new FerricInstanceNameCtor(val.value);
+  }
 
   if (Array.isArray(val)) {
-    return val.map((v) => fromWireToNative(v, FerricSymbolCtor));
+    return val.map((v) => fromWireToNative(v, FerricSymbolCtor, FerricInstanceNameCtor));
   }
 
   const result: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(val)) {
-    result[k] = fromWireToNative(v, FerricSymbolCtor);
+    result[k] = fromWireToNative(v, FerricSymbolCtor, FerricInstanceNameCtor);
   }
   return result;
 }
@@ -296,7 +323,8 @@ export function fromWireToNative(
  */
 export function fromWire(
   val: unknown,
-  FerricSymbolCtor?: new (value: string) => unknown,
+  FerricSymbolCtor?: NameCtor,
+  FerricInstanceNameCtor?: NameCtor,
 ): unknown {
   if (val === null || val === undefined) return val;
 
@@ -310,13 +338,16 @@ export function fromWire(
   }
 
   if (Array.isArray(val)) {
-    return val.map((v) => fromWire(v, FerricSymbolCtor));
+    return val.map((v) => fromWire(v, FerricSymbolCtor, FerricInstanceNameCtor));
   }
 
   if (typeof val === "object") {
-    // Reconstruct WireSymbol back to native FerricSymbol.
+    // Reconstruct wire names back to the native classes.
     if (isWireSymbol(val) && FerricSymbolCtor) {
       return new FerricSymbolCtor(val.value);
+    }
+    if (isWireInstanceName(val) && FerricInstanceNameCtor) {
+      return new FerricInstanceNameCtor(val.value);
     }
 
     // Skip non-plain objects like Buffer, ArrayBuffer, etc.
@@ -329,7 +360,7 @@ export function fromWire(
     // Recursively convert plain objects (e.g. Fact, slots).
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(val)) {
-      result[k] = fromWire(v, FerricSymbolCtor);
+      result[k] = fromWire(v, FerricSymbolCtor, FerricInstanceNameCtor);
     }
     return result;
   }

@@ -167,7 +167,7 @@ fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
     exports.dedup();
     assert_eq!(
         exports.len(),
-        73,
+        74,
         "the export audit count changed; verify every new return category has a panic sentinel"
     );
 }
@@ -250,6 +250,10 @@ fn header_contains_ferric_value_type_enum() {
     assert!(
         header.contains("FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS"),
         "Missing FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS variant"
+    );
+    assert!(
+        header.contains("FERRIC_VALUE_TYPE_INSTANCE_NAME"),
+        "Missing FERRIC_VALUE_TYPE_INSTANCE_NAME variant"
     );
 }
 
@@ -361,6 +365,7 @@ fn header_has_abi_static_assertions() {
     for assertion in [
         "FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_VOID == 0",
         "FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6",
+        "FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_INSTANCE_NAME == 7",
         "FERRIC_STATIC_ASSERT(FERRIC_ERROR_INVALID_ARGUMENT == 9",
         "FERRIC_STATIC_ASSERT(FERRIC_ERROR_INTERNAL_ERROR == 99",
         "FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0",
