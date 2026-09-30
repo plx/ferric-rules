@@ -2,19 +2,9 @@
 //!
 //! Stage 2 transforms the S-expression trees produced by Stage 1 into typed
 //! construct representations for `deftemplate`, `defrule`, `deffacts`,
-//! `deffunction`, and `defglobal`.
+//! `deffunction`, `defglobal`, `defmodule`, `defgeneric`, and `defmethod`:
+//! patterns, constraints, actions, slot definitions, and fact bodies.
 //! Source spans are preserved through the transformation for diagnostics.
-//!
-//! ## Phase 2 complete
-//!
-//! - Full interpretation for `deftemplate`, `defrule`, `deffacts`.
-//! - Typed AST with patterns, constraints, actions, slot definitions, and
-//!   fact bodies.
-//!
-//! ## Phase 3 scope
-//!
-//! - `deffunction` and `defglobal` interpretation (Pass 005).
-//! - Add interpretation for `defmodule`, `defgeneric`, `defmethod`.
 
 use crate::sexpr::{nesting_depth_message, Atom, Connective, SExpr};
 use crate::span::Span;
@@ -36,7 +26,7 @@ pub enum Pattern {
     And(Vec<Pattern>, Span),
     /// Negation CE: (not <pattern>)
     Not(Box<Pattern>, Span),
-    /// Test CE: (test <expression>) -- kept as raw `SExpr` for Phase 2
+    /// Test CE: (test <expression>) -- kept as a raw `SExpr` for the runtime to translate
     Test(SExpr, Span),
     /// Exists CE: (exists <pattern> ...)
     Exists(Vec<Pattern>, Span),

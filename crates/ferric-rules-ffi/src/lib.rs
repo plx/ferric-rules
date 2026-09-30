@@ -2,10 +2,9 @@
 //!
 //! C-ABI foreign function interface for the Ferric rules engine.
 //!
-//! ## Phase 5 Baseline Assumptions
-//!
 //! This crate provides a stable C-callable API surface over the Ferric runtime.
-//! The following invariants from Phase 4 are preserved:
+//!
+//! ## Contracts
 //!
 //! - **Diagnostic parity**: All runtime diagnostics (parse errors, compile errors,
 //!   module visibility/ambiguity failures, generic dispatch/conflict diagnostics)

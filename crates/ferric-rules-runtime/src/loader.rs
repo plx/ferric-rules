@@ -1,21 +1,9 @@
 //! Source code loader for CLIPS-compatible syntax.
 //!
 //! This module provides functionality to load CLIPS source code from strings
-//! or files and convert it into engine-level constructs.
-//!
-//! ## Phase 2 state
-//!
-//! - Full Stage 2 interpretation for `defrule`, `deftemplate`, `deffacts`.
-//! - Rule compilation from Stage 2 AST into rete network.
-//! - Pattern validation (nesting depth, unsupported combinations).
-//! - `(assert ...)` top-level forms for loading facts into working memory.
-//!
-//! ## Phase 3 scope
-//!
-//! - Add support for `deffunction`, `defglobal`, `defmodule`, `defgeneric`,
-//!   `defmethod` top-level forms.
-//! - `test` CE compilation (currently returns compile error).
-//! - Template pattern compilation (currently returns compile error).
+//! or files and convert it into engine-level constructs: Stage 2
+//! interpretation of every supported construct, pattern validation, rule
+//! compilation into the Rete network, and top-level `(assert ...)` forms.
 
 use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -284,10 +272,9 @@ pub enum LoadError {
 
 /// A minimal rule definition stored at S-expression level.
 ///
-/// This is Phase 1's placeholder for rules — it captures the raw S-expression
-/// structure without full Stage 2 interpretation. Phase 2 replaces this with
-/// a Stage 2 AST that is compiled into the rete network. This type is retained
-/// for backward compatibility during the transition.
+/// Captures the raw S-expression structure without Stage 2 interpretation.
+/// The loader itself compiles typed Stage 2 constructs; this type is retained
+/// only as part of the public API.
 #[derive(Clone, Debug)]
 pub struct RuleDef {
     /// Rule name
@@ -307,9 +294,9 @@ pub struct LoadResult {
     pub rules: Vec<RuleConstruct>,
     /// Templates registered during loading.
     pub templates: Vec<TemplateConstruct>,
-    /// Functions parsed during loading (not yet executable; Pass 006 adds execution).
+    /// Functions parsed during loading.
     pub functions: Vec<FunctionConstruct>,
-    /// Globals parsed during loading (not yet active; Pass 006 adds execution).
+    /// Globals parsed during loading.
     pub globals: Vec<GlobalConstruct>,
     /// Modules parsed during loading.
     pub modules: Vec<ModuleConstruct>,

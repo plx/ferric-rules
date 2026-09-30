@@ -16,10 +16,6 @@
 //! - Support count 0→N (first match): create pass-through token, propagate
 //! - Support count N→M (additional matches): no change (still propagated)
 //! - Support count N→0 (last match retracted): retract pass-through token
-//!
-//! ## Phase 2 implementation
-//!
-//! - Pass 010: Exists node and exists memory
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 

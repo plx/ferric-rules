@@ -1,4 +1,4 @@
-//! Header drift detection and smoke tests (Pass 008).
+//! Header drift detection and smoke tests.
 //!
 //! These tests verify that the committed `ferric.h` exists and contains all
 //! expected symbols, banners, and include guards.

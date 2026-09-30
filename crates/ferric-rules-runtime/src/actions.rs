@@ -1,10 +1,8 @@
 //! RHS action execution for rule firings.
 //!
-//! ## Phase 3 scope
-//!
-//! - `GlobalVariable` reads and writes via `GlobalStore` (Pass 006).
-//! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
-//! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
+//! - `GlobalVariable` reads and writes via `GlobalStore`.
+//! - `modify`/`duplicate` support template-aware slot overrides.
+//! - `printout` with per-channel output capture via `OutputRouter`.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
