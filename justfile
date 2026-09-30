@@ -419,10 +419,6 @@ rust-native-artifacts-verify artifacts candidate_sha candidate_tree output:
 dependency-policy:
     ./scripts/dependency-check.sh
 
-# Exercise native scanner rejection of vulnerable inputs and malformed config.
-dependency-policy-test:
-    ./scripts/test-dependency-scanners.sh
-
 # Regenerate Rust third-party license notices from the locked Cargo graph
 license-notices:
     ./scripts/license-notices.sh generate

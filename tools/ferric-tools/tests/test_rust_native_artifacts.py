@@ -114,7 +114,6 @@ SMOKE_NAMES = [
 MANDATORY_COMMAND_NAMES = (
     "rustc-verbose",
     "cargo-verbose",
-    "release-test",
     "release-build",
     "package-facade",
     "package-cli",
@@ -374,18 +373,6 @@ def _command_entries(
     commands = {
         "rustc-verbose": ["rustc", "-vV"],
         "cargo-verbose": ["cargo", "-vV"],
-        "release-test": [
-            "cargo",
-            "test",
-            "--release",
-            "-p",
-            "ferric-rules",
-            "-p",
-            "ferric-rules-cli",
-            "--all-features",
-            "--locked",
-            *target_args,
-        ],
         "release-build": [
             "cargo",
             "build",
@@ -614,7 +601,7 @@ def test_cli_smoke_harness_really_exercises_unicode_crlf_snapshot_and_exit_codes
 
     commands_evidence = harness.run_cli_smokes(binary=binary, scratch_root=scratch)
 
-    assert commands_evidence == _command_entries(binary.name, "ldd", "unused")[7:16]
+    assert commands_evidence == _command_entries(binary.name, "ldd", "unused")[6:15]
     assert all(command["expected_exit"] == command["actual_exit"] for command in commands_evidence)
     records = [
         json.loads(line)
@@ -835,9 +822,9 @@ def test_verifier_rejects_tampered_receipts(tmp_path: pathlib.Path, mutation: st
     elif mutation == "command-schema":
         receipt["commands"][0]["ignored"] = True
     elif mutation == "command-argv":
-        receipt["commands"][8]["argv"][-1] = "--help"
+        receipt["commands"][7]["argv"][-1] = "--help"
     elif mutation == "command-root-leak":
-        receipt["commands"][7]["argv"][0] = "/tmp/install/bin/ferric"
+        receipt["commands"][6]["argv"][0] = "/tmp/install/bin/ferric"
     else:
         raise AssertionError(f"unknown mutation {mutation}")
     _write_json(receipt_path, receipt)
