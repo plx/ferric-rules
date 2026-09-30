@@ -717,20 +717,32 @@ impl AlphaNetwork {
         fact: &Fact,
         accepted: &mut Vec<AlphaMemoryId>,
     ) {
-        let Some((memory_id, children)) = self.propagation_plan(node_id, fact) else {
+        let Some(node) = self.node(node_id) else {
             return;
         };
+        if let AlphaNode::ConstantTest { test, .. } = node {
+            if !evaluate_test(fact, test) {
+                return;
+            }
+        }
 
         // If this node has a memory, insert the fact
-        if let Some(mem_id) = memory_id {
+        if let Some(mem_id) = node.memory() {
             if let Some(memory) = self.memory_mut(mem_id) {
                 memory.insert(fact_id, fact);
                 accepted.push(mem_id);
             }
         }
 
-        for child_id in children {
+        // Propagation only fills memories and never changes the node graph,
+        // so children are visited by position rather than copied per node.
+        let mut index = 0;
+        while let Some(&child_id) = self
+            .node(node_id)
+            .and_then(|node| node.children().get(index))
+        {
             self.propagate(child_id, fact_id, fact, accepted);
+            index += 1;
         }
     }
 
