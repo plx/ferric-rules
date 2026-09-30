@@ -12,11 +12,8 @@ import (
 
 func ffiFormats() []SerializationFormat {
 	return []SerializationFormat{
-		FormatBincode,
 		FormatJSON,
 		FormatCBOR,
-		FormatMessagePack,
-		FormatPostcard,
 	}
 }
 
@@ -259,10 +256,10 @@ func TestManualSerializationWrappers(t *testing.T) {
 		}
 	}
 
-	if data, rc := EngineSerializeAs(nil, FormatBincode); rc == ErrOK || data != nil {
+	if data, rc := EngineSerializeAs(nil, FormatCBOR); rc == ErrOK || data != nil {
 		t.Fatalf("EngineSerializeAs nil = (%v, %d), want nil error", data, rc)
 	}
-	if h, rc := EngineDeserializeAs(nil, FormatBincode); rc != ErrInvalidArgument || h != nil {
+	if h, rc := EngineDeserializeAs(nil, FormatCBOR); rc != ErrInvalidArgument || h != nil {
 		t.Fatalf("EngineDeserializeAs empty = (%v, %d), want invalid argument", h, rc)
 	}
 	if h, rc := EngineDeserializeAs([]byte("not a snapshot"), FormatJSON); rc == ErrOK || h != nil {

@@ -154,11 +154,8 @@ export enum FactType {
 }
 
 export enum Format {
-  Bincode = 0,
-  Json = 1,
-  Cbor = 2,
-  MessagePack = 3,
-  Postcard = 4,
+  Json = 1, // debugging and inspection
+  Cbor = 2, // recommended default
 }
 ```
 

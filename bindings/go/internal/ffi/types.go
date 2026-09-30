@@ -89,11 +89,8 @@ type SerializationFormat = C.enum_FerricSerializationFormat
 
 // SerializationFormat values mirror C.FERRIC_SERIALIZATION_FORMAT_*.
 const (
-	FormatBincode     SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_BINCODE
-	FormatJSON        SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_JSON
-	FormatCBOR        SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_CBOR
-	FormatMessagePack SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK
-	FormatPostcard    SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_POSTCARD
+	FormatJSON SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_JSON
+	FormatCBOR SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_CBOR
 )
 
 // Config mirrors the C FerricConfig struct.

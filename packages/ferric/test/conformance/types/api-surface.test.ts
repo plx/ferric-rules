@@ -125,7 +125,7 @@ test("A-004 public enums are usable at runtime", () => {
   assert.strictEqual(HaltReason.AgendaEmpty, 0);
   assert.strictEqual(HaltReason.ActionError, 3);
   assert.strictEqual(FactType.Ordered, 0);
-  assert.strictEqual(Format.Bincode, 0);
+  assert.strictEqual(Format.Cbor, 2);
 });
 
 // ---------------------------------------------------------------------------

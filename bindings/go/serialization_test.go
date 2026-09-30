@@ -21,11 +21,8 @@ func allFormats() []struct {
 		name   string
 		format Format
 	}{
-		{"Bincode", FormatBincode},
 		{"JSON", FormatJSON},
 		{"CBOR", FormatCBOR},
-		{"MessagePack", FormatMessagePack},
-		{"Postcard", FormatPostcard},
 	}
 }
 
@@ -149,19 +146,19 @@ func TestSnapshotMultipleInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := e.Serialize(FormatBincode)
+	snap, err := e.Serialize(FormatCBOR)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustClose(t, e)
 
-	e1, err := NewEngine(WithSnapshot(snap, FormatBincode))
+	e1, err := NewEngine(WithSnapshot(snap, FormatCBOR))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mustClose(t, e1)
 
-	e2, err := NewEngine(WithSnapshot(snap, FormatBincode))
+	e2, err := NewEngine(WithSnapshot(snap, FormatCBOR))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,21 +228,30 @@ func TestSerializeEmptyEngine(t *testing.T) {
 
 func TestCrossFormatRejection(t *testing.T) {
 	lockThread(t)
-	// Serialize as bincode, try to deserialize as JSON — should fail.
+	// Serialize as CBOR, try to deserialize as JSON — should fail.
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mustClose(t, e)
 
-	snap, err := e.Serialize(FormatBincode)
+	snap, err := e.Serialize(FormatCBOR)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	_, err = NewEngine(WithSnapshot(snap, FormatJSON))
 	if err == nil {
-		t.Fatal("expected error when deserializing bincode as JSON")
+		t.Fatal("expected error when deserializing CBOR as JSON")
+	}
+}
+
+func TestRemovedFormatValuesRejected(t *testing.T) {
+	// 0, 3 and 4 were bincode, MessagePack and Postcard.
+	for _, f := range []Format{0, 3, 4} {
+		if _, err := formatToFFI(f); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("formatToFFI(%d) = %v, want ErrInvalidArgument", f, err)
+		}
 	}
 }
 
@@ -306,7 +312,7 @@ func TestSerializeToFileRoundtrip(t *testing.T) {
 }
 
 func TestNewEngineFromFileNonexistent(t *testing.T) {
-	_, err := NewEngineFromFile("/nonexistent/path/snap.bin", FormatBincode)
+	_, err := NewEngineFromFile("/nonexistent/path/snap.bin", FormatCBOR)
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
@@ -320,7 +326,7 @@ func TestSerializeToFileUnwritable(t *testing.T) {
 	}
 	defer mustClose(t, e)
 
-	err = e.SerializeToFile("/nonexistent/dir/snap.bin", FormatBincode)
+	err = e.SerializeToFile("/nonexistent/dir/snap.bin", FormatCBOR)
 	if err == nil {
 		t.Fatal("expected error for unwritable path")
 	}

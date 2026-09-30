@@ -293,7 +293,7 @@ fn ci_runs_debug_and_release_panic_containment_harness() {
     assert!(script.contains("FERRIC_FFI_TEST_PANIC_INJECTION_BUILD=1"));
     assert!(script.contains("--features serde"));
     assert!(script.contains("panic_containment.c"));
-    assert!(script.contains("expected 101 header exports"));
+    assert!(script.contains("expected 95 header exports"));
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
     exports.dedup();
     assert_eq!(
         exports.len(),
-        101,
+        95,
         "the export audit count changed; verify every new return category has a panic sentinel"
     );
 }
@@ -558,7 +558,7 @@ fn header_has_abi_static_assertions() {
         "FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0",
         "FERRIC_STATIC_ASSERT(FERRIC_CONFLICT_STRATEGY_MEA == 3",
         "FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_ACTION_ERROR == 3",
-        "FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_POSTCARD == 4",
+        "FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_CBOR == 2",
     ] {
         assert!(
             header.contains(assertion),

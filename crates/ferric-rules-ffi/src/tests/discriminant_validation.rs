@@ -318,3 +318,63 @@ fn value_free_rejects_invalid_nested_tag_in_owned_multifield() {
         assert_global_diag_names_tag(999);
     }
 }
+
+/// Snapshot format values 0, 3 and 4 belonged to removed codecs (bincode,
+/// `MessagePack`, Postcard); they must be rejected rather than reinterpreted.
+#[cfg(feature = "serde")]
+#[test]
+fn serialization_format_rejects_removed_and_unknown_values() {
+    use crate::engine::{
+        ferric_bytes_free, ferric_engine_deserialize_as, ferric_engine_serialize_as,
+    };
+    unsafe {
+        let engine = ferric_engine_new();
+        assert!(!engine.is_null());
+        for format in [0, 3, 4, 5, u32::MAX] {
+            let mut data = ptr::null_mut();
+            let mut len = 0;
+            assert_eq!(
+                ferric_engine_serialize_as(
+                    engine,
+                    format,
+                    None,
+                    ptr::null_mut(),
+                    &mut data,
+                    &mut len
+                ),
+                FerricError::InvalidArgument,
+                "serialize format {format}"
+            );
+            let mut restored = ptr::null_mut();
+            assert_eq!(
+                ferric_engine_deserialize_as(b"x".as_ptr(), 1, format, &mut restored),
+                FerricError::InvalidArgument,
+                "deserialize format {format}"
+            );
+            assert!(restored.is_null());
+        }
+        for format in [1, 2] {
+            let mut data = ptr::null_mut();
+            let mut len = 0;
+            assert_eq!(
+                ferric_engine_serialize_as(
+                    engine,
+                    format,
+                    None,
+                    ptr::null_mut(),
+                    &mut data,
+                    &mut len
+                ),
+                FerricError::Ok
+            );
+            let mut restored = ptr::null_mut();
+            assert_eq!(
+                ferric_engine_deserialize_as(data, len, format, &mut restored),
+                FerricError::Ok
+            );
+            ferric_bytes_free(data, len);
+            ferric_engine_free(restored);
+        }
+        ferric_engine_free(engine);
+    }
+}

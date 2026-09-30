@@ -510,12 +510,12 @@ func TestPinnedEngine_Serialize(t *testing.T) {
 	require.NoError(t, err)
 	defer mustClose(t, p)
 
-	data, err := p.Serialize(FormatBincode)
+	data, err := p.Serialize(FormatCBOR)
 	require.NoError(t, err)
 	assert.NotEmpty(t, data)
 
 	// Deserialize into a new PinnedEngine.
-	p2, err := NewPinnedEngine(WithSnapshot(data, FormatBincode))
+	p2, err := NewPinnedEngine(WithSnapshot(data, FormatCBOR))
 	require.NoError(t, err)
 	defer mustClose(t, p2)
 

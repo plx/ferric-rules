@@ -36,6 +36,17 @@ iterator in insertion order instead of a borrowed hash set. Collect that
 iterator when a materialized collection is needed. Public engine fact APIs
 retain their existing result types.
 
+## Pre-1.0 snapshot codec removal
+
+The experimental bincode, MessagePack and Postcard snapshot codecs were removed
+from every surface: Rust `SerializationFormat`, the CLI `--format` /
+`--snapshot-format` values, the C ABI (`FERRIC_SERIALIZATION_FORMAT_BINCODE`,
+`_MESSAGE_PACK`, `_POSTCARD` and the `ferric_engine_{serialize,deserialize}_{bincode,msgpack,postcard}`
+exports), and the TypeScript, Python and Go `Format` enums. CBOR (the default)
+and JSON remain, with unchanged numeric values (JSON `1`, CBOR `2`); the removed
+values `0`, `3` and `4` are now rejected. To keep a snapshot written with a
+removed codec, restore it with the producing version and re-save it as CBOR.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:

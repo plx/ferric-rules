@@ -745,9 +745,9 @@ limits, a corruption checksum, and validation of restored engine state. Facts,
 globals, rules, output, focus, and pending activations survive a round trip;
 resuming does not re-fire an activation that already fired.
 
-`Bincode`, `Json`, `MessagePack`, and `Postcard` remain experimental formats.
-Pass the same format to `deserialize` that you used for `serialize`. JSON's
-payload is readable after the binary envelope and rejects non-finite floats.
+`Json` is also available for debugging and inspection. Pass the same format to
+`deserialize` that you used for `serialize`. JSON's payload is readable after
+the binary envelope and rejects non-finite floats.
 
 Legacy unversioned snapshots are explicitly rejected. Use the producing Ferric
 version to export durable application data before upgrading; rebuilding a

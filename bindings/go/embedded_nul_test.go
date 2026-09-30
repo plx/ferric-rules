@@ -319,12 +319,12 @@ func TestSnapshotBytesAndFilePathsDoNotUseCStringPolicy(t *testing.T) {
 		if string(data) != string(snapshot) {
 			t.Fatalf("snapshot bytes = %q, want %q", data, snapshot)
 		}
-		if format != ffi.FormatBincode {
-			t.Fatalf("format = %d, want bincode", format)
+		if format != ffi.FormatCBOR {
+			t.Fatalf("format = %d, want cbor", format)
 		}
 		return nil, ffi.ErrSerializationError
 	}
-	_, err := NewEngine(WithSnapshot(snapshot, FormatBincode))
+	_, err := NewEngine(WithSnapshot(snapshot, FormatCBOR))
 	if !errors.Is(err, ErrSerialization) {
 		t.Fatalf("snapshot result = %v, want ErrSerialization", err)
 	}
@@ -333,7 +333,7 @@ func TestSnapshotBytesAndFilePathsDoNotUseCStringPolicy(t *testing.T) {
 	if err = os.WriteFile(prefix, []byte("prefix file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewEngineFromFile(prefix+"\x00suffix", FormatBincode)
+	_, err = NewEngineFromFile(prefix+"\x00suffix", FormatCBOR)
 	var pathErr *os.PathError
 	if !errors.As(err, &pathErr) {
 		t.Fatalf("NUL path error = %T %v, want *os.PathError", err, err)
@@ -344,7 +344,7 @@ func TestSnapshotBytesAndFilePathsDoNotUseCStringPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mustClose(t, engine)
-	err = engine.SerializeToFile(prefix+"\x00suffix", FormatBincode)
+	err = engine.SerializeToFile(prefix+"\x00suffix", FormatCBOR)
 	if !errors.As(err, &pathErr) {
 		t.Fatalf("NUL output path error = %T %v, want *os.PathError", err, err)
 	}

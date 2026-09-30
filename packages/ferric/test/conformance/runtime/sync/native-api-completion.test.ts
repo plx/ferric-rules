@@ -44,13 +44,13 @@ test("G-001 Engine static factories return wrapped native Engine instances", () 
     assert.strictEqual(result.rulesFired, 1);
     assert.strictEqual(result.haltReason, HaltReason.AgendaEmpty);
 
-    const snapshot = fromSource.serialize(Format.Bincode);
-    const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Bincode);
+    const snapshot = fromSource.serialize(Format.Cbor);
+    const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Cbor);
     try {
       assert.strictEqual(fromSnapshot.run().haltReason, HaltReason.AgendaEmpty);
-      fromSnapshot.saveSnapshot(path, Format.Bincode);
+      fromSnapshot.saveSnapshot(path, Format.Cbor);
 
-      const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Bincode);
+      const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Cbor);
       try {
         assert.strictEqual(fromSnapshotFile.run().haltReason, HaltReason.AgendaEmpty);
       } finally {
@@ -78,10 +78,10 @@ test("G-001 wrapped Engine instances are recognized by instanceof Engine", () =>
 
   const constructed = new Engine();
   const fromSource = Engine.fromSource(SOURCE);
-  const snapshot = fromSource.serialize(Format.Bincode);
-  const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Bincode);
-  fromSnapshot.saveSnapshot(path, Format.Bincode);
-  const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Bincode);
+  const snapshot = fromSource.serialize(Format.Cbor);
+  const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Cbor);
+  fromSnapshot.saveSnapshot(path, Format.Cbor);
+  const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Cbor);
 
   try {
     const engines: Array<[string, unknown]> = [
@@ -114,10 +114,10 @@ test("N-09 Engine construction paths do not expose logical-run continuation", ()
   const path = join(dir, "snapshot.bin");
   const constructed = new Engine();
   const fromSource = Engine.fromSource(SOURCE);
-  const snapshot = fromSource.serialize(Format.Bincode);
-  const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Bincode);
-  fromSnapshot.saveSnapshot(path, Format.Bincode);
-  const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Bincode);
+  const snapshot = fromSource.serialize(Format.Cbor);
+  const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Cbor);
+  fromSnapshot.saveSnapshot(path, Format.Cbor);
+  const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Cbor);
 
   try {
     for (const [label, engine] of [
@@ -192,7 +192,7 @@ test("C-003 Engine static factory errors are converted to FerricError subclasses
   );
 
   assert.throws(
-    () => Engine.fromSnapshot(Buffer.from("not a ferric snapshot"), Format.Bincode),
+    () => Engine.fromSnapshot(Buffer.from("not a ferric snapshot"), Format.Cbor),
     (err: any) => {
       assert.ok(err instanceof FerricSerializationError);
       assert.strictEqual(err.code, "FERRIC_SERIALIZATION_ERROR");
@@ -201,7 +201,7 @@ test("C-003 Engine static factory errors are converted to FerricError subclasses
   );
 
   assert.throws(
-    () => Engine.fromSnapshotFile("/path/that/does/not/exist/ferric.snapshot", Format.Bincode),
+    () => Engine.fromSnapshotFile("/path/that/does/not/exist/ferric.snapshot", Format.Cbor),
     (err: any) => {
       assert.ok(err instanceof Error);
       assert.match(err.message, /No such file|not exist|no such file/i);

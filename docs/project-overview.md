@@ -71,7 +71,7 @@ Engine, loader, execution loop, evaluator, modules, I/O.
 - `config.rs` — `EngineConfig` and encoding/strategy/execution-limit settings.
 - `qualified_name.rs` — runtime-side module-qualified resolution.
 - `serialization.rs` (feature `serde`) — `EngineSnapshotRef`/`Owned`,
-  bincode/JSON/CBOR/MessagePack/Postcard payloads, ExternalAddress
+  versioned CBOR/JSON payloads, ExternalAddress
   pre-flight rejection.
 - `integration_tests.rs`, `phase{2,3,4}_integration_tests.rs` — in-crate
   integration test modules.
@@ -240,7 +240,7 @@ actual Criterion benches live in the facade crate.
   throughput microbenches.
 - `constraint_bench.rs`, `strategy_bench.rs`, `module_bench.rs`,
   `query_bench.rs`.
-- `serialization_bench.rs` — in `ferric-rules-runtime` (requires `serde` feature).
+- `serialization_bench.rs` — CBOR snapshot serialize/deserialize (requires `serde` feature).
 
 CI gates: `bench-smoke` (compile-only), `bench-thresholds` (absolute ns
 thresholds). Scaling regression: `just scaling-check` runs facade-crate
