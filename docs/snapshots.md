@@ -25,13 +25,12 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 2 adds ordered field-count guards, multifield (sequence) match plans for
-ordered facts and template multislots, and the capture lengths that identify
-each positional match. Schema 1 snapshots are rejected with
-`UnsupportedVersion(1)` before payload decoding: their compiled graphs could
-accept facts with the wrong number of fields. To upgrade unique application
-data, export it with the producing Ferric version and assert that durable data
-into a newly compiled engine. There is no automatic RETE-state migration.
+The current schema is 2. It replaced schema 1 when ordered and multislot
+patterns started matching whole field sequences (field-count guards, multifield
+match plans and per-token capture lengths), so schema 1 snapshots are rejected
+with `UnsupportedVersion(1)` before payload decoding. To upgrade application
+data, export it with the producing Ferric version and assert it into a newly
+compiled engine; there is no automatic RETE-state migration.
 
 Builds supporting a schema must keep its meaning and pass the stored fixture
 and resume regressions. Changes to the serialized layout or runtime semantics

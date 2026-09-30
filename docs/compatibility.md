@@ -8,7 +8,8 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide
 for the supported subset. "Supported" means that the language area is
 implemented, not that every rule set in that area has been proven equivalent.
 Exact CLIPS compatibility claims are limited to the reviewed differential
-policy cases and are qualified by the known gaps below.
+policy cases and the granular corpus programs, and are qualified by the known
+gaps below.
 
 ## Known Differential Gaps
 
@@ -28,6 +29,32 @@ fixtures into compatibility claims; those remain pending or incompatible
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
 evidence boundary.
+
+### Granular corpus
+
+The broadest evidence for the language behavior in this document is
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 562
+small programs, each with the exact output of CLIPS 6.30 as its golden.
+`cargo test --workspace` runs all of them. A conforming program must reproduce
+its golden byte for byte, and again with its rules loaded after `reset` and
+after a JSON or CBOR snapshot round trip; a program that CLIPS rejects must
+fail in Ferric at the same stage (load or run). `just compat-corpus-reference`
+rechecks every golden against a CLIPS 6.30 Docker image.
+
+A known difference is recorded on its case as a `gap` entry holding Ferric's
+exact current output, so the test fails if the behavior changes in either
+direction. Four cases carry one:
+
+| Area | Difference from CLIPS 6.30 | Cases |
+|------|----------------------------|-------|
+| Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
+| Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
+
+Some CLIPS-valid programs are rejected at load instead of running
+differently. The main case is a complex non-linear predicate or return-value
+constraint inside a negated ordered pattern, tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300) (see
+[Template Facts](#template-facts)).
 
 ---
 
@@ -212,9 +239,8 @@ also retains two experimental Ferric orderings for existing consumers:
 | **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
 
 CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
-Their tie order also differs for multiple partitions of the same ordered fact;
-the multifield regressions characterize this separately from depth/breadth
-conformance.
+Their tie order can also differ between the partitions of one ordered fact
+that a multifield pattern matches in several ways.
 Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
 are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared
@@ -1126,9 +1152,13 @@ text. For example, `(sub-string 0 2 abc)` returns `"ab"`, while
 
 ### Compatibility with CLIPS
 
-For ASCII content, Ferric's comparison and indexing behavior is identical to
-CLIPS. Differences arise only with non-ASCII content, where CLIPS behavior
-varies by platform and build configuration.
+Like CLIPS 6.30, `str-length`, `sub-string` and `str-index` count characters
+of UTF-8 text, and comparisons use the bytes. Ferric strings and symbols are
+always valid UTF-8, while CLIPS can build byte strings that are not. Where
+CLIPS would produce such bytes (`%c` of a byte of 128 or more, `%.Ns` that cuts
+a multibyte character, or a scanned string that ends in an escaped end of
+input), Ferric holds U+FFFD instead; the corpus records each of these as a gap
+case (see [Granular corpus](#granular-corpus)).
 
 ### Guidance for Unicode Users
 

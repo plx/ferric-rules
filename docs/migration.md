@@ -47,7 +47,7 @@ and JSON remain, with unchanged numeric values (JSON `1`, CBOR `2`); the removed
 values `0`, `3` and `4` are now rejected. To keep a snapshot written with a
 removed codec, restore it with the producing version and re-save it as CBOR.
 
-## Pre-1.0 instance names and CLIPS text functions
+## Pre-1.0 instance names
 
 `Value` has a new `InstanceName` variant for CLIPS instance names such as
 `[widget]` (Ferric still has no object system), and the parser's
@@ -59,13 +59,41 @@ switch on `value_type` should handle it. The bindings return instance names as
 `InstanceName` values (`FerricInstanceName` in TypeScript,
 `Value.instanceName` in Swift) where they previously could not appear.
 
-Several functions now follow CLIPS instead of Ferric's earlier approximations.
-`string-to-field`, `explode$` and `read` scan text with the CLIPS field
-scanner, so quoted strings stay one STRING field and `read` no longer stops at
-the first space. `format` rejects an argument count that does not match its
-directives, `%s` of a number, and a malformed directive such as `%5-3d`, where
-it previously formatted something. `str-cat` and `sym-cat` spell FLOATs like
-`printout` (`(str-cat 1e20)` is now `"1e+20"`).
+In the parser AST, `SlotConstraint::constraint` is now `constraints:
+Vec<Constraint>`, because a multislot pattern holds a sequence of field
+constraints.
+
+## Pre-1.0 snapshot schema 2
+
+Snapshots are written with schema 2, and schema 1 snapshots are rejected with
+`UnsupportedVersion(1)`: their compiled patterns did not check field counts.
+Restore an old snapshot with the version that produced it, export the
+application data, and assert it into a new engine; see
+[snapshots.md](snapshots.md).
+
+## Pre-1.0 CLIPS behavior fixes
+
+The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
+Programs that relied on the earlier behavior need changes:
+
+- An ordered pattern matches only facts with the same number of fields:
+  `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
+- A multislot pattern matches the whole multislot: `(tags ?t)` needs exactly
+  one value. Use `(tags $? ?t $?)` to match any member.
+- `sort` asks its predicate whether two fields should be exchanged, so
+  `(sort > ...)` sorts ascending and `(sort < ...)` descending.
+- `string-to-field`, `explode$` and `read` use the CLIPS field scanner: quoted
+  strings stay one STRING field and `read` no longer stops at the first space.
+- `format` rejects an argument count that does not match its directives, `%s`
+  of a number, and a malformed directive such as `%5-3d`.
+- `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
+  `"1e+20"`), and `printout` quotes STRING fields inside a multifield.
+- `round` breaks half ties toward the lower integer, and `min`/`max` return the
+  selected operand with its own type.
+- `str-length`, `sub-string` and `str-index` count characters and accept
+  SYMBOLs, `sub-string` clips out-of-range positions, and `nth$` returns `nil`
+  for a missing position.
+- `fact-index` returns the public assertion index.
 
 ## Step 1: Check Feature Coverage
 
