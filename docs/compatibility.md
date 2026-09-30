@@ -72,10 +72,10 @@ before installation. A dynamic single-slot cardinality error stops that RHS
 without asserting a partial fact. Void expression results are omitted from
 multislots while their output effects remain observable.
 
-Pre-1.0 migration: template metadata now records slot cardinality. Legacy raw
-engine snapshots are not a stable interchange contract across this change;
-retain application facts/rule source for rebuilding. The rehabilitation's
-versioned persistence work will define the supported snapshot envelope.
+Pre-1.0 migration: template metadata now records slot cardinality. Unversioned
+(legacy raw) engine snapshots are rejected; persist engines with the versioned
+CBOR snapshot envelope described in [Snapshots](snapshots.md), and keep
+application facts/rule source if older data must be rebuilt.
 
 Complex non-linear predicate or return-value constraints inside negated ordered
 patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
@@ -111,10 +111,11 @@ round-trips.
 
 ### initial-fact
 
-On `(reset)`, Ferric currently reasserts registered `deffacts` before
-`(initial-fact)`. The bootstrap fact enables standalone negation and `forall`
-patterns, but this ordering differs from pinned CLIPS and can reverse activation
-order; see [#156](https://github.com/plx/ferric-rules/issues/156).
+On `(reset)`, Ferric asserts the protected `(initial-fact)` first and then the
+registered `deffacts`, the same order as CLIPS. The fact supports explicit
+`(initial-fact)` patterns; rules with no patterns or a leading negation match
+without it. Host fact queries do not return it, and it cannot be retracted,
+modified, or duplicated.
 
 ### Behavioral Notes
 
@@ -343,10 +344,10 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 
 ### Semantics
 
-- All `deffacts` groups are processed during `(reset)`. Ferric currently
-  processes them before asserting `(initial-fact)`; pinned CLIPS uses the
-  opposite bootstrap order, as tracked in
-  [#156](https://github.com/plx/ferric-rules/issues/156).
+- All `deffacts` groups are processed during `(reset)`, after
+  `(initial-fact)` is asserted (as in CLIPS): modules in creation order, then
+  definition order within each module. Replacing a named `deffacts` moves it
+  to the end of its module's order.
 - Multiple `deffacts` groups may exist; all are processed.
 - `deffacts` groups are module-scoped. Use `MODULE::name` syntax to define
   deffacts in a specific module context.
