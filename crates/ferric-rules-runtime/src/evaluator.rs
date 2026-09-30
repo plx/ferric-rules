@@ -616,6 +616,13 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
     result
 }
 
+/// Whether `name` has the `MODULE::name` form. Every call and global read
+/// asks this; the single-byte scan rejects the usual colon-free name without
+/// setting up a substring search.
+fn is_module_qualified(name: &str) -> bool {
+    name.contains(':') && name.contains("::")
+}
+
 fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, EvalError> {
     match result {
         Err(EvalError::ReturnControl { span, .. }) => {
@@ -655,7 +662,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
         }
         RuntimeExpr::GlobalVar { name, span } => {
             // Module-qualified global references (MODULE::name) use the qualified path.
-            if name.contains("::") {
+            if is_module_qualified(name) {
                 return resolve_qualified_global(ctx, name, span.clone());
             }
             if let Some(value) = ctx.globals.get(ctx.current_module, name).cloned() {
@@ -703,7 +710,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             }
             // Module-qualified calls (MODULE::name) bypass the builtin dispatch
             // and go directly to the qualified resolution path.
-            if name.contains("::") {
+            if is_module_qualified(name) {
                 return dispatch_qualified_call(ctx, name, args, span.clone());
             }
             match dispatch_builtin(ctx, name, args, span.clone()) {
@@ -2984,7 +2991,7 @@ fn dispatch_bind(
         RuntimeExpr::GlobalVar { name, .. } => {
             let name = name.clone();
             let value = eval_inner(ctx, &args[1])?;
-            let target_module = if name.contains("::") {
+            let target_module = if is_module_qualified(&name) {
                 let qualified =
                     parse_qualified_name(&name).map_err(|msg| EvalError::TypeError {
                         function: "bind".to_string(),
