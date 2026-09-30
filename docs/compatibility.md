@@ -88,10 +88,10 @@ before installation. A dynamic single-slot cardinality error stops that RHS
 without asserting a partial fact. Void expression results are omitted from
 multislots while their output effects remain observable.
 
-Pre-1.0 migration: template metadata now records slot cardinality. Legacy raw
-engine snapshots are not a stable interchange contract across this change;
-retain application facts/rule source for rebuilding. The rehabilitation's
-versioned persistence work will define the supported snapshot envelope.
+Pre-1.0 migration: template metadata now records slot cardinality. Unversioned
+(legacy raw) engine snapshots are rejected; persist engines with the versioned
+CBOR snapshot envelope described in [Snapshots](snapshots.md), and keep
+application facts/rule source if older data must be rebuilt.
 
 Complex non-linear predicate or return-value constraints inside negated ordered
 patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
@@ -127,10 +127,11 @@ round-trips.
 
 ### initial-fact
 
-On `(reset)`, Ferric currently reasserts registered `deffacts` before
-`(initial-fact)`. The bootstrap fact enables standalone negation and `forall`
-patterns, but this ordering differs from pinned CLIPS and can reverse activation
-order; see [#156](https://github.com/plx/ferric-rules/issues/156).
+On `(reset)`, Ferric asserts the protected `(initial-fact)` first and then the
+registered `deffacts`, the same order as CLIPS. The fact supports explicit
+`(initial-fact)` patterns; rules with no patterns or a leading negation match
+without it. Host fact queries do not return it, and it cannot be retracted,
+modified, or duplicated.
 
 ### Behavioral Notes
 
@@ -406,10 +407,10 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 
 ### Semantics
 
-- All `deffacts` groups are processed during `(reset)`. Ferric currently
-  processes them before asserting `(initial-fact)`; pinned CLIPS uses the
-  opposite bootstrap order, as tracked in
-  [#156](https://github.com/plx/ferric-rules/issues/156).
+- All `deffacts` groups are processed during `(reset)`, after
+  `(initial-fact)` is asserted (as in CLIPS): modules in creation order, then
+  definition order within each module. Replacing a named `deffacts` moves it
+  to the end of its module's order.
 - Multiple `deffacts` groups may exist; all are processed.
 - `deffacts` groups are module-scoped. Use `MODULE::name` syntax to define
   deffacts in a specific module context.
@@ -1238,8 +1239,8 @@ runtime calls, including reads, and protect the allocation's lifetime:
   and use of borrowed pointers. Admission is not a handle registry and cannot
   make a stale pointer safe. `ferric_engine_free_unchecked` remains an ABI
   compatibility alias with the same lifetime obligations as ordinary free.
-- `FERRIC_ERROR_THREAD_VIOLATION` retains its numeric ABI value for compatibility;
-  ordinary raw-handle calls no longer emit it based on the creating thread.
+- `FERRIC_ERROR_THREAD_VIOLATION` keeps its numeric ABI value but is never
+  returned.
 
 Global error functions use thread-local storage. Retrieve or copy a global
 error on the same OS thread as the failing call, before another call can
@@ -1297,10 +1298,10 @@ The Go binding rejects embedded NUL before every legacy `C.CString`
 conversion. Rejections return `ErrInvalidArgument` through error-bearing APIs;
 their diagnostic identifies the offending argument and the byte offset of the
 first NUL. `Engine.GetOutputE`, `Engine.ClearOutputE`, and
-`Engine.PushInputE` (and their `PinnedEngine` counterparts) expose these
-errors for I/O arguments. The older convenience methods delegate to those
-error-aware methods and intentionally discard the error for compatibility;
-an invalid channel never aliases its prefix, and invalid input is not queued.
+`Engine.PushInputE` expose these errors for I/O arguments. The older
+convenience methods delegate to those error-aware methods and intentionally
+discard the error for compatibility; an invalid channel never aliases its
+prefix, and invalid input is not queued.
 
 Snapshot payloads remain byte-oriented and may contain NUL. Snapshot file
 paths are handled by Go's filesystem APIs rather than `C.CString`; invalid
@@ -1409,7 +1410,7 @@ reach the C ABI.
 
 A contained panic records a stable message naming the export, without
 formatting or downcasting the panic payload. The calling thread's global error
-channel is always updated; a supplied live raw or pinned engine also receives
+channel is always updated; a supplied live engine also receives
 the same per-engine message. Ownership-consuming free functions update only
 the global channel because a panic can make the handle's remaining lifetime
 indeterminate.
@@ -1421,23 +1422,8 @@ Return sentinels are fixed by category:
 | `FerricError` | `FERRIC_ERROR_INTERNAL_ERROR` |
 | Any pointer | NULL |
 | `FerricValue` | Void |
-| `bool` | false |
-| Integer/count | 0 |
 | `void` | Return after recording the diagnostic |
 
-An async submission-wrapper panic is a synchronous rejection: it returns
-`FERRIC_ERROR_INTERNAL_ERROR` and does not invoke the completion callback.
-After a pinned async submission returns `FERRIC_ERROR_OK`, an ordinary Rust
-panic while executing that accepted request is instead a terminal asynchronous
-result: the registry entry is removed, the callback fires exactly once with
-`FERRIC_ERROR_INTERNAL_ERROR`, and later work continues on the same worker.
-Registry cleanup happens before callback invocation, so the completed
-`request_id` is reusable at that point.
-The terminal diagnostic is carried by the result handle rather than written to
-the global or per-engine last-error channel. Although the worker remains
-available, the panic may have left logical engine state partially updated;
-consumers that require a known state should reset or recreate the engine before
-relying on later results.
 Containment does not cover non-unwinding termination such as allocator
 abort/OOM or an explicit process abort. Foreign callbacks must still return
 normally and obey their own no-unwind contract.

@@ -8,25 +8,19 @@ use slotmap::SlotMap;
 
 fn encode(facts: &FactBase, format: SerializationFormat) -> Vec<u8> {
     match format {
-        SerializationFormat::Bincode => bincode::serialize(facts).unwrap(),
         SerializationFormat::Json => serde_json::to_vec(facts).unwrap(),
         SerializationFormat::Cbor => {
             let mut bytes = Vec::new();
             ciborium::into_writer(facts, &mut bytes).unwrap();
             bytes
         }
-        SerializationFormat::MessagePack => rmp_serde::to_vec(facts).unwrap(),
-        SerializationFormat::Postcard => postcard::to_allocvec(facts).unwrap(),
     }
 }
 
 fn decode(bytes: &[u8], format: SerializationFormat) -> FactBase {
     match format {
-        SerializationFormat::Bincode => bincode::deserialize(bytes).unwrap(),
         SerializationFormat::Json => serde_json::from_slice(bytes).unwrap(),
         SerializationFormat::Cbor => ciborium::from_reader(bytes).unwrap(),
-        SerializationFormat::MessagePack => rmp_serde::from_slice(bytes).unwrap(),
-        SerializationFormat::Postcard => postcard::from_bytes(bytes).unwrap(),
     }
 }
 

@@ -5,11 +5,8 @@ import ferric
 
 
 ALL_FORMATS = [
-    ferric.Format.BINCODE,
     ferric.Format.JSON,
     ferric.Format.CBOR,
-    ferric.Format.MSGPACK,
-    ferric.Format.POSTCARD,
 ]
 
 SOURCE = """
@@ -24,7 +21,7 @@ SOURCE = """
 
 class TestFormatEnum:
     def test_format_values_distinct(self):
-        """The five serialization formats must be mutually distinct."""
+        """The serialization formats must be mutually distinct."""
         values = ALL_FORMATS
         assert all(
             left != right
@@ -93,7 +90,7 @@ class TestSerializeErrors:
 
     def test_cross_format_rejected(self):
         engine = ferric.Engine()
-        data = engine.serialize(format=ferric.Format.BINCODE)
+        data = engine.serialize(format=ferric.Format.CBOR)
         with pytest.raises(ferric.FerricSerializationError):
             ferric.Engine.from_snapshot(data, format=ferric.Format.JSON)
 

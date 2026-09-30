@@ -1,31 +1,23 @@
-//! Phase 4 integration tests: Standard Library.
-//!
-//! This file contains integration-level tests for Phase 4 features:
-//! - Module-qualified `MODULE::name` resolution (passes 002-004)
-//! - Cross-module function/global visibility (pass 003)
-//! - `deffunction`/`defgeneric` conflict diagnostics (pass 005)
-//! - Generic specificity ranking and `call-next-method` (passes 006-007)
-//! - Predicate/math/type builtins (pass 008)
-//! - String/symbol builtins (pass 009)
-//! - Multifield builtins (pass 010)
-//! - I/O and environment functions (pass 011)
-//! - Agenda/focus query functions (pass 012)
-//!
-//! Tests are added incrementally as each pass lands. The skeleton sections
-//! below reserve test organization for each feature area.
-
-#![allow(unused_imports)] // Will be used as passes land
+//! Integration tests for the standard library and module system:
+//! - Module-qualified `MODULE::name` resolution
+//! - Cross-module function/global visibility
+//! - `deffunction`/`defgeneric` conflict diagnostics
+//! - Generic specificity ranking and `call-next-method`
+//! - Predicate/math/type builtins
+//! - String/symbol builtins
+//! - Multifield builtins
+//! - I/O and environment functions
+//! - Agenda/focus query functions
 
 use crate::test_helpers::*;
 
 // ===========================================================================
-// Phase 4 baseline: confirm Phase 3 fixtures still pass
+// Language fixture regression checks: each fixture loads, runs, and leaves
+// the engine consistent.
 // ===========================================================================
 
 #[test]
 fn phase3_fixtures_remain_green() {
-    // This is a meta-test that confirms the Phase 3 fixture suite is
-    // still passing after Phase 4 harness alignment changes.
     let mut engine = new_utf8_engine();
     load_fixture(&mut engine, "phase3_deffunction.clp");
     run_to_completion(&mut engine);
@@ -65,7 +57,7 @@ fn phase3_expression_eval_fixture_remains_green() {
 }
 
 // ===========================================================================
-// Module-qualified name resolution (passes 002-004)
+// Module-qualified name resolution
 // ===========================================================================
 
 #[test]
@@ -123,7 +115,7 @@ fn malformed_qualified_name_diagnostics() {
 }
 
 // ---------------------------------------------------------------------------
-// Module-qualified callable and global lookup diagnostics (pass 004)
+// Module-qualified callable and global lookup diagnostics
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -706,7 +698,7 @@ fn same_name_globals_can_coexist_across_modules() {
 }
 
 // ===========================================================================
-// Cross-module function/global visibility (pass 003)
+// Cross-module function/global visibility
 // ===========================================================================
 
 #[test]
@@ -906,7 +898,7 @@ fn function_body_executes_in_own_module_context() {
 }
 
 // ===========================================================================
-// deffunction/defgeneric conflict diagnostics (pass 005)
+// deffunction/defgeneric conflict diagnostics
 // ===========================================================================
 
 #[test]
@@ -969,7 +961,7 @@ fn no_conflict_separate_names_function_and_generic() {
 }
 
 // ===========================================================================
-// Generic specificity ranking (pass 006)
+// Generic specificity ranking
 // ===========================================================================
 
 #[test]
@@ -1115,7 +1107,7 @@ fn generic_dispatch_registration_order_irrelevant() {
 }
 
 // ===========================================================================
-// call-next-method (pass 007)
+// call-next-method
 // ===========================================================================
 
 #[test]
@@ -1208,7 +1200,7 @@ fn call_next_method_outside_generic_produces_error() {
 }
 
 // ===========================================================================
-// Predicate/math/type builtins (pass 008)
+// Predicate/math/type builtins
 // ===========================================================================
 
 #[test]
@@ -1274,7 +1266,7 @@ fn evenp_oddp_in_test_ce() {
 #[test]
 fn multifieldp_false_for_non_multifield() {
     // multifieldp returns FALSE for non-multifield values.
-    // (Testing TRUE requires create$ which is added in pass 010.)
+    // (The TRUE case is covered with create$ in the multifield tests.)
     let mut engine = new_utf8_engine();
     load_ok(
         &mut engine,
@@ -1313,7 +1305,7 @@ fn type_conversion_integer_passthrough_and_float_passthrough() {
 }
 
 // ===========================================================================
-// String/symbol builtins (pass 009)
+// String/symbol builtins
 // ===========================================================================
 
 #[test]
@@ -1557,7 +1549,7 @@ fn str_cat_float_always_includes_decimal() {
 }
 
 // ===========================================================================
-// Multifield builtins (pass 010)
+// Multifield builtins
 // ===========================================================================
 
 #[test]
@@ -1775,7 +1767,7 @@ fn subseq_mf_extracts_expected_slice() {
 }
 
 // ===========================================================================
-// I/O and environment functions (pass 011)
+// I/O and environment functions
 // ===========================================================================
 
 #[test]
@@ -2000,7 +1992,7 @@ fn rhs_fact_slot_access_supports_compact_assignment_and_nested_calls() {
 }
 
 // ===========================================================================
-// Agenda/focus query functions (pass 012)
+// Agenda/focus query functions
 // ===========================================================================
 
 #[test]
@@ -2383,7 +2375,7 @@ fn focus_changes_execution_order() {
 }
 
 // ===========================================================================
-// Phase 4 integration and exit validation (pass 013)
+// Fixture-driven and cross-feature validation
 // ===========================================================================
 
 // --- Fixture-driven validation ---

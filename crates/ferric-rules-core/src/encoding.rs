@@ -1,7 +1,6 @@
 //! Text encoding mode and related errors.
 //!
 //! Controls what byte sequences are accepted when creating symbols and strings.
-//! See Section 2.4 of the implementation plan.
 
 use thiserror::Error;
 

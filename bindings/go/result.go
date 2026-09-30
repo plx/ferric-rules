@@ -27,19 +27,17 @@ const (
 )
 
 // Format selects the serialization format for Engine.SerializeAs / WithSnapshotAs.
+//
+// There is no default: the zero value Format(0) is invalid, so callers must
+// pass FormatCBOR or FormatJSON explicitly. Values 0, 3 and 4 belonged to
+// removed codecs (bincode, MessagePack, Postcard) and are rejected.
 type Format int
 
 const (
-	// FormatBincode uses compact binary encoding (default, fast and small).
-	FormatBincode Format = iota
-	// FormatJSON uses human-readable JSON encoding.
-	FormatJSON
-	// FormatCBOR uses CBOR (Concise Binary Object Representation).
-	FormatCBOR
-	// FormatMessagePack uses MessagePack encoding.
-	FormatMessagePack
-	// FormatPostcard uses Postcard encoding (compact, no_std-friendly).
-	FormatPostcard
+	// FormatJSON uses human-readable JSON encoding (debugging and inspection).
+	FormatJSON Format = 1
+	// FormatCBOR uses CBOR (Concise Binary Object Representation). Recommended.
+	FormatCBOR Format = 2
 )
 
 // HaltReason describes why engine execution stopped.
@@ -56,15 +54,26 @@ const (
 	HaltActionError
 )
 
+// String returns a human-readable label for a HaltReason.
+func (h HaltReason) String() string {
+	switch h {
+	case HaltAgendaEmpty:
+		return "agenda_empty"
+	case HaltLimitReached:
+		return "limit_reached"
+	case HaltRequested:
+		return "requested"
+	case HaltActionError:
+		return "action_error"
+	default:
+		return "unknown"
+	}
+}
+
 // RunResult contains the outcome of an engine run.
 type RunResult struct {
 	RulesFired int
 	HaltReason HaltReason
-}
-
-// FiredRule identifies a single rule that fired during a step.
-type FiredRule struct {
-	RuleName string
 }
 
 // RuleInfo describes a registered rule.

@@ -23,4 +23,10 @@ When claiming performance improvements:
 
 ### Scaling regression checks
 
-`just scaling-check` runs nine `#[ignore]` integration tests that assert asymptotic scaling behavior of core operations (join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout, exists support assertion, independent negative cleanup, dormant focus selection, template multislot join). Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.
+`just scaling-check` runs the nine `#[ignore]` tests in `crates/ferric-rules/tests/scaling_tests.rs` (release mode), which assert asymptotic scaling behavior of core operations: join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout, exists support assertion, independent negative cleanup, dormant focus selection, and template multislot join. Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.
+
+## Repository hygiene
+
+- Do not commit measurement dumps, evidence JSON, or audit/execution-record documents. Put numbers in the PR description; raw output belongs in CI artifacts or local scratch space.
+- Do not write tests that assert the literal text of CI workflow YAML.
+- Plans and work tracking live in GitHub issues, not in-repo plan documents. [`docs/history.md`](docs/history.md) is a short record of past phases; do not extend it into a status log.

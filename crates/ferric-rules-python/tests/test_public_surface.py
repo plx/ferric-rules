@@ -134,7 +134,7 @@ _ENUM_MEMBERS = {
     "Strategy": {"BREADTH", "DEPTH", "LEX", "MEA"},
 }
 if _HAS_SERDE:
-    _ENUM_MEMBERS["Format"] = {"BINCODE", "CBOR", "JSON", "MSGPACK", "POSTCARD"}
+    _ENUM_MEMBERS["Format"] = {"CBOR", "JSON"}
 
 
 # -- Expected Python protocols (dunder methods) --

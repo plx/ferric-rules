@@ -175,7 +175,7 @@ test("B-010 wide opaque fact IDs round-trip exactly in a Node subprocess", () =>
       assert.deepStrictEqual(engine.facts().map((fact) => fact.id), [id]);
       assert.deepStrictEqual(engine.findFacts("generation").map((fact) => fact.id), [id]);
 
-      for (const format of [Format.Bincode, Format.Json]) {
+      for (const format of [Format.Cbor, Format.Json]) {
         const restored = Engine.fromSnapshot(engine.serialize(format), format);
         try {
           assert.strictEqual(restored.getFact(id), null);

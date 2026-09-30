@@ -307,8 +307,6 @@ impl BetaMemory {
 pub struct RuleId(pub u32);
 
 /// A node in the beta network.
-///
-/// Phase 1 includes only root, join, and terminal nodes.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BetaNode {

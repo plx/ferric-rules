@@ -1,38 +1,11 @@
+# Weekly (and manual): build, pack, and smoke the Node release tarballs on every
+# declared native target and verify the deterministic artifact set. Not run on
+# pull requests or pushes; ci.yml builds and tests the Node binding per PR.
 name: Node Package Artifacts
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/node-package-artifacts.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "justfile"
-      - "crates/ferric-*/**"
-      - "examples/embedding/**"
-      - "packages/ferric/**"
-      - "scripts/node-package-lib.mjs"
-      - "scripts/node-package-text.mjs"
-      - "scripts/npm-command.mjs"
-      - "scripts/test-node-package-artifact.mjs"
-      - "scripts/validate-node-package.mjs"
-      - "scripts/verify-node-package-artifacts.mjs"
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/node-package-artifacts.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "justfile"
-      - "crates/ferric-*/**"
-      - "examples/embedding/**"
-      - "packages/ferric/**"
-      - "scripts/node-package-lib.mjs"
-      - "scripts/node-package-text.mjs"
-      - "scripts/npm-command.mjs"
-      - "scripts/test-node-package-artifact.mjs"
-      - "scripts/validate-node-package.mjs"
-      - "scripts/verify-node-package-artifacts.mjs"
+  schedule:
+    - cron: '53 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -48,8 +21,8 @@ jobs:
     name: Validate Node artifact contract
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: Validate package metadata
@@ -95,13 +68,13 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         if: matrix.libc != 'musl'
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.rust_target }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: matrix.libc != 'musl'
         with:
           node-version: "22"
@@ -161,7 +134,7 @@ jobs:
                 --binary crates/ferric-rules-napi/ferric-rules-napi.node \
                 --artifacts-dir node-release-artifacts
             '
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: node-package-${{ matrix.target }}
           path: node-release-artifacts/*.tgz
@@ -173,11 +146,11 @@ jobs:
     needs: pack-and-smoke
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: node-package-*
           path: downloaded-node-artifacts

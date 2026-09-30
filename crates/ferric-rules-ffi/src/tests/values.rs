@@ -1,4 +1,4 @@
-//! Tests for FFI value types, conversion, queries, and resource management (Pass 007).
+//! Tests for FFI value types, conversion, queries, and resource management.
 
 use std::ffi::{CStr, CString};
 use std::ptr;

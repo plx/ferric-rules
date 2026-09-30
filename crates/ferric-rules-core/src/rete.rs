@@ -1697,7 +1697,7 @@ impl ReteNetwork {
     /// Fallible consistency checks, also available to release-built consumers.
     #[doc(hidden)]
     pub fn validate_consistency(&self) -> Result<(), String> {
-        // --- Phase 1 substructure checks ---
+        // --- Substructure checks ---
         self.token_store.validate_consistency()?;
         self.alpha.validate_consistency()?;
         self.beta.validate_consistency()?;
@@ -2258,9 +2258,11 @@ mod tests {
         let age = make_symbol(&mut symbol_table, "age");
         let alice_val = Value::Symbol(make_symbol(&mut symbol_table, "alice"));
 
-        // Build rule: (person ?x) (age ?x 30) => activation
-        // Pattern 1: (person ?x) — binds ?x to field 0
-        // Pattern 2: (age ?x 30) — field 0 must match ?x, field 1 must equal 30
+        // Shape of the rule: (person ?x) (age ?x 30) => activation.
+        // The hand-built joins carry no join tests and bind no variables, so this
+        // test only checks that a two-join chain yields one activation once both
+        // facts are present. Variable-binding joins are covered by the compiled
+        // pipeline tests in ferric-rules-runtime.
 
         // Alpha network:
         // Entry for (person ...) -> alpha_mem1
@@ -2285,33 +2287,12 @@ mod tests {
 
         let root_id = rete.beta.root_id();
 
-        // Join1: match (person ?x) — no tests, but we'd need to bind ?x
-        // For Phase 1 simplicity, we won't actually bind ?x here. We'll just
-        // propagate the token. The join test will check slot equality.
+        // Join1: (person ...), no join tests.
         let (join1_id, join1_mem_id) =
             rete.beta
                 .create_join_node(root_id, alpha_mem1, vec![], vec![]);
 
-        // Join2: match (age ?x 30) — test that age's field 0 equals person's field 0
-        // This requires a join test: alpha_slot=Ordered(0), beta_var=VarId(0), Equal
-        // But for this to work, we need the first pattern to have bound ?x to VarId(0).
-        //
-        // Phase 1 note: We're not actually binding variables during join. We're just
-        // copying parent bindings. For this test to work, we need a different approach:
-        // we'll manually set up bindings or simplify the test.
-        //
-        // Let's simplify: we'll just test that both facts exist and the join creates
-        // a token with both facts. We won't test variable binding for now.
-
-        // Actually, let's test the join test mechanism properly. We need to:
-        // 1. Create a token with bindings for ?x
-        // 2. Have the join test check that the age fact's field 0 matches ?x
-        //
-        // For this, we'll manually create a token in join1's memory with bindings.
-
-        // For now, let's just test that a two-pattern rule produces one activation
-        // when both facts are asserted. We'll skip the variable binding check.
-
+        // Join2: (age ... 30), no join tests (the constant test lives in the alpha net).
         let (join2_id, _join2_mem_id) =
             rete.beta
                 .create_join_node(join1_id, alpha_mem2, vec![], vec![]);
@@ -2350,18 +2331,7 @@ mod tests {
             assert_eq!(mem.len(), 1, "Join1 should have one token");
         }
 
-        // Assert age fact — should join with person token and create activation
-        // But this requires the join test to check variable equality, which we
-        // haven't implemented binding for. For Phase 1, let's just verify that
-        // the join happens when both facts are present.
-        //
-        // Actually, the join test will fail because we don't have bindings in the
-        // person token. Let's remove the join test for this simple test.
-
-        // Let's restart with a simpler test: two patterns, no variable binding,
-        // just check that both facts produce an activation.
-
-        // I'll modify this test to not use join tests for now.
+        // Assert age fact — joins with the person token and creates the activation.
         let activations = rete.assert_fact(age_fact_id, &age_fact, &fact_base);
 
         // With no join tests, the join should succeed and create an activation

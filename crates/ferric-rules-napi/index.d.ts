@@ -23,18 +23,16 @@ export const enum Encoding {
   /** ASCII symbols, UTF-8 strings. */
   AsciiSymbolsUtf8Strings = 2
 }
-/** Serialization format for engine snapshots. */
+/**
+ * Serialization format for engine snapshots.
+ *
+ * Values 0, 3 and 4 belonged to removed codecs and are rejected.
+ */
 export const enum Format {
-  /** Compact binary (bincode). Fast and small. */
-  Bincode = 0,
-  /** JSON (human-readable). */
+  /** JSON (human-readable; for debugging and inspection). */
   Json = 1,
-  /** CBOR. */
-  Cbor = 2,
-  /** `MessagePack`. */
-  MessagePack = 3,
-  /** Postcard. */
-  Postcard = 4
+  /** CBOR (recommended, default). */
+  Cbor = 2
 }
 /** Options for constructing an [`Engine`]. */
 export interface EngineOptions {

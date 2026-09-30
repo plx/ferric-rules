@@ -1,16 +1,16 @@
 # Snapshot contract
 
 Enable the Rust `serde` feature and use `SerializationFormat::Cbor` (also
-`SerializationFormat::RECOMMENDED`) for persistence. The recommended codec is
-the existing `ciborium` dependency; the unmaintained bincode 1.x codec remains
-available only as an experimental format. JSON, MessagePack, and Postcard also
-remain experimental. This changes no format discriminants or method signatures.
+`SerializationFormat::RECOMMENDED`) for persistence, via the `ciborium` crate.
+`SerializationFormat::Json` is also available for debugging and inspection.
+The former experimental bincode, MessagePack, and Postcard codecs were removed;
+their envelope and C/binding discriminants (`0`, `3`, `4`) are rejected and will
+not be reused.
 
 The CLI built with `--features serde` also defaults to CBOR for both
 `ferric snapshot rules.clp -o state.ferric` and
-`ferric repl --snapshot state.ferric`. Existing callers choosing an experimental
-codec must specify `--format` when saving and `--snapshot-format` when restoring.
-The default change accompanies the legacy raw snapshot break below.
+`ferric repl --snapshot state.ferric`. JSON snapshots need `--format json` when
+saving and `--snapshot-format json` when restoring.
 
 Snapshots retain facts and their internal rule-matching identities, templates, globals and their reset
 initializers, deffacts, functions, rules, focus, queued activations, refraction,
@@ -57,13 +57,13 @@ migration framework.
 
 ## Envelope and limits
 
-Every format uses the same binary envelope, including experimental JSON:
+Every format uses the same binary envelope, including JSON:
 
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
 | 8–9 | Little-endian schema version (`2`) |
-| 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
+| 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
 | 20–51 | SHA-256 of bytes 0–19 followed by the payload |

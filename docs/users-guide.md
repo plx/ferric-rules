@@ -745,9 +745,9 @@ limits, a corruption checksum, and validation of restored engine state. Facts,
 globals, rules, output, focus, and pending activations survive a round trip;
 resuming does not re-fire an activation that already fired.
 
-`Bincode`, `Json`, `MessagePack`, and `Postcard` remain experimental formats.
-Pass the same format to `deserialize` that you used for `serialize`. JSON's
-payload is readable after the binary envelope and rejects non-finite floats.
+`Json` is also available for debugging and inspection. Pass the same format to
+`deserialize` that you used for `serialize`. JSON's payload is readable after
+the binary envelope and rejects non-finite floats.
 
 Legacy unversioned snapshots are explicitly rejected. Use the producing Ferric
 version to export durable application data before upgrading; rebuilding a
@@ -875,11 +875,19 @@ A non-exhaustive list worth internalizing:
 Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 (C ABI) and the higher-level wrappers built on it:
 
-- **C / C++ / Swift / Kotlin**: link against `libferric_rules_ffi` and include
+- **C / C++ / other FFI hosts**: link against `libferric_rules_ffi` and include
   the generated `ferric.h`. See [`compatibility.md`](compatibility.md)
   §16.13 for the C contract.
-- **Go**: `bindings/go` provides an idiomatic façade (`Engine`,
-  `Coordinator`, `Manager`) plus a Temporal activity wrapper.
+- **TypeScript / Node.js**: `packages/ferric` (`@ferric-rules/node`, backed by
+  the `crates/ferric-rules-napi` native addon) provides a synchronous `Engine`,
+  a worker-backed `EngineHandle`, and an `EnginePool` for Node 22+. See
+  [its README](../packages/ferric/README.md) and the
+  [normative contract](typescript-binding-normative-contract.md).
+- **Swift**: `bindings/swift` is a local Swift 6 package over the C ABI for
+  macOS 15 and iOS 18 or newer. See
+  [its README](../bindings/swift/README.md) for building and use.
+- **Go**: `bindings/go` provides an idiomatic `Engine` façade; see its
+  [README](../bindings/go/README.md).
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through
   `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.13. Python 3.14,
   free-threaded CPython, subinterpreters, and other interpreters are not

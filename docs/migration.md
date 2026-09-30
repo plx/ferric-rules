@@ -36,6 +36,17 @@ iterator in insertion order instead of a borrowed hash set. Collect that
 iterator when a materialized collection is needed. Public engine fact APIs
 retain their existing result types.
 
+## Pre-1.0 snapshot codec removal
+
+The experimental bincode, MessagePack and Postcard snapshot codecs were removed
+from every surface: Rust `SerializationFormat`, the CLI `--format` /
+`--snapshot-format` values, the C ABI (`FERRIC_SERIALIZATION_FORMAT_BINCODE`,
+`_MESSAGE_PACK`, `_POSTCARD` and the `ferric_engine_{serialize,deserialize}_{bincode,msgpack,postcard}`
+exports), and the TypeScript, Python and Go `Format` enums. CBOR (the default)
+and JSON remain, with unchanged numeric values (JSON `1`, CBOR `2`); the removed
+values `0`, `3` and `4` are now rejected. To keep a snapshot written with a
+removed codec, restore it with the producing version and re-save it as CBOR.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:
@@ -203,7 +214,8 @@ C FFI surface. Key differences:
 - Raw engines may move between OS threads; the host must serialize runtime
   calls and protect borrowed-pointer use and destruction. Per-engine error
   copies are separately synchronized. Both free entry points now have the same
-  lifetime contract. The legacy thread-violation error discriminant is retained.
+  lifetime contract. The legacy thread-violation error code is reserved but
+  never returned.
 - Error handling uses return codes plus synchronized error channels. A failure
   involving a validated raw-engine handle updates both its per-engine snapshot
   and the calling thread's global fallback; pre-handle failures update only
@@ -229,10 +241,21 @@ requirement without adding an asynchronous operation queue.
 Go `Engine` now serializes its complete native operation and diagnostic-copy
 window internally, so callers may use it from different goroutines without a
 lifetime `runtime.LockOSThread`. Constructors pin temporarily for thread-local
-error retrieval. Raw `Halt` queues behind an active operation; use a cancelable
-run context or `PinnedEngine.Halt` for active-run cancellation. Existing worker
-queues and pool ownership rules remain in force, including not retaining an
-engine borrowed inside a manager callback.
+error retrieval. `Halt` queues behind an active operation; use a cancelable
+run context for active-run cancellation.
+
+Pre-1.0 breaking changes to the Go binding (September 2026): the package is
+now just the core `Engine`. `PinnedEngine`, `Coordinator`, `Manager`,
+`NewManager`, `Manager.Evaluate`/`EvaluateNative`, the `Wire*` types and
+conversion helpers, `PanicError`, the `WithLogger`/`WithTracerProvider`/
+`WithMeterProvider` observability options, and the `bindings/go/temporal`
+package were removed, along with their OpenTelemetry and Temporal module
+dependencies. Share one `Engine` across goroutines, or create one per
+goroutine for parallel work, and wrap it in your own queue or activity if you
+need one. `Engine.Clear` now returns an `error` (including `ErrEngineClosed`)
+instead of discarding it. `Engine.Step` now returns `(bool, error)`, reporting
+whether a rule fired; the `FiredRule` type was removed because its `RuleName`
+was never populated.
 
 ---
 
@@ -328,7 +351,15 @@ constraints, general static type inference, or dynamic constraint toggles.
 - Requested callable depth remains configurable and persists, while actual
   evaluation is capped at 32 calls and 64 expression frames. Excessive recursive
   work returns an action diagnostic; deeply nested definitions are rejected.
-- Go source imports use `github.com/plx/ferric-rules/bindings/go`. Raw operations
-  serialize across goroutines, while worker APIs retain offload and cancellation.
+- Go source imports use `github.com/plx/ferric-rules/bindings/go`. Engine
+  operations serialize across goroutines; the worker/pool APIs were removed.
   Swift's local package uses Swift 6, macOS 15 or iOS 18, with asynchronous native
   work and owned results; see [its build instructions](../bindings/swift/README.md).
+- The `ferric-rules-pinned` crate and the `ferric_pinned_*` C API are removed.
+  They only worked around the old thread-affine engine; `Engine` is now
+  `Send + Sync`, so move it to the thread that should run it or wrap it in your
+  own worker. The no-op `Engine::check_thread_affinity` and
+  `Engine::move_to_current_thread` shims and `EngineError::WrongThread` are
+  gone too. In C, `FERRIC_ERROR_THREAD_VIOLATION` (2) stays defined but is
+  never returned, and the former pinned error codes 11-15 are retired and will
+  not be reused.

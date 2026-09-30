@@ -201,12 +201,8 @@ fn source_nonfinite_values_print_in_normal_and_late_rules() {
 // boundary, not a reason to omit the ordinary or late nonfinite output case.
 // The finite FIXTURES above still exercise every SerializationFormat.
 #[cfg(feature = "serde")]
-const NONFINITE_FORMATS: &[ferric_rules::runtime::SerializationFormat] = &[
-    ferric_rules::runtime::SerializationFormat::Bincode,
-    ferric_rules::runtime::SerializationFormat::Cbor,
-    ferric_rules::runtime::SerializationFormat::MessagePack,
-    ferric_rules::runtime::SerializationFormat::Postcard,
-];
+const NONFINITE_FORMATS: &[ferric_rules::runtime::SerializationFormat] =
+    &[ferric_rules::runtime::SerializationFormat::Cbor];
 
 #[cfg(feature = "serde")]
 #[test]

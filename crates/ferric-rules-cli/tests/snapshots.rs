@@ -51,7 +51,7 @@ fn default_snapshot_and_repl_resume_use_cbor_and_preserve_pending_work() {
 }
 
 #[test]
-fn explicit_experimental_codec_still_works_and_legacy_errors_are_useful() {
+fn explicit_json_codec_works_and_legacy_errors_are_useful() {
     let consumer = tempfile::tempdir().unwrap();
     std::fs::write(consumer.path().join("rules.clp"), SOURCE).unwrap();
     let saved = Command::new(env!("CARGO_BIN_EXE_ferric"))
@@ -62,13 +62,13 @@ fn explicit_experimental_codec_still_works_and_legacy_errors_are_useful() {
             "-o",
             "state.ferric",
             "--format",
-            "bincode",
+            "json",
         ])
         .output()
         .unwrap();
     assert!(saved.status.success(), "{saved:?}");
     let bytes = std::fs::read(consumer.path().join("state.ferric")).unwrap();
-    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Bincode).unwrap();
+    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Json).unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
     assert_eq!(engine.find_facts("seen").unwrap().len(), 2);
 

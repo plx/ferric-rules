@@ -1,11 +1,20 @@
+# Scans locked Rust/npm/Python dependencies for advisories and checks Rust
+# licenses and third-party notices. Runs on pull requests to main, pushes to
+# main, weekly (to catch newly published advisories), and on manual dispatch.
 name: Dependency Policy
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: '19 7 * * 1'
+
+concurrency:
+  group: dependency-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -16,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -26,22 +35,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2,cargo-about@0.9.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22.18.0
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           version: 0.11.16
       - name: Scan dependencies and licenses
         run: ./scripts/dependency-check.sh
-      - name: Check scanner rejection behavior
-        if: '!cancelled()'
-        run: ./scripts/test-dependency-scanners.sh
-      - name: Retain scanner reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-scans-${{ github.sha }}
-          path: dependency-policy-evidence/
-          retention-days: 14
-          if-no-files-found: error

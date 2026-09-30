@@ -1,4 +1,4 @@
-//! Tests for copy-to-buffer error APIs (Pass 006).
+//! Tests for copy-to-buffer error APIs.
 
 use crate::engine::{ferric_engine_free, ferric_engine_last_error_copy, ferric_engine_new};
 use crate::error::{

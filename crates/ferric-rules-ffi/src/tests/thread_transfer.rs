@@ -120,7 +120,7 @@ fn overlapping_calls_and_free_are_rejected_while_allocator_holds_admission() {
             let mut bytes = std::ptr::null_mut();
             let mut len = 0;
             assert_eq!(
-                ferric_engine_serialize_bincode(
+                ferric_engine_serialize_cbor(
                     engine,
                     Some(allocator),
                     std::ptr::addr_of_mut!(context).cast(),

@@ -2714,44 +2714,35 @@ pub unsafe extern "C" fn ferric_engine_free_unchecked(engine: *mut FerricEngine)
 
 /// Serialization format selector for `ferric_engine_serialize_as` and
 /// `ferric_engine_deserialize_as`.
+///
+/// Values 0, 3 and 4 belonged to removed codecs (bincode, `MessagePack`,
+/// Postcard) and are rejected; they will not be reused.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(feature = "serde")]
 pub enum FerricSerializationFormat {
-    /// Compact binary (bincode). Fast and small.
-    Bincode = 0,
-    /// JSON (human-readable, larger output).
+    /// JSON (human-readable, larger output; for debugging and inspection).
     Json = 1,
-    /// CBOR (Concise Binary Object Representation).
+    /// CBOR (Concise Binary Object Representation). Recommended.
     Cbor = 2,
-    /// `MessagePack` (compact binary, JSON-like schema).
-    MessagePack = 3,
-    /// Postcard (compact, `no_std`-friendly binary).
-    Postcard = 4,
 }
 
 #[cfg(feature = "serde")]
 impl FerricSerializationFormat {
     /// Try to convert a raw C integer to a valid format variant.
-    /// Returns `None` for out-of-range discriminants.
+    /// Returns `None` for unknown or removed discriminants.
     pub(crate) fn from_raw(raw: u32) -> Option<Self> {
         match raw {
-            0 => Some(Self::Bincode),
             1 => Some(Self::Json),
             2 => Some(Self::Cbor),
-            3 => Some(Self::MessagePack),
-            4 => Some(Self::Postcard),
             _ => None,
         }
     }
 
     pub(crate) fn to_runtime(self) -> ferric_rules_runtime::SerializationFormat {
         match self {
-            Self::Bincode => ferric_rules_runtime::SerializationFormat::Bincode,
             Self::Json => ferric_rules_runtime::SerializationFormat::Json,
             Self::Cbor => ferric_rules_runtime::SerializationFormat::Cbor,
-            Self::MessagePack => ferric_rules_runtime::SerializationFormat::MessagePack,
-            Self::Postcard => ferric_rules_runtime::SerializationFormat::Postcard,
         }
     }
 }
@@ -2875,10 +2866,20 @@ unsafe fn deserialize_engine_impl(
 /// Serialize engine state to bytes in the specified format.
 ///
 /// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
-/// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
-/// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
+/// (1 = JSON, 2 = CBOR). Returns `FERRIC_ERROR_INVALID_ARGUMENT` for any other
+/// value, including the removed codec values 0, 3 and 4.
 ///
-/// See `ferric_engine_serialize_bincode` for memory allocation details.
+/// ## Memory allocation
+///
+/// - If `alloc_fn` is **non-null**: the callback is called once with the exact
+///   byte count needed. The serialized data is written into the returned
+///   buffer. The caller owns this memory and is responsible for freeing it
+///   (via their own allocator). `alloc_context` is passed through unchanged.
+///
+/// - If `alloc_fn` is **null**: Rust allocates the output buffer internally.
+///   The caller must free it with `ferric_bytes_free(out_data, out_len)`.
+///
+/// In both cases, `*out_data` and `*out_len` are set on success.
 ///
 /// # Safety
 ///
@@ -2920,10 +2921,11 @@ pub unsafe extern "C" fn ferric_engine_serialize_as(
 /// Deserialize an engine from bytes in the specified format.
 ///
 /// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
-/// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
-/// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
+/// (1 = JSON, 2 = CBOR). Returns `FERRIC_ERROR_INVALID_ARGUMENT` for any other
+/// value, including the removed codec values 0, 3 and 4.
 ///
-/// See `ferric_engine_deserialize_bincode` for details.
+/// The returned engine handle is ready for use (e.g. `ferric_engine_run`).
+/// It may be transferred between threads under the same serialized-access contract.
 ///
 /// # Safety
 ///
@@ -2948,127 +2950,13 @@ pub unsafe extern "C" fn ferric_engine_deserialize_as(
 
 // ── Per-format convenience functions ─────────────────────────────────────
 
-/// Serialize engine state to bincode.
+/// Serialize engine state to CBOR (the recommended snapshot format).
 ///
-/// ## Memory allocation
-///
-/// - If `alloc_fn` is **non-null**: the callback is called once with the exact
-///   byte count needed. The serialized data is written into the returned
-///   buffer. The caller owns this memory and is responsible for freeing it
-///   (via their own allocator). `alloc_context` is passed through unchanged.
-///
-/// - If `alloc_fn` is **null**: Rust allocates the output buffer internally.
-///   The caller must free it with `ferric_bytes_free(out_data, out_len)`.
-///
-/// In both cases, `*out_data` and `*out_len` are set on success.
+/// See `ferric_engine_serialize_as` for memory allocation details.
 ///
 /// # Safety
 ///
-/// - `engine` must be a valid engine pointer.
-/// - `out_data` and `out_len` must be valid, non-null pointers.
-/// - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
-///   (or null to signal failure).
-#[cfg_attr(ferric_ffi_compile, ffi_export)]
-#[no_mangle]
-#[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_serialize_bincode(
-    engine: *const FerricEngine,
-    alloc_fn: FerricAllocFn,
-    alloc_context: *mut std::ffi::c_void,
-    out_data: *mut *mut u8,
-    out_len: *mut usize,
-) -> FerricError {
-    serialize_engine_impl(
-        engine,
-        ferric_rules_runtime::SerializationFormat::Bincode,
-        alloc_fn,
-        alloc_context,
-        out_data,
-        out_len,
-    )
-}
-
-/// Deserialize an engine from bincode bytes.
-///
-/// The returned engine handle is ready for use (e.g. `ferric_engine_run`).
-/// It may be transferred between threads under the same serialized-access contract.
-///
-/// # Safety
-///
-/// - `data` must point to `len` valid, readable bytes.
-/// - `out_engine` must be a valid, non-null pointer.
-/// - The returned engine must be freed with `ferric_engine_free`.
-#[cfg_attr(ferric_ffi_compile, ffi_export)]
-#[no_mangle]
-#[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_deserialize_bincode(
-    data: *const u8,
-    len: usize,
-    out_engine: *mut *mut FerricEngine,
-) -> FerricError {
-    deserialize_engine_impl(
-        data,
-        len,
-        ferric_rules_runtime::SerializationFormat::Bincode,
-        out_engine,
-    )
-}
-
-/// Serialize engine state to JSON.
-///
-/// See `ferric_engine_serialize_bincode` for memory allocation details.
-///
-/// # Safety
-///
-/// Same safety requirements as `ferric_engine_serialize_bincode`.
-#[cfg_attr(ferric_ffi_compile, ffi_export)]
-#[no_mangle]
-#[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_serialize_json(
-    engine: *const FerricEngine,
-    alloc_fn: FerricAllocFn,
-    alloc_context: *mut std::ffi::c_void,
-    out_data: *mut *mut u8,
-    out_len: *mut usize,
-) -> FerricError {
-    serialize_engine_impl(
-        engine,
-        ferric_rules_runtime::SerializationFormat::Json,
-        alloc_fn,
-        alloc_context,
-        out_data,
-        out_len,
-    )
-}
-
-/// Deserialize an engine from JSON bytes.
-///
-/// # Safety
-///
-/// Same safety requirements as `ferric_engine_deserialize_bincode`.
-#[cfg_attr(ferric_ffi_compile, ffi_export)]
-#[no_mangle]
-#[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_deserialize_json(
-    data: *const u8,
-    len: usize,
-    out_engine: *mut *mut FerricEngine,
-) -> FerricError {
-    deserialize_engine_impl(
-        data,
-        len,
-        ferric_rules_runtime::SerializationFormat::Json,
-        out_engine,
-    )
-}
-
-/// Serialize engine state to CBOR.
-///
-/// See `ferric_engine_serialize_bincode` for memory allocation details.
-///
-/// # Safety
-///
-/// Same safety requirements as `ferric_engine_serialize_bincode`.
+/// Same safety requirements as `ferric_engine_serialize_as`.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
@@ -3093,7 +2981,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_cbor(
 ///
 /// # Safety
 ///
-/// Same safety requirements as `ferric_engine_deserialize_bincode`.
+/// Same safety requirements as `ferric_engine_deserialize_as`.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
@@ -3110,17 +2998,17 @@ pub unsafe extern "C" fn ferric_engine_deserialize_cbor(
     )
 }
 
-/// Serialize engine state to `MessagePack`.
+/// Serialize engine state to JSON.
 ///
-/// See `ferric_engine_serialize_bincode` for memory allocation details.
+/// See `ferric_engine_serialize_as` for memory allocation details.
 ///
 /// # Safety
 ///
-/// Same safety requirements as `ferric_engine_serialize_bincode`.
+/// Same safety requirements as `ferric_engine_serialize_as`.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_serialize_msgpack(
+pub unsafe extern "C" fn ferric_engine_serialize_json(
     engine: *const FerricEngine,
     alloc_fn: FerricAllocFn,
     alloc_context: *mut std::ffi::c_void,
@@ -3129,7 +3017,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_msgpack(
 ) -> FerricError {
     serialize_engine_impl(
         engine,
-        ferric_rules_runtime::SerializationFormat::MessagePack,
+        ferric_rules_runtime::SerializationFormat::Json,
         alloc_fn,
         alloc_context,
         out_data,
@@ -3137,15 +3025,15 @@ pub unsafe extern "C" fn ferric_engine_serialize_msgpack(
     )
 }
 
-/// Deserialize an engine from `MessagePack` bytes.
+/// Deserialize an engine from JSON bytes.
 ///
 /// # Safety
 ///
-/// Same safety requirements as `ferric_engine_deserialize_bincode`.
+/// Same safety requirements as `ferric_engine_deserialize_as`.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_deserialize_msgpack(
+pub unsafe extern "C" fn ferric_engine_deserialize_json(
     data: *const u8,
     len: usize,
     out_engine: *mut *mut FerricEngine,
@@ -3153,55 +3041,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_msgpack(
     deserialize_engine_impl(
         data,
         len,
-        ferric_rules_runtime::SerializationFormat::MessagePack,
-        out_engine,
-    )
-}
-
-/// Serialize engine state to Postcard.
-///
-/// See `ferric_engine_serialize_bincode` for memory allocation details.
-///
-/// # Safety
-///
-/// Same safety requirements as `ferric_engine_serialize_bincode`.
-#[cfg_attr(ferric_ffi_compile, ffi_export)]
-#[no_mangle]
-#[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_serialize_postcard(
-    engine: *const FerricEngine,
-    alloc_fn: FerricAllocFn,
-    alloc_context: *mut std::ffi::c_void,
-    out_data: *mut *mut u8,
-    out_len: *mut usize,
-) -> FerricError {
-    serialize_engine_impl(
-        engine,
-        ferric_rules_runtime::SerializationFormat::Postcard,
-        alloc_fn,
-        alloc_context,
-        out_data,
-        out_len,
-    )
-}
-
-/// Deserialize an engine from Postcard bytes.
-///
-/// # Safety
-///
-/// Same safety requirements as `ferric_engine_deserialize_bincode`.
-#[cfg_attr(ferric_ffi_compile, ffi_export)]
-#[no_mangle]
-#[cfg(feature = "serde")]
-pub unsafe extern "C" fn ferric_engine_deserialize_postcard(
-    data: *const u8,
-    len: usize,
-    out_engine: *mut *mut FerricEngine,
-) -> FerricError {
-    deserialize_engine_impl(
-        data,
-        len,
-        ferric_rules_runtime::SerializationFormat::Postcard,
+        ferric_rules_runtime::SerializationFormat::Json,
         out_engine,
     )
 }
