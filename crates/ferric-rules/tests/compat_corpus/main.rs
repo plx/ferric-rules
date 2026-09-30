@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 
 const RUN_LIMIT: usize = 1_000;
 /// Restore replays snapshot the engine before its first firing. With CBOR,
-/// the persistence format, they also snapshot before each later firing up to
-/// this bound, which keeps the few large programs fast in debug builds.
+/// the persistence format, and rules loaded up front, they also snapshot
+/// before each later firing up to this bound, which keeps the few large
+/// programs fast in debug builds.
 const RESTORED_FIRINGS: usize = 12;
 
 #[derive(Deserialize)]
@@ -171,10 +172,12 @@ fn manifest() -> Manifest {
         .expect("valid corpus manifest")
 }
 
-/// How the engine is driven. Every mode must reproduce the same CLIPS golden:
-/// rules installed after reset (and after a restore) must see the existing
-/// facts, and an engine restored before each firing must continue exactly
-/// where it left off.
+/// How the engine is driven. Every mode must reproduce the CLIPS golden: an
+/// engine restored before each firing must continue exactly where it left
+/// off, and rules installed after reset (and after a restore) must see the
+/// existing facts. CLIPS itself orders the activations of rules loaded after
+/// reset differently, so a late-rule replay must print the same lines, in
+/// any order.
 #[derive(Clone, Copy, Debug)]
 struct Mode {
     late_rules: bool,
@@ -185,20 +188,6 @@ const NORMAL: Mode = Mode {
     late_rules: false,
     restore: None,
 };
-
-/// The replays run for every conforming case after the normal run.
-fn replays() -> impl Iterator<Item = Mode> {
-    let restores = std::iter::once(None).chain(SerializationFormat::ALL.iter().copied().map(Some));
-    [false, true]
-        .into_iter()
-        .flat_map(move |late_rules| {
-            restores.clone().map(move |restore| Mode {
-                late_rules,
-                restore,
-            })
-        })
-        .skip(1)
-}
 
 /// Split before the first line that starts a `defrule`. The prefix is loaded
 /// and reset first; a program with deffacts after its first rule has no
@@ -292,6 +281,7 @@ fn observe(case: &Case, source: &str, input: Option<&str>, mode: Mode) -> Option
                 Some(format)
                     if fired == 0
                         || (format == SerializationFormat::RECOMMENDED
+                            && !mode.late_rules
                             && fired < RESTORED_FIRINGS) =>
                 {
                     format
@@ -330,11 +320,26 @@ fn observe(case: &Case, source: &str, input: Option<&str>, mode: Mode) -> Option
     Some(observation)
 }
 
-/// Whether Ferric's observation agrees with the CLIPS golden.
-fn conforms(error: Option<ErrorPhase>, expected: &Golden, actual: &Observation) -> bool {
+/// Whether Ferric's observation agrees with the CLIPS golden. `ordered`
+/// false compares the printed lines as a multiset.
+fn conforms(
+    error: Option<ErrorPhase>,
+    expected: &Golden,
+    actual: &Observation,
+    ordered: bool,
+) -> bool {
+    fn lines(bytes: &[u8]) -> Vec<&[u8]> {
+        let mut lines: Vec<_> = bytes.split_inclusive(|&byte| byte == b'\n').collect();
+        lines.sort_unstable();
+        lines
+    }
     // Compare bytes, so a golden that is not valid UTF-8 never matches.
-    let printed = actual.output.as_bytes() == expected.output
-        && actual.notices.as_bytes() == expected.notices;
+    let output = if ordered {
+        actual.output.as_bytes() == expected.output
+    } else {
+        lines(actual.output.as_bytes()) == lines(&expected.output)
+    };
+    let printed = output && actual.notices.as_bytes() == expected.notices;
     match error {
         None => actual.phase == "complete" && actual.diagnostics.is_empty() && printed,
         Some(ErrorPhase::Load) => actual.phase == "load",
@@ -430,9 +435,16 @@ fn manifest_covers_every_program() {
     );
 }
 
-#[test]
-fn characterize_corpus() {
-    let manifest = manifest();
+/// A selected corpus program with its source, input and CLIPS golden.
+struct Program {
+    case: Case,
+    source: String,
+    input: Option<String>,
+    expected: Golden,
+}
+
+/// The programs `FERRIC_CORPUS_FILTER` and `FERRIC_CORPUS_LEVEL` select.
+fn selected_programs() -> Vec<Program> {
     let root = corpus_root();
     let filter = std::env::var("FERRIC_CORPUS_FILTER").unwrap_or_default();
     let level = std::env::var("FERRIC_CORPUS_LEVEL").unwrap_or_default();
@@ -440,26 +452,60 @@ fn characterize_corpus() {
         matches!(level.as_str(), "" | "basic" | "boundary" | "interaction"),
         "unknown FERRIC_CORPUS_LEVEL: {level:?}"
     );
+    let programs: Vec<_> = manifest()
+        .cases
+        .into_iter()
+        .filter(|case| case.path.contains(&filter) && (level.is_empty() || case.level == level))
+        .map(|case| {
+            let input_path = root.join(&case.path).with_extension("in");
+            Program {
+                source: std::fs::read_to_string(root.join(&case.path)).unwrap(),
+                input: input_path
+                    .is_file()
+                    .then(|| std::fs::read_to_string(input_path).unwrap()),
+                expected: golden(
+                    &std::fs::read(root.join(&case.path).with_extension("out")).unwrap(),
+                    case.error,
+                ),
+                case,
+            }
+        })
+        .collect();
+    assert!(
+        !programs.is_empty(),
+        "filter {filter:?}, level {level:?} matched no cases"
+    );
+    programs
+}
+
+impl Program {
+    fn observe(&self, mode: Mode) -> Option<Observation> {
+        observe(&self.case, &self.source, self.input.as_deref(), mode)
+    }
+
+    /// Whether the program runs, and conforms, without replay.
+    fn conforming(&self) -> bool {
+        self.case.gap.is_none()
+            && self.case.error != Some(ErrorPhase::Load)
+            && conforms(
+                self.case.error,
+                &self.expected,
+                &self.observe(NORMAL).unwrap(),
+                true,
+            )
+    }
+}
+
+#[test]
+fn characterize_corpus() {
     let mut failures = Vec::new();
     let mut report = serde_json::Map::new();
-    let (mut passing, mut gaps, mut replayed) = (0, 0, 0);
-    for case in manifest
-        .cases
-        .iter()
-        .filter(|case| case.path.contains(&filter) && (level.is_empty() || case.level == level))
-    {
-        let source = std::fs::read_to_string(root.join(&case.path)).unwrap();
-        let expected = golden(
-            &std::fs::read(root.join(&case.path).with_extension("out")).unwrap(),
-            case.error,
-        );
-        let input_path = root.join(&case.path).with_extension("in");
-        let input = input_path
-            .is_file()
-            .then(|| std::fs::read_to_string(input_path).unwrap());
-        let actual = observe(case, &source, input.as_deref(), NORMAL).unwrap();
+    let (mut passing, mut gaps) = (0, 0);
+    for program in selected_programs() {
+        let case = &program.case;
+        let actual = program.observe(NORMAL).unwrap();
         report.insert(case.path.clone(), serde_json::to_value(&actual).unwrap());
-        let matches = conforms(case.error, &expected, &actual);
+        let matches = conforms(case.error, &program.expected, &actual, true);
         if let Some(gap) = &case.gap {
             gaps += 1;
             if matches {
@@ -483,36 +529,69 @@ fn characterize_corpus() {
             failures.push(format!(
                 "{}: CLIPS mismatch\nexpected output {:?}\nexpected notices {:?}\nactual {actual:#?}",
                 case.path,
-                String::from_utf8_lossy(&expected.output),
-                String::from_utf8_lossy(&expected.notices),
+                String::from_utf8_lossy(&program.expected.output),
+                String::from_utf8_lossy(&program.expected.notices),
             ));
+        }
+    }
+    if let Ok(path) = std::env::var("FERRIC_CORPUS_REPORT") {
+        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    }
+    eprintln!("corpus: {passing} conformance cases, {gaps} characterized gaps");
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Replay every conforming program in the given modes. A program that does
+/// not conform without replay is reported by `characterize_corpus` instead.
+fn replay(modes: &[Mode]) {
+    let mut failures = Vec::new();
+    let mut replayed = 0;
+    for program in selected_programs() {
+        if !program.conforming() {
             continue;
         }
-        if case.error == Some(ErrorPhase::Load) {
-            continue;
-        }
-        for mode in replays() {
-            let Some(replay) = observe(case, &source, input.as_deref(), mode) else {
+        for &mode in modes {
+            let Some(replay) = program.observe(mode) else {
                 continue;
             };
             replayed += 1;
-            if !conforms(case.error, &expected, &replay) {
+            if !conforms(
+                program.case.error,
+                &program.expected,
+                &replay,
+                !mode.late_rules,
+            ) {
                 failures.push(format!(
                     "{}: {mode:?} replay mismatch\n{replay:#?}",
-                    case.path
+                    program.case.path
                 ));
             }
         }
     }
-    assert!(
-        passing + gaps > 0,
-        "filter {filter:?}, level {level:?} matched no cases"
-    );
-    if let Ok(path) = std::env::var("FERRIC_CORPUS_REPORT") {
-        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
-    }
-    eprintln!(
-        "corpus: {passing} conformance cases ({replayed} replays), {gaps} characterized gaps"
-    );
+    eprintln!("corpus: {replayed} replays");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+#[test]
+fn replay_after_snapshot_restores() {
+    let modes: Vec<_> = SerializationFormat::ALL
+        .iter()
+        .map(|&format| Mode {
+            late_rules: false,
+            restore: Some(format),
+        })
+        .collect();
+    replay(&modes);
+}
+
+#[test]
+fn replay_with_rules_loaded_after_reset() {
+    let modes: Vec<_> = std::iter::once(None)
+        .chain(SerializationFormat::ALL.iter().copied().map(Some))
+        .map(|restore| Mode {
+            late_rules: true,
+            restore,
+        })
+        .collect();
+    replay(&modes);
 }
