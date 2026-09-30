@@ -20,17 +20,6 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-CARGO_TEST_COMMAND = (
-    "cargo",
-    "test",
-    "--release",
-    "-p",
-    "ferric-rules",
-    "-p",
-    "ferric-rules-cli",
-    "--all-features",
-    "--locked",
-)
 CARGO_BUILD_COMMAND = (
     "cargo",
     "build",
@@ -55,7 +44,6 @@ CARGO_PACKAGE_COMMANDS = (
 MANDATORY_COMMAND_NAMES = (
     "rustc-verbose",
     "cargo-verbose",
-    "release-test",
     "release-build",
     "package-facade",
     "package-cli",
@@ -779,14 +767,6 @@ def build_native_evidence(
             "--target-dir",
             str(cargo_target),
         ]
-        _run_expected(
-            name="release-test",
-            argv=[*CARGO_TEST_COMMAND, *target_args],
-            expected_exit=0,
-            commands=commands,
-            roots=roots,
-            env=cargo_env,
-        )
         _run_expected(
             name="release-build",
             argv=[*CARGO_BUILD_COMMAND, *target_args],

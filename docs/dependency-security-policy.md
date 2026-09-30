@@ -1,12 +1,10 @@
 # Dependency checks
 
 Run `just dependency-policy` to scan the locked Rust, npm, and Python dependencies
-and verify Rust licenses and notices. The same command runs in CI on changes and
-weekly against new advisories. Scanner errors and findings fail the job; reports
-are retained in `dependency-policy-evidence/` and uploaded even on failure.
-`just dependency-policy-test` exercises real scanner rejection of a vulnerable
-npm runtime dependency, a Python version hidden behind a non-host marker, and
-malformed Cargo/Python configuration.
+and verify Rust licenses and notices. The same command runs in CI on pull
+requests, pushes to `main`, and weekly against new advisories. Scanner errors and
+findings fail the job; scanner output appears in the job log and, locally, in
+`dependency-policy-evidence/`.
 
 The scanners own report parsing and advisory matching. There is no separate
 exception evaluator, workspace graph hash, SBOM reconciliation service, or
@@ -79,5 +77,4 @@ Rust license allowlists, crate-specific MPL permission for the cbindgen build
 tool, and generated [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) remain.
 New npm/Python license enforcement and release-wide SBOM products are deferred;
 advisory scanning for their actual graphs remains active. Raw before/after
-scanner logs are local execution evidence, while CI retains the native reports
-for each checked revision.
+scanner logs are local execution evidence.

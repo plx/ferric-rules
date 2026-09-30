@@ -189,7 +189,7 @@ bindings-conformance:
 # Full check (no auto-fix): formatting, clippy, tests, cargo check, examples, Python, Go/TS lint, license notices
 check: fmt-check clippy test cargo-check check-examples py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint license-notices-check
 
-# Alias for `check` (unrelated to scripts/preflight.sh, which CI uses for the Rust-only steps)
+# Alias for `check`
 preflight: check
 
 # PR preflight: like `check`, but auto-fixes formatting/lint and regenerates license notices; also checks the FFI header
@@ -418,10 +418,6 @@ rust-native-artifacts-verify artifacts candidate_sha candidate_tree output:
 # Scan all locked dependency surfaces and check Rust licenses/notices.
 dependency-policy:
     ./scripts/dependency-check.sh
-
-# Exercise native scanner rejection of vulnerable inputs and malformed config.
-dependency-policy-test:
-    ./scripts/test-dependency-scanners.sh
 
 # Regenerate Rust third-party license notices from the locked Cargo graph
 license-notices:

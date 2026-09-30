@@ -92,7 +92,8 @@ cargo bench -p ferric-rules --bench engine_bench -- --baseline phase6-start
 
 ## CI Integration
 
-The CI pipeline includes:
+The weekly `Benchmarks` workflow (`.github/workflows/benchmarks.yml`, also
+manually dispatchable) runs:
 - `bench-smoke`: `cargo bench -p ferric-rules -- --test`
 - `bench-thresholds`: `./scripts/bench-thresholds.sh`
 - `bench-compare`: `./scripts/bench-compare.sh --quick`

@@ -1,11 +1,44 @@
+# Builds and tests the Swift package (macOS runner) on pull requests and pushes
+# to main that touch the Swift binding or the Rust crates beneath it, and on
+# manual dispatch.
 name: Swift
 
 on:
   push:
     branches: [main]
+    paths:
+      - "bindings/swift/**"
+      - "crates/ferric-rules-core/**"
+      - "crates/ferric-rules-ffi/**"
+      - "crates/ferric-rules-ffi-macros/**"
+      - "crates/ferric-rules-parser/**"
+      - "crates/ferric-rules-pinned/**"
+      - "crates/ferric-rules-runtime/**"
+      - "scripts/build-swift.sh"
+      - "scripts/swift-consumer-smoke.sh"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".github/workflows/swift.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "bindings/swift/**"
+      - "crates/ferric-rules-core/**"
+      - "crates/ferric-rules-ffi/**"
+      - "crates/ferric-rules-ffi-macros/**"
+      - "crates/ferric-rules-parser/**"
+      - "crates/ferric-rules-pinned/**"
+      - "crates/ferric-rules-runtime/**"
+      - "scripts/build-swift.sh"
+      - "scripts/swift-consumer-smoke.sh"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".github/workflows/swift.yml"
   workflow_dispatch:
+
+concurrency:
+  group: swift-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -16,7 +49,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.93.0"

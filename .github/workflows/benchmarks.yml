@@ -1,0 +1,118 @@
+# Weekly (and manual) benchmark runs: Criterion smoke, absolute thresholds,
+# ferric-vs-CLIPS comparisons, and the standalone performance report.
+# Not run on pull requests or pushes; `cargo clippy --all-targets` in ci.yml
+# type-checks the default-feature bench targets on every PR.
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: '7 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  bench-smoke:
+    name: Bench Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: cargo bench -p ferric-rules -- --test
+
+  bench-thresholds:
+    name: Bench Thresholds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: ./scripts/bench-thresholds.sh
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bench-threshold-report
+          path: |
+            target/bench-threshold-report.json
+            target/bench-threshold-report.md
+            target/criterion/**/new/estimates.json
+
+  bench-compare:
+    name: Comparative Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install CLIPS and hyperfine
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clips
+          wget -q https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine_1.18.0_amd64.deb
+          sudo dpkg -i hyperfine_1.18.0_amd64.deb
+      - name: Run comparative benchmarks
+        run: ./scripts/bench-compare.sh --quick
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bench-compare-report
+          path: |
+            target/bench-compare/report.json
+            target/bench-compare/report.md
+
+  perf-report:
+    name: Perf Standalone Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install native CLIPS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clips
+
+      - name: Collect benchmark results
+        run: |
+          uv run --project tools/ferric-tools ferric-perf-collect \
+            --commit-sha "${{ github.sha }}" \
+            --clips-reference
+
+      - name: Generate standalone report
+        run: |
+          uv run --project tools/ferric-tools ferric-perf-report \
+            --report /tmp/perf-report.md \
+            --repo "${{ github.repository }}" \
+            --commit-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Copy manifest
+        run: cp target/perf-manifest.json /tmp/perf-manifest.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: perf-report
+          retention-days: 30
+          path: |
+            /tmp/perf-report.md
+            /tmp/perf-manifest.json

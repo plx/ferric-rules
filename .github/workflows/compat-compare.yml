@@ -1,3 +1,6 @@
+# Reusable base-vs-head CLIPS compatibility comparison. Called by
+# pr-assessment.yml on every pull request (its head assessment is the blocking
+# compatibility gate); can also be dispatched manually for any two commits.
 name: Compat Compare
 
 on:
@@ -35,7 +38,7 @@ jobs:
     name: Compat Comparison Report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
@@ -46,11 +49,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Prepare compatibility evidence
         run: mkdir -p /tmp/compat-evidence
@@ -233,7 +236,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: compat-diff-report
           retention-days: 30

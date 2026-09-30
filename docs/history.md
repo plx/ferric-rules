@@ -13,6 +13,7 @@ came from and where the older records went.
 | Sep 6 – 7 | Rehabilitation: program retired, finite repair scope | #298 – #315 |
 | Sep 7 – 8 | Performance work on the rehabilitated baseline | #316 – #364 |
 | Sep 7 – 12 | Granular CLIPS compatibility corpus | #348 |
+| Sep 30 | CI reduced to a per-PR core plus weekly runs | #392 |
 
 ## Build-out (February – April)
 
@@ -120,6 +121,17 @@ differences. The gaps it found were filed as issues #320 – #346 and are listed
 in `tests/clips_compat/corpus/GAPS.md`; the repairs followed as separate
 compatibility work.
 
+## CI slimming (September 30)
+
+PR #392 cut per-PR CI from about 104 checks to about 15 by running the pinned
+CLIPS compatibility gate once per PR (`pr-assessment.yml`, whose `PR
+Compatibility Gate` check is required) and once per push to `main`
+(`compat-standalone.yml`), path-filtering the scaling and Swift workflows,
+moving benchmarks and the release-artifact matrices to weekly runs, and
+removing the unused Claude workflows, `main-assessment.yml`,
+`perf-standalone.yml`, `scripts/preflight.sh`, and the tests that asserted
+workflow text.
+
 ## Where the older records went
 
 The due-diligence report, the remediation-program snapshot, the re-audit
@@ -127,9 +139,9 @@ playbook, the work-selection contract, the rehabilitation execution record, the
 September performance audit with its JSON measurement records, the
 pinned-engine plan, the Phase 6 baseline and performance-analysis notes, the
 TypeScript binding implementation plan and spec post-mortem, and the Maquette
-design mockups were removed in the cleanup PR that added this page. See git
-history before this commit; the last commit that contains them is `aa3586e1`
-(paths: `docs/audits/`, `plan/pinned-engine.md`, `docs/phase6-baseline.md`,
+design mockups were removed in the cleanup PR that added this page. They
+remain in git history; commit `475eea1c`, the `main` head this cleanup was
+merged onto, still contains them (paths: `docs/audits/`, `plan/pinned-engine.md`, `docs/phase6-baseline.md`,
 `docs/performance-analysis.md`, `docs/typescript-binding-implementation-plan.md`,
 `docs/typescript-binding-spec-postmortem.md`, `.maquette/`, `documentation/`).
 

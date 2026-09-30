@@ -33,9 +33,10 @@ chapter), `tools/users-guide-sync` (checks that code in
 corpus).
 
 Feature flags: `serde` enables snapshots (propagated parser → core → runtime →
-ffi → facade); `tracing` enables tracing spans (checked by `just
-check-tracing`); `testing` (Python only) exposes instrumentation for teardown
-tests.
+ffi → facade); `tracing` enables tracing spans (checked locally by `just
+check-tracing`; CI's `Rust` job runs the tracing clippy and the
+`tracing_smoke` test); `testing` (Python only) exposes instrumentation for
+teardown tests.
 
 ## 2. Bindings
 
@@ -83,7 +84,10 @@ suites in `ferric-rules-runtime`, `ferric-rules-core`, and `ferric-rules-ffi`.
 `benches/README.md` and `benches/PROTOCOL.md` describe the workloads and
 measurement protocol; [`benchmark-policy.md`](benchmark-policy.md) covers
 regression thresholds. Use `just bench-*` targets; numbers quoted in PRs must
-come from release `cargo bench` runs.
+come from release `cargo bench` runs. CI runs the benches weekly
+(`benchmarks.yml`: bench smoke, absolute thresholds, CLIPS comparisons, and the
+standalone perf report) and `just scaling-check` on pull requests and pushes
+that touch Rust crates or Cargo manifests (`scaling.yml`).
 
 ## 5. Tooling
 
@@ -98,6 +102,21 @@ come from release `cargo bench` runs.
   collection and diffs), and the bindings-conformance runner.
 - `docker/clips-reference/` — CLIPS 6.30 reference image with observer and
   launcher programs; `docker/bench-runner/` — container for bench runs.
+- `.github/workflows/` — CI:
+  - every pull request to `main`: `ci.yml` (Rust format/clippy/tests plus the
+    tracing checks and users-guide examples, MSRV 1.75, Python/Node/Go
+    bindings, FFI sanitizer harnesses, pinned async TSan, cross-binding
+    conformance, Python tools; skipped for site-only changes),
+    `pr-assessment.yml` (base-vs-head CLIPS compatibility comparison through
+    `compat-compare.yml`; its `PR Compatibility Gate` check is required), and
+    `dependency-policy.yml` (advisory, license, and notices checks; also
+    weekly). `ci.yml` and `dependency-policy.yml` also run on pushes to
+    `main`, where `compat-standalone.yml` runs the compatibility gate;
+  - path-filtered: `scaling.yml` (Rust crates or manifests), `swift.yml`
+    (the Swift binding and the crates beneath it), and `site-check.yml` /
+    `site-publish.yml` (`site/`);
+  - weekly or manual: `benchmarks.yml` and the Rust native, Node, and Python
+    package-artifact workflows; `perf-compare.yml` is manual only.
 - `site/` — the Astro/Starlight documentation site.
 - `examples/embedding/` — shared example program used by consumer smokes.
 

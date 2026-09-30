@@ -141,8 +141,10 @@ The Python artifact workflow must fail closed through this sequence:
 3. Verify the archive layout, distribution metadata, license files, ABI and
    platform tags, native dependencies, and `RECORD` hashes. Record its SHA-256
    digest in the release manifest.
-4. Download that exact artifact into clean consumer jobs for CPython 3.9 through
-   3.13. Install with `pip --no-index --no-deps --only-binary=:all:` from a
+4. Download that exact artifact into a clean consumer job on one supported
+   CPython (currently 3.13; `abi3audit` enforces the 3.9 stable-ABI floor and
+   `ci.yml` tests 3.9 and 3.13 from source). Install with
+   `pip --no-index --no-deps --only-binary=:all:` from a
    directory outside the checkout, then import, load and run rules,
    serialize/restore, and close all engines.
 5. Normalize and deterministically repack Maturin's raw workspace sdist as

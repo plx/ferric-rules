@@ -58,9 +58,9 @@ three tarballs offline into a temporary project outside the repository, then
 checks CommonJS require, ESM named/dynamic imports, and Node16/NodeNext TypeScript consumers. The shared launch-selection program selects one action in sync/worker engines and after CBOR snapshot/resume; invalid input produces a typed diagnostic. The smoke
 also checks that the binary reports the same version as both package manifests.
 
-The `Node Package Artifacts` workflow repeats this operation on every declared
-target. macOS, Windows, and Linux glibc jobs run on matching hosted
-architectures. Linux musl jobs build and execute inside `node:22-alpine` on a
+The weekly (and manually dispatchable) `Node Package Artifacts` workflow
+repeats this operation on every declared target. macOS, Windows, and Linux
+glibc jobs run on matching hosted architectures. Linux musl jobs build and execute inside `node:22-alpine` on a
 matching-architecture Linux host; they do not use CPU emulation. The workflow
 uploads the exact tarballs, checks target coverage, and requires the
 independently packed main tarball to be byte-identical across the matrix. It

@@ -2,7 +2,8 @@
 
 ## Overview
 
-Benchmark validation is now enforced with two blocking CI layers:
+Benchmark validation runs weekly (and on manual dispatch) in the `Benchmarks`
+workflow (`.github/workflows/benchmarks.yml`), not on every pull request:
 
 1. `bench-smoke` verifies benchmark targets compile and execute (`--test` mode).
 2. `bench-thresholds` runs Criterion measurements and enforces absolute
@@ -45,8 +46,8 @@ Thresholds will be added once baseline measurements are established.
 
 | Job | Trigger | Mode | Blocking? |
 |-----|---------|------|-----------|
-| `bench-smoke` | Every push / PR | `cargo bench -p ferric-rules -- --test` | Yes |
-| `bench-thresholds` | Every push / PR | `./scripts/bench-thresholds.sh` | Yes |
+| `bench-smoke` | Weekly / manual | `cargo bench -p ferric-rules -- --test` | No (not a PR check) |
+| `bench-thresholds` | Weekly / manual | `./scripts/bench-thresholds.sh` | No (not a PR check) |
 
 `bench-thresholds` publishes:
 - `target/bench-threshold-report.json`

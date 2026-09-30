@@ -337,13 +337,13 @@ def _complete_artifact_set(root, contract, version):
         inspections[target["id"]] = package_lib.validate_wheel(wheel, contract, version)
     sdist_path = _write_sdist(artifacts, contract, version)
     sdist = package_lib.validate_sdist(sdist_path, contract, version)
+    smoke_minor = package_lib.EXPECTED_SUPPORTED_MINORS[-1]
     for target_id, inspection in inspections.items():
         target = targets[target_id]
-        for minor in package_lib.EXPECTED_SUPPORTED_MINORS:
-            _write_json(
-                receipts / f"wheel-{target_id}-py{minor.replace('.', '')}.json",
-                _wheel_receipt(inspection, target, minor),
-            )
+        _write_json(
+            receipts / f"wheel-{target_id}-py{smoke_minor.replace('.', '')}.json",
+            _wheel_receipt(inspection, target, smoke_minor),
+        )
     rejection_target = targets["manylinux2014-x86_64"]
     rejection_inspection = inspections[rejection_target["id"]]
     rejection = _wheel_receipt(rejection_inspection, rejection_target, "3.14")
@@ -698,7 +698,7 @@ def test_complete_artifact_and_receipt_matrix_produces_deterministic_manifest(
     assert first == second
     assert len(first["artifacts"]) == 8
     assert first["receipt_coverage"] == {
-        "wheel_smokes": 35,
+        "wheel_smokes": 7,
         "python_314_rejections": 1,
         "sdist_smokes": 1,
     }
@@ -732,7 +732,7 @@ def test_receipt_matrix_rejects_missing_duplicate_and_bad_identity(
     artifacts, receipts = _complete_artifact_set(missing_root, contract, version)
     next(receipts.glob("wheel-*.json")).unlink()
     with pytest.raises(
-        package_lib.PackageValidationError, match="expected 37 receipts"
+        package_lib.PackageValidationError, match="expected 9 receipts"
     ):
         package_lib.verify_artifact_set(artifacts, receipts, contract, version)
 
@@ -741,7 +741,7 @@ def test_receipt_matrix_rejects_missing_duplicate_and_bad_identity(
     receipt = next(receipts.glob("wheel-*.json"))
     shutil.copyfile(receipt, receipts / f"duplicate-{receipt.name}")
     with pytest.raises(
-        package_lib.PackageValidationError, match="expected 37 receipts"
+        package_lib.PackageValidationError, match="expected 9 receipts"
     ):
         package_lib.verify_artifact_set(artifacts, receipts, contract, version)
 
