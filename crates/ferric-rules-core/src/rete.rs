@@ -16,7 +16,7 @@ use crate::beta::{
 };
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
-use crate::sequence::{SequenceField, SequencePattern, SequenceSegment, SequenceSource};
+use crate::sequence::SequencePattern;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -1920,34 +1920,24 @@ fn evaluate_join_bindings(fact: &Fact, bindings: Option<&BindingSet>, tests: &[J
     true
 }
 
-/// Equality keys whose logical selectors also identify physical fact fields.
-/// An ordered sequence's single fields before its first capture never shift.
-/// Template projections, captures, and all later ordered fields must be
-/// evaluated against each projected match instead.
+/// Equality keys as physical fact selectors paired with their beta variables.
+/// In a sequence pattern only fields with a fixed physical position qualify:
+/// ordered single fields before the first capture and scalar template slots
+/// (see `SequencePattern::physical_selector`). Captures and shifted fields
+/// are evaluated against each projected match instead.
 /// Use this same selection when requesting indexes and collecting candidates.
 pub(crate) fn indexable_tests<'a>(
     tests: &'a [JoinTest],
-    sequence: Option<&SequencePattern>,
+    sequence: Option<&'a SequencePattern>,
 ) -> impl Iterator<Item = (SlotIndex, VarId)> + 'a {
-    let fixed_prefix = sequence.map(|sequence| match sequence.segments.as_slice() {
-        [SequenceSegment {
-            source: SequenceSource::Ordered,
-            fields,
-        }] => fields
-            .iter()
-            .take_while(|field| **field == SequenceField::Single)
-            .count(),
-        // Even a template segment with one Single may unwrap a multislot;
-        // its logical selector is not a physical scalar index.
-        _ => 0,
-    });
     tests.iter().filter_map(move |test| {
-        let physical = fixed_prefix.map_or(
-            true,
-            |prefix| matches!(test.alpha_slot, SlotIndex::Ordered(index) if index < prefix),
-        );
-        (test.test_type == JoinTestType::Equal && physical)
-            .then_some((test.alpha_slot, test.beta_var))
+        if test.test_type != JoinTestType::Equal {
+            return None;
+        }
+        let physical = sequence.map_or(Some(test.alpha_slot), |sequence| {
+            sequence.physical_selector(test.alpha_slot)
+        })?;
+        Some((physical, test.beta_var))
     })
 }
 
@@ -5021,7 +5011,7 @@ mod tests {
     }
 
     use crate::compiler::{CompilablePattern, CompilableRule, CompileResult, ReteCompiler};
-    use crate::sequence::SequenceField;
+    use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
     use crate::value::Multifield;
 
     struct PrefixIndexFixture {
@@ -5545,5 +5535,40 @@ mod tests {
 
         // Logical slot 0 precedes the Multi but comes from physical slot 1.
         assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
+    }
+
+    #[test]
+    fn template_scalar_slot_keys_the_physical_index() {
+        let sequence = SequencePattern {
+            segments: vec![
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(2),
+                    fields: vec![SequenceField::Multi, SequenceField::Single],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateScalar(0),
+                    fields: vec![SequenceField::Single],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(1),
+                    fields: vec![SequenceField::Multi],
+                },
+            ],
+            tests: vec![],
+        };
+        sequence.validate().unwrap();
+        let tests: Vec<_> = (0..4)
+            .map(|index| JoinTest {
+                alpha_slot: SlotIndex::Template(index),
+                beta_var: VarId(u16::try_from(index).unwrap()),
+                test_type: JoinTestType::Equal,
+            })
+            .collect();
+
+        // Only the scalar slot, written third, has a split-independent position.
+        assert_eq!(
+            indexable_tests(&tests, Some(&sequence)).collect::<Vec<_>>(),
+            vec![(SlotIndex::Template(0), VarId(2))]
+        );
     }
 }

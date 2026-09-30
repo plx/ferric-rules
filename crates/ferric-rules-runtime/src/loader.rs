@@ -4387,29 +4387,19 @@ impl Engine {
                 let sequence = ordered
                     .constraints
                     .iter()
-                    .position(Self::constraint_is_multifield)
-                    .map(|first_multifield| {
-                        let (prefix_tests, tests): (Vec<_>, Vec<_>) = constant_tests
-                            .split_off(1)
-                            .into_iter()
-                            .partition(|test| {
-                                Self::test_uses_ordered_prefix(test, first_multifield)
-                            });
-                        // Fixed prefix selectors are also physical positions;
-                        // retain their alpha filtering before enumerating splits.
+                    .any(Self::constraint_is_multifield)
+                    .then(|| {
                         // The first test is always the raw fact cardinality.
-                        constant_tests.extend(prefix_tests);
-                        SequencePattern {
-                            segments: vec![SequenceSegment {
-                                source: SequenceSource::Ordered,
-                                fields: ordered
-                                    .constraints
-                                    .iter()
-                                    .map(Self::sequence_field)
-                                    .collect(),
-                            }],
-                            tests,
-                        }
+                        let tests = constant_tests.split_off(1);
+                        let segments = vec![SequenceSegment {
+                            source: SequenceSource::Ordered,
+                            fields: ordered
+                                .constraints
+                                .iter()
+                                .map(Self::sequence_field)
+                                .collect(),
+                        }];
+                        Self::sequence_pattern(segments, tests, &mut constant_tests)
                     });
 
                 Ok(CompilablePattern {
@@ -4526,16 +4516,25 @@ impl Engine {
                     slot_indices.push(slot_idx);
                 }
 
-                let needs_sequence = slot_indices.iter().any(|&index| {
-                    registered.slot_types[index] == SlotType::Multi
-                });
+                // A multislot constrained by one multifield term captures the
+                // whole stored multifield, so the physical slot already is the
+                // logical field. Keep such patterns physical (and indexable);
+                // only real positional constraints need a sequence projection.
+                let needs_sequence = template.slot_constraints.iter().zip(&slot_indices).any(
+                    |(slot_constraint, &index)| {
+                        registered.slot_types[index] == SlotType::Multi
+                            && !matches!(
+                                slot_constraint.constraints.as_slice(),
+                                [constraint] if Self::constraint_is_multifield(constraint)
+                            )
+                    },
+                );
                 let mut constant_tests = Vec::new();
                 let mut variable_slots = Vec::new();
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
                 let mut segments = Vec::new();
-                let mut scalar_slots = HashMap::new();
                 let mut logical_offset = 0;
 
                 // Preserve written slot order: independent multislot splits
@@ -4543,15 +4542,17 @@ impl Engine {
                 for (slot_constraint, slot_idx) in template.slot_constraints.iter().zip(slot_indices) {
                     let is_multi = registered.slot_types[slot_idx] == SlotType::Multi;
                     if needs_sequence {
-                        segments.push(SequenceSegment {
-                            source: SequenceSource::TemplateSlot(slot_idx),
-                            fields: slot_constraint.constraints.iter().map(|constraint| {
-                                if is_multi { Self::sequence_field(constraint) } else { SequenceField::Single }
-                            }).collect(),
+                        segments.push(if is_multi {
+                            SequenceSegment {
+                                source: SequenceSource::TemplateSlot(slot_idx),
+                                fields: slot_constraint.constraints.iter().map(Self::sequence_field).collect(),
+                            }
+                        } else {
+                            SequenceSegment {
+                                source: SequenceSource::TemplateScalar(slot_idx),
+                                fields: vec![SequenceField::Single],
+                            }
                         });
-                        if !is_multi {
-                            scalar_slots.insert(logical_offset, slot_idx);
-                        }
                     }
                     for constraint in &slot_constraint.constraints {
                         let slot = SlotIndex::Template(if needs_sequence { logical_offset } else { slot_idx });
@@ -4572,17 +4573,8 @@ impl Engine {
                 }
 
                 let sequence = needs_sequence.then(|| {
-                    let mut tests = Vec::new();
-                    let mut alpha_tests = Vec::new();
-                    for test in constant_tests.drain(..) {
-                        if let Some(physical) = Self::physical_template_test(&test, &scalar_slots) {
-                            alpha_tests.push(physical);
-                        } else {
-                            tests.push(test);
-                        }
-                    }
-                    constant_tests = alpha_tests;
-                    SequencePattern { segments, tests }
+                    let tests = std::mem::take(&mut constant_tests);
+                    Self::sequence_pattern(segments, tests, &mut constant_tests)
                 });
 
                 Ok(CompilablePattern {
@@ -4627,51 +4619,25 @@ impl Engine {
         }
     }
 
-    // Tests on scalar sibling slots can filter physical facts before any
-    // multislot projection. Both sides of a slot comparison must be scalar.
-    fn physical_template_test(
-        test: &ConstantTest,
-        scalar_slots: &HashMap<usize, usize>,
-    ) -> Option<ConstantTest> {
-        let physical = |slot| {
-            let SlotIndex::Template(index) = slot else {
-                return None;
-            };
-            scalar_slots.get(&index).copied().map(SlotIndex::Template)
+    /// Build a sequence plan from logical constant tests. Tests that read only
+    /// split-independent fields (an ordered prefix or scalar template slots)
+    /// move to physical alpha selectors and filter facts before enumeration.
+    fn sequence_pattern(
+        segments: Vec<SequenceSegment>,
+        tests: Vec<ConstantTest>,
+        alpha_tests: &mut Vec<ConstantTest>,
+    ) -> SequencePattern {
+        let mut sequence = SequencePattern {
+            segments,
+            tests: Vec::new(),
         };
-        let mut mapped = test.clone();
-        mapped.slot = physical(test.slot)?;
-        match &mut mapped.test_type {
-            ConstantTestType::EqualSlot(other)
-            | ConstantTestType::NotEqualSlot(other)
-            | ConstantTestType::EqualSlotOffset(other, _)
-            | ConstantTestType::NotEqualSlotOffset(other, _)
-            | ConstantTestType::GreaterThanSlotOffset(other, _)
-            | ConstantTestType::LessThanSlotOffset(other, _)
-            | ConstantTestType::GreaterOrEqualSlotOffset(other, _)
-            | ConstantTestType::LessOrEqualSlotOffset(other, _) => *other = physical(*other)?,
-            ConstantTestType::OrderedFieldCount { .. } => return None,
-            _ => {}
+        for test in tests {
+            match sequence.physical_test(&test) {
+                Some(physical) => alpha_tests.push(physical),
+                None => sequence.tests.push(test),
+            }
         }
-        Some(mapped)
-    }
-
-    fn test_uses_ordered_prefix(test: &ConstantTest, end: usize) -> bool {
-        let in_prefix = |slot| matches!(slot, SlotIndex::Ordered(index) if index < end);
-        if !in_prefix(test.slot) {
-            return false;
-        }
-        match test.test_type {
-            ConstantTestType::EqualSlot(other)
-            | ConstantTestType::NotEqualSlot(other)
-            | ConstantTestType::EqualSlotOffset(other, _)
-            | ConstantTestType::NotEqualSlotOffset(other, _)
-            | ConstantTestType::GreaterThanSlotOffset(other, _)
-            | ConstantTestType::LessThanSlotOffset(other, _)
-            | ConstantTestType::GreaterOrEqualSlotOffset(other, _)
-            | ConstantTestType::LessOrEqualSlotOffset(other, _) => in_prefix(other),
-            _ => true,
-        }
+        sequence
     }
 
     fn constraint_is_multifield(constraint: &Constraint) -> bool {

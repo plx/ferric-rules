@@ -1979,7 +1979,7 @@ mod tests {
         ).unwrap();
         for (source, expected_error) in [
             (999, "invalid physical template slot"),
-            (0, "scalar template sequence source"),
+            (0, "does not match its slot kind"),
         ] {
             let result = alter_state(&engine, |state| {
                 let nodes = state["rete"]["beta"]["nodes"].as_array_mut().unwrap();

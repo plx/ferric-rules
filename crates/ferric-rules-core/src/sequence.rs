@@ -18,8 +18,13 @@ pub enum SequenceField {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SequenceSource {
+    /// All fields of an ordered fact.
     Ordered,
+    /// The stored multifield of a template multislot.
     TemplateSlot(usize),
+    /// A single-field template slot. It projects exactly one logical field
+    /// holding the physical slot value, so its selector stays indexable.
+    TemplateScalar(usize),
 }
 
 /// One independently matched sequence, kept in written constraint order.
@@ -84,6 +89,65 @@ impl SequencePattern {
         self.logical_slot_validator()(slot)
     }
 
+    /// The physical fact selector for a logical field whose position never
+    /// depends on a split: an ordered single field before the first capture,
+    /// or a scalar template slot. Such selectors can key alpha/beta indexes.
+    #[must_use]
+    pub fn physical_selector(&self, slot: SlotIndex) -> Option<SlotIndex> {
+        match (self.segments.as_slice(), slot) {
+            (
+                [SequenceSegment {
+                    source: SequenceSource::Ordered,
+                    fields,
+                }],
+                SlotIndex::Ordered(index),
+            ) => (index < fields.len()
+                && fields[..=index]
+                    .iter()
+                    .all(|field| *field == SequenceField::Single))
+            .then_some(slot),
+            (segments, SlotIndex::Template(mut index)) => {
+                for segment in segments {
+                    if index < segment.fields.len() {
+                        return match segment.source {
+                            SequenceSource::TemplateScalar(physical) => {
+                                Some(SlotIndex::Template(physical))
+                            }
+                            _ => None,
+                        };
+                    }
+                    index -= segment.fields.len();
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Rewrite a constant test to physical selectors when every field it reads
+    /// has a fixed physical position, so it can filter facts in the alpha
+    /// network before any split is enumerated.
+    #[must_use]
+    pub fn physical_test(&self, test: &ConstantTest) -> Option<ConstantTest> {
+        let mut mapped = test.clone();
+        mapped.slot = self.physical_selector(test.slot)?;
+        match &mut mapped.test_type {
+            ConstantTestType::EqualSlot(other)
+            | ConstantTestType::NotEqualSlot(other)
+            | ConstantTestType::EqualSlotOffset(other, _)
+            | ConstantTestType::NotEqualSlotOffset(other, _)
+            | ConstantTestType::GreaterThanSlotOffset(other, _)
+            | ConstantTestType::LessThanSlotOffset(other, _)
+            | ConstantTestType::GreaterOrEqualSlotOffset(other, _)
+            | ConstantTestType::LessOrEqualSlotOffset(other, _) => {
+                *other = self.physical_selector(*other)?;
+            }
+            ConstantTestType::OrderedFieldCount { .. } => return None,
+            _ => {}
+        }
+        Some(mapped)
+    }
+
     /// Check the sources and logical selectors before installing or restoring a pattern.
     pub fn validate(&self) -> Result<(), String> {
         if self.segments.is_empty() {
@@ -92,8 +156,22 @@ impl SequencePattern {
         if !self.is_ordered() {
             let mut sources = rustc_hash::FxHashSet::default();
             for segment in &self.segments {
-                let SequenceSource::TemplateSlot(index) = segment.source else {
-                    return Err("ordered sequence source must be the only segment".to_string());
+                let index = match segment.source {
+                    SequenceSource::TemplateSlot(index) => index,
+                    SequenceSource::TemplateScalar(index)
+                        if segment.fields.as_slice() == [SequenceField::Single] =>
+                    {
+                        index
+                    }
+                    SequenceSource::TemplateScalar(_) => {
+                        return Err(
+                            "scalar template sequence source must project one single field"
+                                .to_string(),
+                        );
+                    }
+                    SequenceSource::Ordered => {
+                        return Err("ordered sequence source must be the only segment".to_string());
+                    }
                 };
                 if !sources.insert(index) {
                     return Err("sequence pattern repeats a template slot source".to_string());
@@ -216,6 +294,9 @@ fn segment_values(source: SequenceSource, fact: &Fact) -> Option<&[Value]> {
                 Value::Multifield(values) => values.as_slice(),
                 value => std::slice::from_ref(value),
             })
+        }
+        (SequenceSource::TemplateScalar(index), Fact::Template(fact)) => {
+            fact.slots.get(index).map(std::slice::from_ref)
         }
         _ => None,
     }
