@@ -38,7 +38,7 @@ FERRIC_CORPUS_REPORT=/tmp/ferric-corpus.json just compat-corpus -- --nocapture
 ```
 
 `cargo test --workspace` automatically runs
-[`crates/ferric-rules/tests/compat_corpus.rs`](../../../crates/ferric-rules/tests/compat_corpus.rs).
+[`crates/ferric-rules/tests/compat_corpus/`](../../../crates/ferric-rules/tests/compat_corpus/main.rs).
 The existing [semantic differential lane](../../examples/ferric-semantic/README.md)
 and [Ferric regression suite](../../../crates/ferric-rules/tests/ferric_semantic_regressions.rs)
 provide complementary coverage and retain their own execution protocols.
@@ -59,7 +59,9 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
 - `manifest.json` registers every program exactly once, with `basic`, `boundary`,
   or `interaction` level and coverage tags. `resets: 2` repeats reset/run in the
   same engine; the golden concatenates both runs. This tests restoration of
-  globals, deffacts, refraction, and derived working memory.
+  globals, deffacts, refraction, and derived working memory. `strategy:
+  "breadth"` runs the program under the breadth strategy (CLIPS
+  `(set-strategy breadth)`, Ferric `EngineConfig::with_strategy`).
 - Prefer a single observable distinction per program. Use salience or phase
   facts where side-effect ordering matters. Keep each problematic function or
   invalid index in its own program so an earlier error cannot conceal it.
@@ -70,6 +72,11 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   modify the statistics watch setting, and must not print CLIPS diagnostic-like
   messages (`[CODE123] message`). The reference wrapper uses unique frames and
   CLIPS statistics to distinguish complete execution from a truncated run.
+- A program where CLIPS reports an error declares where. With `error: "load"`
+  CLIPS rejects the program, the golden is its load diagnostic, and Ferric must
+  reject the program at load. With `error: "run"` CLIPS halts on a run-time
+  error; Ferric must report an error and print the golden without its
+  `[CODE123]` lines. Ferric's own diagnostic text is never compared.
 - The exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error
   routers, interleaved with `t` in the oracle; the runner removes them from the
@@ -77,8 +84,17 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
 
 ## Conformance versus characterization
 
-A case without `gap` must load, reset, and run successfully, produce exactly its
-CLIPS `.out`, and emit no Ferric action diagnostics.
+A case without `gap` or `error` must load, reset, and run successfully, produce
+exactly its CLIPS `.out`, and emit no Ferric action diagnostics.
+
+Every conforming case that loads is then replayed in Ferric, and each replay
+must reproduce the same golden: with its rules loaded after the first reset
+(unless deffacts follow its first rule), and from a snapshot restored before
+the first firing, in JSON and CBOR, with and without that late rule load. CBOR
+replays also restore before each of the first 12 firings. These replays check
+Ferric's backfill and persistence against the CLIPS golden; CLIPS itself only
+runs the load, reset, run protocol, so programs use salience where the order of
+equally ranked activations would otherwise depend on load order.
 
 A `gap` entry records the issue URL, a short summary, and the exact current Ferric
 `phase`, `output`, and `diagnostics`. These cases run normally; they are not
@@ -92,10 +108,6 @@ characterization, so moving fixture code requires reviewing those locations.
 Issue state on GitHub is not consulted at test time; the manifest's recorded
 observation determines whether a case is a conformance check or an active gap.
 The issue index also preserves discoveries that subsequent engine changes fix.
-Retained expression fact-query cases (`any-factp`, `find-fact`, and
-`find-all-facts`) characterize explicit rejection by the current supported
-subset, including empty-result controls; they do not imply these forms are
-currently supported.
 
 ## Oracle provenance and safety
 
@@ -110,7 +122,9 @@ Every program gets a separate Docker container, a read-only source mount, a
 removed explicitly. Load success, complete output/statistics frames, diagnostics,
 and the firing bound are all checked before accepting output. The specific
 CLIPS warning about redefining the built-in MAIN module is allowed for import
-fixtures; other diagnostic codes fail reference verification.
+fixtures; other diagnostic codes fail reference verification unless the case
+declares an `error`. A load-error case is loaded with `load*`, which must fail
+with a diagnostic; a run-error case must print at least one run-time diagnostic.
 
 The Rust runner has the same firing bound. These are bounded authored programs;
 the runner is not a sandbox for arbitrary nonterminating procedural code.

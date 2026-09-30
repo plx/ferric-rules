@@ -10,6 +10,7 @@ from ferric_tools.compat import corpus
 from ferric_tools.compat.corpus import (
     ReferenceFailure,
     batch_source,
+    extract_load_error,
     extract_output,
     extract_runs,
     run_reference,
@@ -47,6 +48,31 @@ def test_scanner_notices_are_output_not_protocol_failures():
 
 def test_literal_bracket_text_inside_output_is_not_a_diagnostic():
     assert extract_output("BEGIN\n[USER123]\nEND\n", "", "BEGIN", "END") == "[USER123]\n"
+
+
+def test_run_error_cases_require_a_runtime_diagnostic():
+    output = "BEGIN\nfirst\n[PRCCODE4] Execution halted.\nEND\n"
+    assert (
+        extract_output(output, "", "BEGIN", "END", "run") == "first\n[PRCCODE4] Execution halted.\n"
+    )
+    with pytest.raises(ReferenceFailure, match="expected a CLIPS runtime diagnostic"):
+        extract_output("BEGIN\nfirst\nEND\n", "", "BEGIN", "END", "run")
+    # Each run step is its own command line: CLIPS drops the rest of a line.
+    source = batch_source("tests/clips_compat/corpus/a.clp", "BEGIN", "END", 1, "run")
+    assert "(run 1000)\n" in source
+    assert all(line.count("(") - line.count(")") == 0 for line in source.splitlines())
+
+
+def test_load_error_cases_capture_the_rejection_diagnostic():
+    source = batch_source("tests/clips_compat/corpus/a.clp", "BEGIN", "END", 1, "load")
+    assert '(load* "tests/clips_compat/corpus/a.clp")' in source
+    assert "(run" not in source
+    diagnostic = "[PRNTUTIL1] Unable to find deftemplate ghost.\n"
+    assert extract_load_error(f"BEGIN\n{diagnostic}END\n", "", "BEGIN", "END") == diagnostic
+    with pytest.raises(ReferenceFailure, match="loaded a program"):
+        extract_load_error("BEGIN\nBEGIN_ACCEPTED\nEND\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="without a diagnostic"):
+        extract_load_error("BEGIN\nEND\n", "", "BEGIN", "END")
 
 
 def test_batch_checks_load_and_bounds_each_reset_run():

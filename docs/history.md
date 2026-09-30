@@ -115,7 +115,7 @@ and dormant focus selection), bringing `just scaling-check` to eight.
 ## Granular compatibility corpus (September 7 – 12)
 
 PR #348 added `tests/clips_compat/corpus/`: 219 small CLIPS programs with exact
-CLIPS 6.30 output goldens, run by `crates/ferric-rules/tests/compat_corpus.rs`.
+CLIPS 6.30 output goldens, run by `crates/ferric-rules/tests/compat_corpus/`.
 At merge, 158 cases conformed and 61 were active characterizations of known
 differences. The gaps it found were filed as issues #320 – #346 and are listed
 in `tests/clips_compat/corpus/GAPS.md`; the repairs followed as separate

@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-exclude = ["tests/compat_corpus.rs"]
+exclude = ["tests/compat_corpus"]
 
 [features]
 serde = ["ferric-rules-runtime/serde"]
@@ -19,6 +19,8 @@ ferric-rules-parser = { workspace = true }
 ferric-rules-runtime = { workspace = true }
 
 [dev-dependencies]
+# The CLIPS corpus replays every program from a restored snapshot.
+ferric-rules-runtime = { workspace = true, features = ["serde"] }
 criterion = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

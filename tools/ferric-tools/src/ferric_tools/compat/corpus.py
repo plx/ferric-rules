@@ -46,8 +46,15 @@ def decode(data: bytes) -> str:
     return data.decode("utf-8", errors="surrogateescape")
 
 
-def extract_output(stdout: str, stderr: str, begin: str, end: str) -> str:
-    """Require exactly one complete frame and reject reference diagnostics."""
+DIAGNOSTIC = re.compile(r"(?m)^\[[A-Z]+\d+\][ \t]")
+
+
+def extract_output(stdout: str, stderr: str, begin: str, end: str, error: str | None = None) -> str:
+    """Require exactly one complete frame and check reference diagnostics.
+
+    Only a case that declares a CLIPS run-time error may print diagnostics in
+    its frame, and it must print at least one.
+    """
     if stderr.strip():
         raise ReferenceFailure(f"CLIPS diagnostics on stderr:\n{stderr}")
     if stdout.count(begin + "\n") != 1 or stdout.count(end + "\n") != 1:
@@ -64,8 +71,24 @@ def extract_output(stdout: str, stderr: str, begin: str, end: str) -> str:
     checked = output
     for notice in SCANNER_NOTICES:
         checked = checked.replace(notice, "")
-    if re.search(r"\[[A-Z]+\d+\][ \t]", checked):
+    if error == "run" and not DIAGNOSTIC.search(checked):
+        raise ReferenceFailure(f"expected a CLIPS runtime diagnostic:\n{output}")
+    if error != "run" and re.search(r"\[[A-Z]+\d+\][ \t]", checked):
         raise ReferenceFailure(f"CLIPS runtime diagnostic:\n{output}")
+    return output
+
+
+def extract_load_error(stdout: str, stderr: str, begin: str, end: str) -> str:
+    """Return the diagnostic CLIPS prints when it rejects the program."""
+    if stderr.strip():
+        raise ReferenceFailure(f"CLIPS diagnostics on stderr:\n{stderr}")
+    if stdout.count(begin + "\n") != 1 or stdout.count(end + "\n") != 1:
+        raise ReferenceFailure(f"missing/duplicate CLIPS output markers:\n{stdout}")
+    output = stdout.split(begin + "\n", 1)[1].split(end + "\n", 1)[0]
+    if f"{begin}_ACCEPTED" in output:
+        raise ReferenceFailure(f"CLIPS loaded a program that expects a load error:\n{output}")
+    if not DIAGNOSTIC.search(output):
+        raise ReferenceFailure(f"CLIPS rejected the program without a diagnostic:\n{output}")
     return output
 
 
@@ -96,19 +119,40 @@ def extract_runs(output: str, begin: str, end: str, resets: int) -> str:
     return "".join(captured)
 
 
-def batch_source(path: str, begin: str, end: str, resets: int) -> str:
+def batch_source(path: str, begin: str, end: str, resets: int, error: str | None = None) -> str:
     """Use load's boolean result so partial loads cannot produce an oracle."""
     # Paths are relative, corpus-controlled POSIX names, never CLIPS expressions.
     if not re.fullmatch(r"[a-zA-Z0-9_./-]+", path) or ".." in Path(path).parts:
         raise ReferenceFailure(f"invalid fixture path: {path!r}")
     if not 1 <= resets <= 3:
         raise ReferenceFailure("resets must be between 1 and 3")
+    if error == "load":
+        # load* prints no progress characters, so the frame holds only the
+        # diagnostic; a successful load marks the frame as a failure.
+        return (
+            f'(printout t "{begin}" crlf)\n'
+            f'(if (load* "{path}") then (printout t "{begin}_ACCEPTED" crlf))\n'
+            f'(printout t "{end}" crlf)\n(exit)\n'
+        )
     runs = "\n".join(
         f'(reset) (printout t "{begin}_RUN_{index}" crlf)\n'
         f"(watch statistics) (run {RUN_LIMIT}) (unwatch statistics)\n"
         f'(printout t "{end}_RUN_{index}" crlf)'
         for index in range(resets)
     )
+    if error == "run":
+        # A run-time error abandons the rest of an enclosing call, so each
+        # step is a top-level command on its own line (CLIPS drops the rest
+        # of a command line). A failed load still omits BEGIN.
+        steps = "".join(
+            f'(reset)\n(printout t "{begin}_RUN_{index}" crlf)\n(watch statistics)\n'
+            f'(run {RUN_LIMIT})\n(unwatch statistics)\n(printout t "{end}_RUN_{index}" crlf)\n'
+            for index in range(resets)
+        )
+        return (
+            f'(if (load "{path}") then (printout t "{begin}" crlf))\n'
+            f'{steps}(printout t "{end}" crlf)\n(exit)\n'
+        )
     return (
         f'(if (load "{path}") then\n'
         f' (printout t "{begin}" crlf)\n{runs}\n'
@@ -129,7 +173,17 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         raise ReferenceFailure(
             "input fixtures require exactly one reset; input replay is undefined"
         )
-    source = batch_source(f"tests/clips_compat/corpus/{case['path']}", begin, end, resets)
+    error = case.get("error")
+    if error not in (None, "load", "run"):
+        raise ReferenceFailure(f"unknown error phase: {error!r}")
+    if error == "load" and (resets != 1 or input_path.exists()):
+        raise ReferenceFailure("a load error case has no runs")
+    source = batch_source(f"tests/clips_compat/corpus/{case['path']}", begin, end, resets, error)
+    strategy = case.get("strategy")
+    if strategy not in (None, "breadth"):
+        raise ReferenceFailure(f"unknown strategy: {strategy!r}")
+    if strategy:
+        source = f"(set-strategy {strategy})\n{source}"
     with tempfile.NamedTemporaryFile(mode="w", suffix=".clp", dir=scratch) as batch:
         batch.write(source)
         batch.flush()
@@ -173,7 +227,9 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
     stdout, stderr = decode(process.stdout), decode(process.stderr)
     if process.returncode:
         raise ReferenceFailure(f"CLIPS exit {process.returncode}: {stderr}")
-    output = extract_output(stdout, stderr, begin, end)
+    if error == "load":
+        return extract_load_error(stdout, stderr, begin, end)
+    output = extract_output(stdout, stderr, begin, end, error)
     return extract_runs(output, begin, end, resets)
 
 
