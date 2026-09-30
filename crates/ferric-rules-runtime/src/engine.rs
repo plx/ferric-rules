@@ -1080,7 +1080,7 @@ impl Engine {
         token_id: ferric_rules_core::token::TokenId,
     ) -> (bool, bool, bool, bool) {
         ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
-        let Some(token) = self.rete.token_store.get(token_id).cloned() else {
+        let Some(mut token) = self.rete.token_store.get(token_id).cloned() else {
             ferric_event!(debug, rule = rule_id.0, token = ?token_id, "activation_missing_token");
             self.action_diagnostics.push(ActionError::EvalError(format!(
                 "internal invariant violation: activation for rule {rule_id:?} references missing token {token_id:?}"
@@ -1106,6 +1106,13 @@ impl Engine {
         };
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
+        actions::bind_fact_addresses(
+            &mut token,
+            &info,
+            &collected_facts,
+            &self.symbol_table,
+            self.config.string_encoding,
+        );
 
         let (fired, reset_requested, clear_requested, errors) = {
             let mut action_context = actions::ActionExecutionContext {

@@ -41,9 +41,6 @@ pub(crate) struct ActionExecutionContext<'a> {
 
 #[derive(Default)]
 struct ActionEvalEnv {
-    /// Captured once per activation; remains available after supporting facts
-    /// are retracted. Inner token bindings and explicit RHS locals override it.
-    fact_bindings: RuntimeBindingEnv,
     /// Query membership has lexical scope independent of ordinary loop values.
     compact_facts: crate::evaluator::CompactFactBindings,
     runtime_bindings: RuntimeBindingEnv,
@@ -148,14 +145,9 @@ impl ActionEvalEnv {
         runtime_expr: &crate::evaluator::RuntimeExpr,
         context: &mut ActionExecutionContext<'_>,
     ) -> Result<Value, ActionError> {
-        if !self.fact_bindings.is_empty() || !self.runtime_bindings.is_empty() {
-            let (bindings, var_map) = build_runtime_eval_bindings(
-                token,
-                rule_info,
-                &self.fact_bindings,
-                &self.runtime_bindings,
-                context,
-            )?;
+        if !self.runtime_bindings.is_empty() {
+            let (bindings, var_map) =
+                build_runtime_eval_bindings(token, rule_info, &self.runtime_bindings, context)?;
             return Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
                 &bindings,
@@ -315,15 +307,11 @@ pub(crate) fn execute_actions(
     // Defensive: clear any stale deferred events that might have accumulated
     // in non-action evaluation contexts.
     let _ = context.engine.globals.take_printout_events();
-    if let Err(error) = seed_fact_address_bindings(
+    seed_compact_fact_addresses(
         collected_facts,
         &rule_info.fact_address_vars,
-        &mut eval_env.fact_bindings,
         &mut eval_env.compact_facts,
-    ) {
-        context.engine.config.end_action_loop_budget();
-        return (true, false, false, vec![error]);
-    }
+    );
 
     for (index, action) in rule_info.actions.iter().enumerate() {
         let runtime_call = rule_info
@@ -411,31 +399,50 @@ pub(crate) fn evaluate_test_condition(
     result
 }
 
-fn seed_fact_address_bindings(
+/// Bind pattern fact addresses (`?f <- (...)`) into an activation's own token
+/// copy, so RHS expressions read them through the ordinary binding frame.
+/// A same-named pattern variable keeps precedence.
+pub(crate) fn bind_fact_addresses(
+    token: &mut Token,
+    rule_info: &CompiledRuleInfo,
+    collected_facts: &[FactId],
+    symbol_table: &SymbolTable,
+    encoding: ferric_rules_core::StringEncoding,
+) {
+    for (name, &index) in &rule_info.fact_address_vars {
+        let Some(fact_id) = collected_facts.get(index) else {
+            continue;
+        };
+        let Some(id) = symbol_table
+            .find_symbol(name, encoding)
+            .and_then(|symbol| rule_info.var_map.lookup(symbol))
+        else {
+            continue;
+        };
+        if token.bindings.get(id).is_none() {
+            let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
+            token
+                .bindings
+                .set(id, ValueRef::new(Value::Integer(encoded)));
+        }
+    }
+}
+
+/// Compact `?f:slot` references read the pattern fact even when a loop or
+/// query later reuses the ordinary variable name.
+fn seed_compact_fact_addresses(
     collected_facts: &[FactId],
     addresses: &HashMap<String, usize>,
-    env: &mut RuntimeBindingEnv,
     compact_facts: &mut crate::evaluator::CompactFactBindings,
-) -> Result<(), ActionError> {
-    if addresses.len() > ferric_rules_core::compiler::MAX_RULE_CONDITIONS {
-        return Err(ActionError::EvalError(
-            "too many fact-address bindings for one rule".to_string(),
-        ));
+) {
+    for (name, &index) in addresses {
+        if let Some(fact_id) = collected_facts.get(index) {
+            compact_facts.insert(
+                name.strip_prefix("$?").unwrap_or(name).to_string(),
+                CompactFactBinding::live(*fact_id),
+            );
+        }
     }
-    for (name, index) in addresses {
-        let fact_id = collected_facts.get(*index).ok_or_else(|| {
-            ActionError::EvalError(format!(
-                "fact-address binding ?{name} references missing fact at position {index}"
-            ))
-        })?;
-        let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
-        insert_runtime_binding(env, name, Value::Integer(encoded));
-        compact_facts.insert(
-            name.strip_prefix("$?").unwrap_or(name).to_string(),
-            CompactFactBinding::live(*fact_id),
-        );
-    }
-    Ok(())
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
@@ -446,14 +453,11 @@ fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value)
 fn build_runtime_eval_bindings(
     token: &Token,
     rule_info: &CompiledRuleInfo,
-    fact_bindings: &RuntimeBindingEnv,
-    runtime_bindings: &RuntimeBindingEnv,
+    env: &RuntimeBindingEnv,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<(BindingSet, VarMap), ActionError> {
-    // ValueRef clones share strings/multifields. Adding an address must not
-    // deep-copy all ordinary values for every expression in the RHS.
-    let mut var_map = rule_info.var_map.clone();
-    let mut bindings = token.bindings.clone();
+    let mut var_map = VarMap::new();
+    let mut bindings = BindingSet::new();
 
     // Preserve outer VarId order: when both spellings exist, the later
     // `$?name`/`name` alias wins, just as in the former merged map.
@@ -489,22 +493,19 @@ fn build_runtime_eval_bindings(
             .map_err(|error| ActionError::EvalError(error.to_string()))?;
         bindings.set(id, value.clone());
     }
-    // Fact addresses fill only unbound names; RHS locals override outer aliases.
-    for (env, overwrite) in [(fact_bindings, false), (runtime_bindings, true)] {
-        for (name, value) in env {
-            let name = name.strip_prefix("$?").unwrap_or(name);
-            let symbol = context
-                .engine
-                .symbol_table
-                .intern_symbol(name, context.engine.config.string_encoding)
-                .map_err(ActionError::Encoding)?;
-            let id = var_map
-                .get_or_create(symbol)
-                .map_err(|error| ActionError::EvalError(error.to_string()))?;
-            if overwrite || bindings.get(id).is_none() {
-                bindings.set(id, ValueRef::new(value.clone()));
-            }
-        }
+    // Runtime locals override outer aliases. Clone their values once, directly
+    // into the evaluation frame, without an intermediate owned-value map.
+    for (name, value) in env {
+        let name = name.strip_prefix("$?").unwrap_or(name);
+        let symbol = context
+            .engine
+            .symbol_table
+            .intern_symbol(name, context.engine.config.string_encoding)
+            .map_err(ActionError::Encoding)?;
+        let id = var_map
+            .get_or_create(symbol)
+            .map_err(|error| ActionError::EvalError(error.to_string()))?;
+        bindings.set(id, ValueRef::new(value.clone()));
     }
     Ok((bindings, var_map))
 }
@@ -2855,7 +2856,7 @@ mod tests {
             let id = info.var_map.get_or_create(symbol).unwrap();
             token.bindings.set(id, ValueRef::new(expected_tail.clone()));
             let symbol = engine.symbol_table.intern_symbol("unbound", encoding).unwrap();
-            let unbound_id = info.var_map.get_or_create(symbol).unwrap();
+            info.var_map.get_or_create(symbol).unwrap();
 
             let mut locals = RuntimeBindingEnv::from([("local".to_owned(), Value::Integer(0))]);
             if let Some(value) = local {
@@ -2863,16 +2864,10 @@ mod tests {
             }
             let module = engine.module_registry.current_module();
             let (bindings, names) = build_runtime_eval_bindings(
-                &token, &info, &RuntimeBindingEnv::new(), &locals,
+                &token, &info, &locals,
                 &mut ActionExecutionContext { engine: &mut engine, current_module: module },
             ).unwrap();
-            // The shared frame retains original IDs, including unused slots.
-            // Adding locals must not assign a value to an unbound variable.
-            for index in 0..info.var_map.len() {
-                let id = VarId(u16::try_from(index).unwrap());
-                prop_assert_eq!(names.lookup(info.var_map.name(id)), Some(id));
-            }
-            prop_assert!(bindings.get(unbound_id).is_none());
+            prop_assert_eq!(names.len(), 3);
             for (name, expected) in [
                 ("x", Value::Integer(local.unwrap_or(second))),
                 ("tail", expected_tail),
@@ -3018,7 +3013,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_eval_bindings_preserve_shared_values_and_precedence() {
+    fn runtime_eval_bindings_share_values_and_let_locals_win() {
         let mut engine = Engine::new(crate::EngineConfig::utf8());
         let mut rule_info = CompiledRuleInfo {
             name: "binding-test".into(),
@@ -3042,7 +3037,6 @@ mod tests {
         };
         for (name, value) in [
             ("ordinary", ValueRef::Shared(Arc::clone(&shared))),
-            ("shadow", ValueRef::new(Value::Integer(2))),
             ("local", ValueRef::new(Value::Integer(20))),
         ] {
             let symbol = engine
@@ -3052,17 +3046,11 @@ mod tests {
             let id = rule_info.var_map.get_or_create(symbol).unwrap();
             token.bindings.set(id, value);
         }
-        let fact_bindings = HashMap::from([
-            ("shadow".into(), Value::Integer(1)),
-            ("only_fact".into(), Value::Integer(3)),
-            ("local".into(), Value::Integer(10)),
-        ]);
         let runtime_bindings = HashMap::from([("local".into(), Value::Integer(30))]);
         let current_module = engine.module_registry.current_module();
         let (bindings, var_map) = build_runtime_eval_bindings(
             &token,
             &rule_info,
-            &fact_bindings,
             &runtime_bindings,
             &mut ActionExecutionContext {
                 engine: &mut engine,
@@ -3071,64 +3059,83 @@ mod tests {
         )
         .unwrap();
 
-        for (name, expected) in [("shadow", 2), ("only_fact", 3), ("local", 30)] {
+        let lookup = |engine: &mut Engine, name: &str| {
             let symbol = engine
                 .symbol_table
                 .intern_symbol(name, engine.config.string_encoding)
                 .unwrap();
-            let id = var_map.lookup(symbol).unwrap();
-            assert!(bindings
-                .get(id)
-                .unwrap()
-                .structural_eq(&Value::Integer(expected)));
-        }
-        let symbol = engine
-            .symbol_table
-            .intern_symbol("ordinary", engine.config.string_encoding)
-            .unwrap();
-        let id = var_map.lookup(symbol).unwrap();
-        let ValueRef::Shared(merged) = bindings.get(id).unwrap() else {
+            var_map.lookup(symbol).unwrap()
+        };
+        let local = lookup(&mut engine, "local");
+        assert!(bindings
+            .get(local)
+            .unwrap()
+            .structural_eq(&Value::Integer(30)));
+        let ordinary = lookup(&mut engine, "ordinary");
+        let ValueRef::Shared(merged) = bindings.get(ordinary).unwrap() else {
             panic!("ordinary multifield must retain shared storage");
         };
         assert!(Arc::ptr_eq(&shared, merged));
-        assert_eq!(rule_info.var_map.len(), 3);
-        assert_eq!(token.bindings.bound_count(), 3);
-        let local_symbol = engine
-            .symbol_table
-            .intern_symbol("local", engine.config.string_encoding)
+        // The activation frame itself is unchanged.
+        assert_eq!(token.bindings.bound_count(), 2);
+    }
+
+    #[test]
+    fn fact_addresses_bind_into_the_activation_token() {
+        let mut engine = Engine::new(crate::EngineConfig::utf8());
+        engine
+            .load_str("(defrule r ?f <- (a ?x) ?g <- (b ?x) => (printout t (fact-index ?f) crlf))")
             .unwrap();
-        let local_id = rule_info.var_map.lookup(local_symbol).unwrap();
+        let info = rule_info_clone_light(engine.rule_info.iter().flatten().next().unwrap());
+        let mut token = Token {
+            fact: None,
+            bindings: BindingSet::new(),
+            parent: None,
+            owner_node: engine.rete.beta.root_id(),
+        };
+        let lookup = |engine: &Engine, name: &str| {
+            let symbol = engine
+                .symbol_table
+                .find_symbol(name, engine.config.string_encoding)
+                .unwrap();
+            info.var_map.lookup(symbol).unwrap()
+        };
+        let (f, g) = (lookup(&engine, "f"), lookup(&engine, "g"));
+        // A pattern binding of the same name keeps precedence.
+        token.bindings.set(g, ValueRef::new(Value::Integer(-1)));
+        let fact_id = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
+        bind_fact_addresses(
+            &mut token,
+            &info,
+            &[fact_id, fact_id],
+            &engine.symbol_table,
+            engine.config.string_encoding,
+        );
+        let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
         assert!(token
             .bindings
-            .get(local_id)
+            .get(f)
             .unwrap()
-            .structural_eq(&Value::Integer(20)));
-    }
+            .structural_eq(&Value::Integer(encoded)));
+        assert!(token
+            .bindings
+            .get(g)
+            .unwrap()
+            .structural_eq(&Value::Integer(-1)));
 
-    #[test]
-    fn fact_address_seed_rejects_oversized_mapping() {
-        let addresses = (0..=ferric_rules_core::compiler::MAX_RULE_CONDITIONS)
-            .map(|index| (format!("f{index}"), 0))
-            .collect();
-        let mut env = RuntimeBindingEnv::new();
-        let error =
-            seed_fact_address_bindings(&[], &addresses, &mut env, &mut HashMap::new()).unwrap_err();
-        assert!(error.to_string().contains("too many fact-address bindings"));
-        assert!(env.is_empty());
-    }
-
-    #[test]
-    fn fact_address_seed_rejects_out_of_range_mapping_without_indexing() {
-        let fact_id = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
-        let addresses = HashMap::from([("f".into(), usize::MAX)]);
-        let mut env = RuntimeBindingEnv::new();
-        let error =
-            seed_fact_address_bindings(&[fact_id], &addresses, &mut env, &mut HashMap::new())
-                .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("references missing fact at position"));
-        assert!(env.is_empty());
+        // Missing collected facts leave the variable unbound.
+        let mut empty = Token {
+            bindings: BindingSet::new(),
+            ..token
+        };
+        bind_fact_addresses(
+            &mut empty,
+            &info,
+            &[],
+            &engine.symbol_table,
+            engine.config.string_encoding,
+        );
+        assert_eq!(empty.bindings.bound_count(), 0);
     }
 }
 

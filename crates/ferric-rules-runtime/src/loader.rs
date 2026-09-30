@@ -2910,12 +2910,27 @@ impl Engine {
             .filter(|snippet| !snippet.is_empty())
             .map(ToOwned::to_owned);
 
+        // Pattern fact addresses get variable slots after the match variables,
+        // so each activation can bind them into its own token copy.
+        let mut var_map = plan.var_map().clone();
+        let mut address_names: Vec<&String> = translated.fact_address_vars.keys().collect();
+        address_names.sort_unstable();
+        for name in address_names {
+            let symbol = self
+                .symbol_table
+                .intern_symbol(name, self.config.string_encoding)
+                .map_err(|e| LoadError::Compile(format!("{e}")))?;
+            var_map
+                .get_or_create(symbol)
+                .map_err(|e| LoadError::Compile(format!("{e}")))?;
+        }
+
         // Store rule info for action execution
         let info = CompiledRuleInfo {
             name: rule.name.clone(),
             source_definition,
             actions: rule.actions.clone(),
-            var_map: plan.var_map().clone(),
+            var_map,
             fact_address_vars: translated.fact_address_vars,
             salience: Salience::new(rule.salience),
             test_conditions: translated.test_conditions,
