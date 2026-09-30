@@ -13,9 +13,10 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use crate::field_scanner::{FieldScanner, FieldToken};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
-use ferric_rules_core::symbol::{InstanceName, SymbolTable};
+use ferric_rules_core::symbol::{InstanceName, Symbol, SymbolTable};
 use ferric_rules_core::value::Value;
 use ferric_rules_core::{Fact, FactBase, FactId, StringEncoding, TemplateId};
 
@@ -4731,69 +4732,50 @@ fn builtin_str_compare(
     Ok(Value::Integer(result))
 }
 
-/// `string-to-field` — parse string as a typed value (integer, float, or symbol).
+/// `string-to-field` — the first CLIPS field of a STRING, SYMBOL or
+/// INSTANCE-NAME, scanned as CLIPS does; the rest of the text is ignored.
 fn builtin_string_to_field(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("string-to-field", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::String(s) = &val else {
-        return Err(EvalError::TypeError {
-            function: "string-to-field".to_string(),
-            expected: "STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        });
-    };
-    parse_string_as_value(
-        s.as_str(),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-        "string-to-field",
-        span,
-    )
-}
-
-/// Parse a string token as integer, float, or symbol.
-fn parse_string_as_value(
-    s: &str,
-    symbol_table: &mut SymbolTable,
-    encoding: StringEncoding,
-    function: &str,
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        let sym = symbol_table
-            .intern_symbol("", encoding)
-            .map_err(|e| EvalError::TypeError {
-                function: function.to_string(),
-                expected: "encodable symbol".to_string(),
-                actual: format!("{e}"),
+    let value = eval_inner(ctx, &args[0])?;
+    let text = match &value {
+        Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+        Value::Symbol(symbol) => std::borrow::Cow::Owned(
+            ctx.symbol_table
+                .resolve_symbol_str(*symbol)
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        Value::InstanceName(name) => std::borrow::Cow::Owned(
+            ctx.symbol_table
+                .resolve_symbol_str(name.as_symbol())
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        other => {
+            return Err(EvalError::TypeError {
+                function: "string-to-field".to_string(),
+                expected: "STRING, SYMBOL, or INSTANCE-NAME".to_string(),
+                actual: generic_value_type_name(other).to_string(),
                 span: span.cloned(),
-            })?;
-        return Ok(Value::Symbol(sym));
+            })
+        }
+    };
+    let scanned = scan_field(ctx, &mut FieldScanner::new(text.as_bytes()));
+    match scanned {
+        FieldToken::Stop => {
+            intern_scanned_symbol(ctx, "EOF", "string-to-field", span).map(Value::Symbol)
+        }
+        FieldToken::Unknown => scanned_string(ctx, "*** ERROR ***", "string-to-field", span),
+        token => scanned_field_value(ctx, token, "string-to-field", span),
     }
-    if let Ok(n) = trimmed.parse::<i64>() {
-        return Ok(Value::Integer(n));
-    }
-    if let Ok(f) = trimmed.parse::<f64>() {
-        return Ok(Value::Float(f));
-    }
-    let sym = symbol_table
-        .intern_symbol(trimmed, encoding)
-        .map_err(|e| EvalError::TypeError {
-            function: function.to_string(),
-            expected: "encodable symbol".to_string(),
-            actual: format!("{e}"),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
 }
 
-/// `explode$` / `str-explode` — split string by whitespace into multifield.
+/// `explode$` / `str-explode` — every CLIPS field of a STRING, in order.
+/// Tokens that are not values (such as `(`) become STRINGs of their print form.
 fn builtin_explode_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -4809,17 +4791,92 @@ fn builtin_explode_mf(
             span: span.cloned(),
         });
     };
+    let mut scanner = FieldScanner::new(s.as_str().as_bytes());
     let mut result = ferric_rules_core::value::Multifield::new();
-    for word in s.as_str().split_whitespace() {
-        result.push(parse_string_as_value(
-            word,
-            ctx.symbol_table,
-            ctx.config.string_encoding,
-            "explode$",
-            span,
-        )?);
+    loop {
+        match scan_field(ctx, &mut scanner) {
+            FieldToken::Stop => return Ok(Value::Multifield(Box::new(result))),
+            token => result.push(scanned_field_value(ctx, token, "explode$", span)?),
+        }
     }
-    Ok(Value::Multifield(Box::new(result)))
+}
+
+/// Scan the next field, writing any scanner notice to its CLIPS router.
+fn scan_field<'a>(ctx: &mut EvalContext<'_>, scanner: &mut FieldScanner<'a>) -> FieldToken<'a> {
+    let field = scanner.next_token();
+    if let Some(notice) = field.notice {
+        ctx.globals
+            .push_printout_event(notice.router().to_string(), notice.text().to_string());
+    }
+    field.token
+}
+
+/// The value of a scanned token. Tokens that are not values become STRINGs of
+/// their print form. Scanned text is decoded as UTF-8; the only invalid
+/// sequence the scanner can produce (a string ending in an escaped end of
+/// input) becomes U+FFFD, where CLIPS keeps a raw byte.
+fn scanned_field_value(
+    ctx: &mut EvalContext<'_>,
+    token: FieldToken<'_>,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    match token {
+        FieldToken::Integer(value) => Ok(Value::Integer(value)),
+        FieldToken::Float(value) => Ok(Value::Float(value)),
+        FieldToken::Symbol(bytes) => {
+            intern_scanned_symbol(ctx, &String::from_utf8_lossy(&bytes), function, span)
+                .map(Value::Symbol)
+        }
+        FieldToken::InstanceName(bytes) => {
+            intern_scanned_symbol(ctx, &String::from_utf8_lossy(&bytes), function, span)
+                .map(|symbol| Value::InstanceName(InstanceName::from_symbol(symbol)))
+        }
+        FieldToken::String(bytes) => {
+            scanned_string(ctx, &String::from_utf8_lossy(&bytes), function, span)
+        }
+        other => {
+            let print_form = other
+                .print_form()
+                .expect("non-value token has a print form");
+            scanned_string(ctx, &String::from_utf8_lossy(print_form), function, span)
+        }
+    }
+}
+
+fn intern_scanned_symbol(
+    ctx: &mut EvalContext<'_>,
+    text: &str,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Symbol, EvalError> {
+    ctx.symbol_table
+        .intern_symbol(text, ctx.config.string_encoding)
+        .map_err(|error| scanned_encoding_error(&error, function, span))
+}
+
+fn scanned_string(
+    ctx: &EvalContext<'_>,
+    text: &str,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    FerricString::new(text, ctx.config.string_encoding)
+        .map(Value::String)
+        .map_err(|error| scanned_encoding_error(&error, function, span))
+}
+
+fn scanned_encoding_error(
+    error: &impl std::fmt::Display,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> EvalError {
+    EvalError::TypeError {
+        function: function.to_string(),
+        expected: "field permitted by the configured encoding".to_string(),
+        actual: error.to_string(),
+        span: span.cloned(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6057,13 +6114,13 @@ fn intern_eof_symbol(
     Ok(Value::Symbol(sym))
 }
 
-/// `read` — read a single atom from the input buffer.
+/// `read` — read one CLIPS field from the queued input lines.
 ///
 /// `(read)` or `(read <channel>)`
 ///
-/// Pops a line from the input buffer and parses the first whitespace-delimited
-/// token as a typed value (integer, float, quoted string, or symbol).
-/// Returns `Symbol("EOF")` when no input is available.
+/// Like CLIPS reading `stdin`, each call consumes whole lines until one
+/// contains a field, returns that line's first field and discards the rest.
+/// Returns the symbol `EOF` when the queue runs out first.
 fn builtin_read(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6082,57 +6139,22 @@ fn builtin_read(
         let _ = eval_inner(ctx, &args[0])?;
     }
 
-    let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    let Some(line) = buffer.pop_front() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return intern_eof_symbol(ctx, span);
-    }
-
-    // Get first whitespace-delimited token
-    let token_str = trimmed.split_whitespace().next().unwrap_or(trimmed);
-
-    // Try to parse as integer
-    if let Ok(i) = token_str.parse::<i64>() {
-        return Ok(Value::Integer(i));
-    }
-
-    // Try to parse as float
-    if let Ok(f) = token_str.parse::<f64>() {
-        return Ok(Value::Float(f));
-    }
-
-    // If quoted string: "..."
-    if token_str.starts_with('"') && token_str.ends_with('"') && token_str.len() >= 2 {
-        let inner = &token_str[1..token_str.len() - 1];
-        let fs = FerricString::new(inner, ctx.config.string_encoding).map_err(|_| {
-            EvalError::TypeError {
-                function: "read".to_string(),
-                expected: "valid string encoding".to_string(),
-                actual: format!("cannot create string from `{inner}`"),
-                span: span.cloned(),
+    loop {
+        let Some(line) = ctx
+            .input_buffer
+            .as_deref_mut()
+            .and_then(std::collections::VecDeque::pop_front)
+        else {
+            return intern_eof_symbol(ctx, span);
+        };
+        match scan_field(ctx, &mut FieldScanner::new(line.as_bytes())) {
+            FieldToken::Stop => {}
+            FieldToken::Unknown => {
+                return scanned_string(ctx, "*** READ ERROR ***", "read", span);
             }
-        })?;
-        return Ok(Value::String(fs));
+            token => return scanned_field_value(ctx, token, "read", span),
+        }
     }
-
-    // Otherwise it's a symbol
-    let sym = ctx
-        .symbol_table
-        .intern_symbol(token_str, ctx.config.string_encoding)
-        .map_err(|_| EvalError::TypeError {
-            function: "read".to_string(),
-            expected: "valid symbol".to_string(),
-            actual: format!("cannot intern `{token_str}`"),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
 }
 
 /// `readline` — read a complete line from the input buffer as a string.

@@ -351,18 +351,7 @@
       "covers": [
         "read",
         "STRING"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/346"
-        ],
-        "summary": "CLIPS compatibility: read truncates quoted strings at whitespace",
-        "observed": {
-          "diagnostics": [],
-          "output": "FALSE:\"two\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "io/read-symbol.clp",
@@ -1600,18 +1589,7 @@
         "integerp",
         "string-to-field",
         "symbolp"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/338"
-        ],
-        "summary": "CLIPS compatibility: parse only the first token in string-to-field",
-        "observed": {
-          "diagnostics": [],
-          "output": "42 trailing TRUE TRUE TRUE\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "stdlib/042_explode_quoted_fields.clp",
@@ -1622,18 +1600,7 @@
         "length$",
         "nth$",
         "stringp"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/339"
-        ],
-        "summary": "CLIPS compatibility: preserve quoted fields when parsing explode$",
-        "observed": {
-          "diagnostics": [],
-          "output": "4 FALSE FALSE\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "stdlib/043_funcall_builtin.clp",

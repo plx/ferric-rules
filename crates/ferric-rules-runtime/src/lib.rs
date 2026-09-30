@@ -44,6 +44,7 @@ pub mod config;
 pub mod engine;
 pub mod evaluator;
 pub mod execution;
+mod field_scanner;
 pub mod functions;
 pub mod host;
 pub mod loader;
