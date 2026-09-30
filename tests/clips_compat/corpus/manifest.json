@@ -90,6 +90,17 @@
       ]
     },
     {
+      "path": "agenda/011_halt_finishes_the_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "do-for-all-facts",
+        "halt",
+        "loop-for-count",
+        "while"
+      ]
+    },
+    {
       "path": "facts/001_ordered_zero_fields.clp",
       "level": "basic",
       "covers": [
@@ -1633,6 +1644,18 @@
       "strategy": "breadth"
     },
     {
+      "path": "patterns/077_instance_name_fields.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "deftemplate",
+        "eq",
+        "instance-name",
+        "multislot",
+        "ordered-facts"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
@@ -2598,6 +2621,19 @@
       "covers": [
         "queries",
         "fact-index-address"
+      ]
+    },
+    {
+      "path": "queries/fact-index-designators.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "fact-existp",
+        "fact-index",
+        "fact-relation",
+        "fact-slot-names",
+        "fact-slot-value",
+        "retract"
       ]
     },
     {
@@ -5570,6 +5606,43 @@
         "defglobal",
         "sub-string"
       ]
+    },
+    {
+      "path": "stdlib/210_lexeme_functions_accept_instance_names.clp",
+      "level": "boundary",
+      "covers": [
+        "instance-name",
+        "lowcase",
+        "str-compare",
+        "str-index",
+        "str-length",
+        "sub-string",
+        "upcase"
+      ]
+    },
+    {
+      "path": "stdlib/211_format_string_directive_rejects_numbers.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/212_format_missing_argument.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/213_format_extra_argument.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "error": "run"
     }
   ]
 }
