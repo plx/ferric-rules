@@ -46,7 +46,8 @@ pub struct Token {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TokenStore {
     pub(crate) tokens: SlotMap<TokenId, Token>,
-    pub(crate) sequence_matches: slotmap::SparseSecondaryMap<TokenId, SmallVec<[usize; 2]>>,
+    pub(crate) sequence_matches:
+        slotmap::SparseSecondaryMap<TokenId, SmallVec<[usize; 2]>, rustc_hash::FxBuildHasher>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
@@ -65,7 +66,7 @@ impl TokenStore {
     pub fn new() -> Self {
         Self {
             tokens: SlotMap::with_key(),
-            sequence_matches: slotmap::SparseSecondaryMap::new(),
+            sequence_matches: slotmap::SparseSecondaryMap::default(),
             fact_to_tokens: HashMap::default(),
             parent_to_children: HashMap::default(),
         }
@@ -126,7 +127,10 @@ impl TokenStore {
     /// Returns the removed token if it existed, or `None` if not found.
     pub fn remove(&mut self, id: TokenId) -> Option<Token> {
         let token = self.tokens.remove(id)?;
-        self.sequence_matches.remove(id);
+        // Only sequence joins record split lengths; skip the lookup otherwise.
+        if !self.sequence_matches.is_empty() {
+            self.sequence_matches.remove(id);
+        }
 
         // Clean up fact_to_tokens index (single fact per token)
         if let Some(fact_id) = token.fact {

@@ -206,32 +206,20 @@ impl Work {
     }
 }
 
-/// Visit projected matches without letting rejected split combinations escape
-/// the snapshot work budget. Charge before advancing the unfiltered iterator.
-#[allow(clippy::too_many_arguments)]
-fn visit_join_matches(
+/// Work to project and test one split of `fact`. A projection clones physical
+/// values, including string bytes and nested multifields, so counting only
+/// top-level fields would undercharge large values.
+fn sequence_candidate_cost(
     fact: &Fact,
-    token: &crate::token::Token,
+    sequence: &SequencePattern,
     tests: &[JoinTest],
-    sequence: Option<&SequencePattern>,
     binding_cost: usize,
     work: &mut Work,
-    mut visit: impl FnMut(&Fact, Option<&[usize]>) -> Result<bool, String>,
-) -> Result<(), String> {
-    let Some(sequence) = sequence else {
-        work.spend(tests.len() + binding_cost + 1)?;
-        if crate::rete::evaluate_join(fact, Some(token), tests) {
-            visit(fact, None)?;
-        }
-        return Ok(());
-    };
+) -> Result<usize, String> {
     let values = match fact {
         Fact::Ordered(fact) => fact.fields.as_slice(),
         Fact::Template(fact) => fact.slots.as_ref(),
     };
-    // Projection clones physical values, including string bytes and nested
-    // multifields. Counting only top-level fields would undercharge a large
-    // value repeatedly cloned across many rejected split candidates.
     let mut value_cost = 0_usize;
     let mut pending = vec![values];
     while let Some(values) = pending.pop() {
@@ -260,28 +248,53 @@ fn visit_join_matches(
                     _ => value_cost + 1,
                 })
             });
-    let candidate_cost = sequence
+    Ok(sequence
         .logical_width()
         .saturating_add(sequence.segments.len())
         .saturating_add(value_cost)
         .saturating_add(test_cost)
         .saturating_add(binding_cost.saturating_mul(value_cost + 1))
-        .saturating_add(1);
-    work.spend(sequence.logical_width() + sequence.segments.len() + 1)?;
+        .saturating_add(1))
+}
+
+/// Whether some split of `fact` satisfies the plan and the join tests.
+/// Enumeration is combinatorial, so each candidate, including rejected
+/// ones, is charged before the iterator advances.
+fn any_sequence_match(
+    fact: &Fact,
+    token: &crate::token::Token,
+    tests: &[JoinTest],
+    sequence: &SequencePattern,
+    work: &mut Work,
+) -> Result<bool, String> {
+    let candidate_cost = sequence_candidate_cost(fact, sequence, tests, 0, work)?;
     let mut candidates = sequence.candidates(fact);
     loop {
         work.spend(candidate_cost)?;
         let Some(candidate) = candidates.next() else {
-            break;
+            return Ok(false);
         };
         if sequence.accepts(&candidate.fact)
             && crate::rete::evaluate_join(&candidate.fact, Some(token), tests)
-            && !visit(&candidate.fact, Some(&candidate.lengths))?
         {
-            break;
+            return Ok(true);
         }
     }
-    Ok(())
+}
+
+/// Bindings a join token must carry for `fact` (or its projected split).
+fn join_bindings(
+    parent: &crate::token::Token,
+    fact: &Fact,
+    bindings: &[(crate::alpha::SlotIndex, crate::binding::VarId)],
+) -> crate::binding::BindingSet {
+    let mut expected = parent.bindings.clone();
+    for &(slot, variable) in bindings {
+        if let Some(value) = crate::alpha::get_slot_value(fact, slot) {
+            expected.set(variable, crate::binding::ValueRef::new(value.clone()));
+        }
+    }
+    expected
 }
 
 fn validate_sequence_plan(
@@ -1176,30 +1189,49 @@ impl ReteNetwork {
                     .get(parent)
                     .ok_or("missing conditional parent token")?;
                 let mut matches = rustc_hash::FxHashSet::default();
-                let indexed_tests = if sequence.is_some() {
-                    &[][..]
+                if let Some(sequence) = sequence.as_deref() {
+                    // Enumerating every split of every candidate is
+                    // combinatorial. Check only that each recorded fact
+                    // matches through some split; a fact counts once.
+                    let recorded = match (negative, exists) {
+                        (Some(id), _) => self
+                            .beta
+                            .get_neg_memory(id)
+                            .ok_or("missing negative memory")?
+                            .blocked
+                            .get(&parent),
+                        (_, Some(id)) => self
+                            .beta
+                            .get_exists_memory(id)
+                            .ok_or("missing exists memory")?
+                            .support
+                            .get(&parent),
+                        _ => None,
+                    };
+                    for &fact in recorded.into_iter().flatten() {
+                        require!(
+                            alpha.contains(fact),
+                            "conditional support fact is not in its alpha memory"
+                        );
+                        let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
+                        require!(
+                            any_sequence_match(fact_value, token, tests, sequence, work)?,
+                            "conditional support fact does not match"
+                        );
+                        matches.insert(fact);
+                    }
                 } else {
-                    tests.as_ref()
-                };
-                for fact in crate::rete::collect_candidate_facts(
-                    alpha,
-                    crate::rete::indexable_tests(indexed_tests, None),
-                    &token.bindings,
-                ) {
-                    let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
-                    visit_join_matches(
-                        fact_value,
-                        token,
-                        tests,
-                        sequence.as_deref(),
-                        0,
-                        work,
-                        |_, _| {
+                    for fact in crate::rete::collect_candidate_facts(
+                        alpha,
+                        crate::rete::indexable_tests(tests, None),
+                        &token.bindings,
+                    ) {
+                        work.spend(tests.len() + 1)?;
+                        let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
+                        if crate::rete::evaluate_join(fact_value, Some(token), tests) {
                             matches.insert(fact);
-                            // A supporting fact is counted once, regardless of cuts.
-                            Ok(false)
-                        },
-                    )?;
+                        }
+                    }
                 }
                 if let Some(id) = negative {
                     let memory = self
@@ -1325,24 +1357,33 @@ impl ReteNetwork {
             else {
                 continue;
             };
-            let mut matches = rustc_hash::FxHashMap::default();
-            for id in self
-                .beta
-                .get_memory(*memory)
-                .ok_or("missing join memory")?
-                .iter()
-            {
+            let memory = self.beta.get_memory(*memory).ok_or("missing join memory")?;
+            let alpha = self
+                .alpha
+                .get_memory(*alpha_memory)
+                .ok_or("missing join alpha memory")?;
+            if let Some(sequence) = sequence.as_deref() {
+                self.validate_sequence_join(memory, alpha, tests, bindings, sequence, facts, work)?;
+                continue;
+            }
+            let mut pairs = rustc_hash::FxHashSet::default();
+            for id in memory.iter() {
                 let token = self.token_store.get(id).ok_or("missing join token")?;
                 let parent_id = token.parent.ok_or("join token has no parent")?;
                 let fact_id = token.fact.ok_or("join token has no fact")?;
-                let lengths = self.token_store.match_lengths(id).map(<[usize]>::to_vec);
+                require!(pairs.insert((parent_id, fact_id)), "duplicate join match");
+                let parent_token = self
+                    .token_store
+                    .get(parent_id)
+                    .ok_or("missing join parent")?;
+                let fact = &facts.get(fact_id).ok_or("missing join fact")?.fact;
+                work.spend(bindings.len() + parent_token.bindings.capacity() + 1)?;
                 require!(
-                    sequence.is_some() == lengths.is_some(),
-                    "join token has inconsistent sequence metadata"
-                );
-                require!(
-                    matches.insert((parent_id, fact_id, lengths), id).is_none(),
-                    "duplicate join match"
+                    same_bindings(
+                        &token.bindings,
+                        &join_bindings(parent_token, fact, bindings)
+                    ),
+                    "inconsistent join token bindings"
                 );
             }
             let upstream = self
@@ -1350,15 +1391,6 @@ impl ReteNetwork {
                 .memory_id_for_node(*parent)
                 .and_then(|id| self.beta.get_memory(id))
                 .ok_or("missing join parent memory")?;
-            let alpha = self
-                .alpha
-                .get_memory(*alpha_memory)
-                .ok_or("missing join alpha memory")?;
-            let indexed_tests = if sequence.is_some() {
-                &[][..]
-            } else {
-                tests.as_ref()
-            };
             for parent_id in upstream.iter() {
                 let parent_token = self
                     .token_store
@@ -1366,42 +1398,79 @@ impl ReteNetwork {
                     .ok_or("missing upstream token")?;
                 for fact_id in crate::rete::collect_candidate_facts(
                     alpha,
-                    crate::rete::indexable_tests(indexed_tests, None),
+                    crate::rete::indexable_tests(tests, None),
                     &parent_token.bindings,
                 ) {
+                    work.spend(tests.len() + 1)?;
                     let fact = &facts.get(fact_id).ok_or("missing alpha fact")?.fact;
-                    visit_join_matches(
-                        fact,
-                        parent_token,
-                        tests,
-                        sequence.as_deref(),
-                        bindings.len() + parent_token.bindings.capacity(),
-                        work,
-                        |projected, lengths| {
-                            let key = (parent_id, fact_id, lengths.map(<[usize]>::to_vec));
-                            let id = matches.remove(&key).ok_or_else(|| {
-                                format!("missing positive join match at {node_id:?}")
-                            })?;
-                            let token = self.token_store.get(id).ok_or("missing join token")?;
-                            let mut expected = parent_token.bindings.clone();
-                            for &(slot, variable) in bindings.iter() {
-                                if let Some(value) = crate::alpha::get_slot_value(projected, slot) {
-                                    expected.set(
-                                        variable,
-                                        crate::binding::ValueRef::new(value.clone()),
-                                    );
-                                }
-                            }
-                            require!(
-                                same_bindings(&token.bindings, &expected),
-                                "inconsistent join token bindings"
-                            );
-                            Ok(true)
-                        },
-                    )?;
+                    if crate::rete::evaluate_join(fact, Some(parent_token), tests) {
+                        require!(
+                            pairs.remove(&(parent_id, fact_id)),
+                            "missing positive join match at {node_id:?}"
+                        );
+                    }
                 }
             }
-            require!(matches.is_empty(), "unexpected positive join match");
+            require!(pairs.is_empty(), "unexpected positive join match");
+        }
+        Ok(())
+    }
+
+    /// Sequence tokens record their split, so each one is checked for
+    /// soundness by rebuilding that single projection in `O(width)`.
+    /// Completeness is not re-enumerated: every split of every parent and
+    /// alpha fact pair is combinatorial and would not fit the work budget.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_sequence_join(
+        &self,
+        memory: &crate::beta::BetaMemory,
+        alpha: &AlphaMemory,
+        tests: &[JoinTest],
+        bindings: &[(crate::alpha::SlotIndex, crate::binding::VarId)],
+        sequence: &SequencePattern,
+        facts: &FactBase,
+        work: &mut Work,
+    ) -> Result<(), String> {
+        let mut seen = rustc_hash::FxHashSet::default();
+        for id in memory.iter() {
+            let token = self.token_store.get(id).ok_or("missing join token")?;
+            let parent_id = token.parent.ok_or("join token has no parent")?;
+            let fact_id = token.fact.ok_or("join token has no fact")?;
+            let lengths = self
+                .token_store
+                .match_lengths(id)
+                .ok_or("join token has inconsistent sequence metadata")?;
+            require!(
+                seen.insert((parent_id, fact_id, lengths)),
+                "duplicate join match"
+            );
+            require!(
+                alpha.contains(fact_id),
+                "join token fact is not in its alpha memory"
+            );
+            let parent_token = self
+                .token_store
+                .get(parent_id)
+                .ok_or("missing join parent")?;
+            let fact = &facts.get(fact_id).ok_or("missing join fact")?.fact;
+            let binding_cost = bindings.len() + parent_token.bindings.capacity();
+            let cost = sequence_candidate_cost(fact, sequence, tests, binding_cost, work)?;
+            work.spend(cost)?;
+            let projected = sequence
+                .project(fact, lengths)
+                .ok_or("invalid sequence capture lengths")?;
+            require!(
+                sequence.accepts(&projected.fact)
+                    && crate::rete::evaluate_join(&projected.fact, Some(parent_token), tests),
+                "unexpected positive join match"
+            );
+            require!(
+                same_bindings(
+                    &token.bindings,
+                    &join_bindings(parent_token, &projected.fact, bindings)
+                ),
+                "inconsistent join token bindings"
+            );
         }
         Ok(())
     }
@@ -1632,45 +1701,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejected_sequence_candidates_still_consume_snapshot_work() {
-        let mut symbols = SymbolTable::new();
-        let relation = symbols
-            .intern_symbol("row", crate::StringEncoding::Ascii)
-            .unwrap();
-        let fact = Fact::Ordered(crate::fact::OrderedFact {
-            relation,
-            fields: smallvec::smallvec![Value::Integer(1); 4],
-        });
-        let plan = SequencePattern {
-            segments: vec![crate::sequence::SequenceSegment {
-                source: crate::sequence::SequenceSource::Ordered,
-                fields: vec![crate::sequence::SequenceField::Multi; 3],
-            }],
-            tests: vec![crate::alpha::ConstantTest {
-                slot: crate::alpha::SlotIndex::Ordered(0),
-                test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
-            }],
-        };
-        let token = crate::token::Token {
-            fact: None,
-            parent: None,
-            owner_node: NodeId(0),
-            bindings: crate::binding::BindingSet::new(),
-        };
-        let mut visited = 0;
-        let result =
-            visit_join_matches(&fact, &token, &[], Some(&plan), 0, &mut Work(50), |_, _| {
-                visited += 1;
-                Ok(true)
-            });
-        assert_eq!(visited, 0);
-        assert_eq!(
-            result.unwrap_err(),
-            "snapshot validation work limit exceeded"
-        );
-    }
-
-    #[test]
     fn rejected_template_cartesian_candidates_consume_snapshot_work() {
         use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
         let mut ids: slotmap::SlotMap<crate::fact::TemplateId, ()> = slotmap::SlotMap::with_key();
@@ -1697,18 +1727,11 @@ mod tests {
             owner_node: NodeId(0),
             bindings: crate::binding::BindingSet::new(),
         };
-        let result = visit_join_matches(
-            &fact,
-            &token,
-            &[],
-            Some(&plan),
-            0,
-            &mut Work(100),
-            |_, _| panic!("rejected candidate reached visitor"),
-        );
+        // 15 x 15 splits, all rejected by the constant test.
         assert_eq!(
-            result.unwrap_err(),
+            any_sequence_match(&fact, &token, &[], &plan, &mut Work(100)).unwrap_err(),
             "snapshot validation work limit exceeded"
         );
+        assert!(!any_sequence_match(&fact, &token, &[], &plan, &mut Work(100_000)).unwrap());
     }
 }

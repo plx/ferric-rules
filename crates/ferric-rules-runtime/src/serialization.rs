@@ -1721,6 +1721,27 @@ mod tests {
     }
 
     #[test]
+    fn wide_sequence_joins_restore_within_the_validation_budget() {
+        // Split enumeration for every key x list pair would exceed the work
+        // budget; recorded splits are validated per token instead.
+        let values: Vec<String> = (0..150).map(|value| value.to_string()).collect();
+        let keys: Vec<String> = values.iter().map(|key| format!("(key {key})")).collect();
+        let mut engine = Engine::with_rules(&format!(
+            "(deffacts seed {} (lst {}))
+             (defrule member (key ?k) (lst $? ?k $?) =>)
+             (defrule present (key ?k) (exists (lst $? ?k $?)) =>)",
+            keys.join(" "),
+            values.join(" ")
+        ))
+        .unwrap();
+        assert_eq!(engine.agenda_len(), 300);
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 300);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 300);
+    }
+
+    #[test]
     fn malformed_sequence_match_metadata_is_rejected() {
         let engine = schema_three_fixture_engine();
         for corruption in 0..3 {

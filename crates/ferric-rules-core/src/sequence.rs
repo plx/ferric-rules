@@ -148,17 +148,7 @@ impl SequencePattern {
             .segments
             .iter()
             .map(|segment| {
-                let values = match (segment.source, fact) {
-                    (SequenceSource::Ordered, Fact::Ordered(fact)) => fact.fields.as_slice(),
-                    (SequenceSource::TemplateSlot(index), Fact::Template(fact)) => {
-                        match fact.slots.get(index)? {
-                            Value::Multifield(values) => values.as_slice(),
-                            value => std::slice::from_ref(value),
-                        }
-                    }
-                    _ => return None,
-                };
-                SegmentCursor::new(&segment.fields, values)
+                SegmentCursor::new(&segment.fields, segment_values(segment.source, fact)?)
             })
             .collect();
         let done = self.segments.is_empty() || cursors.is_none();
@@ -168,6 +158,41 @@ impl SequencePattern {
             width: self.logical_width(),
             done,
         }
+    }
+
+    /// Rebuild the projection of one recorded split in `O(width)`.
+    /// Returns `None` when `lengths` is not a valid split of `fact`.
+    #[must_use]
+    pub fn project(&self, fact: &Fact, lengths: &[usize]) -> Option<SequenceMatch> {
+        let mut remaining = lengths;
+        let mut cursors = Vec::with_capacity(self.segments.len());
+        for segment in &self.segments {
+            let mut cursor =
+                SegmentCursor::new(&segment.fields, segment_values(segment.source, fact)?)?;
+            if remaining.len() < cursor.lengths.len() {
+                return None;
+            }
+            let (own, rest) = remaining.split_at(cursor.lengths.len());
+            let total = own
+                .iter()
+                .try_fold(0_usize, |total, length| total.checked_add(*length))?;
+            if total != cursor.extra {
+                return None;
+            }
+            cursor.lengths.copy_from_slice(own);
+            remaining = rest;
+            cursors.push(cursor);
+        }
+        if !remaining.is_empty() || cursors.is_empty() {
+            return None;
+        }
+        SequenceCandidates {
+            fact,
+            cursors,
+            width: self.logical_width(),
+            done: false,
+        }
+        .current()
     }
 
     /// Evaluate constant constraints against an already projected candidate.
@@ -180,6 +205,19 @@ impl SequencePattern {
     pub fn matches<'a>(&'a self, fact: &'a Fact) -> impl Iterator<Item = SequenceMatch> + 'a {
         self.candidates(fact)
             .filter(|candidate| self.accepts(&candidate.fact))
+    }
+}
+
+fn segment_values(source: SequenceSource, fact: &Fact) -> Option<&[Value]> {
+    match (source, fact) {
+        (SequenceSource::Ordered, Fact::Ordered(fact)) => Some(fact.fields.as_slice()),
+        (SequenceSource::TemplateSlot(index), Fact::Template(fact)) => {
+            Some(match fact.slots.get(index)? {
+                Value::Multifield(values) => values.as_slice(),
+                value => std::slice::from_ref(value),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -265,10 +303,9 @@ impl<'a> SegmentCursor<'a> {
     }
 }
 
-impl Iterator for SequenceCandidates<'_> {
-    type Item = SequenceMatch;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl SequenceCandidates<'_> {
+    /// Project the split the cursors currently describe.
+    fn current(&self) -> Option<SequenceMatch> {
         if self.done {
             return None;
         }
@@ -288,6 +325,15 @@ impl Iterator for SequenceCandidates<'_> {
                 slots: fields.into_vec().into_boxed_slice(),
             }),
         };
+        Some(SequenceMatch { fact, lengths })
+    }
+}
+
+impl Iterator for SequenceCandidates<'_> {
+    type Item = SequenceMatch;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current()?;
         self.done = true;
         for cursor in self.cursors.iter_mut().rev() {
             if cursor.advance() {
@@ -296,7 +342,7 @@ impl Iterator for SequenceCandidates<'_> {
             }
             cursor.reset();
         }
-        Some(SequenceMatch { fact, lengths })
+        Some(current)
     }
 }
 
@@ -489,6 +535,54 @@ mod tests {
             .iter()
             .zip(expected)
             .all(|(actual, expected)| actual.structural_eq(&expected)));
+    }
+
+    #[test]
+    fn recorded_splits_project_without_enumeration() {
+        let source = template(vec![multifield(&[1, 2, 3]), multifield(&[4])]);
+        let plan = SequencePattern {
+            segments: vec![
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(0),
+                    fields: vec![
+                        SequenceField::Multi,
+                        SequenceField::Single,
+                        SequenceField::Multi,
+                    ],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(1),
+                    fields: vec![SequenceField::Multi, SequenceField::Multi],
+                },
+            ],
+            tests: vec![],
+        };
+        let mut count = 0;
+        for matched in plan.matches(&source) {
+            let projected = plan.project(&source, &matched.lengths).unwrap();
+            let (Fact::Template(expected), Fact::Template(actual)) =
+                (&matched.fact, &projected.fact)
+            else {
+                panic!("template projection");
+            };
+            assert_eq!(projected.lengths, matched.lengths);
+            assert!(expected
+                .slots
+                .iter()
+                .zip(actual.slots.iter())
+                .all(|(expected, actual)| expected.structural_eq(actual)));
+            count += 1;
+        }
+        assert_eq!(count, 6);
+        for lengths in [
+            &[][..],
+            &[2, 1, 1, 0],
+            &[1, 1, 1],
+            &[1, 1, 1, 0, 0],
+            &[usize::MAX, 3, 0, 1],
+        ] {
+            assert!(plan.project(&source, lengths).is_none(), "{lengths:?}");
+        }
     }
 
     #[test]
