@@ -65,4 +65,4 @@ matching-architecture Linux host; they do not use CPU emulation. The workflow
 uploads the exact tarballs, checks target coverage, and requires the
 independently packed main tarball to be byte-identical across the matrix. It
 does not upload the temporary dependency tarball. It stages release artifacts
-only; public registry publication is outside the rehabilitation scope.
+only; public registry publication is not currently planned.
