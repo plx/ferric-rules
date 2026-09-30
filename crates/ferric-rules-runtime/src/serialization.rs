@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 4")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 2")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,7 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 4;
+const SCHEMA_VERSION: u16 = 2;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -153,7 +153,7 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 4.
+    bytes.push(0); // No optional capabilities in schema 2.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -1605,15 +1605,6 @@ mod tests {
         verify_schema_one_resume(restored);
     }
 
-    fn cardinality_fixture_engine() -> Engine {
-        let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
-        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
-        assert_eq!(engine.get_output("t"), Some("one field\n"));
-        engine
-    }
-
     fn verify_cardinality_resume(mut engine: Engine) {
         assert_eq!(engine.get_output("t"), Some("one field\n"));
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
@@ -1639,85 +1630,132 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_two_snapshot_is_explicitly_rejected() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-2.cbor");
-        assert!(matches!(
-            Engine::deserialize(bytes, SerializationFormat::Cbor),
-            Err(SerializationError::UnsupportedVersion(2))
-        ));
-    }
-
-    #[test]
     fn ordered_cardinality_roundtrips_in_all_snapshot_formats() {
-        let engine = cardinality_fixture_engine();
+        let mut engine = Engine::with_rules(
+            r#"(defglobal ?*seen* = 0)
+            (deffacts rows (row a) (row b) (row a b))
+            (defrule observe
+              (row ?)
+              =>
+              (bind ?*seen* (+ ?*seen* 1))
+              (printout t "one field" crlf))"#,
+        )
+        .unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
             verify_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
         }
     }
 
-    fn schema_three_fixture_engine() -> Engine {
+    /// Source of the committed schema-2 fixture: an ordered fact with three
+    /// splits and a template fact with six slot-segment splits, one fired.
+    fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-3.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("split\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
     }
 
-    fn verify_schema_three_resume(mut engine: Engine) {
-        assert_eq!(engine.get_output("t"), Some("split\n"));
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
-        assert_eq!(engine.get_output("t"), Some("split\nsplit\nsplit\n"));
-        let mut widths: Vec<_> = engine
-            .find_facts("widths")
+    fn integer_rows(engine: &Engine, relation: &str) -> Vec<Vec<i64>> {
+        let mut rows: Vec<Vec<i64>> = engine
+            .find_facts(relation)
             .unwrap()
             .into_iter()
             .map(|(_, fact)| match fact {
-                Fact::Ordered(fact) => match fact.fields.as_slice() {
-                    [Value::Integer(left), Value::Integer(right)] => (*left, *right),
-                    _ => panic!("widths must contain two scalar integers"),
-                },
-                Fact::Template(_) => panic!("widths must be ordered"),
+                Fact::Ordered(fact) => fact
+                    .fields
+                    .iter()
+                    .map(|value| match value {
+                        Value::Integer(value) => *value,
+                        _ => panic!("{relation} fields must be integers"),
+                    })
+                    .collect(),
+                Fact::Template(_) => panic!("{relation} must be ordered"),
             })
             .collect();
-        widths.sort_unstable();
-        assert_eq!(widths, [(0, 2), (1, 1), (2, 0)]);
+        rows.sort_unstable();
+        rows
+    }
+
+    fn verify_split_resume(mut engine: Engine) {
+        // Each pending activation keeps its capture identity: together with
+        // the fired one they cover every split exactly once.
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 8);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(9))));
+        assert_eq!(
+            integer_rows(&engine, "row-widths"),
+            [[0, 2], [1, 1], [2, 0]]
+        );
+        assert_eq!(
+            integer_rows(&engine, "bag-widths"),
+            [
+                [0, 2, 0, 1],
+                [0, 2, 1, 0],
+                [1, 1, 0, 1],
+                [1, 1, 1, 0],
+                [2, 0, 0, 1],
+                [2, 0, 1, 0]
+            ]
+        );
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
         let row = engine.find_facts("row").unwrap()[0].0;
         engine.retract(row).unwrap();
-        engine.load_str("(assert (row c))").unwrap();
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(5))));
-        // Reuse the restored sequence join, including its capture metadata.
-        engine
-            .load_str("(defrule observe (row $?before $?after) => (printout t shared crlf))")
+        let bag = engine
+            .facts()
+            .unwrap()
+            .find_map(|(id, fact)| matches!(fact, Fact::Template(_)).then_some(id))
             .unwrap();
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        engine.retract(bag).unwrap();
+        // Replacements: 2 + 2 x 3 splits, plus one match of two empty slots.
+        engine
+            .load_str(
+                "(assert (row c) (bag (tag next) (left d) (right e f)) (bag (tag empty) (left) (right)))",
+            )
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 9);
+        assert!(matches!(
+            engine.get_global("seen"),
+            Some(Value::Integer(18))
+        ));
+        // Rules with other variable names share the restored sequence joins.
+        engine
+            .load_str(
+                "(defrule observe-row (row $?a $?b) =>)
+                 (defrule observe-bag (bag (tag ?t) (left $?a $?b) (right $?c $?d)) =>)",
+            )
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 9);
         engine.reset().unwrap();
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 6);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 18);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(9))));
         assert!(engine.action_diagnostics().is_empty());
     }
 
     #[test]
-    fn committed_schema_three_snapshot_is_explicitly_rejected() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-3.cbor");
-        assert!(matches!(
-            Engine::deserialize(bytes, SerializationFormat::Cbor),
-            Err(SerializationError::UnsupportedVersion(3))
-        ));
+    fn committed_schema_two_snapshot_resumes_pending_splits() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-2.cbor");
+        verify_split_resume(Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap());
     }
 
     #[test]
-    fn sequence_matches_roundtrip_in_all_snapshot_formats() {
-        let engine = schema_three_fixture_engine();
+    fn sequence_splits_roundtrip_in_all_snapshot_formats() {
+        let engine = split_fixture_engine();
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
-            verify_schema_three_resume(Engine::deserialize(&bytes, format).unwrap());
+            verify_split_resume(Engine::deserialize(&bytes, format).unwrap());
         }
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-2 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_two_fixture() {
+        let engine = split_fixture_engine();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-2.cbor");
+        std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 
     #[test]
@@ -1743,7 +1781,7 @@ mod tests {
 
     #[test]
     fn malformed_sequence_match_metadata_is_rejected() {
-        let engine = schema_three_fixture_engine();
+        let engine = split_fixture_engine();
         for corruption in 0..3 {
             let result = alter_state(&engine, |state| {
                 let slots = state["rete"]["token_store"]["sequence_matches"]
@@ -1755,7 +1793,7 @@ mod tests {
                     .filter(|(_, slot)| slot["value"].is_array())
                     .map(|(index, _)| index)
                     .collect();
-                assert_eq!(occupied.len(), 3);
+                assert_eq!(occupied.len(), 9);
                 match corruption {
                     0 => slots[occupied[0]]["value"] = serde_json::json!([usize::MAX, 0]),
                     1 => slots[occupied[1]]["value"] = slots[occupied[0]]["value"].clone(),
@@ -1774,7 +1812,7 @@ mod tests {
 
     #[test]
     fn sequence_projection_bindings_are_validated_after_restore() {
-        let engine = schema_three_fixture_engine();
+        let engine = split_fixture_engine();
         let result = alter_state(&engine, |state| {
             let slots = state["rete"]["token_store"]["tokens"]
                 .as_array_mut()
@@ -1791,7 +1829,7 @@ mod tests {
 
     #[test]
     fn sequence_metadata_cannot_be_attached_to_a_root_token() {
-        let engine = schema_three_fixture_engine();
+        let engine = split_fixture_engine();
         let result = alter_state(&engine, |state| {
             let root_slot = state["rete"]["token_store"]["tokens"]
                 .as_array()
@@ -1882,97 +1920,6 @@ mod tests {
         );
     }
 
-    fn schema_four_fixture_engine() -> Engine {
-        let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-4.clp")).unwrap();
-        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
-        assert_eq!(engine.get_output("t"), Some("template split\n"));
-        engine
-    }
-
-    fn verify_schema_four_resume(mut engine: Engine) {
-        assert_eq!(engine.get_output("t"), Some("template split\n"));
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 5);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(6))));
-        let mut widths: Vec<_> = engine.find_facts("widths").unwrap().into_iter()
-            .map(|(_, fact)| match fact {
-                Fact::Ordered(fact) => match fact.fields.as_slice() {
-                    [Value::Integer(a), Value::Integer(b), Value::Integer(c), Value::Integer(d)] => (*a, *b, *c, *d),
-                    _ => panic!("widths must contain four scalar integers"),
-                },
-                Fact::Template(_) => panic!("widths must be ordered"),
-            }).collect();
-        widths.sort_unstable();
-        assert_eq!(
-            widths,
-            [
-                (0, 2, 0, 1),
-                (0, 2, 1, 0),
-                (1, 1, 0, 1),
-                (1, 1, 1, 0),
-                (2, 0, 0, 1),
-                (2, 0, 1, 0)
-            ]
-        );
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
-        let bag = engine
-            .facts()
-            .unwrap()
-            .find_map(|(id, fact)| matches!(fact, Fact::Template(_)).then_some(id))
-            .unwrap();
-        engine.retract(bag).unwrap();
-        engine
-            .load_str("(assert (bag (tag next) (left d) (right e f)))")
-            .unwrap();
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 6);
-        assert!(matches!(
-            engine.get_global("seen"),
-            Some(Value::Integer(12))
-        ));
-        engine
-            .load_str("(assert (bag (tag empty) (left) (right)))")
-            .unwrap();
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert!(matches!(
-            engine.get_global("seen"),
-            Some(Value::Integer(13))
-        ));
-        // Different variable names reuse the restored segment projection,
-        // including the one match formed by two empty physical multislots.
-        engine.load_str("(defrule observe (bag (tag ?tag) (left $?a $?b) (right $?c $?d)) => (printout t shared crlf))").unwrap();
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 7);
-        engine.reset().unwrap();
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
-        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 12);
-        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(6))));
-        assert!(engine.action_diagnostics().is_empty());
-    }
-
-    #[test]
-    fn committed_schema_four_snapshot_preserves_multislot_resume_and_reset() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-4.cbor");
-        verify_schema_four_resume(Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap());
-    }
-
-    #[test]
-    fn template_multislot_matches_roundtrip_in_all_snapshot_formats() {
-        let engine = schema_four_fixture_engine();
-        for &format in SerializationFormat::ALL {
-            let bytes = engine.serialize(format).unwrap();
-            verify_schema_four_resume(Engine::deserialize(&bytes, format).unwrap());
-        }
-    }
-
-    #[test]
-    #[ignore = "regenerates the committed schema-4 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_four_fixture() {
-        let engine = schema_four_fixture_engine();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-4.cbor");
-        std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
-    }
-
     #[test]
     fn template_multislot_conditional_support_survives_restore() {
         let engine = Engine::with_rules(
@@ -2055,14 +2002,18 @@ mod tests {
 
     #[test]
     fn capture_lengths_cannot_cross_template_slot_boundaries() {
-        let engine = schema_four_fixture_engine();
+        let engine = split_fixture_engine();
         let result = alter_state(&engine, |state| {
             let slots = state["rete"]["token_store"]["sequence_matches"]
                 .as_array_mut()
                 .unwrap();
             let slot = slots
                 .iter_mut()
-                .find(|slot| slot["value"].is_array())
+                .find(|slot| {
+                    slot["value"]
+                        .as_array()
+                        .is_some_and(|value| value.len() == 4)
+                })
                 .unwrap();
             // Preserve the total captured width while moving one field from
             // the two-field left slot into the one-field right slot.
