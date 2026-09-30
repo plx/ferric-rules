@@ -334,7 +334,7 @@ impl CompactFactBinding {
     }
 }
 
-const COMPACT_FACT_SLOT_REF: &str = "__fact_slot_ref";
+pub(crate) const COMPACT_FACT_SLOT_REF: &str = "__fact_slot_ref";
 
 /// Mutable state belonging to one callable invocation, never to the engine.
 #[derive(Default)]

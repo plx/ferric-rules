@@ -2935,6 +2935,7 @@ impl Engine {
             salience: Salience::new(rule.salience),
             test_conditions: translated.test_conditions,
             runtime_actions,
+            activation_layout: std::sync::OnceLock::new(),
         };
         Ok(PreparedRuleInstallation {
             plan,

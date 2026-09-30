@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ferric_rules_core::beta::{RuleId, Salience};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
@@ -248,6 +248,85 @@ pub(crate) struct CompiledRuleInfo {
     pub test_conditions: Vec<CompiledTestCondition>,
     /// Pre-translated RHS action call expressions.
     pub runtime_actions: Vec<Option<crate::evaluator::RuntimeExpr>>,
+    /// Derived from the fields above on first activation; never serialized.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub activation_layout: OnceLock<ActivationLayout>,
+}
+
+/// Per-rule facts about activations that would otherwise be recomputed from
+/// names on every firing.
+#[derive(Clone, Debug)]
+pub(crate) struct ActivationLayout {
+    /// Frame slot and collected-fact index for each pattern fact address.
+    fact_address_slots: Vec<(VarId, usize)>,
+    /// Whether any RHS expression uses the compact `?fact:slot` form.
+    compact_slot_refs: bool,
+}
+
+impl CompiledRuleInfo {
+    pub(crate) fn activation_layout(
+        &self,
+        symbol_table: &SymbolTable,
+        encoding: ferric_rules_core::StringEncoding,
+    ) -> &ActivationLayout {
+        self.activation_layout.get_or_init(|| ActivationLayout {
+            fact_address_slots: self
+                .fact_address_vars
+                .iter()
+                .filter_map(|(name, &index)| {
+                    let symbol = symbol_table.find_symbol(name, encoding)?;
+                    Some((self.var_map.lookup(symbol)?, index))
+                })
+                .collect(),
+            compact_slot_refs: self
+                .actions
+                .iter()
+                .any(|action| call_uses_compact_slot_refs(&action.call)),
+        })
+    }
+}
+
+fn call_uses_compact_slot_refs(call: &FunctionCall) -> bool {
+    call.name == crate::evaluator::COMPACT_FACT_SLOT_REF
+        || call.args.iter().any(expr_uses_compact_slot_refs)
+}
+
+fn expr_uses_compact_slot_refs(expr: &ActionExpr) -> bool {
+    let any = |exprs: &[ActionExpr]| exprs.iter().any(expr_uses_compact_slot_refs);
+    match expr {
+        ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => false,
+        ActionExpr::FunctionCall(call) => call_uses_compact_slot_refs(call),
+        ActionExpr::If {
+            condition,
+            then_actions,
+            else_actions,
+            ..
+        } => expr_uses_compact_slot_refs(condition) || any(then_actions) || any(else_actions),
+        ActionExpr::While {
+            condition, body, ..
+        } => expr_uses_compact_slot_refs(condition) || any(body),
+        ActionExpr::LoopForCount {
+            start, end, body, ..
+        } => expr_uses_compact_slot_refs(start) || expr_uses_compact_slot_refs(end) || any(body),
+        ActionExpr::Progn {
+            list_expr, body, ..
+        } => expr_uses_compact_slot_refs(list_expr) || any(body),
+        ActionExpr::QueryAction { query, body, .. } => {
+            expr_uses_compact_slot_refs(query) || any(body)
+        }
+        ActionExpr::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            expr_uses_compact_slot_refs(expr)
+                || cases
+                    .iter()
+                    .any(|(case, body)| expr_uses_compact_slot_refs(case) || any(body))
+                || default.as_deref().is_some_and(any)
+        }
+    }
 }
 
 /// Errors that can occur during action execution.
@@ -307,11 +386,17 @@ pub(crate) fn execute_actions(
     // Defensive: clear any stale deferred events that might have accumulated
     // in non-action evaluation contexts.
     let _ = context.engine.globals.take_printout_events();
-    seed_compact_fact_addresses(
-        collected_facts,
-        &rule_info.fact_address_vars,
-        &mut eval_env.compact_facts,
+    let layout = rule_info.activation_layout(
+        &context.engine.symbol_table,
+        context.engine.config.string_encoding,
     );
+    if layout.compact_slot_refs {
+        seed_compact_fact_addresses(
+            collected_facts,
+            &rule_info.fact_address_vars,
+            &mut eval_env.compact_facts,
+        );
+    }
 
     for (index, action) in rule_info.actions.iter().enumerate() {
         let runtime_call = rule_info
@@ -409,14 +494,9 @@ pub(crate) fn bind_fact_addresses(
     symbol_table: &SymbolTable,
     encoding: ferric_rules_core::StringEncoding,
 ) {
-    for (name, &index) in &rule_info.fact_address_vars {
+    let layout = rule_info.activation_layout(symbol_table, encoding);
+    for &(id, index) in &layout.fact_address_slots {
         let Some(fact_id) = collected_facts.get(index) else {
-            continue;
-        };
-        let Some(id) = symbol_table
-            .find_symbol(name, encoding)
-            .and_then(|symbol| rule_info.var_map.lookup(symbol))
-        else {
             continue;
         };
         if token.bindings.get(id).is_none() {
@@ -1153,6 +1233,8 @@ fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
         salience: rule_info.salience,
         test_conditions: Vec::new(),
         runtime_actions: Vec::new(),
+        // Loop bodies never start an activation.
+        activation_layout: OnceLock::new(),
     }
 }
 
@@ -2703,9 +2785,36 @@ fn resolve_target_fact_id(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<FactId, ActionError> {
-    let value = eval_env.eval_expr(token, rule_info, target, context, collected_facts)?;
+    let fast = match target {
+        // Without RHS locals, a variable reads the activation frame directly;
+        // this is what evaluating it would do, minus building a frame.
+        ActionExpr::Variable(name, _) if eval_env.runtime_bindings.is_empty() => {
+            activation_binding(token, rule_info, name, context)
+        }
+        _ => None,
+    };
+    let value = match fast {
+        Some(value) => value,
+        None => eval_env.eval_expr(token, rule_info, target, context, collected_facts)?,
+    };
     crate::evaluator::checked_fact_address(&value)
         .ok_or_else(|| ActionError::EvalError(format!("{action}: target must be a fact-address")))
+}
+
+/// Read a variable from the activation frame (pattern and fact-address bindings).
+fn activation_binding(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    name: &str,
+    context: &ActionExecutionContext<'_>,
+) -> Option<Value> {
+    let name = name.strip_prefix("$?").unwrap_or(name);
+    let symbol = context
+        .engine
+        .symbol_table
+        .find_symbol(name, context.engine.config.string_encoding)?;
+    let id = rule_info.var_map.lookup(symbol)?;
+    token.bindings.get(id).map(|value| (**value).clone())
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
@@ -3024,6 +3133,7 @@ mod tests {
             salience: Salience::new(0),
             test_conditions: Vec::new(),
             runtime_actions: Vec::new(),
+            activation_layout: OnceLock::new(),
         };
         let mut multifield = ferric_rules_core::Multifield::new();
         multifield.push(Value::Integer(7));
@@ -3189,6 +3299,7 @@ mod action_query_validation_tests {
             salience: Salience::new(0),
             test_conditions: Vec::new(),
             runtime_actions: Vec::new(),
+            activation_layout: OnceLock::new(),
         };
         let mut env = ActionEvalEnv::default();
         insert_runtime_binding(&mut env.runtime_bindings, "outside", Value::Integer(7));
