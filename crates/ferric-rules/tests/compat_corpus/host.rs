@@ -1,6 +1,5 @@
 //! Host-driven lifecycles that the corpus protocol cannot express: top-level
-//! assertions, host fact operations between runs, and Ferric's own run
-//! boundaries.
+//! assertions and host fact operations between runs.
 
 use ferric_rules::core::{Fact, Value};
 use ferric_rules::runtime::{
@@ -61,61 +60,13 @@ fn top_level_multislot_assertions() {
     }
 }
 
-fn item_values(engine: &Engine) -> Vec<i64> {
-    let mut values: Vec<_> = engine
-        .facts()
-        .unwrap()
-        .filter_map(|(_, fact)| match fact {
-            Fact::Template(item) => match item.slots.first() {
-                Some(Value::Integer(value)) => Some(*value),
-                _ => None,
-            },
-            Fact::Ordered(_) => None,
-        })
-        .collect();
-    values.sort_unstable();
-    values
-}
-
-/// Ferric's run boundaries inside a query body (issue #327). These are not
-/// CLIPS equivalence claims: CLIPS continues the query and rule body after
-/// these actions. Ferric's `halt` stops the query body and finishes the outer
-/// RHS; `reset` and `clear` stop both.
-#[test]
-fn halt_reset_and_clear_inside_a_query_body() {
-    for (action, output, values, rules) in [
-        ("halt", "before:10\noutside-after\n", &[20][..], 1),
-        ("reset", "", &[10, 20][..], 1),
-        ("clear", "", &[][..], 0),
-    ] {
-        let mut engine = loaded(&format!(
-            "(deftemplate item (slot value))
-             (deffacts seed (item (value 10)) (item (value 20)))
-             (defrule probe =>
-               (do-for-fact ((?f item)) TRUE
-                 (retract ?f)
-                 (printout t \"before:\" ?f:value crlf)
-                 ({action})
-                 (printout t \"inside-after\" crlf))
-               (printout t \"outside-after\" crlf))"
-        ));
-        engine.reset().unwrap();
-        let result = engine.run(RunLimit::Count(10)).unwrap();
-        assert_eq!(result.halt_reason, HaltReason::HaltRequested, "{action}");
-        assert_eq!(result.rules_fired, 1, "{action}");
-        assert!(engine.action_diagnostics().is_empty(), "{action}");
-        assert_eq!(engine.get_output("t").unwrap_or(""), output, "{action}");
-        assert_eq!(item_values(&engine), values, "{action}");
-        assert_eq!(engine.rules().len(), rules, "{action}");
-    }
-}
-
 /// Issue #329: facts the host asserts before loading source, and after
-/// `clear`, take public fact indices as CLIPS top-level assertions do:
+/// `clear`, take public fact indices as CLIPS 6.30 top-level assertions do:
 /// `clear; assert pre10; assert pre20; load; assert item30; run` prints 3,
 /// `reset; assert item30; run` prints 1, and `clear; assert pre10; load;
-/// assert item30; run` prints 2. A host-made zero-field user `initial-fact`
-/// follows the same policy.
+/// assert item30; run` prints 2. The `initial-fact` variant pins Ferric's
+/// own policy: a host-made `initial-fact` is an ordinary user fact, where
+/// CLIPS gives it index 0.
 #[test]
 fn host_assertions_take_public_fact_indices() {
     const SOURCE: &str = "(deftemplate item (slot value))

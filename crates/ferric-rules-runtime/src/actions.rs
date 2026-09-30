@@ -893,7 +893,7 @@ fn execute_single_action(
                         eval_env,
                         collected_facts,
                     )?;
-                    if context.engine.is_halted() || *reset_requested || *clear_requested {
+                    if *reset_requested || *clear_requested {
                         break;
                     }
                 }
@@ -994,7 +994,7 @@ fn execute_single_action(
                             eval_env,
                             collected_facts,
                         )?;
-                        if context.engine.is_halted() || *reset_requested || *clear_requested {
+                        if *reset_requested || *clear_requested {
                             break;
                         }
                     }
@@ -1144,7 +1144,7 @@ fn execute_single_action(
                                 eval_env,
                                 collected_facts,
                             )?;
-                            if context.engine.is_halted() || *reset_requested || *clear_requested {
+                            if *reset_requested || *clear_requested {
                                 break;
                             }
                         }
@@ -1390,7 +1390,7 @@ fn execute_loop_body(
             eval_env,
             collected_facts,
         )?;
-        if context.engine.is_halted() || *reset_requested || *clear_requested {
+        if *reset_requested || *clear_requested {
             break;
         }
     }
@@ -1619,11 +1619,7 @@ fn execute_query_action(
         if matched && delayed {
             selected.push(candidate);
         }
-        if context.engine.is_halted()
-            || *reset_requested
-            || *clear_requested
-            || (matched && stop_after_first)
-        {
+        if *reset_requested || *clear_requested || (matched && stop_after_first) {
             return Ok(());
         }
     }
@@ -1649,7 +1645,7 @@ fn execute_query_action(
                 )
             },
         )?;
-        if context.engine.is_halted() || *reset_requested || *clear_requested {
+        if *reset_requested || *clear_requested {
             break;
         }
     }

@@ -16,6 +16,7 @@ mod numeric_extrema;
 #[cfg(feature = "serde")]
 mod query_chronology_snapshot;
 mod query_mutation_budget;
+mod query_run_boundaries;
 mod rounding;
 mod string_index;
 mod string_length;
