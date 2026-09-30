@@ -373,10 +373,7 @@ impl Engine {
             relation,
             fields: smallvec::SmallVec::new(),
         });
-        let FactInsertionResult::Inserted(fact_id) = self.fact_base.try_assert_fact(fact, true)?
-        else {
-            unreachable!("initial-fact insertion permits duplicates");
-        };
+        let fact_id = self.fact_base.try_assert_distinct_fact(fact)?;
         // Predicates may introspect indices during propagation. Publish the
         // protected identity before any match-time expression can run.
         self.initial_fact_id = Some(fact_id);

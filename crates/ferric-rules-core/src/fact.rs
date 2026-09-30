@@ -528,8 +528,35 @@ impl FactBase {
             }
             Some(fingerprint)
         };
+        Ok(FactInsertionResult::Inserted(
+            self.insert_indexed(fact, fingerprint)?,
+        ))
+    }
 
-        let id = match &fact {
+    /// Insert a fact without looking for an equivalent one, keeping the
+    /// duplicate index current when it exists.
+    ///
+    /// The protected initial fact must stay distinct from a same-named host
+    /// fact, but later duplicate checks should still see it. Unlike
+    /// `try_assert_fact(fact, true)`, this does not discard the index, so the
+    /// next checked assertion does not rebuild it.
+    pub fn try_assert_distinct_fact(
+        &mut self,
+        fact: Fact,
+    ) -> Result<FactId, FactTimestampExhausted> {
+        let fingerprint = self
+            .by_structural_fingerprint
+            .as_ref()
+            .map(|_| structural_fingerprint(&fact));
+        self.insert_indexed(fact, fingerprint)
+    }
+
+    fn insert_indexed(
+        &mut self,
+        fact: Fact,
+        fingerprint: Option<u64>,
+    ) -> Result<FactId, FactTimestampExhausted> {
+        Ok(match &fact {
             Fact::Ordered(ordered) => {
                 let relation = ordered.relation;
                 let id = self.insert_fact(fact, fingerprint)?;
@@ -547,9 +574,7 @@ impl FactBase {
                 }
                 id
             }
-        };
-
-        Ok(FactInsertionResult::Inserted(id))
+        })
     }
 
     /// Assert an ordered fact into working memory.
@@ -1083,6 +1108,32 @@ mod tests {
         assert_eq!(
             fb.next_template_fact_after(new_template, None),
             Some((reset_fact, 0))
+        );
+    }
+
+    #[test]
+    fn distinct_insert_stays_separate_and_keeps_the_duplicate_index() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let template = templates.insert(());
+        let mut fb = FactBase::new();
+        let fact = Fact::Template(TemplateFact {
+            template_id: template,
+            slots: Box::new([]),
+        });
+        let FactInsertionResult::Inserted(host) = fb.assert_fact(fact.clone(), false) else {
+            panic!("first assertion must insert");
+        };
+        let distinct = fb.try_assert_distinct_fact(fact.clone()).unwrap();
+        assert_ne!(host, distinct);
+        assert!(fb.by_structural_fingerprint.is_some());
+        assert_eq!(
+            fb.assert_fact(fact.clone(), false),
+            FactInsertionResult::Duplicate(host)
+        );
+        fb.retract(host).unwrap();
+        assert_eq!(
+            fb.assert_fact(fact, false),
+            FactInsertionResult::Duplicate(distinct)
         );
     }
 
