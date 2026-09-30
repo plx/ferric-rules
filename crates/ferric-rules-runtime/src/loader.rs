@@ -3676,6 +3676,12 @@ impl Engine {
     /// Also expands slot-level `Constraint::Or` disjunctions inside patterns.
     /// Returns a vec of rule variants (1 if no disjunctions, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
+        // Without any `or` CE or `|` constraint, every pattern has exactly one
+        // alternative; skip building (and cloning) the single-variant product.
+        if !rule.patterns.iter().any(Self::pattern_has_disjunction) {
+            return vec![rule.clone()];
+        }
+
         // First flatten top-level And to expose Or patterns
         let mut flat_patterns: Vec<Pattern> = Vec::new();
         for pattern in &rule.patterns {
@@ -3727,6 +3733,35 @@ impl Engine {
                 actions: rule.actions.clone(),
             })
             .collect()
+    }
+
+    /// Whether a pattern contains an `or` CE or a `|` constraint anywhere.
+    fn pattern_has_disjunction(pattern: &Pattern) -> bool {
+        fn constraint_has_disjunction(constraint: &Constraint) -> bool {
+            match constraint {
+                Constraint::Or(..) => true,
+                Constraint::And(parts, _) => parts.iter().any(constraint_has_disjunction),
+                Constraint::Not(inner, _) => constraint_has_disjunction(inner),
+                _ => false,
+            }
+        }
+        match pattern {
+            Pattern::Or(..) => true,
+            Pattern::Test(..) => false,
+            Pattern::Ordered(ordered) => ordered.constraints.iter().any(constraint_has_disjunction),
+            Pattern::Template(template) => template
+                .slot_constraints
+                .iter()
+                .flat_map(|slot| &slot.constraints)
+                .any(constraint_has_disjunction),
+            Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
+                Self::pattern_has_disjunction(inner)
+            }
+            Pattern::And(children, _)
+            | Pattern::Exists(children, _)
+            | Pattern::Forall(children, _)
+            | Pattern::Logical(children, _) => children.iter().any(Self::pattern_has_disjunction),
+        }
     }
 
     /// Expand a top-level pattern into disjunctive alternatives used for rule duplication.
