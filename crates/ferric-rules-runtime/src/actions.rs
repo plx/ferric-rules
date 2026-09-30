@@ -2821,8 +2821,17 @@ fn resolve_target_fact_id(
         Some(value) => value,
         None => eval_env.eval_expr(token, rule_info, target, context, collected_facts)?,
     };
-    crate::evaluator::checked_fact_address(&value)
-        .ok_or_else(|| ActionError::EvalError(format!("{action}: target must be a fact-address")))
+    let Value::Integer(index) = value else {
+        return Err(ActionError::EvalError(format!(
+            "{action}: target must be a fact-address or fact index"
+        )));
+    };
+    crate::evaluator::designated_fact(
+        &context.engine.fact_base,
+        context.engine.initial_fact_id,
+        &value,
+    )
+    .ok_or_else(|| ActionError::EvalError(format!("{action}: no fact has index {index}")))
 }
 
 /// Read a variable from the activation frame (pattern and fact-address bindings).

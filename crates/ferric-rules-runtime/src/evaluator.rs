@@ -6062,16 +6062,6 @@ fn builtin_get_focus_stack(
 // Fact introspection builtins
 // ===========================================================================
 
-/// Decode an integer-encoded fact address to a `FactId`.
-///
-/// Fact addresses in ferric are stored as integers in bindings via
-/// `fact_id.data().as_ffi() as i64`. This reverses the conversion.
-fn integer_to_fact_id(n: i64) -> ferric_rules_core::FactId {
-    #[allow(clippy::cast_sign_loss)] // user-supplied; out-of-range just yields a miss
-    let ffi = n as u64;
-    ferric_rules_core::FactId::from(slotmap::KeyData::from_ffi(ffi))
-}
-
 /// Decode the canonical address representation without normalizing an ordinary
 /// integer into a live key. Liveness and protected-fact policies belong to callers.
 pub(crate) fn checked_fact_address(value: &Value) -> Option<FactId> {
@@ -6091,27 +6081,82 @@ pub(crate) fn checked_fact_address(value: &Value) -> Option<FactId> {
         .then_some(fact_id)
 }
 
-/// `(fact-existp <integer>)` — returns TRUE if a fact with the given index exists.
+/// A live fact's public index, as `fact-index` reports it. CLIPS gives
+/// `initial-fact` index zero and numbers the other facts from one, in
+/// assertion order; the protected fact can follow host-created facts.
+fn public_fact_index(
+    fact_base: &FactBase,
+    initial_fact_id: Option<FactId>,
+    fact_id: FactId,
+) -> Option<u64> {
+    let entry = fact_base.get(fact_id)?;
+    if initial_fact_id == Some(fact_id) {
+        return Some(0);
+    }
+    let initial_precedes = initial_fact_id
+        .and_then(|id| fact_base.get(id))
+        .is_some_and(|initial| initial.timestamp < entry.timestamp);
+    if initial_precedes {
+        Some(entry.timestamp.get())
+    } else {
+        entry.timestamp.get().checked_add(1)
+    }
+}
+
+/// The fact a CLIPS fact designator names: a fact address, or an INTEGER
+/// fact index as `fact-index` returns it. An address is returned even when
+/// stale; an index names only a live fact, found by scanning working memory.
+pub(crate) fn designated_fact(
+    fact_base: &FactBase,
+    initial_fact_id: Option<FactId>,
+    value: &Value,
+) -> Option<FactId> {
+    if let Some(address) = checked_fact_address(value) {
+        return Some(address);
+    }
+    let Value::Integer(index) = *value else {
+        return None;
+    };
+    let index = u64::try_from(index).ok()?;
+    fact_base
+        .iter()
+        .map(|(id, _)| id)
+        .find(|&id| public_fact_index(fact_base, initial_fact_id, id) == Some(index))
+}
+
+/// Evaluate a fact-function argument that must be an address or an index.
+/// `None` means no fact base is available, or no live fact has the index.
+fn eval_fact_designator(
+    ctx: &mut EvalContext<'_>,
+    function: &str,
+    arg: &RuntimeExpr,
+    span: Option<&SourceSpan>,
+) -> Result<Option<FactId>, EvalError> {
+    let value = eval_inner(ctx, arg)?;
+    if !matches!(value, Value::Integer(_)) {
+        return Err(EvalError::TypeError {
+            function: function.into(),
+            expected: "fact-address or INTEGER fact index".into(),
+            actual: generic_value_type_name(&value).into(),
+            span: span.cloned(),
+        });
+    }
+    Ok(ctx
+        .fact_base
+        .and_then(|fact_base| designated_fact(fact_base, ctx.initial_fact_id, &value)))
+}
+
+/// `(fact-existp <fact-address-or-index>)` — whether the fact is in working memory.
 fn builtin_fact_existp(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-existp", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::Integer(idx) = val else {
-        return Err(EvalError::TypeError {
-            function: "fact-existp".into(),
-            expected: "INTEGER (fact-address)".into(),
-            actual: generic_value_type_name(&val).into(),
-            span: span.cloned(),
-        });
-    };
-    let Some(fb) = ctx.fact_base else {
-        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
-    };
-    let fact_id = integer_to_fact_id(idx);
-    let exists = fb.get(fact_id).is_some();
+    let fact = eval_fact_designator(ctx, "fact-existp", &args[0], span)?;
+    let exists = fact
+        .zip(ctx.fact_base)
+        .is_some_and(|(fact_id, fact_base)| fact_base.get(fact_id).is_some());
     Ok(clips_bool(
         exists,
         ctx.symbol_table,
@@ -6141,33 +6186,20 @@ fn builtin_fact_index(
     let Some(fact_base) = ctx.fact_base else {
         return Ok(Value::Integer(-1));
     };
-    let Some(entry) = fact_base.get(fact_id) else {
+    if fact_base.get(fact_id).is_none() {
         return Ok(Value::Integer(-1));
-    };
-    if ctx.initial_fact_id == Some(fact_id) {
-        return Ok(Value::Integer(0));
     }
-    // Chronology includes the protected fact, but public user indices start at
-    // one and skip that assertion. It can be installed after host-created facts.
-    let initial_precedes = ctx
-        .initial_fact_id
-        .and_then(|id| fact_base.get(id))
-        .is_some_and(|initial| initial.timestamp < entry.timestamp);
-    let index = if initial_precedes {
-        Some(entry.timestamp.get())
-    } else {
-        entry.timestamp.get().checked_add(1)
-    }
-    .and_then(|index| i64::try_from(index).ok())
-    .ok_or_else(|| EvalError::UnsupportedOperation {
-        operation: "fact-index".into(),
-        reason: "fact index exceeds the signed 64-bit integer range".into(),
-        span: span.cloned(),
-    })?;
+    let index = public_fact_index(fact_base, ctx.initial_fact_id, fact_id)
+        .and_then(|index| i64::try_from(index).ok())
+        .ok_or_else(|| EvalError::UnsupportedOperation {
+            operation: "fact-index".into(),
+            reason: "fact index exceeds the signed 64-bit integer range".into(),
+            span: span.cloned(),
+        })?;
     Ok(Value::Integer(index))
 }
 
-/// `(fact-relation <integer>)` — returns the relation name of a fact as a SYMBOL.
+/// `(fact-relation <fact-address-or-index>)` — the relation name of a fact as a SYMBOL.
 ///
 /// For ordered facts this is the relation symbol; for template facts it is the
 /// template name. Returns `FALSE` if the fact does not exist or no fact base is
@@ -6178,19 +6210,10 @@ fn builtin_fact_relation(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-relation", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::Integer(idx) = val else {
-        return Err(EvalError::TypeError {
-            function: "fact-relation".into(),
-            expected: "INTEGER (fact-address)".into(),
-            actual: generic_value_type_name(&val).into(),
-            span: span.cloned(),
-        });
-    };
-    let Some(fb) = ctx.fact_base else {
+    let fact = eval_fact_designator(ctx, "fact-relation", &args[0], span)?;
+    let Some((fact_id, fb)) = fact.zip(ctx.fact_base) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
-    let fact_id = integer_to_fact_id(idx);
     let Some(entry) = fb.get(fact_id) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
@@ -6308,7 +6331,7 @@ fn builtin_compact_fact_slot_ref(
     })
 }
 
-/// `(fact-slot-value <integer> <slot-name>)` — returns the value of a named slot.
+/// `(fact-slot-value <fact-address-or-index> <slot-name>)` — the value of a named slot.
 ///
 /// For template facts, returns the value at the named slot position.
 /// For ordered facts, the only valid slot name is `"implied"`, which returns
@@ -6324,13 +6347,17 @@ fn builtin_fact_slot_value(
     let Value::Integer(idx) = &values[0] else {
         return Err(EvalError::TypeError {
             function: "fact-slot-value".into(),
-            expected: "INTEGER (fact-address)".into(),
+            expected: "fact-address or INTEGER fact index".into(),
             actual: generic_value_type_name(&values[0]).into(),
             span: span.cloned(),
         });
     };
     let slot_name = as_lexeme_str(&values[1], ctx.symbol_table, "fact-slot-value", span)?;
-    let fact_id = integer_to_fact_id(*idx);
+    // An unknown index reads as the null fact, which reports it missing.
+    let fact_id = ctx
+        .fact_base
+        .and_then(|fact_base| designated_fact(fact_base, ctx.initial_fact_id, &values[0]))
+        .unwrap_or_default();
     let value = read_fact_slot_value(ctx, fact_id, &slot_name, "fact-slot-value", span, || {
         format!("fact {idx} does not exist")
     })?;
@@ -6413,7 +6440,7 @@ fn read_record_slot_value(
     Ok(Some(value))
 }
 
-/// `(fact-slot-names <integer>)` — returns slot names of a fact as a multifield of SYMBOLs.
+/// `(fact-slot-names <fact-address-or-index>)` — a fact's slot names as a multifield of SYMBOLs.
 ///
 /// For template facts, returns slot names in declaration order (requires `template_defs`).
 /// For ordered facts, returns a single-element multifield `(implied)`.
@@ -6424,19 +6451,10 @@ fn builtin_fact_slot_names(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-slot-names", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::Integer(idx) = val else {
-        return Err(EvalError::TypeError {
-            function: "fact-slot-names".into(),
-            expected: "INTEGER (fact-address)".into(),
-            actual: generic_value_type_name(&val).into(),
-            span: span.cloned(),
-        });
-    };
-    let Some(fb) = ctx.fact_base else {
+    let fact = eval_fact_designator(ctx, "fact-slot-names", &args[0], span)?;
+    let Some((fact_id, fb)) = fact.zip(ctx.fact_base) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
-    let fact_id = integer_to_fact_id(idx);
     let Some(entry) = fb.get(fact_id) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
