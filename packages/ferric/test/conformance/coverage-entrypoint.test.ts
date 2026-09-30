@@ -65,5 +65,5 @@ import "./runtime/worker/protocol-direct.test.ts";
 import "./runtime/worker/run-limit.test.ts";
 import "./runtime/worker/wire-conversion.test.ts";
 
-import "./runtime/sync/rehabilitation.test.ts";
-import "./runtime/worker/rehabilitation.test.ts";
+import "./runtime/sync/embedding-contracts.test.ts";
+import "./runtime/worker/embedding-contracts.test.ts";
