@@ -1,10 +1,8 @@
 //! RHS action execution for rule firings.
 //!
-//! ## Phase 3 scope
-//!
-//! - `GlobalVariable` reads and writes via `GlobalStore` (Pass 006).
-//! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
-//! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
+//! - `GlobalVariable` reads and writes via `GlobalStore`.
+//! - `modify`/`duplicate` support template-aware slot overrides.
+//! - `printout` with per-channel output capture via `OutputRouter`.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -2808,9 +2806,9 @@ fn apply_ordered_slot_overrides(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
-    // we interpret FunctionCall args as positional overrides where the "name" is the index.
-    // But the more common usage is with template facts, which we don't fully support yet.
+    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts we
+    // interpret FunctionCall args as positional overrides where the "name" is
+    // the index. Template facts take the named-slot path instead.
     for slot_override in slot_overrides {
         let ActionExpr::FunctionCall(fc) = slot_override else {
             continue;

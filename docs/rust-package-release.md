@@ -60,13 +60,12 @@ deployment minimum. The project currently distributes Cargo source packages,
 not downloadable per-target CLI binaries; binaries retained by CI are test
 evidence only.
 
-For pushes to `main`, pull requests targeting `main`, and manual dispatches,
-the path-unfiltered `Rust Native Artifacts` workflow checks out the immutable
-pull-request head (or push commit) directly. On every row it:
+Weekly and on manual dispatch, the `Rust Native Artifacts` workflow checks
+out the commit directly. On every row it:
 
 1. uses Rust 1.93.0 and verifies that the compiler host and observed runtime
    match the declaration;
-2. runs release-profile, all-feature facade and CLI tests and builds the CLI;
+2. builds the release-profile, all-feature CLI (tests run in `ci.yml`);
 3. packages the facade and CLI source crates;
 4. installs the all-feature CLI from its source path into a temporary prefix
    outside the worktree; and
@@ -79,9 +78,7 @@ dependency output, and a receipt containing the candidate commit/tree,
 toolchain and runtime identities, commands, and artifact SHA-256 digests. A
 fail-closed aggregate job requires all seven rows, compares each receipt with
 the target declaration and direct candidate, rechecks every retained hash, and
-retains one candidate-SHA-named verified evidence bundle. That aggregate
-exposes the stable `Rust Native Artifacts` check context; changes to the formal
-required-status ruleset remain outside this lane.
+retains one candidate-SHA-named verified evidence bundle.
 
 This native portability lane is intentionally narrower than the clean-room
 install contract in [FR-RELEASE-008 (#153)](https://github.com/plx/ferric-rules/issues/153).

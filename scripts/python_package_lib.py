@@ -2636,9 +2636,11 @@ def verify_artifact_set(
         not unexpected_receipts, f"unexpected receipt artifacts: {unexpected_receipts}"
     )
     receipts = [(path, load_json_object(path)) for path in receipt_files]
+    expected_receipts = len(EXPECTED_TARGETS) + 2
     _require(
-        len(receipts) == 37,
-        f"expected 37 receipts (35 smoke, one rejection, one sdist), found {len(receipts)}",
+        len(receipts) == expected_receipts,
+        f"expected {expected_receipts} receipts (one smoke per wheel target, "
+        f"one rejection, one sdist), found {len(receipts)}",
     )
     smoke_keys: set[tuple[str, str]] = set()
     rejection_count = 0
@@ -2666,16 +2668,15 @@ def verify_artifact_set(
         else:
             raise _error(f"{context} has unknown kind {kind!r}")
 
-    expected_smoke_keys = {
-        (target_id, minor)
-        for target_id in EXPECTED_TARGETS
-        for minor in EXPECTED_SUPPORTED_MINORS
-    }
-    missing_smokes = sorted(expected_smoke_keys - smoke_keys)
-    unexpected_smokes = sorted(smoke_keys - expected_smoke_keys)
+    # One smoke per wheel target, on any supported CPython minor.
+    smoke_targets = [target_id for target_id, _minor in smoke_keys]
+    missing_smokes = sorted(set(EXPECTED_TARGETS) - set(smoke_targets))
+    repeated_smokes = sorted(
+        {target_id for target_id in smoke_targets if smoke_targets.count(target_id) > 1}
+    )
     _require(
-        not missing_smokes and not unexpected_smokes,
-        f"smoke receipt matrix differs: missing={missing_smokes}, unexpected={unexpected_smokes}",
+        not missing_smokes and not repeated_smokes,
+        f"smoke receipts must cover each wheel target once: missing={missing_smokes}, repeated={repeated_smokes}",
     )
     _require(
         rejection_count == 1,

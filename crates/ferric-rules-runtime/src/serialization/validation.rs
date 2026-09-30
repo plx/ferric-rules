@@ -313,7 +313,7 @@ impl Engine {
                     fact.slots.len() == template.slot_names.len(),
                     "fact/template slot count mismatch",
                 )?;
-                for (kind, value) in template.slot_types.iter().zip(&fact.slots) {
+                for (kind, value) in template.slot_types.iter().zip(fact.slots.iter()) {
                     ensure(
                         matches!(value, Value::Multifield(_)) == (*kind == SlotType::Multi),
                         "fact/template slot cardinality mismatch",

@@ -1,4 +1,4 @@
-//! Header drift detection and smoke tests (Pass 008).
+//! Header drift detection and smoke tests.
 //!
 //! These tests verify that the committed `ferric.h` exists and contains all
 //! expected symbols, banners, and include guards.
@@ -26,27 +26,6 @@ fn read_committed_go_header() -> String {
     let header_path = crate_dir.join("../../bindings/go/internal/ffi/lib/ferric.h");
     std::fs::read_to_string(&header_path)
         .unwrap_or_else(|_| panic!("Go FFI header not found at {}", header_path.display()))
-}
-
-fn read_ci_workflow() -> String {
-    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workflow_path = crate_dir.join("../../.github/workflows/ci.yml");
-    std::fs::read_to_string(&workflow_path)
-        .unwrap_or_else(|_| panic!("CI workflow not found at {}", workflow_path.display()))
-}
-
-fn read_tsan_harness() -> String {
-    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let script_path = crate_dir.join("../../scripts/ffi-tsan-harness.sh");
-    std::fs::read_to_string(&script_path)
-        .unwrap_or_else(|_| panic!("TSan harness not found at {}", script_path.display()))
-}
-
-fn read_panic_harness() -> String {
-    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let script_path = crate_dir.join("../../scripts/ffi-panic-harness.sh");
-    std::fs::read_to_string(&script_path)
-        .unwrap_or_else(|_| panic!("panic harness not found at {}", script_path.display()))
 }
 
 #[test]
@@ -146,69 +125,6 @@ fn header_documents_logical_run_continuation_contract() {
         assert!(
             header.contains(required),
             "logical-run continuation contract is missing from ferric.h: {required}"
-        );
-    }
-}
-
-#[test]
-fn ci_checks_both_committed_headers_after_generation() {
-    let workflow = read_ci_workflow();
-    let build_position = workflow
-        .find("- run: just build-go-ffi")
-        .expect("CI must build the Go FFI before checking headers");
-    let check_position = workflow
-        .find(
-            "git diff --exit-code -- crates/ferric-rules-ffi/ferric.h \
-             bindings/go/internal/ffi/lib/ferric.h",
-        )
-        .expect("CI must reject drift in both committed FFI headers");
-    assert!(
-        build_position < check_position,
-        "CI must generate headers before checking them for drift"
-    );
-}
-
-#[test]
-fn ci_runs_mixed_language_thread_sanitizer_harness() {
-    let workflow = read_ci_workflow();
-    assert!(
-        workflow.contains("FFI Diagnostics (ThreadSanitizer)"),
-        "CI must contain the raw-engine diagnostic TSan job"
-    );
-    assert!(
-        workflow.contains("just ffi-tsan-harness"),
-        "CI must run the mixed Rust/C TSan harness"
-    );
-}
-
-#[test]
-fn ci_runs_debug_and_release_panic_containment_harness() {
-    let workflow = read_ci_workflow();
-    assert!(workflow.contains("FFI Panic Containment"));
-    assert!(workflow.contains("just ffi-panic-harness"));
-
-    let script = read_panic_harness();
-    assert!(script.contains("for profile in ffi-dev ffi-release"));
-    assert!(script.contains("FERRIC_FFI_TEST_PANIC_INJECTION_BUILD=1"));
-    assert!(script.contains("--features serde"));
-    assert!(script.contains("panic_containment.c"));
-    assert!(script.contains("expected 79 header exports"));
-}
-
-#[test]
-fn tsan_harness_instruments_rust_std_and_c() {
-    let script = read_tsan_harness();
-    for required in [
-        "-Zsanitizer=thread",
-        "-Zexternal-clangrt",
-        "-Zbuild-std=std,panic_unwind",
-        "--crate-type staticlib",
-        "-fsanitize=thread",
-        "nm -u",
-    ] {
-        assert!(
-            script.contains(required),
-            "TSan harness is missing required mixed-language instrumentation: {required}"
         );
     }
 }

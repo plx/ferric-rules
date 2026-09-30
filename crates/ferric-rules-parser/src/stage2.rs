@@ -2,19 +2,9 @@
 //!
 //! Stage 2 transforms the S-expression trees produced by Stage 1 into typed
 //! construct representations for `deftemplate`, `defrule`, `deffacts`,
-//! `deffunction`, and `defglobal`.
+//! `deffunction`, `defglobal`, `defmodule`, `defgeneric`, and `defmethod`:
+//! patterns, constraints, actions, slot definitions, and fact bodies.
 //! Source spans are preserved through the transformation for diagnostics.
-//!
-//! ## Phase 2 complete
-//!
-//! - Full interpretation for `deftemplate`, `defrule`, `deffacts`.
-//! - Typed AST with patterns, constraints, actions, slot definitions, and
-//!   fact bodies.
-//!
-//! ## Phase 3 scope
-//!
-//! - `deffunction` and `defglobal` interpretation (Pass 005).
-//! - Add interpretation for `defmodule`, `defgeneric`, `defmethod`.
 
 use crate::sexpr::{nesting_depth_message, Atom, Connective, SExpr};
 use crate::span::Span;
@@ -36,7 +26,7 @@ pub enum Pattern {
     And(Vec<Pattern>, Span),
     /// Negation CE: (not <pattern>)
     Not(Box<Pattern>, Span),
-    /// Test CE: (test <expression>) -- kept as raw `SExpr` for Phase 2
+    /// Test CE: (test <expression>) -- kept as a raw `SExpr` for the runtime to translate
     Test(SExpr, Span),
     /// Exists CE: (exists <pattern> ...)
     Exists(Vec<Pattern>, Span),
@@ -1643,7 +1633,7 @@ fn interpret_conditional_pattern(
                     expr.span(),
                 ));
             }
-            // Store the test expression as raw S-expr (full compilation in Phase 3)
+            // Keep the test expression as a raw S-expression; the runtime loader compiles it.
             Ok(Some(Pattern::Test(list[1].clone(), expr.span())))
         }
         Some("exists") => {
@@ -1963,7 +1953,7 @@ impl Constraint {
 fn interpret_constraint(expr: &SExpr) -> Result<Constraint, InterpretError> {
     // Check if this is a list (might be a connected constraint expression)
     if let Some(_list) = expr.as_list() {
-        // For Phase 2, treat lists as errors (connected constraints require more parsing)
+        // List-shaped constraint expressions are not supported; reject them.
         return Err(InterpretError::invalid(
             "complex constraint expressions not yet supported",
             expr.span(),
@@ -3799,7 +3789,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Pass 003 typed interpretation tests
+    // Typed interpretation tests
     // ========================================================================
 
     #[test]
@@ -4428,7 +4418,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 005: deffunction interpretation tests
+    // deffunction interpretation tests
     // -----------------------------------------------------------------------
 
     fn interpret_source_inner(source: &str) -> InterpretResult {
@@ -4611,7 +4601,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 005: defglobal interpretation tests
+    // defglobal interpretation tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -4717,7 +4707,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 007: defmodule interpretation tests
+    // defmodule interpretation tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -4835,7 +4825,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 007: defgeneric interpretation tests
+    // defgeneric interpretation tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -4872,7 +4862,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 007: defmethod interpretation tests
+    // defmethod interpretation tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -4993,7 +4983,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 010: forall interpretation tests
+    // forall interpretation tests
     // -----------------------------------------------------------------------
 
     #[test]

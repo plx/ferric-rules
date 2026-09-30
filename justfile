@@ -181,13 +181,13 @@ bindings-conformance:
 
 # ── Composite checks ────────────────────────────────────────────────────────
 
-# Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
+# Full check (no auto-fix): formatting, clippy, tests, cargo check, examples, Python, Go/TS lint, license notices
 check: fmt-check clippy test cargo-check check-examples py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint license-notices-check
 
-# Same as `check` — alias for the preflight script
+# Alias for `check`
 preflight: check
 
-# PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
+# PR preflight: like `check`, but auto-fixes formatting/lint and regenerates license notices; also checks the FFI header
 preflight-pr: fmt clippy test cargo-check check-examples py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint license-notices check-ffi-header
 
 # ── User-guide examples ─────────────────────────────────────────────────────
@@ -414,10 +414,6 @@ rust-native-artifacts-verify artifacts candidate_sha candidate_tree output:
 dependency-policy:
     ./scripts/dependency-check.sh
 
-# Exercise native scanner rejection of vulnerable inputs and malformed config.
-dependency-policy-test:
-    ./scripts/test-dependency-scanners.sh
-
 # Regenerate Rust third-party license notices from the locked Cargo graph
 license-notices:
     ./scripts/license-notices.sh generate
@@ -524,10 +520,6 @@ clean:
     cargo clean
 
 # ── Issue tracking ────────────────────────────────────────────────────────────
-
-# Print the next production-readiness issue URL, completion, or waiting state
-get-next-production-readiness-issue *args:
-    ./scripts/get-next-production-readiness-issue.sh {{args}}
 
 # Find the next unblocked issue matching comma-separated labels (e.g. `just find-next-matching-issue golang-binding,remediation`)
 find-next-matching-issue labels:

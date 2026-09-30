@@ -4,10 +4,9 @@ Date: 2026-04-11
 Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
 
 Companion documents:
-- [TypeScript Binding Architecture (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
-- [TypeScript Binding Normative Contract (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-normative-contract.md)
-- [TypeScript Binding Test Specification (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-test-spec.md)
-- [TypeScript Binding Spec Post-Mortem](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-spec-postmortem.md)
+- [TypeScript Binding Architecture (Revised)](typescript-binding-architecture.md)
+- [TypeScript Binding Normative Contract (Revised)](typescript-binding-normative-contract.md)
+- [TypeScript Binding Test Specification (Revised)](typescript-binding-test-spec.md)
 
 ## Purpose
 This matrix converts the API spec into executable conformance requirements.

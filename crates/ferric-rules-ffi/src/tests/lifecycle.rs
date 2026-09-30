@@ -1,4 +1,4 @@
-//! Tests for FFI engine lifecycle and serialized thread transfer (Pass 004).
+//! Tests for FFI engine lifecycle and serialized thread transfer.
 
 use crate::engine::{
     ferric_engine_clear_error, ferric_engine_free, ferric_engine_last_error,

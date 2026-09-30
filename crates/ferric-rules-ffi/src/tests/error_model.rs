@@ -1,4 +1,4 @@
-//! Tests for the FFI error model (Pass 003).
+//! Tests for the FFI error model.
 
 use crate::error::{
     clear_global_error, ferric_clear_error_global, ferric_last_error_global, map_engine_error,

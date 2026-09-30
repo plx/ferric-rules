@@ -1,42 +1,11 @@
+# Weekly (and manual): build, repair, audit, and smoke the seven release wheels
+# and the sdist, then verify the release bundle and dry-run publication. Not run
+# on pull requests or pushes; ci.yml builds and tests the binding per PR.
 name: Python Package Artifacts
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".cargo/**"
-      - ".gitattributes"
-      - ".github/workflows/python-package-artifacts.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "LICENSE-APACHE"
-      - "LICENSE-MIT"
-      - "crates/ferric-*/**"
-      - "examples/embedding/**"
-      - "scripts/python_package_lib.py"
-      - "scripts/musl_static_libgcc_linker.py"
-      - "scripts/test-python-sdist-artifact.py"
-      - "scripts/test-python-wheel-artifact.py"
-      - "scripts/validate-python-package.py"
-      - "scripts/verify-python-package-artifacts.py"
-  pull_request:
-    branches: [main]
-    paths:
-      - ".cargo/**"
-      - ".gitattributes"
-      - ".github/workflows/python-package-artifacts.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "LICENSE-APACHE"
-      - "LICENSE-MIT"
-      - "crates/ferric-*/**"
-      - "examples/embedding/**"
-      - "scripts/python_package_lib.py"
-      - "scripts/musl_static_libgcc_linker.py"
-      - "scripts/test-python-sdist-artifact.py"
-      - "scripts/test-python-wheel-artifact.py"
-      - "scripts/validate-python-package.py"
-      - "scripts/verify-python-package-artifacts.py"
+  schedule:
+    - cron: '41 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -59,7 +28,7 @@ jobs:
     name: Validate Python artifact contract
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate package metadata and release matrix
         run: python3 scripts/validate-python-package.py
 
@@ -147,7 +116,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure the pinned static musl unwind linker
         if: matrix.family == 'musllinux'
         shell: bash
@@ -173,7 +142,7 @@ jobs:
           printf '%s=%s\n' "$cargo_linker_env" "$wrapper" >>"$GITHUB_ENV"
       - name: Install the abi3 baseline interpreter for Windows linking
         if: matrix.family == 'windows'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           architecture: x64
           python-version: "3.9"
@@ -479,7 +448,7 @@ jobs:
           printf 'path=%s\n' \
             "crates/ferric-rules-python/${wheels[0]}" >>"$GITHUB_OUTPUT"
       - name: Upload exact repaired wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-wheel-${{ matrix.target }}
           path: ${{ steps.final-wheel.outputs.path }}
@@ -491,7 +460,7 @@ jobs:
               (steps.linux-audit.outcome != 'skipped' ||
                steps.macos-audit.outcome != 'skipped' ||
                steps.windows-audit.outcome != 'skipped') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-audit-${{ matrix.target }}
           path: crates/ferric-rules-python/python-audit/audit-${{ matrix.target }}.txt
@@ -513,7 +482,10 @@ jobs:
           - macos-x86_64
           - macos-arm64
           - windows-x86_64
-        python_version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # One interpreter per target: the newest supported CPython. The abi3
+        # floor (3.9) is enforced by abi3audit at build time and exercised
+        # from source by ci.yml.
+        python_version: ["3.13"]
         include:
           - target: manylinux2014-x86_64
             runner: ubuntu-24.04
@@ -538,9 +510,9 @@ jobs:
             family: windows
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Download the exact repaired wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: python-wheel-${{ matrix.target }}
           path: downloaded-python-wheel
@@ -620,7 +592,7 @@ jobs:
               --target "$TARGET_ID" \
               --receipt "/workspace/$RECEIPT"
       - name: Upload exact smoke receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-smoke-${{ matrix.target }}-py${{ matrix.python_version }}
           path: python-receipts/wheel-smoke-${{ matrix.target }}-py${{ matrix.python_version }}.json
@@ -633,9 +605,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Download the exact manylinux x86-64 wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: python-wheel-manylinux2014-x86_64
           path: downloaded-python-wheel
@@ -681,7 +653,7 @@ jobs:
               --receipt python-receipts/wheel-reject-py314.json \
               --expect-python-rejection
       - name: Upload exact rejection receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-rejection-py314
           path: python-receipts/wheel-reject-py314.json
@@ -694,9 +666,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install the source-build interpreter
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install pinned uv
@@ -772,14 +744,14 @@ jobs:
               --uv "$uv_path"
           test -f "$FINAL_SDIST"
       - name: Upload exact tested sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-sdist
           path: ${{ steps.sdist.outputs.final_path }}
           if-no-files-found: error
           retention-days: 14
       - name: Upload exact sdist smoke receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-sdist-smoke
           path: python-receipts/sdist-smoke.json
@@ -795,36 +767,36 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Download only final wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: python-wheel-*
           merge-multiple: true
           path: downloaded-python-artifacts
       - name: Download the final sdist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: python-sdist
           path: downloaded-python-artifacts
-      - name: Download all 35 wheel smoke receipts
-        uses: actions/download-artifact@v4
+      - name: Download every wheel smoke receipt
+        uses: actions/download-artifact@v7
         with:
           pattern: python-smoke-*
           merge-multiple: true
           path: downloaded-python-receipts
       - name: Download the Python 3.14 rejection receipt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: python-rejection-py314
           path: downloaded-python-receipts
       - name: Download the sdist smoke receipt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: python-sdist-smoke
           path: downloaded-python-receipts
       - name: Download exact platform audit reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: python-audit-*
           merge-multiple: true
@@ -866,7 +838,7 @@ jobs:
             --no-attestations \
             "${publish_files[@]}"
       - name: Upload exact verified release bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: python-package-release-bundle
           path: |
