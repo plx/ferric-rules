@@ -113,7 +113,7 @@ func TestEngineErrorsDescribeCurrentOperation(t *testing.T) {
 	)
 	staleMessages = append(staleMessages, invalidArgumentMessage)
 
-	_, err = NewEngine(WithSnapshot([]byte("not-a-ferric-snapshot"), FormatBincode))
+	_, err = NewEngine(WithSnapshot([]byte("not-a-ferric-snapshot"), FormatCBOR))
 	var serialization *SerializationError
 	if !errors.As(err, &serialization) {
 		t.Fatalf("corrupt snapshot error = %T %v, want *SerializationError", err, err)
@@ -133,7 +133,7 @@ func TestEngineErrorsDescribeCurrentOperation(t *testing.T) {
 	// A positive capacity makes this distinguishable from a nil slice while
 	// retaining the empty payload that fails before the native deserializer.
 	emptySnapshot := make([]byte, 0, 1)
-	_, err = NewEngine(WithSnapshot(emptySnapshot, FormatBincode))
+	_, err = NewEngine(WithSnapshot(emptySnapshot, FormatCBOR))
 	var emptySnapshotError *InvalidArgumentError
 	if !errors.As(err, &emptySnapshotError) {
 		t.Fatalf("empty snapshot error = %T %v, want *InvalidArgumentError", err, err)

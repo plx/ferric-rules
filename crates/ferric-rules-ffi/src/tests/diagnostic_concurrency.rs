@@ -5,7 +5,7 @@ use crate::engine::{
     ferric_engine_last_error_copy, ferric_engine_new, ferric_engine_retract, FerricEngine,
 };
 #[cfg(feature = "serde")]
-use crate::engine::{ferric_engine_reset, ferric_engine_serialize_bincode};
+use crate::engine::{ferric_engine_reset, ferric_engine_serialize_cbor};
 use crate::error::FerricError;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -315,7 +315,7 @@ fn allocator_callback_can_reenter_diagnostics_but_not_runtime() {
         let mut len = 0;
 
         assert_eq!(
-            ferric_engine_serialize_bincode(
+            ferric_engine_serialize_cbor(
                 engine,
                 Some(reentrant_allocator),
                 std::ptr::addr_of_mut!(context).cast::<std::ffi::c_void>(),

@@ -244,9 +244,9 @@ bench-engine:
 bench-waltz:
     cargo bench -p ferric-rules --bench waltz_bench
 
-# Run serialization format comparison benchmarks
+# Run the CBOR snapshot serialize/deserialize benchmarks
 bench-serde:
-    cargo bench -p ferric-rules-runtime --features serde --bench serialization_bench
+    cargo bench -p ferric-rules --features serde --bench serialization_bench
 
 # Run the manners benchmark suite
 bench-manners:

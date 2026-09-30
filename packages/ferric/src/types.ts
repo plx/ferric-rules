@@ -116,13 +116,14 @@ export enum FactType {
   Template = 1,
 }
 
-/** Serialization format for engine snapshots. */
+/**
+ * Serialization format for engine snapshots. CBOR is the recommended default;
+ * JSON is for debugging and inspection. Values 0, 3 and 4 belonged to removed
+ * codecs and are rejected.
+ */
 export enum Format {
-  Bincode = 0,
   Json = 1,
   Cbor = 2,
-  MessagePack = 3,
-  Postcard = 4,
 }
 
 // ---------------------------------------------------------------------------

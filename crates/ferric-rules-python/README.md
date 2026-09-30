@@ -91,8 +91,8 @@ Release workers are tested with 512 KiB native stacks; unoptimized development
 builds need at least the ordinary Rust 2 MiB stack for the tested runtime paths.
 Arbitrarily tiny host thread stacks are unsupported.
 
-Snapshots use the versioned CBOR envelope by default. Explicit `Format` values
-remain available as experimental codecs inside the same envelope. Inputs are
+Snapshots use the versioned CBOR envelope by default. `Format.JSON` is also
+available (for debugging and inspection) inside the same envelope. Inputs are
 limited to 16 MiB; file restore reads only the limit plus one byte before
 validation. Unknown versions, corruption, unsupported external values, and
 invalid restored state raise `FerricSerializationError`. File access errors
@@ -105,7 +105,8 @@ Pre-1.0 migration: replace stored `None` values with an application sentinel and
 persist application IDs instead of native fact IDs. Replace plain strings with
 `Symbol(...)` where a rule expects
 a symbol; replace wrapper-to-str comparisons with typed wrappers or `.value`;
-use explicit `Format.BINCODE` only for the experimental Bincode codec. Catch
+`Format.BINCODE`, `Format.MSGPACK` and `Format.POSTCARD` were removed, so use
+`Format.CBOR` (the default) or `Format.JSON`. Catch
 `FerricSerializationError` for snapshot failures. `Interpret` errors now raise
 `FerricParseError`, unsupported/invalid/validation load errors raise
 `FerricCompileError`, and source-file I/O failures raise `OSError`. Every load

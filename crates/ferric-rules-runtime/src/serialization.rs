@@ -1,20 +1,17 @@
 //! Engine serialization and deserialization.
 //!
 //! Provides [`Engine::serialize`] and [`Engine::deserialize`] for converting a
-//! fully loaded engine to/from bytes in one of several formats. This enables
-//! workflows where a canonical rule set is loaded and compiled once, serialized,
-//! and then deserialized many times to create fresh ready-to-run engines —
-//! skipping the parse/compile pipeline entirely.
+//! fully loaded engine to/from bytes. This enables workflows where a canonical
+//! rule set is loaded and compiled once, serialized, and then deserialized many
+//! times to create fresh ready-to-run engines — skipping the parse/compile
+//! pipeline entirely.
 //!
 //! ## Supported formats
 //!
 //! | Format | Crate | Status |
 //! | --- | --- | --- |
 //! | CBOR | `ciborium` | Recommended persistence format |
-//! | Bincode | `bincode` | Experimental compact binary |
-//! | JSON | `serde_json` | Experimental human-readable payload |
-//! | `MessagePack` | `rmp-serde` | Experimental compact binary |
-//! | Postcard | `postcard` | Experimental compact binary |
+//! | JSON | `serde_json` | Human-readable debugging/inspection payload |
 //!
 //! Every codec payload is wrapped in the same versioned binary envelope.
 //!
@@ -28,7 +25,6 @@
 mod limited;
 mod validation;
 
-use bincode::Options;
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -48,28 +44,20 @@ use crate::templates::RegisteredTemplate;
 /// Supported serialization formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SerializationFormat {
-    /// Experimental compact binary format via `bincode`.
-    Bincode,
-    /// JSON via `serde_json`. Human-readable, larger output.
+    /// JSON via `serde_json`. Human-readable, larger output; useful for
+    /// debugging and inspection.
     /// Note: JSON does not support `NaN` or `Infinity` float values.
     Json,
     /// Recommended CBOR persistence format via `ciborium`.
     Cbor,
-    /// `MessagePack` via `rmp-serde`. Compact binary with JSON-like schema.
-    MessagePack,
-    /// Postcard — compact, `no_std`-friendly binary format.
-    Postcard,
 }
 
 impl SerializationFormat {
     /// Returns a human-readable name for this format.
     pub fn name(self) -> &'static str {
         match self {
-            Self::Bincode => "bincode",
             Self::Json => "json",
             Self::Cbor => "cbor",
-            Self::MessagePack => "msgpack",
-            Self::Postcard => "postcard",
         }
     }
 
@@ -77,13 +65,7 @@ impl SerializationFormat {
     pub const RECOMMENDED: Self = Self::Cbor;
 
     /// All supported formats, in declaration order.
-    pub const ALL: &'static [SerializationFormat] = &[
-        Self::Bincode,
-        Self::Json,
-        Self::Cbor,
-        Self::MessagePack,
-        Self::Postcard,
-    ];
+    pub const ALL: &'static [SerializationFormat] = &[Self::Json, Self::Cbor];
 }
 
 /// Errors from serialization and deserialization.
@@ -134,13 +116,12 @@ pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
 
+/// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
+/// belonged to removed codecs and must not be reused.
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
-        SerializationFormat::Bincode => 0,
         SerializationFormat::Json => 1,
         SerializationFormat::Cbor => 2,
-        SerializationFormat::MessagePack => 3,
-        SerializationFormat::Postcard => 4,
     }
 }
 
@@ -477,19 +458,6 @@ impl std::io::Write for BoundedWriter {
     }
 }
 
-impl postcard::ser_flavors::Flavor for BoundedWriter {
-    type Output = Vec<u8>;
-    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-        self.try_extend(&[byte])
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        std::io::Write::write_all(self, bytes).map_err(|_| postcard::Error::SerializeBufferFull)
-    }
-    fn finalize(self) -> postcard::Result<Self::Output> {
-        Ok(self.0)
-    }
-}
-
 /// Encode a snapshot to bytes in the given format.
 fn encode<T: serde::Serialize>(
     value: &T,
@@ -497,10 +465,6 @@ fn encode<T: serde::Serialize>(
 ) -> Result<Vec<u8>, SerializationError> {
     let mut writer = BoundedWriter::default();
     match format {
-        SerializationFormat::Bincode => {
-            bincode::serialize_into(&mut writer, value)
-                .map_err(|e| SerializationError::Encode(e.to_string()))?;
-        }
         SerializationFormat::Json => {
             serde_json::to_writer(&mut writer, value)
                 .map_err(|e| SerializationError::Encode(e.to_string()))?;
@@ -508,15 +472,6 @@ fn encode<T: serde::Serialize>(
         SerializationFormat::Cbor => {
             ciborium::ser::into_writer(value, &mut writer)
                 .map_err(|e| SerializationError::Encode(e.to_string()))?;
-        }
-        SerializationFormat::MessagePack => {
-            value
-                .serialize(&mut rmp_serde::Serializer::new(&mut writer))
-                .map_err(|e| SerializationError::Encode(e.to_string()))?;
-        }
-        SerializationFormat::Postcard => {
-            return postcard::serialize_with_flavor::<T, BoundedWriter, Vec<u8>>(value, writer)
-                .map_err(|e| SerializationError::Encode(e.to_string()));
         }
     }
     Ok(writer.0)
@@ -528,13 +483,6 @@ fn decode<T: serde::de::DeserializeOwned>(
     format: SerializationFormat,
 ) -> Result<T, SerializationError> {
     match format {
-        SerializationFormat::Bincode => bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(MAX_SNAPSHOT_BYTES as u64)
-            .reject_trailing_bytes()
-            .deserialize::<limited::Limited<T>>(data)
-            .map(|value| value.0)
-            .map_err(|e| SerializationError::Decode(e.to_string())),
         SerializationFormat::Json => serde_json::from_slice::<limited::Limited<T>>(data)
             .map(|value| value.0)
             .map_err(|e| SerializationError::Decode(e.to_string())),
@@ -547,28 +495,6 @@ fn decode<T: serde::de::DeserializeOwned>(
             .map_err(|e| SerializationError::Decode(e.to_string()))?;
             if !reader.is_empty() {
                 return Err(SerializationError::Decode("trailing CBOR data".to_owned()));
-            }
-            Ok(value.0)
-        }
-        SerializationFormat::MessagePack => {
-            let mut decoder = rmp_serde::Deserializer::new(std::io::Cursor::new(data));
-            decoder.set_max_depth(limited::MAX_DEPTH);
-            let value: limited::Limited<T> = serde::Deserialize::deserialize(&mut decoder)
-                .map_err(|e| SerializationError::Decode(e.to_string()))?;
-            if decoder.position() != data.len() as u64 {
-                return Err(SerializationError::Decode(
-                    "trailing MessagePack data".to_owned(),
-                ));
-            }
-            Ok(value.0)
-        }
-        SerializationFormat::Postcard => {
-            let (value, remaining) = postcard::take_from_bytes::<limited::Limited<T>>(data)
-                .map_err(|e| SerializationError::Decode(e.to_string()))?;
-            if !remaining.is_empty() {
-                return Err(SerializationError::Decode(
-                    "trailing Postcard data".to_owned(),
-                ));
             }
             Ok(value.0)
         }
@@ -864,12 +790,15 @@ mod tests {
                 Engine::deserialize(&changed, format),
                 Err(SerializationError::UnsupportedCapabilities(1))
             ));
-            changed = bytes.clone();
-            changed[10] = (changed[10] + 1) % 5;
-            assert!(matches!(
-                Engine::deserialize(&changed, format),
-                Err(SerializationError::WrongFormat(_))
-            ));
+            // The other supported codec, and the IDs of removed codecs.
+            for codec in [3 - bytes[10], 0, 3, 4] {
+                changed = bytes.clone();
+                changed[10] = codec;
+                assert!(matches!(
+                    Engine::deserialize(&changed, format),
+                    Err(SerializationError::WrongFormat(_))
+                ));
+            }
             changed = bytes.clone();
             *changed.last_mut().unwrap() ^= 1;
             assert!(matches!(
@@ -925,22 +854,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("limit"));
-        assert!(
-            decode::<Vec<Value>>(&u64::MAX.to_le_bytes(), SerializationFormat::Bincode)
-                .unwrap_err()
-                .to_string()
-                .contains("limit")
-        );
-        let mut msgpack = vec![0xdd];
-        msgpack.extend(u32::MAX.to_be_bytes());
-        assert!(
-            decode::<Vec<Value>>(&msgpack, SerializationFormat::MessagePack)
-                .unwrap_err()
-                .to_string()
-                .contains("limit")
-        );
-        let postcard = postcard::to_allocvec(&(limited::MAX_ITEMS + 1)).unwrap();
-        assert!(decode::<Vec<Value>>(&postcard, SerializationFormat::Postcard).is_err());
         for &format in SerializationFormat::ALL {
             let mut nested = Value::Integer(7);
             for _ in 0..8 {
@@ -958,10 +871,7 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .to_lowercase();
-            assert!(
-                format == SerializationFormat::Postcard || error.contains("limit"),
-                "{format:?}: {error}"
-            );
+            assert!(error.contains("limit"), "{format:?}: {error}");
         }
         // The aggregate budget also applies when no collection advertises a size.
         let mut cbor = vec![0x9f];
@@ -1125,32 +1035,25 @@ mod tests {
                 engine.serialize(SerializationFormat::Json),
                 Err(SerializationError::Encode(_))
             ),
-            "experimental JSON must reject non-finite values explicitly"
+            "JSON must reject non-finite values explicitly"
         );
-        for format in [
-            SerializationFormat::Cbor,
-            SerializationFormat::Bincode,
-            SerializationFormat::MessagePack,
-            SerializationFormat::Postcard,
-        ] {
-            let bytes = engine.serialize(format).unwrap();
-            let restored = Engine::deserialize(&bytes, format).unwrap();
-            assert!(
-                restored.get_fact(id).unwrap().is_none(),
-                "host handles do not survive restore"
-            );
-            let facts = restored.find_facts("measurement").unwrap();
-            let Fact::Ordered(fact) = facts[0].1 else {
-                panic!("ordered measurement");
-            };
-            assert!(
-                fields
-                    .iter()
-                    .zip(&fact.fields)
-                    .all(|(expected, actual)| expected.structural_eq(actual)),
-                "float bits changed in {format:?}"
-            );
-        }
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        assert!(
+            restored.get_fact(id).unwrap().is_none(),
+            "host handles do not survive restore"
+        );
+        let facts = restored.find_facts("measurement").unwrap();
+        let Fact::Ordered(fact) = facts[0].1 else {
+            panic!("ordered measurement");
+        };
+        assert!(
+            fields
+                .iter()
+                .zip(&fact.fields)
+                .all(|(expected, actual)| expected.structural_eq(actual)),
+            "float bits changed in CBOR"
+        );
     }
 
     #[test]
@@ -1924,21 +1827,18 @@ mod tests {
         };
     }
 
-    format_tests!(Bincode, bincode_tests);
     format_tests!(Json, json_tests);
     format_tests!(Cbor, cbor_tests);
-    format_tests!(MessagePack, msgpack_tests);
-    format_tests!(Postcard, postcard_tests);
 
     // ── Cross-format and error tests ─────────────────────────────────────
 
     #[test]
     fn reject_wrong_format() {
         let engine = Engine::new(EngineConfig::default());
-        let bincode_bytes = engine.serialize(SerializationFormat::Bincode).unwrap();
+        let cbor_bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
 
-        // Trying to decode bincode data as JSON should fail.
-        let result = Engine::deserialize(&bincode_bytes, SerializationFormat::Json);
+        // Trying to decode CBOR data as JSON should fail.
+        let result = Engine::deserialize(&cbor_bytes, SerializationFormat::Json);
         assert!(result.is_err());
     }
 
@@ -2022,16 +1922,13 @@ mod tests {
 
     #[test]
     fn format_name() {
-        assert_eq!(SerializationFormat::Bincode.name(), "bincode");
         assert_eq!(SerializationFormat::Json.name(), "json");
         assert_eq!(SerializationFormat::Cbor.name(), "cbor");
-        assert_eq!(SerializationFormat::MessagePack.name(), "msgpack");
-        assert_eq!(SerializationFormat::Postcard.name(), "postcard");
     }
 
     #[test]
     fn all_formats_list() {
-        assert_eq!(SerializationFormat::ALL.len(), 5);
+        assert_eq!(SerializationFormat::ALL.len(), 2);
     }
 
     /// Regression: asserting a template fact (via `load_str`) into a

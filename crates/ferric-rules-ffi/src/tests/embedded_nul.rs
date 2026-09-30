@@ -2,7 +2,7 @@
 
 #[cfg(feature = "serde")]
 use crate::engine::{
-    ferric_bytes_free, ferric_engine_deserialize_bincode, ferric_engine_serialize_bincode,
+    ferric_bytes_free, ferric_engine_deserialize_cbor, ferric_engine_serialize_cbor,
 };
 use crate::engine::{
     ferric_engine_free, ferric_engine_get_fact_field, ferric_engine_get_fact_slot_by_name,
@@ -206,13 +206,7 @@ fn snapshot_round_trip_preserves_nul_before_legacy_egress_rejects_it() {
         let mut data = std::ptr::null_mut();
         let mut len = 0;
         assert_eq!(
-            ferric_engine_serialize_bincode(
-                engine,
-                None,
-                std::ptr::null_mut(),
-                &mut data,
-                &mut len,
-            ),
+            ferric_engine_serialize_cbor(engine, None, std::ptr::null_mut(), &mut data, &mut len),
             FerricError::Ok
         );
         assert!(!data.is_null());
@@ -220,7 +214,7 @@ fn snapshot_round_trip_preserves_nul_before_legacy_egress_rejects_it() {
 
         let mut restored = std::ptr::null_mut();
         assert_eq!(
-            ferric_engine_deserialize_bincode(data, len, &mut restored),
+            ferric_engine_deserialize_cbor(data, len, &mut restored),
             FerricError::Ok
         );
         ferric_bytes_free(data, len);

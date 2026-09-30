@@ -112,7 +112,7 @@ def test_snapshots_are_versioned_cbor_by_default_with_owned_typed_errors(tmp_pat
         with pytest.raises(ferric.FerricSerializationError, match=message):
             ferric.Engine.from_snapshot(data)
     with pytest.raises(ferric.FerricSerializationError, match="format"):
-        ferric.Engine.from_snapshot(snapshot, format=ferric.Format.BINCODE)
+        ferric.Engine.from_snapshot(snapshot, format=ferric.Format.JSON)
     sparse = tmp_path / "huge.cbor"
     with sparse.open("wb") as handle:
         handle.truncate(1024 * 1024 * 1024)

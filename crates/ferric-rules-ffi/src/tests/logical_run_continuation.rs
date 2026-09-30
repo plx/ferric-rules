@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString};
 
 #[cfg(feature = "serde")]
 use crate::engine::{
-    ferric_bytes_free, ferric_engine_deserialize_bincode, ferric_engine_serialize_bincode,
+    ferric_bytes_free, ferric_engine_deserialize_cbor, ferric_engine_serialize_cbor,
 };
 use crate::engine::{
     ferric_engine_action_diagnostic_count, ferric_engine_agenda_count, ferric_engine_clear_error,
@@ -889,7 +889,7 @@ fn a_reentrant_mutating_call_leaves_the_logical_run_intact() {
         let mut data = std::ptr::null_mut();
         let mut len = 0;
         assert_eq!(
-            ferric_engine_serialize_bincode(
+            ferric_engine_serialize_cbor(
                 engine,
                 Some(reentrant_reset_allocator),
                 std::ptr::addr_of_mut!(context).cast::<std::ffi::c_void>(),
@@ -928,19 +928,13 @@ fn continuation_eligibility_is_per_handle_and_not_serialized() {
         let mut data = std::ptr::null_mut();
         let mut len = 0;
         assert_eq!(
-            ferric_engine_serialize_bincode(
-                engine,
-                None,
-                std::ptr::null_mut(),
-                &mut data,
-                &mut len
-            ),
+            ferric_engine_serialize_cbor(engine, None, std::ptr::null_mut(), &mut data, &mut len),
             FerricError::Ok
         );
 
         let mut restored = std::ptr::null_mut();
         assert_eq!(
-            ferric_engine_deserialize_bincode(data, len, &mut restored),
+            ferric_engine_deserialize_cbor(data, len, &mut restored),
             FerricError::Ok
         );
         ferric_bytes_free(data, len);

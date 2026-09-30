@@ -418,7 +418,7 @@ func TestManualNilEngineErrorBranches(t *testing.T) {
 		t.Fatal("Step: expected error")
 	}
 	assertErr("Reset", e.Reset())
-	if _, err := e.Serialize(FormatBincode); err == nil {
+	if _, err := e.Serialize(FormatCBOR); err == nil {
 		t.Fatal("Serialize: expected error")
 	}
 	if err := e.SerializeToFile("unused", Format(99)); !errors.Is(err, ErrInvalidArgument) {
@@ -752,7 +752,7 @@ func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
 	defer mustClose(t, p)
 
 	path := t.TempDir() + "/snapshot.bin"
-	if err := p.SerializeToFile(path, FormatBincode); err != nil {
+	if err := p.SerializeToFile(path, FormatCBOR); err != nil {
 		t.Fatalf("SerializeToFile failed: %v", err)
 	}
 	var nilPinnedCtx context.Context
@@ -889,7 +889,7 @@ func TestManualHookedNewEngineNativeFallbacks(t *testing.T) {
 		ffiEngineDeserializeAs = func([]byte, ffi.SerializationFormat) (ffi.EngineHandle, ffi.ErrorCode) {
 			return nil, ffi.ErrOK
 		}
-		_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatBincode))
+		_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatCBOR))
 		var fe *FerricError
 		if !errors.As(err, &fe) || !strings.Contains(err.Error(), "snapshot") {
 			t.Fatalf("snapshot nil handle error = %v, want *FerricError mentioning snapshot", err)
@@ -1398,11 +1398,8 @@ func TestPropertyEngineSurfaceSweep(t *testing.T) {
 		id := rapid.Int64Range(1, 1000).Draw(rt, "id")
 		value := rapid.Float64Range(0.1, 1000.0).Draw(rt, "value")
 		format := rapid.SampledFrom([]Format{
-			FormatBincode,
 			FormatJSON,
 			FormatCBOR,
-			FormatMessagePack,
-			FormatPostcard,
 		}).Draw(rt, "format")
 
 		e, err := NewEngine(
@@ -1571,7 +1568,7 @@ func TestManagerCoordinatorPinnedSurface(t *testing.T) {
 	const (
 		id     = int64(42)
 		value  = 3.14
-		format = FormatBincode
+		format = FormatCBOR
 		// Negative index exercises the ((idx % n) + n) % n clamp in pickWorker.
 		policyIndex = -1
 	)
@@ -1962,7 +1959,7 @@ func TestManualHookedMutationAndAccessorErrors(t *testing.T) {
 			},
 			check: func(t *testing.T, e *Engine) {
 				t.Helper()
-				if _, err := e.Serialize(FormatBincode); !errors.Is(err, ErrRuntime) {
+				if _, err := e.Serialize(FormatCBOR); !errors.Is(err, ErrRuntime) {
 					t.Fatalf("Serialize err = %v, want ErrRuntime", err)
 				}
 			},

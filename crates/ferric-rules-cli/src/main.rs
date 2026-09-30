@@ -29,22 +29,16 @@ use clap::{Parser, Subcommand};
 #[cfg(feature = "serde")]
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum CliFormat {
-    Bincode,
     Json,
     Cbor,
-    Msgpack,
-    Postcard,
 }
 
 #[cfg(feature = "serde")]
 impl From<CliFormat> for ferric_rules_runtime::serialization::SerializationFormat {
     fn from(f: CliFormat) -> Self {
         match f {
-            CliFormat::Bincode => Self::Bincode,
             CliFormat::Json => Self::Json,
             CliFormat::Cbor => Self::Cbor,
-            CliFormat::Msgpack => Self::MessagePack,
-            CliFormat::Postcard => Self::Postcard,
         }
     }
 }

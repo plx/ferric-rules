@@ -24,10 +24,10 @@ pre-1.0 minimum-version correction ([Node release status](https://nodejs.org/en/
 Package root exports support CommonJS require, ESM named/dynamic import and
 Node16/NodeNext type resolution. Only the root and `package.json` are exported.
 
-Implicit snapshots now use recommended CBOR. Explicit Bincode and the other
-formats remain experimental. Native envelope compatibility applies to every
-format. Compatible versioned Bincode snapshots require an explicit format when
-restored. Legacy raw snapshots are rejected rather than silently migrated.
+Implicit snapshots now use recommended CBOR; `Format.Json` remains available
+for debugging and inspection. The experimental Bincode, MessagePack and
+Postcard formats were removed. Native envelope compatibility applies to every
+format. Legacy raw snapshots are rejected rather than silently migrated.
 
 Integral JavaScript numbers must be safe integers; use bigint for the signed
 64-bit range. Integral numbers outside that range are rejected instead of

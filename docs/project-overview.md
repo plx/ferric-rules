@@ -130,7 +130,8 @@ Users:
 - [`migration.md`](migration.md) — moving from CLIPS, plus pre-1.0 breaking
   changes.
 - [`host-api.md`](host-api.md) — host values and fact handles.
-- [`snapshots.md`](snapshots.md) — versioned CBOR snapshot format.
+- [`snapshots.md`](snapshots.md) — versioned snapshot format (CBOR, plus JSON
+  for inspection).
 
 TypeScript binding:
 [`typescript-binding-normative-contract.md`](typescript-binding-normative-contract.md),

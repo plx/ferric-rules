@@ -185,7 +185,7 @@ func TestPropertySnapshotEquivalence(t *testing.T) {
 
 	rapid.Check(t, func(t *rapid.T) {
 		format := rapid.SampledFrom([]Format{
-			FormatBincode, FormatJSON, FormatCBOR, FormatMessagePack, FormatPostcard,
+			FormatJSON, FormatCBOR,
 		}).Draw(t, "format")
 
 		id := rapid.Int64Range(1, 100).Draw(t, "sensor_id")

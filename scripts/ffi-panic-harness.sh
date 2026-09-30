@@ -36,8 +36,8 @@ audit_symbols() {
 
     sed -nE 's/.*[ *](ferric_[a-z0-9_]+)\(.*/\1/p' \
         crates/ferric-rules-ffi/ferric.h | sort -u >"$expected"
-    if [[ $(wc -l <"$expected") -ne 79 ]]; then
-        echo "ffi-panic-harness: expected 79 header exports" >&2
+    if [[ $(wc -l <"$expected") -ne 73 ]]; then
+        echo "ffi-panic-harness: expected 73 header exports" >&2
         exit 1
     fi
     while IFS= read -r symbol; do

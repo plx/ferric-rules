@@ -107,16 +107,10 @@ func WithSnapshot(data []byte, format Format) EngineOption {
 // formatToFFI converts a public Format to the FFI-level format enum.
 func formatToFFI(f Format) (ffi.SerializationFormat, error) {
 	switch f {
-	case FormatBincode:
-		return ffi.FormatBincode, nil
 	case FormatJSON:
 		return ffi.FormatJSON, nil
 	case FormatCBOR:
 		return ffi.FormatCBOR, nil
-	case FormatMessagePack:
-		return ffi.FormatMessagePack, nil
-	case FormatPostcard:
-		return ffi.FormatPostcard, nil
 	default:
 		return 0, fmt.Errorf("%w: unsupported serialization format %d", ErrInvalidArgument, f)
 	}

@@ -27,19 +27,15 @@ pub enum Encoding {
 }
 
 /// Serialization format for engine snapshots.
+///
+/// Values 0, 3 and 4 belonged to removed codecs and are rejected.
 #[cfg(feature = "serde")]
 #[napi]
 pub enum Format {
-    /// Compact binary (bincode). Fast and small.
-    Bincode = 0,
-    /// JSON (human-readable).
+    /// JSON (human-readable; for debugging and inspection).
     Json = 1,
-    /// CBOR.
+    /// CBOR (recommended, default).
     Cbor = 2,
-    /// `MessagePack`.
-    MessagePack = 3,
-    /// Postcard.
-    Postcard = 4,
 }
 
 impl From<Strategy> for ferric_rules_core::ConflictResolutionStrategy {
@@ -67,11 +63,8 @@ impl From<Encoding> for ferric_rules_core::StringEncoding {
 impl From<Format> for ferric_rules_runtime::SerializationFormat {
     fn from(f: Format) -> Self {
         match f {
-            Format::Bincode => Self::Bincode,
             Format::Json => Self::Json,
             Format::Cbor => Self::Cbor,
-            Format::MessagePack => Self::MessagePack,
-            Format::Postcard => Self::Postcard,
         }
     }
 }
@@ -124,11 +117,8 @@ impl TryFrom<f64> for Format {
     type Error = napi::Error;
     fn try_from(value: f64) -> napi::Result<Self> {
         match checked_u32(value, "snapshot format")? {
-            0 => Ok(Self::Bincode),
             1 => Ok(Self::Json),
             2 => Ok(Self::Cbor),
-            3 => Ok(Self::MessagePack),
-            4 => Ok(Self::Postcard),
             _ => Err(napi::Error::new(
                 napi::Status::InvalidArg,
                 "unknown snapshot format",
