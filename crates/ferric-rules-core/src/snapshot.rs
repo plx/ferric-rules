@@ -1181,9 +1181,11 @@ impl ReteNetwork {
                 } else {
                     tests.as_ref()
                 };
-                for fact in
-                    crate::rete::collect_candidate_facts(alpha, indexed_tests, &token.bindings)
-                {
+                for fact in crate::rete::collect_candidate_facts(
+                    alpha,
+                    crate::rete::indexable_tests(indexed_tests, None),
+                    &token.bindings,
+                ) {
                     let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
                     visit_join_matches(
                         fact_value,
@@ -1364,7 +1366,7 @@ impl ReteNetwork {
                     .ok_or("missing upstream token")?;
                 for fact_id in crate::rete::collect_candidate_facts(
                     alpha,
-                    indexed_tests,
+                    crate::rete::indexable_tests(indexed_tests, None),
                     &parent_token.bindings,
                 ) {
                     let fact = &facts.get(fact_id).ok_or("missing alpha fact")?.fact;

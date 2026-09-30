@@ -147,3 +147,183 @@ fn experimental_lex_mea_split_order_characterization() {
         check_split_order(strategy, ferric);
     }
 }
+
+mod fixed_prefix_indexing {
+    //! PR #352: fixed-prefix sequence indexes preserve full matching semantics.
+    //!
+    //! Twenty-four distinct keys exercise each arrival direction above the existing
+    //! index threshold. Key selectors occupy physical prefix slots zero and one;
+    //! later marker/constant constraints and TEST conditions still filter splits.
+    //! This suite checks results and lifecycle behavior, without timing assertions.
+
+    use ferric_rules::core::{Fact, Value};
+    use ferric_rules::runtime::{Engine, EngineConfig, FactHandle, HaltReason, RunLimit};
+
+    const SOURCE: &str = include_str!("fixtures/core/ordered_sequence_prefix_indexing.clp");
+    const OUTPUT: &str = include_str!("fixtures/core/ordered_sequence_prefix_indexing.out");
+    const GLOBALS: [&str; 12] = [
+        "right-empty",
+        "right-tail",
+        "left-empty",
+        "left-tail",
+        "right-splits",
+        "right-prefix",
+        "right-suffix",
+        "left-splits",
+        "left-prefix",
+        "left-suffix",
+        "right-selected",
+        "left-selected",
+    ];
+    const COMPLETE: [i64; 12] = [24, 24, 24, 24, 72, 48, 96, 72, 48, 96, 24, 24];
+    const AFTER_REMOVAL: [i64; 12] = [23, 24, 24, 24, 70, 46, 92, 72, 48, 96, 23, 24];
+    const AFTER_NEW_KEY: [i64; 12] = [24, 24, 25, 25, 72, 48, 96, 75, 50, 100, 24, 25];
+    const REMOVED_OUTPUT: &str = "tails:23:24:24:24\nsplits:70:46:92:72:48:96\nselected:23:24\n";
+    const REPEATED_ROW: [i64; 7] = [900, 7, 207, 7, 207, 8, 999];
+
+    fn pending(late_rules: bool) -> Engine {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        if late_rules {
+            let (prefix, suffix) = SOURCE.split_once("(defrule").unwrap();
+            engine.load_str(prefix).unwrap();
+            engine.reset().unwrap();
+            engine.load_str(&format!("(defrule{suffix}")).unwrap();
+        } else {
+            engine.load_str(SOURCE).unwrap();
+            engine.reset().unwrap();
+        }
+        engine
+    }
+
+    fn assert_counts(engine: &Engine, expected: &[i64; 12]) {
+        for (name, expected) in GLOBALS.into_iter().zip(expected) {
+            assert!(
+                matches!(engine.get_global(name), Some(Value::Integer(value)) if value == expected),
+                "{name}: {:?}, expected {expected}",
+                engine.get_global(name)
+            );
+        }
+    }
+
+    fn run_and_check(engine: &mut Engine, firings: usize, expected: &[i64; 12]) {
+        let run = engine.run(RunLimit::Count(1_000)).unwrap();
+        assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
+        assert_eq!(run.rules_fired, firings);
+        assert!(
+            engine.action_diagnostics().is_empty(),
+            "{:?}",
+            engine.action_diagnostics()
+        );
+        assert_counts(engine, expected);
+        assert_eq!(engine.run(RunLimit::Count(1_000)).unwrap().rules_fired, 0);
+    }
+
+    fn fact_handle(engine: &Engine, relation: &str, expected: &[i64]) -> FactHandle {
+        engine
+            .find_facts(relation)
+            .unwrap()
+            .into_iter()
+            .find_map(|(handle, fact)| match fact {
+                Fact::Ordered(row)
+                    if row.fields.len() == expected.len()
+                        && row.fields.iter().zip(expected).all(
+                            |(field, expected)| matches!(field, Value::Integer(value) if value == expected),
+                        ) =>
+                {
+                    Some(handle)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {relation} {expected:?}"))
+    }
+
+    fn remove_pending_rows(engine: &mut Engine) {
+        let empty = fact_handle(engine, "tail-after", &[3]);
+        let repeated = fact_handle(engine, "split-after", &REPEATED_ROW);
+        engine.retract(empty).unwrap();
+        engine.retract(repeated).unwrap();
+    }
+
+    fn finish_lifecycle(engine: &mut Engine) {
+        engine
+            .assert_ordered("tail-after", vec![Value::Integer(3)])
+            .unwrap();
+        engine
+            .assert_ordered(
+                "split-after",
+                REPEATED_ROW
+                    .into_iter()
+                    .map(Value::Integer)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        // Restoring the empty tail yields one match; the repeated row recreates
+        // both partitions and the descendant that passes the later TEST filters.
+        run_and_check(engine, 4, &COMPLETE);
+        assert_eq!(engine.get_output("t").unwrap_or(""), REMOVED_OUTPUT);
+
+        let key = fact_handle(engine, "key-after", &[7, 207]);
+        engine.retract(key).unwrap();
+        engine
+            .assert_ordered("key-after", vec![Value::Integer(7), Value::Integer(207)])
+            .unwrap();
+        // A new parent recreates two tails, three partitions and one filtered
+        // descendant against already resident sequence facts.
+        run_and_check(engine, 6, &AFTER_NEW_KEY);
+        assert_eq!(engine.get_output("t").unwrap_or(""), REMOVED_OUTPUT);
+    }
+
+    #[test]
+    fn fixed_prefix_indexes_preserve_both_arrivals_all_splits_and_later_constraints() {
+        for late_rules in [false, true] {
+            let mut engine = pending(late_rules);
+            run_and_check(&mut engine, 289, &COMPLETE);
+            assert_eq!(engine.get_output("t").unwrap_or(""), OUTPUT);
+        }
+    }
+
+    #[test]
+    fn retraction_and_reassertion_update_prefix_candidates_and_all_descendants() {
+        for late_rules in [false, true] {
+            let mut engine = pending(late_rules);
+            remove_pending_rows(&mut engine);
+            run_and_check(&mut engine, 285, &AFTER_REMOVAL);
+            assert_eq!(engine.get_output("t").unwrap_or(""), REMOVED_OUTPUT);
+            finish_lifecycle(&mut engine);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn indexed_sequence_matches_restore_in_all_formats() {
+        use ferric_rules::runtime::SerializationFormat;
+        for late_rules in [false, true] {
+            let engine = pending(late_rules);
+            for &format in SerializationFormat::ALL {
+                let mut restored =
+                    Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+                run_and_check(&mut restored, 289, &COMPLETE);
+                assert_eq!(restored.get_output("t").unwrap_or(""), OUTPUT);
+            }
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn removed_rows_and_completed_matches_restore_before_fresh_arrivals() {
+        use ferric_rules::runtime::SerializationFormat;
+        for late_rules in [false, true] {
+            let mut engine = pending(late_rules);
+            remove_pending_rows(&mut engine);
+            for &format in SerializationFormat::ALL {
+                let mut restored =
+                    Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+                run_and_check(&mut restored, 285, &AFTER_REMOVAL);
+                assert_eq!(restored.get_output("t").unwrap_or(""), REMOVED_OUTPUT);
+                let mut resumed =
+                    Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+                finish_lifecycle(&mut resumed);
+            }
+        }
+    }
+}
