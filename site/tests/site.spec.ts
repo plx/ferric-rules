@@ -11,7 +11,7 @@ type DocsPage = {
 const origin = "http://127.0.0.1:4321";
 const projectTitle = "ferric-rules";
 const projectDescription =
-  "A mostly CLIPS-compatible forward-chaining rules engine written in Rust. Designed for embedding as independent engine instances in modern applications.";
+  "A mostly CLIPS-compatible forward-chaining rules engine for embedding in applications. Each engine instance owns its state.";
 const basePath: string = "/ferric-rules";
 const normalizedBasePath = basePath === "/" ? "" : basePath;
 // prettier-ignore

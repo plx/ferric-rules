@@ -1,55 +1,69 @@
 ---
 title: Embedding API
-description: How ferric-rules is organized for host applications and independent engine instances.
+description: Engine lifecycle, thread ownership, output, and language bindings.
 ---
 
-Ferric is designed for embedding. The key design constraint is that each engine instance owns its runtime state and can be hosted independently.
+Use `Engine` from `ferric_rules::runtime`. The `ferric-rules` facade crate
+re-exports the runtime, parser, and core types; most Rust applications need only
+this dependency.
 
-## Runtime Shape
+## Ownership and threads
 
-The core host-facing type is `Engine` from `ferric-rules-runtime`, re-exported through the public `ferric-rules` facade crate.
+Each engine owns its rules, facts, agenda, modules, and output buffers. Engines
+share no runtime state. An `Engine` is `Send + Sync`: ownership can move between
+threads, and shared references may be read concurrently. Mutation requires
+exclusive access; use a mutex when multiple threads operate on one engine.
+Separate workers can also each own an engine.
 
-An engine owns:
+## Load and reuse
 
-- compiled rules and templates,
-- working memory facts,
-- activations and agenda state,
-- module and focus-stack state,
-- function, global, and generic registries,
-- output router buffers.
+`Engine::with_rules(source)` compiles CLIPS source and resets the engine. For
+configuration, use `Engine::with_rules_config(source, config)` with an
+`EngineConfig`.
 
-## Why Independent Engines Matter
+After a run, `reset()` clears facts, activations, output, and action diagnostics;
+it restores globals and the focus stack, then reasserts initial facts. Compiled
+rules and templates remain available. `clear()` also removes rules and other
+registered constructs.
 
-CLIPS is battle-tested, but its C runtime model can be awkward in modern applications with multiple isolated contexts. Ferric avoids global runtime state so an application can hold one engine per tenant, document, app feature, simulation, or user session.
+The [getting-started example](../getting-started/) shows the load, assert, run,
+and read sequence. Reuse an engine with `reset()` when successive inputs use the
+same rules.
 
-## Host Bindings
+## Run results and errors
 
-The repository includes multiple host-facing layers:
+`run(RunLimit::Count(n))` permits at most `n` rule firings. Its `RunResult` contains
+`rules_fired` and `halt_reason`:
 
-| Layer                        | Purpose                                                  |
-| ---------------------------- | -------------------------------------------------------- |
-| `ferric-rules`               | Public Rust facade crate.                                |
-| `ferric-rules-runtime`       | Engine, execution environment, value types, and routing. |
-| `ferric-rules-ffi`           | C ABI over the runtime.                                  |
-| `bindings/go`                | Go binding on top of the FFI.                            |
-| `crates/ferric-rules-python` | PyO3 extension module.                                   |
-| `packages/ferric`            | TypeScript package work.                                 |
+| Halt reason     | Meaning                                                    |
+| --------------- | ---------------------------------------------------------- |
+| `AgendaEmpty`   | No activations remain.                                     |
+| `LimitReached`  | The firing limit was reached.                              |
+| `HaltRequested` | Execution was stopped by a halt request.                   |
+| `ActionError`   | An action failed; the rest of that activation was skipped. |
 
-Future embedding targets can reuse the same runtime and FFI boundary.
+A successful Rust `Result` from `run` does not imply that every action succeeded.
+For `ActionError`, inspect `action_diagnostics()` before calling `run`, `step`,
+or `reset` again: these calls clear the diagnostics. Earlier actions keep their
+effects, and later activations remain available for another run.
 
-## Embedding Pattern
+## Read results
 
-```rust
-use ferric_rules::runtime::{Engine, RunLimit};
+Use `find_facts` to select facts by relation, or `facts()` to iterate working
+memory. Use `get_output("t")` to read the captured `printout` channel. Output is
+buffered in the engine; it is not automatically written to the host's stdout.
 
-let mut engine = Engine::with_rules(include_str!("rules.clp"))?;
+## Other languages
 
-engine.assert_ordered_symbol("user-tier", "free")?;
-engine.run(RunLimit::Count(100))?;
+These interfaces are also in the repository. Follow each binding's documentation
+for its API, build instructions, and lifecycle rules.
 
-for (_id, fact) in engine.facts()? {
-    println!("{fact:?}");
-}
-```
+| Interface            | Source and documentation                                                                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C ABI                | [`ferric-rules-ffi`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules-ffi), [C contract](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#1613-external-interface-contracts-ffi--embedding) |
+| Go                   | [`bindings/go`](https://github.com/plx/ferric-rules/tree/main/bindings/go)                                                                                                                                                      |
+| Python               | [`ferric-rules-python`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules-python)                                                                                                                               |
+| TypeScript / Node.js | [`packages/ferric`](https://github.com/plx/ferric-rules/tree/main/packages/ferric), [API reference](https://github.com/plx/ferric-rules/blob/main/docs/typescript-binding-api.md)                                               |
 
-Use a fresh engine when you need a fresh isolated decision context.
+For configuration and snapshots, see the
+[Rust user guide](https://github.com/plx/ferric-rules/blob/main/docs/users-guide.md).
