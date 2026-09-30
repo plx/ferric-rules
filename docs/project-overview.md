@@ -14,7 +14,7 @@ linked from [§6](#6-documentation-docs).
 | `ferric-rules-parser` | Lexer → S-expressions → Stage 2 typed constructs (`defrule`, `deftemplate`, `deffacts`, `deffunction`, `defglobal`, `defmodule`, `defgeneric`, `defmethod`). |
 | `ferric-rules-runtime` | `Engine`, loader, run loop, expression evaluator, builtin functions, modules/focus, output router, host values (`host.rs`), and snapshots (`serialization.rs`, feature `serde`). |
 | `ferric-rules-cli` | The `ferric` binary: `run`, `check`, `repl`, snapshot commands, `version`. Exit codes: 0 success, 1 runtime error, 2 usage error. |
-| `ferric-rules-ffi` | C ABI over the runtime (`libferric_rules_ffi`, checked-in `ferric.h` verified by `just check-ffi-header`). Has its own `ffi-dev`/`ffi-release` profiles; C regression harnesses live in `tests/c/`. |
+| `ferric-rules-ffi` | C ABI over the runtime (`libferric_rules_ffi`, checked-in `ferric.h` verified by `just check-ffi-header`). Has its own `ffi-dev`/`ffi-release` profiles; C regression harnesses live in `crates/ferric-rules-ffi/tests/c/`. |
 | `ferric-rules-ffi-macros` | Proc macro that wraps each exported C function in panic containment. |
 | `ferric-rules-napi` | napi-rs native addon used by the TypeScript package. |
 | `ferric-rules-python` | PyO3 extension module `ferric`, built with `maturin`; tests in `tests/*.py`. |
@@ -41,7 +41,7 @@ tests.
 
 | Binding | Location | Notes |
 | --- | --- | --- |
-| TypeScript / Node | `crates/ferric-rules-napi` + `packages/ferric` (`@ferric-rules/node`) | Synchronous `Engine`, worker-backed `EngineHandle`, and `EnginePool`. See [`typescript-binding-api.md`](typescript-binding-api.md). |
+| TypeScript / Node | `crates/ferric-rules-napi` + `packages/ferric` (`@ferric-rules/node`) | Synchronous `Engine`, worker-backed `EngineHandle`, and `EnginePool`. See [`packages/ferric/README.md`](../packages/ferric/README.md) and the [normative contract](typescript-binding-normative-contract.md). |
 | Python | `crates/ferric-rules-python` | abi3 wheels; see [`python-package-release.md`](python-package-release.md). |
 | Swift | `bindings/swift` | Local Swift 6 package over the C ABI (macOS 15 / iOS 18); built with `scripts/build-swift.sh`. |
 | Go | `bindings/go` | cgo over the C ABI; kept building and tested, without broader distribution. |
@@ -115,11 +115,12 @@ Users:
 - [`snapshots.md`](snapshots.md) — versioned CBOR snapshot format.
 
 TypeScript binding:
-[`typescript-binding-api.md`](typescript-binding-api.md),
-[`typescript-binding-architecture.md`](typescript-binding-architecture.md),
 [`typescript-binding-normative-contract.md`](typescript-binding-normative-contract.md),
+[`typescript-binding-architecture.md`](typescript-binding-architecture.md),
 [`typescript-binding-conformance-matrix.md`](typescript-binding-conformance-matrix.md),
-[`typescript-binding-test-spec.md`](typescript-binding-test-spec.md).
+[`typescript-binding-test-spec.md`](typescript-binding-test-spec.md), and the
+superseded design draft
+[`typescript-binding-api.md`](typescript-binding-api.md).
 
 Maintainers:
 

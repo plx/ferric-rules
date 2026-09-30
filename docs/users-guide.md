@@ -880,8 +880,9 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   §16.13 for the C contract.
 - **TypeScript / Node.js**: `packages/ferric` (`@ferric-rules/node`, backed by
   the `crates/ferric-rules-napi` native addon) provides a synchronous `Engine`,
-  a worker-backed `EngineHandle`, and an `EnginePool` for Node 22+. See the
-  [TypeScript binding API](typescript-binding-api.md).
+  a worker-backed `EngineHandle`, and an `EnginePool` for Node 22+. See
+  [its README](../packages/ferric/README.md) and the
+  [normative contract](typescript-binding-normative-contract.md).
 - **Swift**: `bindings/swift` is a local Swift 6 package over the C ABI for
   macOS 15 and iOS 18 or newer. See
   [its README](../bindings/swift/README.md) for building and use.
