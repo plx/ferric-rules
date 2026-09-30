@@ -44,7 +44,12 @@ struct ActionEvalEnv {
     /// Query membership has lexical scope independent of ordinary loop values.
     compact_facts: crate::evaluator::CompactFactBindings,
     runtime_bindings: RuntimeBindingEnv,
+    /// Reused storage for the merged frame built while RHS locals exist.
+    merged_frame: RuntimeFrame,
 }
+
+/// An evaluation frame: its bindings and the names they are keyed by.
+type RuntimeFrame = (BindingSet, VarMap);
 
 fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
     for (channel, text) in context.engine.globals.take_printout_events() {
@@ -146,15 +151,24 @@ impl ActionEvalEnv {
         context: &mut ActionExecutionContext<'_>,
     ) -> Result<Value, ActionError> {
         if !self.runtime_bindings.is_empty() {
-            let (bindings, var_map) =
-                build_runtime_eval_bindings(token, rule_info, &self.runtime_bindings, context)?;
-            return Self::eval_runtime_expr_with_bindings(
+            build_runtime_eval_bindings(
+                token,
+                rule_info,
+                &self.runtime_bindings,
+                context,
+                &mut self.merged_frame,
+            )?;
+            let (bindings, var_map) = &self.merged_frame;
+            let result = Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
-                &bindings,
-                &var_map,
+                bindings,
+                var_map,
                 context,
                 &self.compact_facts,
             );
+            // Keep the capacity, not the values.
+            self.merged_frame.0.clear();
+            return result;
         }
 
         let mut ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
@@ -530,14 +544,18 @@ fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value)
     env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
 }
 
+/// Build the frame that RHS expressions see while RHS locals exist, reusing
+/// `frame`'s storage.
 fn build_runtime_eval_bindings(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     env: &RuntimeBindingEnv,
     context: &mut ActionExecutionContext<'_>,
-) -> Result<(BindingSet, VarMap), ActionError> {
-    let mut var_map = VarMap::new();
-    let mut bindings = BindingSet::new();
+    frame: &mut RuntimeFrame,
+) -> Result<(), ActionError> {
+    let (bindings, var_map) = frame;
+    bindings.clear();
+    var_map.clear();
 
     // Preserve outer VarId order: when both spellings exist, the later
     // `$?name`/`name` alias wins, just as in the former merged map.
@@ -587,7 +605,7 @@ fn build_runtime_eval_bindings(
             .map_err(|error| ActionError::EvalError(error.to_string()))?;
         bindings.set(id, ValueRef::new(value.clone()));
     }
-    Ok((bindings, var_map))
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // Action dispatch needs full mutable engine/action context.
@@ -2972,10 +2990,13 @@ mod tests {
                 locals.insert("$?x".to_owned(), Value::Integer(value));
             }
             let module = engine.module_registry.current_module();
-            let (bindings, names) = build_runtime_eval_bindings(
+            let mut frame = RuntimeFrame::default();
+            build_runtime_eval_bindings(
                 &token, &info, &locals,
                 &mut ActionExecutionContext { engine: &mut engine, current_module: module },
+                &mut frame,
             ).unwrap();
+            let (bindings, names) = frame;
             prop_assert_eq!(names.len(), 3);
             for (name, expected) in [
                 ("x", Value::Integer(local.unwrap_or(second))),
@@ -3158,7 +3179,8 @@ mod tests {
         }
         let runtime_bindings = HashMap::from([("local".into(), Value::Integer(30))]);
         let current_module = engine.module_registry.current_module();
-        let (bindings, var_map) = build_runtime_eval_bindings(
+        let mut frame = RuntimeFrame::default();
+        build_runtime_eval_bindings(
             &token,
             &rule_info,
             &runtime_bindings,
@@ -3166,8 +3188,10 @@ mod tests {
                 engine: &mut engine,
                 current_module,
             },
+            &mut frame,
         )
         .unwrap();
+        let (bindings, var_map) = frame;
 
         let lookup = |engine: &mut Engine, name: &str| {
             let symbol = engine
