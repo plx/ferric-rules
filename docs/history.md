@@ -141,7 +141,8 @@ pinned-engine plan, the Phase 6 baseline and performance-analysis notes, the
 TypeScript binding implementation plan and spec post-mortem, and the Maquette
 design mockups were removed in the cleanup PR that added this page. They
 remain in git history; commit `475eea1c`, the `main` head this cleanup was
-merged onto, still contains them (paths: `docs/audits/`, `plan/pinned-engine.md`, `docs/phase6-baseline.md`,
+merged onto, still contains them (paths: `docs/audits/`,
+`plan/pinned-engine.md`, `docs/phase6-baseline.md`,
 `docs/performance-analysis.md`, `docs/typescript-binding-implementation-plan.md`,
 `docs/typescript-binding-spec-postmortem.md`, `.maquette/`, `documentation/`).
 
