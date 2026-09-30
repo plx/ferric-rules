@@ -3,14 +3,15 @@
 //! Lexer, S-expression parser, and AST for CLIPS-compatible rule syntax.
 //!
 //! This crate provides a two-stage parser:
-//! - **Stage 1 (implemented)**: Lexical analysis and S-expression parsing
-//! - **Stage 2 (Phase 2)**: AST construction and semantic validation for
-//!   `deftemplate`, `defrule`, and `deffacts` constructs
+//! - **Stage 1**: Lexical analysis and S-expression parsing
+//! - **Stage 2**: Typed construct interpretation and semantic validation for
+//!   `deftemplate`, `defrule`, `deffacts`, `deffunction`, `defglobal`,
+//!   `defmodule`, `defgeneric`, and `defmethod`
 //!
 //! This crate is not intended for direct use by end-users; prefer the
 //! `ferric-rules` facade crate instead.
 //!
-//! ## Phase 1 baseline (parser API)
+//! ## Parser API
 //!
 //! Stage 1 exposes `parse_sexprs(...) -> ParseResult { exprs, errors }`.
 //! Lex errors short-circuit into parse errors (no partial token-stream parse

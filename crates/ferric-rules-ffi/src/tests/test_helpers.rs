@@ -25,9 +25,6 @@ pub fn assert_fixture_exists(name: &str) {
     );
 }
 
-// --- Placeholder helpers for future passes ---
-// These will be expanded when `FerricError` (Pass 003) and engine lifecycle (Pass 004) land.
-
 /// Standard FFI fixture file names used across tests.
 pub mod fixtures {
     pub const SIMPLE_RULE: &str = "simple_rule.clp";

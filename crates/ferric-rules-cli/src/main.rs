@@ -2,10 +2,9 @@
 //!
 //! Command-line interface for the Ferric rules engine.
 //!
-//! ## Phase 5 Baseline Assumptions
-//!
 //! This binary provides batch and interactive access to the Ferric runtime.
-//! Phase 4 diagnostic contracts are preserved:
+//!
+//! ## Diagnostics and exit codes
 //!
 //! - Source-located diagnostics are rendered with file/line/column context.
 //! - Module visibility, ambiguity, and generic dispatch/conflict diagnostics

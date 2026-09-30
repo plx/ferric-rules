@@ -1,5 +1,5 @@
 # Runs on pull requests to main and on pushes to main. Changes confined to the
-# docs site (site/, documentation/) skip it; site-check.yml covers those.
+# docs site (site/) skip it; site-check.yml covers those.
 # The pinned CLIPS compatibility gate is not here: it runs once per PR in
 # pr-assessment.yml and once per push to main in compat-standalone.yml.
 name: CI
@@ -9,12 +9,10 @@ on:
     branches: [main]
     paths-ignore:
       - "site/**"
-      - "documentation/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "site/**"
-      - "documentation/**"
   workflow_dispatch:
 
 concurrency:

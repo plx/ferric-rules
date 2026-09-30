@@ -243,7 +243,7 @@ fn repl_facts_command() {
     );
 }
 
-// ---- Phase 4 diagnostic parity through CLI ----
+// ---- Diagnostic parity through CLI ----
 
 #[test]
 fn run_invalid_source_shows_diagnostic() {

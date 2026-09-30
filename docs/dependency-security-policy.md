@@ -8,17 +8,16 @@ findings fail the job; scanner output appears in the job log and, locally, in
 
 The scanners own report parsing and advisory matching. There is no separate
 exception evaluator, workspace graph hash, SBOM reconciliation service, or
-calendar-based waiver renewal. The retired `dependency-policy.json` and Python
-policy engine are preserved in Git history; their expiry dates no longer control
-CI. This is a deliberate replacement of the former release-program contract,
-not a claim that its original exit criteria were completed.
+calendar-based waiver renewal. The earlier bespoke `dependency-policy.json` and
+Python policy engine remain available in the repository history (see
+[history](history.md)).
 
 ## Covered surfaces
 
 | Surface | Check |
 | --- | --- |
 | Cargo workspace, all features and targets, including development/build dependencies | `cargo deny --locked --all-features check advisories bans licenses sources`, configured in [`deny.toml`](../deny.toml) |
-| `packages/ferric`, `crates/ferric-rules-napi`, `documentation`, `site` | `npm audit --package-lock-only --audit-level=info`, including dev, optional, and peer dependencies |
+| `packages/ferric`, `crates/ferric-rules-napi`, `site` | `npm audit --package-lock-only --audit-level=info`, including dev, optional, and peer dependencies |
 | `crates/ferric-rules-python`, `tools/ferric-tools` | `uv export --locked --all-groups --all-extras --no-emit-project --format pylock.toml`, then `pip-audit --locked --strict` |
 | Rust third-party license texts | Existing `cargo-about` configuration and `just license-notices-check` |
 

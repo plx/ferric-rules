@@ -1,4 +1,4 @@
-//! FFI contract lock tests (Phase 6, Pass 005).
+//! FFI contract lock tests.
 //!
 //! These tests document and lock the stable C API surface against ABI drift.
 //! They serve as explicit regression guards — if any of these tests fail after

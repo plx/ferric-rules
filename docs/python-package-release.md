@@ -8,8 +8,8 @@ Changes to either document must keep package metadata, CI, validators, and
 consumer smoke tests in agreement.
 
 This contract covers the retained Python artifact targets and clean-consumer
-checks. The finite rehabilitation scope requires locally usable artifacts and
-truthful validation, without public publication or a new platform matrix.
+checks: locally usable artifacts and truthful validation, without public
+publication or a new platform matrix.
 
 ## Package identity and support boundary
 
@@ -171,9 +171,8 @@ non-mutating registry dry run are permitted staging steps. Stable publication
 to PyPI is an irreversible action and is not authorized by this contract or by
 the existence of a successful workflow run.
 
-Public publication is outside the rehabilitation task. Any future publication
-requires explicit maintainer authorization for the verified artifacts; the
-retired production-readiness audit is not an active release prerequisite.
+Public publication is not currently planned. Any future publication requires
+explicit maintainer authorization for the verified artifacts.
 
 ## Updating the contract
 

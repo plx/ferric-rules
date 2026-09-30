@@ -3,10 +3,6 @@
 //! Validates pattern restrictions at compile time according to Section 7.7
 //! of the CLIPS specification. Reports stable error codes `E0001`–`E0005`
 //! with source spans for diagnostics.
-//!
-//! ## Phase 2 implementation plan
-//!
-//! - Pass 011: Pattern validation and source-located compile errors
 
 use std::fmt;
 

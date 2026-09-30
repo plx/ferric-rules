@@ -6,8 +6,8 @@
 //! - `lifecycle` — Engine create/configure/free
 //! - `execution` — run/step/assert/retract
 //! - `copy_to_buffer` — Truncation, size query, edge cases
-//! - `diagnostic_parity` — Phase 4 diagnostics through FFI unchanged
-//! - `build_matrix` — Artifact build verification across profiles (Pass 009)
+//! - `diagnostic_parity` — runtime diagnostics surface through FFI unchanged
+//! - `build_matrix` — Artifact build verification across profiles
 
 #[cfg(test)]
 mod test_helpers;
