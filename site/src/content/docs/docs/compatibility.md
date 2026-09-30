@@ -21,65 +21,6 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for
 | Globals                                                     | Supported                 |
 | Core math, string, multifield, predicate, and I/O functions | Supported subset          |
 
-## Direct Output
-
-`printout` writes top-level STRING contents without quotes. Multifields use
-parentheses, one space between fields, and quotes around STRING fields:
-`(printout t (create$ "a" "two words") crlf)` writes `("a" "two words")` and
-a newline. Empty multifields print `()` and empty STRING fields print `""`.
-The same rendering applies inside deffunctions and methods and to Ferric's
-RHS `println`, which adds a newline.
-
-Printed STRING fields retain literal embedded quotes, backslashes, control
-characters, and UTF8 bytes. `implode$` instead uses the escaped field mode
-described below. SYMBOL fields remain
-literal, including `crlf`, `tab`, `vtab`, and `ff`. Those four symbols expand
-to LF, TAB, VT, and FF only as top-level output operands.
-
-FLOAT output uses up to 15 significant decimal digits, preserving `-0.0`.
-Rounded decimal exponents from -4 through 14 use fixed notation; other values
-use scientific notation such as `1e-05` and `1e+15`. Integral fixed-form
-FLOATs include `.0`; nonfinite spellings are `nan.0`, `inf.0`, and `-inf.0`.
-INTEGER spelling remains exact. `str-cat` and `sym-cat` spell FLOATs the
-same way; `save-facts` keeps its own formatting.
-
-INSTANCE-NAME values such as `[widget]` print with their brackets. Ferric has
-no object system, so an instance name names no instance. Typed FACT-ADDRESS
-print forms remain a representation gap; INTEGERs are printed as integers and
-host ExternalAddress values retain an opaque placeholder. This output contract
-does not cover general source round-tripping.
-
-## Multifield Text
-
-`create$` evaluates VOID-producing operands for their effects but omits those
-scalar results from the multifield. Empty STRINGs remain fields.
-
-`implode$` accepts exactly one MULTIFIELD and returns a STRING containing its
-fields separated by one space, without outer parentheses. An empty multifield
-returns an empty STRING; an empty STRING field contributes `""`. Each STRING
-field is quoted, with embedded quotes and backslashes escaped by a backslash.
-Literal control characters and UTF8 bytes remain unchanged, and SYMBOLs keep
-their raw spelling, including `crlf`, `tab`, `vtab`, and `ff`.
-
-INTEGER spelling stays exact. FLOATs share direct output's 15-significant-digit
-format, including `-0.0`, exponents, and nonfinite spellings. The operand is
-evaluated once after the argument-count check; a scalar result produces a type
-error. Rendering leaves input values unchanged.
-
-`explode$` of an `implode$` result returns the original fields, including
-quoted STRINGs, numbers and instance names. `string-to-field`, `explode$` and
-`read` scan text with the CLIPS field scanner. Arbitrary generated SYMBOL
-spellings have no general source round-trip guarantee, and INTEGERs are never
-reinterpreted as fact addresses.
-
-## UTF-8 Text
-
-Ferric strings are UTF-8. In the few places where CLIPS produces bytes that
-are not UTF-8, Ferric produces U+FFFD instead: `format` with `%.Ns` cutting a
-UTF-8 character or `%c` of a byte of 128 or more, and a scanned string
-that ends in a backslash at the end of input. `format` also reports an error
-for a malformed directive such as `%5-3d`, which CLIPS passes to `printf`.
-
 ## Conflict Resolution
 
 Depth and breadth use activation creation order and match the pinned reference cases. The retained LEX and MEA host options are experimental Ferric strategies with the ordering gaps below.
