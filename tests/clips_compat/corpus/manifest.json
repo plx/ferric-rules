@@ -1792,18 +1792,7 @@
       "level": "boundary",
       "covers": [
         "format"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/340"
-        ],
-        "summary": "CLIPS compatibility: honor zero padding in format integer directives",
-        "observed": {
-          "diagnostics": [],
-          "output": "   7\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "stdlib/068_printout_multifield_string_quotes.clp",

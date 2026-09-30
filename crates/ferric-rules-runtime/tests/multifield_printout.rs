@@ -233,19 +233,12 @@ fn neighboring_string_builders_keep_their_existing_raw_content_policy() {
         Some("a\"b|a\\b|two words")
     );
     assert_eq!(global_string(&engine, "format"), "two words");
-    // Deliberately preserve these neighboring functions' preexisting spelling:
-    // #345 changes printout's numeric writer, not str-cat/sym-cat semantics.
-    assert_eq!(
-        global_string(&engine, "number-string"),
-        "100000000000000000000.0"
-    );
+    // str-cat and sym-cat share printout's CLIPS %.15g float spelling.
+    assert_eq!(global_string(&engine, "number-string"), "1e+20");
     let Some(Value::Symbol(symbol)) = engine.get_global("number-symbol") else {
         panic!("sym-cat must keep SYMBOL identity")
     };
-    assert_eq!(
-        engine.resolve_core_symbol(*symbol),
-        Some("100000000000000000000.0")
-    );
+    assert_eq!(engine.resolve_core_symbol(*symbol), Some("1e+20"));
 }
 
 #[test]

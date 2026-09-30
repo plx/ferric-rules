@@ -4205,18 +4205,6 @@ fn builtin_to_float(
 // String/Symbol built-ins
 // ---------------------------------------------------------------------------
 
-/// Format a float value the same way CLIPS does: always include a decimal point.
-///
-/// If the fractional part is zero, formats as `"<n>.0"`. Otherwise uses
-/// Rust's default float-to-string formatting which already includes decimals.
-fn format_float_for_str_cat(f: f64) -> String {
-    if f.fract() == 0.0 {
-        format!("{f:.1}")
-    } else {
-        f.to_string()
-    }
-}
-
 /// Append each value's string representation to `buf`, using the symbol table
 /// to resolve symbol names.
 ///
@@ -4229,7 +4217,7 @@ fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mu
                 // Use write! to avoid clippy::format_push_string warning.
                 let _ = write!(buf, "{n}");
             }
-            Value::Float(f) => buf.push_str(&format_float_for_str_cat(*f)),
+            Value::Float(f) => crate::formatting::append_clips_float(*f, buf),
             Value::Symbol(sym) => {
                 if let Some(name) = ctx.symbol_table.resolve_symbol_str(*sym) {
                     buf.push_str(name);
@@ -5815,37 +5803,25 @@ fn builtin_printout(
     Ok(Value::Void)
 }
 
-/// `format` — CLIPS-style printf formatting.
+/// `format` — CLIPS `printf`-style formatting.
 ///
-/// `(format <channel> <format-string> <arg>*)`
+/// `(format <channel> <control> <arg>*)`
 ///
-/// Returns the formatted string. The channel argument is evaluated but not
-/// used for output (the evaluator has no router access; use `printout` for
-/// output to a channel).
-///
-/// Format directives:
-/// - `%d` — integer
-/// - `%f` — float (default 6 decimal places)
-/// - `%e` — scientific notation
-/// - `%g` — general (shorter of `%f` and `%e`)
-/// - `%s` — string representation
-/// - `%n` — newline character
-/// - `%r` — carriage return
-/// - `%%` — literal percent sign
-/// - Width/precision: `%10d`, `%-10s`, `%6.2f`, etc.
+/// Returns the formatted STRING. The channel is evaluated but nothing is
+/// written to it. As in CLIPS, the whole control string is checked and the
+/// argument count must match its directives before any argument is
+/// evaluated. See [`crate::formatting`] for the directives.
 fn builtin_format(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
+    use crate::formatting::Piece;
+
     check_arity_min("format", args, 2, span)?;
-
-    // First arg is channel (evaluate but don't use for output)
     let _channel = eval_inner(ctx, &args[0])?;
-
-    // Second arg is format string
-    let fmt_str = match eval_inner(ctx, &args[1])? {
-        Value::String(s) => s.as_str().to_string(),
+    let control = match eval_inner(ctx, &args[1])? {
+        Value::String(s) => s,
         other => {
             return Err(EvalError::TypeError {
                 function: "format".to_string(),
@@ -5855,12 +5831,45 @@ fn builtin_format(
             });
         }
     };
+    let pieces = crate::formatting::parse(control.as_str()).map_err(|error| {
+        EvalError::UnsupportedOperation {
+            operation: "format".to_string(),
+            reason: error.to_string(),
+            span: span.cloned(),
+        }
+    })?;
+    let directives = pieces
+        .iter()
+        .filter(|piece| matches!(piece, Piece::Directive(..)))
+        .count();
+    if args.len() != directives + 2 {
+        return Err(EvalError::ArityMismatch {
+            name: "format".to_string(),
+            expected: format!("exactly {}", directives + 2),
+            actual: args.len(),
+            span: span.cloned(),
+        });
+    }
 
-    // Remaining args are format arguments
-    let format_args = eval_args(ctx, &args[2..])?;
-
-    let result = apply_format_string(&fmt_str, &format_args, ctx.symbol_table, span)?;
-    let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|_| {
+    let mut output = String::new();
+    let mut operands = args[2..].iter();
+    for piece in pieces {
+        match piece {
+            Piece::Text(text) => output.push_str(text),
+            Piece::Directive(conversion, spec) => {
+                let operand = operands.next().expect("operand count was checked");
+                let value = eval_inner(ctx, operand)?;
+                render_format_value(&mut output, conversion, spec, &value, ctx.symbol_table)
+                    .map_err(|expected| EvalError::TypeError {
+                        function: "format".to_string(),
+                        expected: expected.to_string(),
+                        actual: generic_value_type_name(&value).to_string(),
+                        span: span.cloned(),
+                    })?;
+            }
+        }
+    }
+    let fs = FerricString::new(&output, ctx.config.string_encoding).map_err(|_| {
         EvalError::TypeError {
             function: "format".to_string(),
             expected: "valid string encoding".to_string(),
@@ -5871,230 +5880,61 @@ fn builtin_format(
     Ok(Value::String(fs))
 }
 
-/// Apply CLIPS format directives to produce a formatted string.
-#[allow(clippy::too_many_lines)]
-fn apply_format_string(
-    fmt: &str,
-    args: &[Value],
-    symbol_table: &SymbolTable,
-    span: Option<&SourceSpan>,
-) -> Result<String, EvalError> {
-    use std::fmt::Write as FmtWrite;
+/// Render one `format` argument, or name the types its directive accepts.
+fn render_format_value(
+    out: &mut String,
+    conversion: crate::formatting::Conversion,
+    spec: crate::formatting::Spec,
+    value: &Value,
+    symbols: &SymbolTable,
+) -> Result<(), &'static str> {
+    use crate::formatting::{self as fmt, Conversion};
 
-    let mut result = String::new();
-    let mut chars = fmt.chars().peekable();
-    let mut arg_idx = 0;
-
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
-            result.push(ch);
-            continue;
-        }
-
-        match chars.peek() {
-            None => {
-                result.push('%'); // trailing % — just emit it
-            }
-            Some('%') => {
-                chars.next();
-                result.push('%');
-            }
-            Some('n') => {
-                chars.next();
-                result.push('\n');
-            }
-            Some('r') => {
-                chars.next();
-                result.push('\r');
-            }
-            _ => {
-                // Parse optional flags, width, precision
-                let mut left_align = false;
-                let mut width: Option<usize> = None;
-                let mut precision: Option<usize> = None;
-
-                if chars.peek() == Some(&'-') {
-                    left_align = true;
-                    chars.next();
-                }
-
-                // Width
-                let mut width_str = String::new();
-                while let Some(&c) = chars.peek() {
-                    if c.is_ascii_digit() {
-                        width_str.push(c);
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                }
-                if !width_str.is_empty() {
-                    width = width_str.parse().ok();
-                }
-
-                // Precision
-                if chars.peek() == Some(&'.') {
-                    chars.next();
-                    let mut prec_str = String::new();
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_digit() {
-                            prec_str.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    precision = prec_str.parse().ok();
-                }
-
-                // Conversion character
-                let Some(conv) = chars.next() else {
-                    result.push('%');
-                    continue;
-                };
-
-                if arg_idx >= args.len() {
-                    return Err(EvalError::ArityMismatch {
-                        name: "format".to_string(),
-                        expected: format!("{}+", arg_idx + 3),
-                        actual: args.len() + 2,
-                        span: span.cloned(),
-                    });
-                }
-
-                let arg = &args[arg_idx];
-                arg_idx += 1;
-
-                let formatted = match conv {
-                    'd' => {
-                        let n = match arg {
-                            Value::Integer(i) => *i,
-                            #[allow(clippy::cast_possible_truncation)]
-                            Value::Float(f) => *f as i64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %d".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        format!("{n}")
-                    }
-                    'f' => {
-                        let f = match arg {
-                            Value::Float(f) => *f,
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Integer(i) => *i as f64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %f".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        let prec = precision.unwrap_or(6);
-                        format!("{f:.prec$}")
-                    }
-                    'e' => {
-                        let f = match arg {
-                            Value::Float(f) => *f,
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Integer(i) => *i as f64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %e".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        let prec = precision.unwrap_or(6);
-                        format!("{f:.prec$e}")
-                    }
-                    'g' => {
-                        let f = match arg {
-                            Value::Float(f) => *f,
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Integer(i) => *i as f64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %g".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        let f_str = format!("{f:.6}");
-                        let e_str = format!("{f:.6e}");
-                        if f_str.len() <= e_str.len() {
-                            f_str
-                        } else {
-                            e_str
-                        }
-                    }
-                    's' => format_value_for_format(arg, symbol_table),
-                    _ => {
-                        // Unknown directive — just emit literal
-                        format!("%{conv}")
-                    }
-                };
-
-                // Apply width and alignment
-                match (width, left_align) {
-                    (Some(w), true) => {
-                        write!(result, "{formatted:<w$}").unwrap();
-                    }
-                    (Some(w), false) => {
-                        write!(result, "{formatted:>w$}").unwrap();
-                    }
-                    (None, _) => {
-                        result.push_str(&formatted);
-                    }
-                }
-            }
+    fn lexeme<'a>(value: &'a Value, symbols: &'a SymbolTable) -> Option<&'a str> {
+        match value {
+            Value::String(s) => Some(s.as_str()),
+            Value::Symbol(symbol) => symbols.resolve_symbol_str(*symbol),
+            Value::InstanceName(name) => symbols.resolve_symbol_str(name.as_symbol()),
+            _ => None,
         }
     }
 
-    Ok(result)
-}
-
-/// Format a value for `%s` in `format` strings.
-fn format_value_for_format(value: &Value, symbol_table: &SymbolTable) -> String {
-    match value {
-        Value::Integer(n) => n.to_string(),
-        Value::Float(f) => {
-            if f.fract() == 0.0 {
-                format!("{f:.1}")
-            } else {
-                f.to_string()
-            }
+    match conversion {
+        Conversion::Decimal | Conversion::Octal | Conversion::Hex | Conversion::Unsigned => {
+            let number = match value {
+                Value::Integer(i) => *i,
+                // C truncates toward zero; Rust's cast also saturates.
+                #[allow(clippy::cast_possible_truncation)]
+                Value::Float(f) => *f as i64,
+                _ => return Err("INTEGER or FLOAT"),
+            };
+            fmt::render_integer(out, conversion, number, spec);
         }
-        Value::Symbol(sym) => symbol_table
-            .resolve_symbol_str(*sym)
-            .unwrap_or("???")
-            .to_string(),
-        Value::InstanceName(name) => symbol_table
-            .resolve_symbol_str(name.as_symbol())
-            .unwrap_or("???")
-            .to_string(),
-        Value::String(s) => s.as_str().to_string(),
-        Value::Void => String::new(),
-        Value::ExternalAddress(_) => "<ExternalAddress>".to_string(),
-        Value::Multifield(mf) => {
-            let parts: Vec<String> = mf
-                .as_slice()
-                .iter()
-                .map(|v| format_value_for_format(v, symbol_table))
-                .collect();
-            format!("({})", parts.join(" "))
+        Conversion::Fixed | Conversion::Scientific | Conversion::General => {
+            let number = match value {
+                Value::Float(f) => *f,
+                #[allow(clippy::cast_precision_loss)]
+                Value::Integer(i) => *i as f64,
+                _ => return Err("INTEGER or FLOAT"),
+            };
+            fmt::render_float(out, number, conversion, spec);
+        }
+        Conversion::Lexeme => {
+            let text = lexeme(value, symbols).ok_or("STRING, SYMBOL, or INSTANCE-NAME")?;
+            fmt::render_lexeme(out, text, spec);
+        }
+        Conversion::Character => {
+            let byte = match value {
+                Value::Integer(i) => i.to_le_bytes()[0],
+                Value::String(_) | Value::Symbol(_) => lexeme(value, symbols)
+                    .and_then(|text| text.bytes().next())
+                    .unwrap_or(0),
+                _ => return Err("INTEGER, STRING, or SYMBOL"),
+            };
+            fmt::render_character(out, byte, spec);
         }
     }
+    Ok(())
 }
 
 /// Intern the `EOF` symbol — shared helper for `read`/`readline`.

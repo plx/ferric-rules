@@ -320,7 +320,6 @@ fn neighboring_string_builders_keep_their_existing_unescaped_policy() {
         panic!("expected SYMBOL")
     };
     assert_eq!(engine.resolve_core_symbol(*symbol), Some("a\"b|a\\b"));
-    // Neighboring numeric spelling is existing Ferric behavior, not a CLIPS
-    // conformance assertion for str-cat in this implode$ repair.
-    assert_eq!(string(&engine, "number"), "100000000000000000000.0");
+    // str-cat spells floats like printout: CLIPS's %.15g FloatToString.
+    assert_eq!(string(&engine, "number"), "1e+20");
 }
