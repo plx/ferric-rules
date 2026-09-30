@@ -539,6 +539,15 @@
       ]
     },
     {
+      "path": "modules/import-sort-comparator.clp",
+      "level": "interaction",
+      "covers": [
+        "import-function-named",
+        "modules",
+        "sort"
+      ]
+    },
+    {
       "path": "modules/import-template-named.clp",
       "level": "interaction",
       "covers": [
@@ -560,6 +569,20 @@
       "covers": [
         "modules",
         "qualified-function-call"
+      ]
+    },
+    {
+      "path": "modules/sort-comparator-scope.clp",
+      "level": "interaction",
+      "covers": [
+        "<",
+        ">",
+        "create$",
+        "deffunction",
+        "defmodule",
+        "export",
+        "import",
+        "sort"
       ]
     },
     {
@@ -1755,18 +1778,7 @@
       "covers": [
         "create$",
         "sort"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/343"
-        ],
-        "summary": "CLIPS compatibility: use CLIPS ordering for builtin sort predicates",
-        "observed": {
-          "diagnostics": [],
-          "output": "(1 2 3) (3 2 1)\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "stdlib/062_sort_user_function.clp",
@@ -1846,6 +1858,120 @@
       "level": "boundary",
       "covers": [
         "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/071_sort_callable_directions.clp",
+      "level": "interaction",
+      "covers": [
+        "<",
+        ">",
+        "create$",
+        "deffunction",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/072_sort_predicate_truthiness.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/073_sort_predicate_void_result.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "printout",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/074_sort_variadic_arguments.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        ">",
+        "create$",
+        "deffunction",
+        "nth$",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/075_sort_stable_equal_keys.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        ">",
+        "create$",
+        "deffunction",
+        "div",
+        "floatp",
+        "integerp",
+        "progn$",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/076_sort_comparison_order.clp",
+      "level": "interaction",
+      "covers": [
+        ">",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal",
+        "implode$",
+        "sort",
+        "str-cat"
+      ]
+    },
+    {
+      "path": "stdlib/077_sort_generic_predicate.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "<",
+        "bind",
+        "create$",
+        "defgeneric",
+        "defglobal",
+        "defmethod",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/078_sort_lexeme_fields.clp",
+      "level": "boundary",
+      "covers": [
+        ">",
+        "create$",
+        "deffunction",
+        "progn$",
+        "sort",
+        "str-compare",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/079_sort_evaluation_order.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        ">",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal",
+        "sort"
       ]
     }
   ]

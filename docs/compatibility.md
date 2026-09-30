@@ -922,7 +922,7 @@ matching position or FALSE.
 | `replace$` | Replace range with values | `(replace$ (create$ a b c) 2 2 x)` => `(a x c)` |
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
-| `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+| `sort` | Stable predicate sort of scalar and multifield arguments | `(sort > (create$ 3 1 2))` => `(1 2 3)` |
 
 `nth$` and its `nth` alias preserve the selected field's type and return the
 lowercase symbol `nil` for zero, negative, or excessive positions, including an
@@ -965,6 +965,20 @@ Arbitrary generated SYMBOL spellings are not a general source round-trip
 contract. The INSTANCE-NAME, typed FACT-ADDRESS, opaque host-address, and
 invalid-UTF8 boundaries described under direct output also apply to `implode$`;
 no INTEGER is reinterpreted as an address.
+
+`(sort <predicate> <value>...)` takes a function name SYMBOL (a builtin, or a
+deffunction or defgeneric visible from the calling module) followed by zero or
+more values; scalar values and the fields of multifield values form one
+sequence. As in CLIPS, the predicate answers "should these two fields be
+exchanged?": any result other than the symbol `FALSE` puts the right field
+first. So `(sort > (create$ 3 1 2))` returns `(1 2 3)` and `<` sorts in
+descending order. The name is evaluated first, then the values from left to
+right; empty and singleton sequences never call the predicate. Sorting is a
+stable merge sort that calls the predicate in the same order as CLIPS 6.30, so
+predicates with side effects observe the same sequence of calls. A predicate
+error, an unknown name, or a non-SYMBOL name is an ordinary action error.
+CLIPS instead reports an unknown name and continues the rule with `FALSE`;
+Ferric does not reproduce that recovery.
 
 ### Fact Introspection Functions
 

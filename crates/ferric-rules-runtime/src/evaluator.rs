@@ -5339,68 +5339,88 @@ fn builtin_rest_mf(
     }
 }
 
-/// CLIPS-compatible value comparison for sort.
-#[allow(clippy::cast_precision_loss)]
-fn clips_compare_values(a: &Value, b: &Value, symbol_table: &SymbolTable) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    // Type ordering: Integer/Float < String < Symbol < other
-    fn type_rank(v: &Value) -> u8 {
-        match v {
-            Value::Integer(_) | Value::Float(_) => 0,
-            Value::String(_) => 1,
-            Value::Symbol(_) => 2,
-            _ => 3,
-        }
-    }
-    let ra = type_rank(a);
-    let rb = type_rank(b);
-    if ra != rb {
-        return ra.cmp(&rb);
-    }
-    match (a, b) {
-        (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        (Value::Integer(a), Value::Float(b)) => {
-            (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
-        }
-        (Value::Float(a), Value::Integer(b)) => {
-            a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)
-        }
-        (Value::String(a), Value::String(b)) => a.as_str().cmp(b.as_str()),
-        (Value::Symbol(a), Value::Symbol(b)) => {
-            let a_str = symbol_table.resolve_symbol_str(*a).unwrap_or("");
-            let b_str = symbol_table.resolve_symbol_str(*b).unwrap_or("");
-            a_str.cmp(b_str)
-        }
-        _ => Ordering::Equal,
-    }
-}
-
-/// `sort` — sort a multifield using a comparison function.
+/// `sort` — `(sort <predicate> <value>...)`.
 ///
-/// `(sort <comparator> <multifield>)` — comparator is typically `>` or `<`.
+/// Scalar values and the fields of multifield values form one sequence, which
+/// is merge-sorted in CLIPS 6.30's comparison order. The predicate is called
+/// with the current left and right fields; any result other than the symbol
+/// `FALSE` puts the right field first, so `>` sorts ascending.
 fn builtin_sort(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("sort", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let cmp_name = as_lexeme_str(&values[0], ctx.symbol_table, "sort", span)?;
-    let Value::Multifield(mf) = &values[1] else {
+    check_arity_min("sort", args, 1, span)?;
+    let name_value = eval_inner(ctx, &args[0])?;
+    let Value::Symbol(symbol) = name_value else {
         return Err(EvalError::TypeError {
             function: "sort".to_string(),
-            expected: "MULTIFIELD".to_string(),
-            actual: generic_value_type_name(&values[1]).to_string(),
+            expected: "SYMBOL (function name)".to_string(),
+            actual: generic_value_type_name(&name_value).to_string(),
             span: span.cloned(),
         });
     };
-    let mut sorted = mf.clone();
-    sorted.sort_by(|a, b| clips_compare_values(a, b, ctx.symbol_table));
-    if cmp_name == ">" {
-        sorted.reverse();
+    let name = ctx
+        .symbol_table
+        .resolve_symbol_str(symbol)
+        .unwrap_or("")
+        .to_string();
+    let predicate = resolve_named_callable(ctx, &name, span)?;
+    let mut fields = Vec::new();
+    for arg in &args[1..] {
+        match eval_inner(ctx, arg)? {
+            Value::Multifield(mf) => fields.extend(mf.iter().cloned()),
+            value => fields.push(value),
+        }
     }
-    Ok(Value::Multifield(sorted))
+    let mut scratch = vec![Value::Void; fields.len()];
+    merge_sort_fields(ctx, &predicate, &name, &mut fields, &mut scratch, span)?;
+    Ok(Value::Multifield(Box::new(fields.into_iter().collect())))
+}
+
+/// Top-down merge sort with the left half rounded up, comparing each pair of
+/// current heads once: the order in which CLIPS 6.30 calls the predicate.
+fn merge_sort_fields(
+    ctx: &mut EvalContext<'_>,
+    predicate: &NamedCallable,
+    name: &str,
+    fields: &mut [Value],
+    scratch: &mut [Value],
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
+    let len = fields.len();
+    if len < 2 {
+        return Ok(());
+    }
+    let middle = len.div_ceil(2);
+    {
+        let (left, right) = fields.split_at_mut(middle);
+        let (left_scratch, right_scratch) = scratch.split_at_mut(middle);
+        merge_sort_fields(ctx, predicate, name, left, left_scratch, span)?;
+        merge_sort_fields(ctx, predicate, name, right, right_scratch, span)?;
+    }
+    let (mut left, mut right) = (0, middle);
+    for slot in scratch.iter_mut() {
+        let take_right = if left == middle {
+            true
+        } else if right == len {
+            false
+        } else {
+            let pair = [
+                RuntimeExpr::Literal(fields[left].clone()),
+                RuntimeExpr::Literal(fields[right].clone()),
+            ];
+            let result = predicate.call(ctx, name, &pair, span.cloned())?;
+            !matches!(result, Value::Symbol(sym)
+                if ctx.symbol_table.resolve_symbol_str(sym) == Some("FALSE"))
+        };
+        let taken = if take_right { &mut right } else { &mut left };
+        // A consumed field is never compared again, so move it out.
+        std::mem::swap(slot, &mut fields[*taken]);
+        *taken += 1;
+    }
+    fields.swap_with_slice(scratch);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -5434,56 +5454,82 @@ fn builtin_funcall(
             })
         }
     };
-    // Evaluate remaining arguments.
-    let remaining_args = &args[1..];
-    let span_owned = span.cloned();
+    resolve_named_callable(ctx, &fn_name, span)?.call(ctx, &fn_name, &args[1..], span.cloned())
+}
 
-    // Try dispatching as a builtin first.
-    if is_builtin_callable(&fn_name) {
-        return dispatch_builtin(ctx, &fn_name, remaining_args, span_owned);
+/// A function named by a runtime value (`funcall`, `sort`).
+enum NamedCallable {
+    Builtin,
+    Function(UserFunction, crate::modules::ModuleId),
+    Generic(GenericFunction, crate::modules::ModuleId),
+}
+
+impl NamedCallable {
+    fn call(
+        &self,
+        ctx: &mut EvalContext<'_>,
+        name: &str,
+        args: &[RuntimeExpr],
+        span: Option<SourceSpan>,
+    ) -> Result<Value, EvalError> {
+        match self {
+            Self::Builtin => dispatch_builtin(ctx, name, args, span),
+            Self::Function(func, module) => dispatch_user_function(ctx, func, *module, args, span),
+            Self::Generic(generic, module) => dispatch_generic(ctx, generic, *module, args, span),
+        }
+    }
+}
+
+/// Resolve a function name from the current module: builtins first, then
+/// visible deffunctions, then visible defgenerics.
+fn resolve_named_callable(
+    ctx: &EvalContext<'_>,
+    name: &str,
+    span: Option<&SourceSpan>,
+) -> Result<NamedCallable, EvalError> {
+    if is_builtin_callable(name) {
+        return Ok(NamedCallable::Builtin);
     }
 
-    // Try user-defined function (deffunction) with module resolution.
-    let function_modules = sorted_dedup_modules(ctx.functions.modules_for_name(&fn_name));
+    let function_modules = sorted_dedup_modules(ctx.functions.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
-        &fn_name,
+        name,
         "deffunction",
         &function_modules,
-        ctx.functions.contains(ctx.current_module, &fn_name),
+        ctx.functions.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous deffunction resolution",
             actual: "multiple visible deffunctions; use MODULE::name",
         },
-        span_owned.clone(),
+        span.cloned(),
     )? {
-        if let Some(func) = ctx.functions.get(target_module, &fn_name).cloned() {
-            return dispatch_user_function(ctx, &func, target_module, remaining_args, span_owned);
+        if let Some(func) = ctx.functions.get(target_module, name) {
+            return Ok(NamedCallable::Function(func.clone(), target_module));
         }
     }
 
-    // Try generic function with module resolution.
-    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(&fn_name));
+    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
-        &fn_name,
+        name,
         "defgeneric",
         &generic_modules,
-        ctx.generics.contains(ctx.current_module, &fn_name),
+        ctx.generics.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous defgeneric resolution",
             actual: "multiple visible defgenerics; use MODULE::name",
         },
-        span_owned.clone(),
+        span.cloned(),
     )? {
-        if let Some(generic) = ctx.generics.get(target_module, &fn_name).cloned() {
-            return dispatch_generic(ctx, &generic, target_module, remaining_args, span_owned);
+        if let Some(generic) = ctx.generics.get(target_module, name) {
+            return Ok(NamedCallable::Generic(generic.clone(), target_module));
         }
     }
 
     Err(EvalError::UnknownFunction {
-        name: fn_name,
-        span: span_owned,
+        name: name.to_string(),
+        span: span.cloned(),
     })
 }
 
