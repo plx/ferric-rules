@@ -25,8 +25,8 @@ platform bundled Go distribution is deferred.
 
 ## API
 
-The package exposes one type, `Engine`, created with `NewEngine` (optionally
-`WithSource`, `WithSnapshot`, `WithStrategy`, `WithEncoding`,
+The package is built around one type, `Engine`, created with `NewEngine`
+(optionally `WithSource`, `WithSnapshot`, `WithStrategy`, `WithEncoding`,
 `WithMaxCallDepth`) and released with `Close`. Engine methods serialize native
 access internally, so a single `Engine` may be used from several goroutines;
 for parallel work, create one `Engine` per goroutine. See the package examples
@@ -42,6 +42,6 @@ for parallel work, create one `Engine` per goroutine. See the package examples
   nil/empty bytes, combination with `WithSource` (even an empty source), and
   explicit configuration overrides; a restored engine uses its saved
   configuration.
-- Methods that return only a value (for example `Rules`, `AgendaSize`,
-  `GetOutput`) have `...E` variants that also report errors such as
-  `ErrEngineClosed`.
+- Most convenience methods that drop errors (for example `Rules`,
+  `AgendaSize`, `GetOutput`) have `...E` variants that also report errors
+  such as `ErrEngineClosed`.

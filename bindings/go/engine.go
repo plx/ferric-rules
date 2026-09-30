@@ -588,7 +588,7 @@ func (e *Engine) runDirect(handle ffi.EngineHandle, limit int64) (*RunResult, er
 }
 
 // Step fires at most one activation. It reports true when a rule fired and
-// false when the agenda was empty.
+// false when no rule fired (agenda empty or engine halted).
 func (e *Engine) Step() (bool, error) {
 	handle, release, err := e.leaseHandle()
 	if err != nil {

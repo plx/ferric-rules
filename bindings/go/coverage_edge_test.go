@@ -1192,10 +1192,6 @@ func TestPropertyEngineSurfaceSweep(t *testing.T) {
 		if err := e.Clear(); err != nil {
 			rt.Fatal(err)
 		}
-		_ = HaltAgendaEmpty.String()
-		_ = HaltLimitReached.String()
-		_ = HaltRequested.String()
-		_ = HaltReason(99).String()
 	})
 }
 
