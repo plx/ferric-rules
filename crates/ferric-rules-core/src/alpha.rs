@@ -85,6 +85,10 @@ pub enum ConstantTestType {
         min: usize,
         max: Option<usize>,
     },
+    /// Some split of the fact passes the sequence plan's constant tests.
+    /// The compiler ends the alpha path of a sequence pattern with this, so
+    /// joins only enumerate the splits of facts that can match.
+    Sequence(Box<crate::sequence::SequencePattern>),
 }
 
 /// An alpha network node.
@@ -795,10 +799,14 @@ fn fact_matches_entry_type(fact: &Fact, entry_type: &AlphaEntryType) -> bool {
 
 /// Evaluate a constant test against a fact.
 pub(crate) fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
-    if let ConstantTestType::OrderedFieldCount { min, max } = &test.test_type {
-        return matches!(fact, Fact::Ordered(ordered)
-            if ordered.fields.len() >= *min
-                && max.map_or(true, |max| ordered.fields.len() <= max));
+    match &test.test_type {
+        ConstantTestType::OrderedFieldCount { min, max } => {
+            return matches!(fact, Fact::Ordered(ordered)
+                if ordered.fields.len() >= *min
+                    && max.map_or(true, |max| ordered.fields.len() <= max));
+        }
+        ConstantTestType::Sequence(plan) => return plan.admits(fact),
+        _ => {}
     }
     evaluate_field_test(test, |slot| get_slot_value(fact, slot))
 }
@@ -810,7 +818,8 @@ pub(crate) fn evaluate_field_test<'v>(
     field: impl Fn(SlotIndex) -> Option<&'v Value>,
 ) -> bool {
     match (&test.test_type, field(test.slot)) {
-        (ConstantTestType::OrderedFieldCount { .. }, _) | (_, None) => false,
+        (ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_), _)
+        | (_, None) => false,
         (ConstantTestType::Equal(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key == test_key)
         }

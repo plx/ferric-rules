@@ -6,6 +6,7 @@
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 
 use crate::tracing_support::ferric_span;
 
@@ -16,7 +17,7 @@ use crate::beta::{
 };
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
-use crate::sequence::{SequencePattern, SplitView};
+use crate::sequence::{SequencePattern, SplitEvent, SplitView};
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -628,8 +629,7 @@ impl ReteNetwork {
         };
         // Matching reads only the fact and parent bindings, so collect every
         // split before emission mutates the network.
-        let matches: SmallVec<[_; 2]> =
-            sequence_matches(fact, &parent_token.bindings, tests, bindings, sequence).collect();
+        let matches = sequence_matches(fact, &parent_token.bindings, tests, bindings, sequence);
         for (bindings, lengths) in matches {
             if self.token_store.get(parent).is_none() {
                 break;
@@ -1954,8 +1954,19 @@ pub(crate) fn evaluate_pattern(
 ) -> bool {
     if let Some(sequence) = sequence {
         sequence
-            .candidates(fact)
-            .any(|split| split_matches(&split, &token.bindings, tests, sequence))
+            .search(fact, &mut |event| match event {
+                SplitEvent::Match(split)
+                    if evaluate_join_fields(
+                        |slot| split.get(slot),
+                        Some(&token.bindings),
+                        tests,
+                    ) =>
+                {
+                    ControlFlow::Break(())
+                }
+                _ => ControlFlow::Continue(()),
+            })
+            .is_break()
     } else {
         evaluate_join(fact, Some(token), tests)
     }
@@ -1973,25 +1984,29 @@ pub(crate) fn split_matches(
 }
 
 /// Bindings and capture lengths for every split of `fact` that matches.
-fn sequence_matches<'a>(
-    fact: &'a Fact,
-    parent_bindings: &'a BindingSet,
-    tests: &'a [JoinTest],
-    bindings: &'a [(SlotIndex, VarId)],
-    sequence: &'a SequencePattern,
-) -> impl Iterator<Item = (BindingSet, SmallVec<[usize; 2]>)> + 'a {
-    sequence.candidates(fact).filter_map(move |split| {
-        if !split_matches(&split, parent_bindings, tests, sequence) {
-            return None;
-        }
-        let mut extracted = parent_bindings.clone();
-        for &(slot, variable) in bindings {
-            if let Some(value) = split.get(slot) {
-                extracted.set(variable, ValueRef::new(value.clone()));
+fn sequence_matches(
+    fact: &Fact,
+    parent_bindings: &BindingSet,
+    tests: &[JoinTest],
+    bindings: &[(SlotIndex, VarId)],
+    sequence: &SequencePattern,
+) -> SmallVec<[(BindingSet, SmallVec<[usize; 2]>); 2]> {
+    let mut matches = SmallVec::new();
+    let _ = sequence.search(fact, &mut |event| {
+        if let SplitEvent::Match(split) = event {
+            if evaluate_join_fields(|slot| split.get(slot), Some(parent_bindings), tests) {
+                let mut extracted = parent_bindings.clone();
+                for &(slot, variable) in bindings {
+                    if let Some(value) = split.get(slot) {
+                        extracted.set(variable, ValueRef::new(value.clone()));
+                    }
+                }
+                matches.push((extracted, split.lengths.clone()));
             }
         }
-        Some((extracted, split.lengths))
-    })
+        ControlFlow::<()>::Continue(())
+    });
+    matches
 }
 
 /// Equality for join values, including complete multifield slot values.

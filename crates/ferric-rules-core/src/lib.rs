@@ -75,7 +75,8 @@ pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
 pub use rete::{PendingPredicateMatch, ReteCardinality, ReteNetwork};
 pub use sequence::{
-    SequenceField, SequenceMatch, SequencePattern, SequenceSegment, SequenceSource, SplitView,
+    SequenceField, SequenceMatch, SequencePattern, SequenceSegment, SequenceSource, SplitEvent,
+    SplitView,
 };
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;

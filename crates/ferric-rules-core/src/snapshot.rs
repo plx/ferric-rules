@@ -160,8 +160,9 @@ use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode, Consta
 use crate::beta::{BetaNode, JoinTest, RuleId};
 use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
-use crate::sequence::SequencePattern;
+use crate::sequence::{SequencePattern, SplitEvent};
 use crate::token::NodeId;
+use std::ops::ControlFlow;
 
 // Source compilation allows 64 total condition nodes and 64 alpha value tests,
 // with one additional ordered field-count test per alpha path.
@@ -250,32 +251,78 @@ fn split_cost(sequence: &SequencePattern, tests: &[JoinTest]) -> usize {
 }
 
 /// Whether some split of `fact` satisfies the plan and the join tests.
-/// Enumeration is combinatorial, so each candidate, including rejected
-/// ones, is charged before the iterator advances; a candidate whose tests
-/// read a capture is charged for copying and comparing it.
+/// The search is combinatorial, so every capture length it tries is
+/// charged before it runs, including those its tests reject; each step of a
+/// plan whose tests read a capture is also charged for copying and comparing
+/// one, as is a split whose join tests copy one.
 fn any_sequence_match(
     fact: &Fact,
-    token: &crate::token::Token,
+    bindings: Option<&crate::binding::BindingSet>,
     tests: &[JoinTest],
     sequence: &SequencePattern,
     work: &mut Work,
 ) -> Result<bool, String> {
     let value_cost = fact_value_cost(fact, work)?;
     let split_cost = split_cost(sequence, tests);
-    let mut candidates = sequence.candidates(fact);
-    loop {
-        work.spend(split_cost)?;
-        let Some(split) = candidates.next() else {
-            return Ok(false);
+    let copy_cost = value_cost.saturating_mul(2);
+    let step_cost = if sequence_tests_read_captures(sequence) {
+        split_cost.saturating_add(copy_cost)
+    } else {
+        split_cost
+    };
+    work.spend(split_cost)?;
+    let search = sequence.search(fact, &mut |event| {
+        let charged = match event {
+            SplitEvent::Step => work.spend(step_cost),
+            SplitEvent::Match(split) => {
+                let matched =
+                    crate::rete::evaluate_join_fields(|slot| split.get(slot), bindings, tests);
+                match work.spend(if split.copied_capture() { copy_cost } else { 0 }) {
+                    Ok(()) if matched => return ControlFlow::Break(Ok(true)),
+                    charged => charged,
+                }
+            }
         };
-        let matched = crate::rete::split_matches(&split, &token.bindings, tests, sequence);
-        if split.copied_capture() {
-            work.spend(value_cost.saturating_mul(2))?;
+        match charged {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(Err(error)),
         }
-        if matched {
-            return Ok(true);
-        }
+    });
+    match search {
+        ControlFlow::Break(result) => result,
+        ControlFlow::Continue(()) => Ok(false),
     }
+}
+
+/// Whether any test of the plan reads a capture, which copies it.
+fn sequence_tests_read_captures(sequence: &SequencePattern) -> bool {
+    let fields: Vec<_> = sequence
+        .segments
+        .iter()
+        .flat_map(|segment| &segment.fields)
+        .collect();
+    let capture = |slot: crate::alpha::SlotIndex| {
+        let (crate::alpha::SlotIndex::Ordered(index) | crate::alpha::SlotIndex::Template(index)) =
+            slot;
+        fields
+            .get(index)
+            .is_some_and(|field| **field == crate::sequence::SequenceField::Multi)
+    };
+    sequence.tests.iter().any(|test| {
+        capture(test.slot)
+            || matches!(
+                test.test_type,
+                ConstantTestType::EqualSlot(slot)
+                    | ConstantTestType::NotEqualSlot(slot)
+                    | ConstantTestType::EqualSlotOffset(slot, _)
+                    | ConstantTestType::NotEqualSlotOffset(slot, _)
+                    | ConstantTestType::GreaterThanSlotOffset(slot, _)
+                    | ConstantTestType::LessThanSlotOffset(slot, _)
+                    | ConstantTestType::GreaterOrEqualSlotOffset(slot, _)
+                    | ConstantTestType::LessOrEqualSlotOffset(slot, _)
+                    if capture(slot)
+            )
+    })
 }
 
 /// Bindings a join token must carry for the fields of its fact or split.
@@ -356,6 +403,12 @@ fn validate_constant(
         Test::EqualAny(values) => {
             for value in values {
                 symbols.validate_snapshot_value(&value.to_value())?;
+            }
+        }
+        Test::Sequence(plan) => {
+            plan.validate()?;
+            for test in &plan.tests {
+                validate_constant(test, symbols)?;
             }
         }
         _ => {}
@@ -987,16 +1040,17 @@ impl ReteNetwork {
             let mut memories = smallvec::SmallVec::<[AlphaMemoryId; 4]>::new();
             while let Some(node) = pending.pop() {
                 work.step()?;
-                if let Some(AlphaNode::ConstantTest {
-                    test:
-                        crate::alpha::ConstantTest {
-                            test_type: crate::alpha::ConstantTestType::EqualAny(values),
-                            ..
-                        },
-                    ..
-                }) = self.alpha.nodes.get(node.0 as usize)
+                if let Some(AlphaNode::ConstantTest { test, .. }) =
+                    self.alpha.nodes.get(node.0 as usize)
                 {
-                    work.spend(values.len())?;
+                    match &test.test_type {
+                        ConstantTestType::EqualAny(values) => work.spend(values.len())?,
+                        // Charge the split search the test itself repeats.
+                        ConstantTestType::Sequence(plan) => {
+                            any_sequence_match(&entry.fact, None, &[], plan, work)?;
+                        }
+                        _ => {}
+                    }
                 }
                 if let Some((memory, children)) = self.alpha.propagation_plan(node, &entry.fact) {
                     if let Some(memory) = memory {
@@ -1185,48 +1239,28 @@ impl ReteNetwork {
                     .get(parent)
                     .ok_or("missing conditional parent token")?;
                 let mut matches = rustc_hash::FxHashSet::default();
-                if let Some(sequence) = sequence.as_deref() {
-                    // Enumerating every split of every candidate is
-                    // combinatorial. Check only that each recorded fact
-                    // matches through some split; a fact counts once.
-                    let recorded = match (negative, exists) {
-                        (Some(id), _) => self
-                            .beta
-                            .get_neg_memory(id)
-                            .ok_or("missing negative memory")?
-                            .blocked
-                            .get(&parent),
-                        (_, Some(id)) => self
-                            .beta
-                            .get_exists_memory(id)
-                            .ok_or("missing exists memory")?
-                            .support
-                            .get(&parent),
-                        _ => None,
-                    };
-                    for &fact in recorded.into_iter().flatten() {
-                        require!(
-                            alpha.contains(fact),
-                            "conditional support fact is not in its alpha memory"
-                        );
-                        let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
-                        require!(
-                            any_sequence_match(fact_value, token, tests, sequence, work)?,
-                            "conditional support fact does not match"
-                        );
-                        matches.insert(fact);
-                    }
-                } else {
-                    for fact in crate::rete::collect_candidate_facts(
-                        alpha,
-                        crate::rete::indexable_tests(tests, None),
-                        &token.bindings,
-                    ) {
+                let sequence = sequence.as_deref();
+                for fact in crate::rete::collect_candidate_facts(
+                    alpha,
+                    crate::rete::indexable_tests(tests, sequence),
+                    &token.bindings,
+                ) {
+                    let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
+                    // A fact counts once, through any matching split.
+                    let supports = if let Some(sequence) = sequence {
+                        any_sequence_match(
+                            fact_value,
+                            Some(&token.bindings),
+                            tests,
+                            sequence,
+                            work,
+                        )?
+                    } else {
                         work.spend(tests.len() + 1)?;
-                        let fact_value = &facts.get(fact).ok_or("missing conditional fact")?.fact;
-                        if crate::rete::evaluate_join(fact_value, Some(token), tests) {
-                            matches.insert(fact);
-                        }
+                        crate::rete::evaluate_join(fact_value, Some(token), tests)
+                    };
+                    if supports {
+                        matches.insert(fact);
                     }
                 }
                 if let Some(id) = negative {
@@ -1432,6 +1466,7 @@ impl ReteNetwork {
         work: &mut Work,
     ) -> Result<(), String> {
         let mut seen = rustc_hash::FxHashSet::default();
+        let mut value_costs = rustc_hash::FxHashMap::default();
         for id in memory.iter() {
             let token = self.token_store.get(id).ok_or("missing join token")?;
             let parent_id = token.parent.ok_or("join token has no parent")?;
@@ -1453,13 +1488,8 @@ impl ReteNetwork {
                 .get(parent_id)
                 .ok_or("missing join parent")?;
             let fact = &facts.get(fact_id).ok_or("missing join fact")?.fact;
-            // Tests and bindings may copy and compare every capture.
-            let value_cost = fact_value_cost(fact, work)?;
             let binding_cost = bindings.len() + parent_token.bindings.capacity() + 2;
-            work.spend(
-                split_cost(sequence, tests)
-                    .saturating_add(binding_cost.saturating_mul(value_cost + 1)),
-            )?;
+            work.spend(split_cost(sequence, tests).saturating_add(binding_cost))?;
             let split = sequence
                 .project(fact, lengths)
                 .ok_or("invalid sequence capture lengths")?;
@@ -1474,6 +1504,16 @@ impl ReteNetwork {
                 ),
                 "inconsistent join token bindings"
             );
+            // Tests and bindings that read a capture copied and compared it.
+            if split.copied_capture() {
+                let value_cost = match value_costs.entry(fact_id) {
+                    std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        *entry.insert(fact_value_cost(fact, work)?)
+                    }
+                };
+                work.spend(binding_cost.saturating_mul(value_cost))?;
+            }
         }
         Ok(())
     }
@@ -1661,7 +1701,8 @@ impl crate::compiler::ReteCompiler {
                 .ok_or("cached alpha memory lacks owner")?;
             for expected in key.tests.iter().rev() {
                 work.spend(match &expected.test_type {
-                    crate::alpha::ConstantTestType::EqualAny(values) => values.len() + 1,
+                    ConstantTestType::EqualAny(values) => values.len() + 1,
+                    ConstantTestType::Sequence(plan) => plan.tests.len() + plan.logical_width() + 1,
                     _ => 1,
                 })?;
                 require!(
@@ -1719,8 +1760,9 @@ mod tests {
                     fields: vec![SequenceField::Multi; 3],
                 })
                 .collect(),
+            // The last capture is placed last, so no split is pruned early.
             tests: vec![crate::alpha::ConstantTest {
-                slot: crate::alpha::SlotIndex::Template(0),
+                slot: crate::alpha::SlotIndex::Template(5),
                 test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
             }],
         };
@@ -1732,9 +1774,13 @@ mod tests {
         };
         // 15 x 15 splits, all rejected by the constant test.
         assert_eq!(
-            any_sequence_match(&fact, &token, &[], &plan, &mut Work(100)).unwrap_err(),
+            any_sequence_match(&fact, Some(&token.bindings), &[], &plan, &mut Work(100))
+                .unwrap_err(),
             "snapshot validation work limit exceeded"
         );
-        assert!(!any_sequence_match(&fact, &token, &[], &plan, &mut Work(100_000)).unwrap());
+        assert!(
+            !any_sequence_match(&fact, Some(&token.bindings), &[], &plan, &mut Work(100_000))
+                .unwrap()
+        );
     }
 }

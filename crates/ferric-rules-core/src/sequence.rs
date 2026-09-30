@@ -1,6 +1,7 @@
 //! Sequence matching with independent zero-or-more captures in ordered facts and template slots.
 
 use std::cell::OnceCell;
+use std::ops::ControlFlow;
 
 use smallvec::SmallVec;
 
@@ -146,7 +147,9 @@ impl SequencePattern {
             | ConstantTestType::LessOrEqualSlotOffset(other, _) => {
                 *other = self.physical_selector(*other)?;
             }
-            ConstantTestType::OrderedFieldCount { .. } => return None,
+            ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_) => {
+                return None
+            }
             _ => {}
         }
         Some(mapped)
@@ -191,10 +194,8 @@ impl SequencePattern {
                 return Err("sequence test has an invalid logical field".to_string());
             }
             match test.test_type {
-                ConstantTestType::OrderedFieldCount { .. } => {
-                    return Err(
-                        "sequence test contains a physical field-count constraint".to_string()
-                    );
+                ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_) => {
+                    return Err("sequence test contains a whole-fact constraint".to_string());
                 }
                 ConstantTestType::EqualSlot(slot)
                 | ConstantTestType::NotEqualSlot(slot)
@@ -223,61 +224,95 @@ impl SequencePattern {
         Ok(())
     }
 
-    /// Enumerate all positional split combinations lazily, before constant tests.
-    /// Each step yields one candidate, including those rejected by constraints.
-    pub fn candidates<'a>(&'a self, fact: &'a Fact) -> SequenceCandidates<'a> {
-        let cursors: Option<Vec<_>> = self
-            .segments
-            .iter()
-            .map(|segment| {
-                SegmentCursor::new(&segment.fields, segment_values(segment.source, fact)?)
-            })
-            .collect();
-        let done = self.segments.is_empty() || cursors.is_none();
-        SequenceCandidates {
-            fact,
-            cursors: cursors.unwrap_or_default(),
-            width: self.logical_width(),
-            done,
+    /// Search the splits of `fact` depth first and report each one that passes
+    /// every test of the plan.
+    ///
+    /// Captures are placed in written order, the earlier segments outermost,
+    /// and each capture tries its longest length first, so splits arrive in
+    /// the order CLIPS inserts them. A test runs as soon as every field it
+    /// reads is placed, so a failing constant prunes every split sharing that
+    /// prefix. `visit` sees [`SplitEvent::Step`] before each capture length is
+    /// tried, which lets callers bound the work, and [`SplitEvent::Match`] for
+    /// each accepted split. Returning `Break` stops the search.
+    pub fn search<'a, B>(
+        &'a self,
+        fact: &'a Fact,
+        visit: &mut impl FnMut(SplitEvent<'_, 'a>) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        let mut sources = SmallVec::<[(&'a [Value], usize); 2]>::new();
+        for segment in &self.segments {
+            let Some(values) = segment_values(segment.source, fact) else {
+                return ControlFlow::Continue(());
+            };
+            let Some(extra) = segment_extra(&segment.fields, values) else {
+                return ControlFlow::Continue(());
+            };
+            sources.push((values, extra));
         }
+        let Some(&(_, extra)) = sources.first() else {
+            return ControlFlow::Continue(());
+        };
+        let width = self.logical_width();
+        let mut search = SplitSearch {
+            plan: self,
+            needs: self.tests.iter().map(test_extent).collect(),
+            sources,
+            split: SplitView {
+                fact,
+                fields: SmallVec::with_capacity(width),
+                lengths: SmallVec::new(),
+            },
+        };
+        search.place(0, 0, 0, extra, 0, visit)
     }
 
     /// Rebuild the view of one recorded split in `O(width)`.
     /// Returns `None` when `lengths` is not a valid split of `fact`.
     #[must_use]
     pub fn project<'a>(&'a self, fact: &'a Fact, lengths: &[usize]) -> Option<SplitView<'a>> {
-        let mut remaining = lengths;
-        let mut cursors = Vec::with_capacity(self.segments.len());
-        for segment in &self.segments {
-            let mut cursor =
-                SegmentCursor::new(&segment.fields, segment_values(segment.source, fact)?)?;
-            if remaining.len() < cursor.lengths.len() {
-                return None;
-            }
-            let (own, rest) = remaining.split_at(cursor.lengths.len());
-            let total = own
-                .iter()
-                .try_fold(0_usize, |total, length| total.checked_add(*length))?;
-            if total != cursor.extra {
-                return None;
-            }
-            cursor.lengths.copy_from_slice(own);
-            remaining = rest;
-            cursors.push(cursor);
-        }
-        if !remaining.is_empty() || cursors.is_empty() {
-            return None;
-        }
-        SequenceCandidates {
+        let mut split = SplitView {
             fact,
-            cursors,
-            width: self.logical_width(),
-            done: false,
+            fields: SmallVec::with_capacity(self.logical_width()),
+            lengths: SmallVec::from_slice(lengths),
+        };
+        let mut lengths = lengths.iter();
+        for segment in &self.segments {
+            let values = segment_values(segment.source, fact)?;
+            let mut offset = 0_usize;
+            for field in &segment.fields {
+                let length = match field {
+                    SequenceField::Single => 1,
+                    SequenceField::Multi => *lengths.next()?,
+                };
+                let end = offset.checked_add(length)?;
+                let values = values.get(offset..end)?;
+                split.fields.push((
+                    match field {
+                        SequenceField::Single => FieldRef::Single(&values[0]),
+                        SequenceField::Multi => FieldRef::Multi(values),
+                    },
+                    OnceCell::new(),
+                ));
+                offset = end;
+            }
+            if offset != values.len() {
+                return None;
+            }
         }
-        .current()
+        (lengths.next().is_none() && !self.segments.is_empty()).then_some(split)
     }
 
-    /// Evaluate constant constraints against a candidate split.
+    /// Whether some split of `fact` passes every test of the plan.
+    #[must_use]
+    pub fn admits(&self, fact: &Fact) -> bool {
+        self.search(fact, &mut |event| match event {
+            SplitEvent::Match(_) => ControlFlow::Break(()),
+            SplitEvent::Step => ControlFlow::Continue(()),
+        })
+        .is_break()
+    }
+
+    /// Evaluate constant constraints against a complete split.
     #[must_use]
     pub fn accepts(&self, split: &SplitView<'_>) -> bool {
         self.tests
@@ -285,11 +320,149 @@ impl SequencePattern {
             .all(|test| evaluate_field_test(test, |slot| split.get(slot)))
     }
 
-    /// Enumerate every matching split, including empty and anonymous captures.
-    pub fn matches<'a>(&'a self, fact: &'a Fact) -> impl Iterator<Item = SequenceMatch> + 'a {
-        self.candidates(fact)
-            .filter(|split| self.accepts(split))
-            .map(SplitView::into_match)
+    /// Every matching split, including empty and anonymous captures.
+    pub fn matches(&self, fact: &Fact) -> impl Iterator<Item = SequenceMatch> {
+        let mut matches = Vec::new();
+        let _ = self.search(fact, &mut |event| {
+            if let SplitEvent::Match(split) = event {
+                matches.push(split.to_match());
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        matches.into_iter()
+    }
+}
+
+/// What a split search reports to its visitor.
+pub enum SplitEvent<'s, 'a> {
+    /// One capture length is about to be tried.
+    Step,
+    /// A complete split that passes every test of the plan.
+    Match(&'s SplitView<'a>),
+}
+
+/// The number of leading logical fields a test reads.
+fn test_extent(test: &ConstantTest) -> usize {
+    let index = |slot: SlotIndex| match slot {
+        SlotIndex::Ordered(index) | SlotIndex::Template(index) => index,
+    };
+    let other = match test.test_type {
+        ConstantTestType::EqualSlot(slot)
+        | ConstantTestType::NotEqualSlot(slot)
+        | ConstantTestType::EqualSlotOffset(slot, _)
+        | ConstantTestType::NotEqualSlotOffset(slot, _)
+        | ConstantTestType::GreaterThanSlotOffset(slot, _)
+        | ConstantTestType::LessThanSlotOffset(slot, _)
+        | ConstantTestType::GreaterOrEqualSlotOffset(slot, _)
+        | ConstantTestType::LessOrEqualSlotOffset(slot, _) => index(slot),
+        _ => 0,
+    };
+    index(test.slot).max(other).saturating_add(1)
+}
+
+/// The values a segment's captures share, or `None` when its single fields
+/// cannot fit (or, without captures, do not fill) the source.
+fn segment_extra(fields: &[SequenceField], values: &[Value]) -> Option<usize> {
+    let singles = fields
+        .iter()
+        .filter(|field| **field == SequenceField::Single)
+        .count();
+    let extra = values.len().checked_sub(singles)?;
+    (extra == 0 || singles < fields.len()).then_some(extra)
+}
+
+struct SplitSearch<'p, 'a> {
+    plan: &'p SequencePattern,
+    /// Each segment's values and the length its captures share.
+    sources: SmallVec<[(&'a [Value], usize); 2]>,
+    /// Per test, how many leading logical fields must be placed to run it.
+    needs: SmallVec<[usize; 8]>,
+    split: SplitView<'a>,
+}
+
+impl<'a> SplitSearch<'_, 'a> {
+    /// Run the tests that became ready since `checked` fields were placed.
+    /// A complete split runs every remaining test, so a selector past the
+    /// projection still runs, and fails, there.
+    fn ready_tests_pass(&self, checked: usize, complete: bool) -> bool {
+        let placed = self.split.fields.len();
+        self.plan
+            .tests
+            .iter()
+            .zip(&self.needs)
+            .all(|(test, &need)| {
+                need <= checked
+                    || (need > placed && !complete)
+                    || evaluate_field_test(test, |slot| self.split.get(slot))
+            })
+    }
+
+    /// Place the fields from `field` of `segment` on, at physical `offset`,
+    /// with `extra` values left for that segment's remaining captures.
+    /// Tests reading only the first `checked` fields have already passed.
+    fn place<B>(
+        &mut self,
+        mut segment: usize,
+        mut field: usize,
+        mut offset: usize,
+        mut extra: usize,
+        checked: usize,
+        visit: &mut impl FnMut(SplitEvent<'_, 'a>) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
+        let mark = self.split.fields.len();
+        let plan = self.plan;
+        loop {
+            let fields = &plan.segments[segment].fields;
+            let values = self.sources[segment].0;
+            if field == fields.len() {
+                segment += 1;
+                if segment < plan.segments.len() {
+                    (field, offset, extra) = (0, 0, self.sources[segment].1);
+                    continue;
+                }
+                if self.ready_tests_pass(checked, true) {
+                    visit(SplitEvent::Match(&self.split))?;
+                }
+                break;
+            }
+            if fields[field] == SequenceField::Single {
+                self.split
+                    .fields
+                    .push((FieldRef::Single(&values[offset]), OnceCell::new()));
+                (field, offset) = (field + 1, offset + 1);
+                continue;
+            }
+            if !self.ready_tests_pass(checked, false) {
+                break;
+            }
+            let checked = self.split.fields.len();
+            // The segment's last capture takes whatever the others leave.
+            let last = fields[field + 1..]
+                .iter()
+                .all(|field| *field == SequenceField::Single);
+            let shortest = if last { extra } else { 0 };
+            for length in (shortest..=extra).rev() {
+                visit(SplitEvent::Step)?;
+                self.split.fields.push((
+                    FieldRef::Multi(&values[offset..offset + length]),
+                    OnceCell::new(),
+                ));
+                self.split.lengths.push(length);
+                self.place(
+                    segment,
+                    field + 1,
+                    offset + length,
+                    extra - length,
+                    checked,
+                    visit,
+                )?;
+                self.split.fields.pop();
+                self.split.lengths.pop();
+            }
+            break;
+        }
+        self.split.fields.truncate(mark);
+        ControlFlow::Continue(())
     }
 }
 
@@ -300,9 +473,9 @@ enum FieldRef<'a> {
     Multi(&'a [Value]),
 }
 
-/// A candidate split that borrows the physical fact. Tests and bindings
-/// read logical fields through [`SplitView::get`]; a capture is copied into
-/// a multifield value only when something reads it.
+/// A split that borrows the physical fact. Tests and bindings read logical
+/// fields through [`SplitView::get`]; a capture is copied into a multifield
+/// value only when something reads it.
 #[derive(Debug)]
 pub struct SplitView<'a> {
     fact: &'a Fact,
@@ -335,10 +508,10 @@ impl SplitView<'_> {
 
     /// Materialize the projected fact.
     #[must_use]
-    pub fn into_match(self) -> SequenceMatch {
-        let fields = self.fields.into_iter().map(|(field, copy)| match field {
-            FieldRef::Single(value) => value.clone(),
-            FieldRef::Multi(values) => copy.into_inner().unwrap_or_else(|| capture(values)),
+    pub fn to_match(&self) -> SequenceMatch {
+        let fields = self.fields.iter().map(|(field, copy)| match field {
+            FieldRef::Single(value) => (*value).clone(),
+            FieldRef::Multi(values) => copy.get().cloned().unwrap_or_else(|| capture(values)),
         });
         let fact = match self.fact {
             Fact::Ordered(original) => Fact::Ordered(OrderedFact {
@@ -352,7 +525,7 @@ impl SplitView<'_> {
         };
         SequenceMatch {
             fact,
-            lengths: self.lengths,
+            lengths: self.lengths.clone(),
         }
     }
 }
@@ -374,122 +547,6 @@ fn segment_values(source: SequenceSource, fact: &Fact) -> Option<&[Value]> {
             fact.slots.get(index).map(std::slice::from_ref)
         }
         _ => None,
-    }
-}
-
-/// Lazy Cartesian product in written source order; the final segment advances fastest.
-/// Within each segment, larger earlier captures are inserted first, as in CLIPS.
-pub struct SequenceCandidates<'a> {
-    fact: &'a Fact,
-    cursors: Vec<SegmentCursor<'a>>,
-    width: usize,
-    done: bool,
-}
-
-struct SegmentCursor<'a> {
-    fields: &'a [SequenceField],
-    values: &'a [Value],
-    lengths: SmallVec<[usize; 2]>,
-    extra: usize,
-}
-
-impl<'a> SegmentCursor<'a> {
-    fn new(fields: &'a [SequenceField], values: &'a [Value]) -> Option<Self> {
-        let multi = fields
-            .iter()
-            .filter(|field| **field == SequenceField::Multi)
-            .count();
-        let extra = values.len().checked_sub(fields.len() - multi)?;
-        if multi == 0 && extra != 0 {
-            return None;
-        }
-        let mut cursor = Self {
-            fields,
-            values,
-            lengths: smallvec::smallvec![0; multi],
-            extra,
-        };
-        cursor.reset();
-        Some(cursor)
-    }
-
-    fn reset(&mut self) {
-        self.lengths.fill(0);
-        if let Some(first) = self.lengths.first_mut() {
-            *first = self.extra;
-        }
-    }
-
-    fn advance(&mut self) -> bool {
-        if let Some(&last) = self.lengths.last() {
-            let mut available = last;
-            for index in (0..self.lengths.len() - 1).rev() {
-                if self.lengths[index] > 0 {
-                    self.lengths[index] -= 1;
-                    self.lengths[index + 1..].fill(0);
-                    self.lengths[index + 1] = available + 1;
-                    return true;
-                }
-                available += self.lengths[index];
-            }
-        }
-        false
-    }
-
-    fn push_fields(&self, output: &mut SmallVec<[(FieldRef<'a>, OnceCell<Value>); 8]>) {
-        let mut offset = 0;
-        let mut ranges = self.lengths.iter();
-        for field in self.fields {
-            let field = match field {
-                SequenceField::Single => {
-                    offset += 1;
-                    FieldRef::Single(&self.values[offset - 1])
-                }
-                SequenceField::Multi => {
-                    let length = *ranges.next().expect("one length for every capture");
-                    offset += length;
-                    FieldRef::Multi(&self.values[offset - length..offset])
-                }
-            };
-            output.push((field, OnceCell::new()));
-        }
-    }
-}
-
-impl<'a> SequenceCandidates<'a> {
-    /// View the split the cursors currently describe.
-    fn current(&self) -> Option<SplitView<'a>> {
-        if self.done {
-            return None;
-        }
-        let mut fields = SmallVec::with_capacity(self.width);
-        let mut lengths = SmallVec::new();
-        for cursor in &self.cursors {
-            cursor.push_fields(&mut fields);
-            lengths.extend_from_slice(&cursor.lengths);
-        }
-        Some(SplitView {
-            fact: self.fact,
-            fields,
-            lengths,
-        })
-    }
-}
-
-impl<'a> Iterator for SequenceCandidates<'a> {
-    type Item = SplitView<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let current = self.current()?;
-        self.done = true;
-        for cursor in self.cursors.iter_mut().rev() {
-            if cursor.advance() {
-                self.done = false;
-                break;
-            }
-            cursor.reset();
-        }
-        Some(current)
     }
 }
 
@@ -701,17 +758,65 @@ mod tests {
                 test_type: ConstantTestType::Equal(AtomKey::Integer(2)),
             }],
         };
-        let split = plan
-            .candidates(&source)
-            .find(|split| plan.accepts(split))
-            .unwrap();
-        assert_eq!(split.lengths.as_slice(), &[2, 1]);
-        assert!(!split.copied_capture());
-        let captured = split.get(SlotIndex::Ordered(0)).unwrap();
-        assert!(captured.structural_eq(&multifield(&[0, 1])));
-        assert!(split.copied_capture());
-        assert!(split.get(SlotIndex::Template(0)).is_none());
-        assert!(split.get(SlotIndex::Ordered(3)).is_none());
+        let first = plan.search(&source, &mut |event| match event {
+            SplitEvent::Match(split) => {
+                assert_eq!(split.lengths.as_slice(), &[2, 1]);
+                assert!(!split.copied_capture());
+                let captured = split.get(SlotIndex::Ordered(0)).unwrap();
+                assert!(captured.structural_eq(&multifield(&[0, 1])));
+                assert!(split.copied_capture());
+                assert!(split.get(SlotIndex::Template(0)).is_none());
+                assert!(split.get(SlotIndex::Ordered(3)).is_none());
+                ControlFlow::Break(())
+            }
+            SplitEvent::Step => ControlFlow::Continue(()),
+        });
+        assert!(first.is_break());
+    }
+
+    #[test]
+    fn split_search_prunes_on_placed_constants() {
+        // (row $? 0 $? 1 $? 2 $?) against a row with no 0 fails on the first
+        // capture's lengths alone, instead of enumerating every composition.
+        let plan = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: [SequenceField::Multi, SequenceField::Single]
+                    .repeat(3)
+                    .into_iter()
+                    .chain([SequenceField::Multi])
+                    .collect(),
+            }],
+            tests: (0..3)
+                .map(|value| ConstantTest {
+                    slot: SlotIndex::Ordered(2 * value + 1),
+                    test_type: ConstantTestType::Equal(AtomKey::Integer(
+                        i64::try_from(value).unwrap(),
+                    )),
+                })
+                .collect(),
+        };
+        let count_steps = |source: &Fact| {
+            let (mut steps, mut matches) = (0, 0);
+            let _ = plan.search(source, &mut |event| {
+                match event {
+                    SplitEvent::Step => steps += 1,
+                    SplitEvent::Match(_) => matches += 1,
+                }
+                ControlFlow::<()>::Continue(())
+            });
+            (steps, matches)
+        };
+        let Fact::Ordered(mut row) = fact(200) else {
+            unreachable!()
+        };
+        row.fields[0] = Value::Integer(7);
+        assert_eq!(count_steps(&Fact::Ordered(row)), (198, 0));
+        // Fields 0, 1 and 2 are adjacent: one match, found without a full
+        // enumeration of the C(200, 3) compositions.
+        let (steps, matches) = count_steps(&fact(200));
+        assert_eq!(matches, 1);
+        assert!(steps < 1_000, "{steps} steps");
     }
 
     #[test]
@@ -736,10 +841,7 @@ mod tests {
         };
         let mut count = 0;
         for matched in plan.matches(&source) {
-            let projected = plan
-                .project(&source, &matched.lengths)
-                .unwrap()
-                .into_match();
+            let projected = plan.project(&source, &matched.lengths).unwrap().to_match();
             let (Fact::Template(expected), Fact::Template(actual)) =
                 (&matched.fact, &projected.fact)
             else {

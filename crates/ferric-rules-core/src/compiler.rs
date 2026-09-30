@@ -737,9 +737,22 @@ impl ReteCompiler {
         alpha: &mut AlphaNetwork,
         pattern: &CompilablePattern,
     ) -> (AlphaMemoryId, bool) {
+        let mut tests = pattern.constant_tests.clone();
+        // Facts without a split that passes the plan's constants never
+        // reach the joins, which then enumerate splits only for candidates.
+        if let Some(sequence) = pattern
+            .sequence
+            .as_ref()
+            .filter(|plan| !plan.tests.is_empty())
+        {
+            tests.push(ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Sequence(Box::new(sequence.clone())),
+            });
+        }
         let key = AlphaPathKey {
             entry_type: pattern.entry_type.clone(),
-            tests: pattern.constant_tests.clone(),
+            tests,
         };
 
         if let Some(&mem_id) = self.alpha_path_cache.get(&key) {
@@ -750,7 +763,7 @@ impl ReteCompiler {
         let entry_node = alpha.create_entry_node(pattern.entry_type.clone());
         let mut current_node = entry_node;
 
-        for test in &pattern.constant_tests {
+        for test in &key.tests {
             current_node = alpha.create_constant_test_node(current_node, test.clone());
         }
 
