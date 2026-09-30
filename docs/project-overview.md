@@ -324,8 +324,9 @@ asymptotic ratio bounds (`scaling.yml`, on PRs that touch Rust code).
   CLI snapshot commands. `slotmap`/`smallvec` serde features always on.
 - `tracing` — optional tracing spans and events. The facade, pinned, FFI,
   Python, and CLI feature declarations propagate tracing into the runtime and
-  core as appropriate. The locked full-workspace `just check-tracing` command
-  and `Tracing Feature` CI job validate this configuration.
+  core as appropriate. `just check-tracing` validates this configuration
+  locally; CI's `Rust` job runs the tracing clippy and the `tracing_smoke`
+  test.
 - `testing` (ferric-rules-python only) — exposes `engine_instance_count` for
   teardown-leak tests.
 
