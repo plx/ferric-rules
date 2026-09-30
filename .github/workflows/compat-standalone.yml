@@ -1,8 +1,11 @@
+# Runs the pinned CLIPS compatibility gate once per push to main (and on manual
+# dispatch). Pull requests run the same gate via pr-assessment.yml.
 name: Compat Standalone
 
 on:
-  workflow_dispatch: {}
-  workflow_call: {}
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ jobs:
     name: Compatibility Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -27,11 +30,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Prepare compatibility evidence
         run: mkdir -p /tmp/compat-evidence
@@ -142,7 +145,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: compat-report
           retention-days: 30

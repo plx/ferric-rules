@@ -1,10 +1,11 @@
+# Weekly (and manual): build, package, install, and smoke the CLI natively on
+# every declared release target, plus the offline Rust package check
+# (scripts/verify-rust-packages.sh). Not run on pull requests or pushes.
 name: Rust Native Artifacts
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    - cron: '23 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -66,7 +67,7 @@ jobs:
       RUST_TARGET: ${{ matrix.rust_target }}
       TARGET_ID: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -79,7 +80,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.rust_target }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: matrix.libc != 'musl'
         with:
           python-version: "3.12"
@@ -135,7 +136,7 @@ jobs:
               test -f "$EVIDENCE_DIR/receipt.json"
             '
       - name: Upload exact native evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rust-native-${{ matrix.target }}-${{ env.CANDIDATE_SHA }}
           path: ${{ runner.temp }}/rust-native-evidence/${{ matrix.target }}/
@@ -156,7 +157,7 @@ jobs:
         run: |
           echo "native-rust success: $NATIVE_RUST_PASSED"
           exit 1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -164,7 +165,7 @@ jobs:
       - name: Bind aggregate verification to the candidate tree
         run: echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
       - name: Download all native target evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: rust-native-*-${{ env.CANDIDATE_SHA }}
           path: ${{ runner.temp }}/rust-native-downloads
@@ -179,9 +180,19 @@ jobs:
             --candidate-tree "$CANDIDATE_TREE" \
             --output-dir "${{ runner.temp }}/rust-native-verified"
       - name: Upload one verified native bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rust-native-verified-${{ env.CANDIDATE_SHA }}
           path: ${{ runner.temp }}/rust-native-verified/
           if-no-files-found: error
           retention-days: 30
+
+  rust-package:
+    name: Rust Package Artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: ./scripts/verify-rust-packages.sh

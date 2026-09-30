@@ -242,9 +242,10 @@ actual Criterion benches live in the facade crate.
   `query_bench.rs`.
 - `serialization_bench.rs` — in `ferric-rules-runtime` (requires `serde` feature).
 
-CI gates: `bench-smoke` (compile-only), `bench-thresholds` (absolute ns
-thresholds). Scaling regression: `just scaling-check` runs facade-crate
-`scaling_tests.rs` with two sizes, asserts asymptotic ratio bounds.
+Weekly CI (`benchmarks.yml`): `bench-smoke` (`--test` mode),
+`bench-thresholds` (absolute ns thresholds). Scaling regression: `just
+scaling-check` runs facade-crate `scaling_tests.rs` with two sizes, asserts
+asymptotic ratio bounds (`scaling.yml`, on PRs that touch Rust code).
 
 ---
 
@@ -293,7 +294,7 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
 - Composite: `check`, `preflight`, `preflight-pr` (fmt + clippy + tests +
   cargo check + Python + Go lint). **Required before any PR push.**
 - Tracing: `check-tracing` (locked full-workspace feature gate
-  check+clippy+test), validated by the `Tracing Feature` CI job.
+  check+clippy+test); CI's `Rust` job runs the tracing clippy and smoke test.
 - Bench: `bench`, `bench-engine`, `bench-waltz`, `bench-serde`,
   `bench-manners`, `bench-join`, `bench-churn`, `bench-negation`,
   `bench-thresholds`, `bench-compare`, `scaling-check`.
@@ -309,7 +310,6 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
 
 ### `scripts/`
 
-- `preflight.sh` — wraps preflight flow.
 - `bench-compare.sh`, `bench-thresholds.sh` — comparative + threshold gates.
 - `clips-reference.sh` — Docker CLIPS reference driver.
 - `compose-pr-comment.sh` — CI PR comment formatting.

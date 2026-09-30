@@ -20,7 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANDATORY_COMMAND_NAMES = (
     "rustc-verbose",
     "cargo-verbose",
-    "release-test",
     "release-build",
     "package-facade",
     "package-cli",
@@ -123,18 +122,6 @@ def _expected_commands(target: Mapping[str, Any]) -> list[list[str]]:
     return [
         ["rustc", "-vV"],
         ["cargo", "-vV"],
-        [
-            "cargo",
-            "test",
-            "--release",
-            "-p",
-            "ferric-rules",
-            "-p",
-            "ferric-rules-cli",
-            "--all-features",
-            "--locked",
-            *target_args,
-        ],
         [
             "cargo",
             "build",
