@@ -1,9 +1,5 @@
-//! Phase 2 integration tests: compiled pipeline end-to-end.
-//!
-//! These tests exercise the full Phase 2 pipeline:
+//! Integration tests for the compiled pipeline, end to end:
 //! parse → Stage 2 interpret → compile → rete assertion → verify activations.
-//!
-//! Tests are added incrementally as passes land.
 
 #[cfg(test)]
 mod tests {
@@ -13,7 +9,7 @@ mod tests {
     };
 
     // -----------------------------------------------------------------------
-    // Pass 004: Rule compilation pipeline
+    // Rule compilation pipeline
     // -----------------------------------------------------------------------
 
     #[test]
@@ -248,7 +244,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 006: Negative node (single pattern) and blocker tracking
+    // Negative node (single pattern) and blocker tracking
     // -----------------------------------------------------------------------
 
     /// Helper: assert facts into both the `fact_base` (via `load_ok`) and the rete network.
@@ -484,7 +480,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 009: Action execution tests
+    // Action execution tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -635,7 +631,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 010: Exists node tests
+    // Exists node tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -718,7 +714,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 011: Pattern validation and source-located compile errors
+    // Pattern validation and source-located compile errors
     // -----------------------------------------------------------------------
 
     #[test]
@@ -907,13 +903,7 @@ mod tests {
         assert_rete_consistent(engine.rete());
     }
 
-    // -----------------------------------------------------------------------
-    // Planned test areas for later passes:
-    // -----------------------------------------------------------------------
-    // - agenda strategy ordering in multi-rule programs
-    // - .clp fixture loading and verification
-
-    // Phase 3 forall regression contract (per Section 7.5 of implementation plan).
+    // forall regression contract: vacuous truth, then retraction cycles.
     #[test]
     fn forall_vacuous_truth_and_retraction_cycle() {
         let mut engine = new_utf8_engine();
@@ -974,7 +964,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 012: Integration fixtures and exit validation
+    // Integration fixtures
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1092,7 +1082,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 012: Retraction invariant hardening
+    // Retraction invariant hardening
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1287,7 +1277,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 012: Compile-time validation in integration scenarios
+    // Compile-time validation in integration scenarios
     // -----------------------------------------------------------------------
 
     #[test]

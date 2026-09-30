@@ -2806,9 +2806,9 @@ fn apply_ordered_slot_overrides(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
-    // we interpret FunctionCall args as positional overrides where the "name" is the index.
-    // But the more common usage is with template facts, which we don't fully support yet.
+    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts we
+    // interpret FunctionCall args as positional overrides where the "name" is
+    // the index. Template facts take the named-slot path instead.
     for slot_override in slot_overrides {
         let ActionExpr::FunctionCall(fc) = slot_override else {
             continue;

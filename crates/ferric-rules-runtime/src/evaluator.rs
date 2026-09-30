@@ -20,8 +20,6 @@ use ferric_rules_core::StringEncoding;
 
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStore, UserFunction};
-// Qualified name utilities: wired into dispatch chain in passes 003/004.
-#[allow(unused_imports)]
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::tracing_support::ferric_event;
 #[cfg(feature = "tracing")]
@@ -8186,7 +8184,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Specificity scoring unit tests (pass 006)
+    // Specificity scoring unit tests
     // -------------------------------------------------------------------
 
     #[test]
@@ -8341,7 +8339,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // String/Symbol built-ins (pass 009)
+    // String/Symbol built-ins
     // -------------------------------------------------------------------
 
     /// Helper: make a STRING `RuntimeExpr` literal.
@@ -8909,7 +8907,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Multifield built-ins (pass 010)
+    // Multifield built-ins
     // -------------------------------------------------------------------
 
     /// Helper: create a MULTIFIELD `RuntimeExpr` literal from a `Vec` of `Value`s.
