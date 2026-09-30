@@ -1,7 +1,5 @@
 //! Derived live-query chronology must not change persisted fact state.
 
-#![cfg(feature = "serde")]
-
 use ferric_rules_core::{FactBase, FactId, TemplateId, Value};
 use ferric_rules_runtime::SerializationFormat;
 use slotmap::SlotMap;
