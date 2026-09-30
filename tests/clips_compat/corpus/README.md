@@ -1,10 +1,11 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 219 small programs progress from individual features to
+CLIPS subset. Its 288 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 158 clean conformance cases and 61 active
-characterizations of differences on engine snapshot `d428e780`.
+CLIPS-verified output oracle. There are 284 clean conformance cases and 4 active
+characterizations of documented differences: CLIPS output that is not UTF-8,
+and malformed `format` directives.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs
@@ -51,8 +52,10 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
 - The companion `.out` is exact CLIPS program output, including whitespace,
   numeric formatting, quoting, and line order. It must be nonempty and end in a
   newline. No sorting, float normalization, or whitespace trimming is applied.
+  Outputs compare as bytes, so an oracle that is not UTF-8 can never match.
 - Optional `.in` files supply input verbatim to CLIPS stdin, and the same lines
-  through Ferric's `Engine::push_input`. Input cases use exactly one reset.
+  through Ferric's `Engine::push_input`, where each CR or LF ends a line as it
+  does for CLIPS `read`/`readline`. Input cases use exactly one reset.
 - `manifest.json` registers every program exactly once, with `basic`, `boundary`,
   or `interaction` level and coverage tags. `resets: 2` repeats reset/run in the
   same engine; the golden concatenates both runs. This tests restoration of
@@ -67,6 +70,10 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   modify the statistics watch setting, and must not print CLIPS diagnostic-like
   messages (`[CODE123] message`). The reference wrapper uses unique frames and
   CLIPS statistics to distinguish complete execution from a truncated run.
+- The exception is the two recoverable `[SCANNER1]` scanner notices (integer
+  overflow, unterminated string). CLIPS prints them on its warning and error
+  routers, interleaved with `t` in the oracle; the runner removes them from the
+  oracle and compares them with Ferric's `wwarning` and `werror` output.
 
 ## Conformance versus characterization
 

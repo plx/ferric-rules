@@ -1,0 +1,10 @@
+42 tail
+-17 tail
++17 tail
+2.5 tail
+2e3 tail
+.5 tail
+1. tail
+-0.0 tail
+9223372036854775807 tail
+-9223372036854775808 tail

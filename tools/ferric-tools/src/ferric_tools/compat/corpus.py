@@ -33,6 +33,19 @@ STATISTICS = re.compile(
 )
 
 
+# CLIPS writes these scanner notices for recoverable input problems and keeps
+# the scanned value. The Rust runner compares them with Ferric's routers.
+SCANNER_NOTICES = (
+    "[SCANNER1] WARNING: Over or underflow of long long integer.\n",
+    "\n[SCANNER1] Encountered End-Of-File while scanning a string\n",
+)
+
+
+def decode(data: bytes) -> str:
+    """Decode CLIPS bytes, keeping any invalid UTF-8 byte-for-byte."""
+    return data.decode("utf-8", errors="surrogateescape")
+
+
 def extract_output(stdout: str, stderr: str, begin: str, end: str) -> str:
     """Require exactly one complete frame and reject reference diagnostics."""
     if stderr.strip():
@@ -48,7 +61,10 @@ def extract_output(stdout: str, stderr: str, begin: str, end: str) -> str:
         raise ReferenceFailure(f"CLIPS load/protocol diagnostic:\n{prefix}{suffix}")
     # The Debian CLIPS executable also writes runtime errors to stdout. Reserve
     # its diagnostic-code-plus-message syntax; a literal [USER123] stays valid.
-    if re.search(r"\[[A-Z]+\d+\][ \t]", output):
+    checked = output
+    for notice in SCANNER_NOTICES:
+        checked = checked.replace(notice, "")
+    if re.search(r"\[[A-Z]+\d+\][ \t]", checked):
         raise ReferenceFailure(f"CLIPS runtime diagnostic:\n{output}")
     return output
 
@@ -144,9 +160,9 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
             str(Path(batch.name).relative_to(root)),
         ]
         try:
-            input_text = input_path.read_text() if input_path.exists() else ""
+            input_bytes = input_path.read_bytes() if input_path.exists() else b""
             process = subprocess.run(
-                command, input=input_text, capture_output=True, text=True, timeout=timeout
+                command, input=input_bytes, capture_output=True, timeout=timeout
             )
         except subprocess.TimeoutExpired as error:
             # Killing the Docker client alone can leave the container running.
@@ -154,9 +170,10 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
                 ["docker", "rm", "-f", name], capture_output=True, check=False, timeout=10
             )
             raise ReferenceFailure(f"reference timed out after {timeout}s") from error
+    stdout, stderr = decode(process.stdout), decode(process.stderr)
     if process.returncode:
-        raise ReferenceFailure(f"CLIPS exit {process.returncode}: {process.stderr}")
-    output = extract_output(process.stdout, process.stderr, begin, end)
+        raise ReferenceFailure(f"CLIPS exit {process.returncode}: {stderr}")
+    output = extract_output(stdout, stderr, begin, end)
     return extract_runs(output, begin, end, resets)
 
 
@@ -204,7 +221,7 @@ def main() -> None:
     def verify(case: dict) -> tuple[str, dict]:
         try:
             output = run_reference(root, case, image, args.timeout)
-            expected = (corpus / case["path"]).with_suffix(".out").read_text()
+            expected = decode((corpus / case["path"]).with_suffix(".out").read_bytes())
             return case["path"], {"matches": output == expected, "output": output}
         except (ReferenceFailure, OSError, subprocess.SubprocessError) as error:
             return case["path"], {"matches": False, "error": str(error)}

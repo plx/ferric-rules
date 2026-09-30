@@ -1,0 +1,5 @@
+[SCANNER1] WARNING: Over or underflow of long long integer.
+above:TRUE:FALSE:FALSE:FALSE:[9223372036854775807]
+[SCANNER1] WARNING: Over or underflow of long long integer.
+below:TRUE:FALSE:FALSE:FALSE:[-9223372036854775808]
+after:FALSE:FALSE:FALSE:TRUE:[done]

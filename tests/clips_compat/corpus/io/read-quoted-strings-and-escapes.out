@@ -1,0 +1,8 @@
+words:FALSE:FALSE:TRUE:FALSE:[two words]
+empty:FALSE:FALSE:TRUE:FALSE:[]
+quote:FALSE:FALSE:TRUE:FALSE:[a"b]
+backslash:FALSE:FALSE:TRUE:FALSE:[a\b]
+n:FALSE:FALSE:TRUE:FALSE:[anb]
+unknown:FALSE:FALSE:TRUE:FALSE:[aqb]
+horizontal-tab:FALSE:FALSE:TRUE:FALSE:[a	b]
+unicode:FALSE:FALSE:TRUE:FALSE:[café 😀]

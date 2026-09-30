@@ -1,0 +1,2 @@
+TRUE|12|TRUE|TRUE|TRUE|TRUE|TRUE|TRUE
+red "two words" "a\"b" "a\\b" "" "42" "[widget]" [widget] [a?b] 3 1.25 -0.0

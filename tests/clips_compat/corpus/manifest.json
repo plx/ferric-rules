@@ -330,11 +330,84 @@
       ]
     },
     {
+      "path": "io/read-blank-comment-lines-skip.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-callable-and-nested-read.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "defmethod",
+        "floatp",
+        "integerp",
+        "read",
+        "str-cat",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-crlf-readline-state.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "readline",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
       "path": "io/read-eof.clp",
       "level": "boundary",
       "covers": [
         "read",
         "EOF"
+      ]
+    },
+    {
+      "path": "io/read-explicit-stdin-channel.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "defglobal",
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-instance-name-token.clp",
+      "level": "basic",
+      "covers": [
+        "floatp",
+        "instance-namep",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-integer-overflow.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
       ]
     },
     {
@@ -346,11 +419,78 @@
       ]
     },
     {
+      "path": "io/read-no-final-newline.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-numeric-looking-symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-numeric-token-types.clp",
+      "level": "basic",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-physical-lines-and-readline.clp",
+      "level": "interaction",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "readline",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-quoted-strings-and-escapes.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
       "path": "io/read-string.clp",
       "level": "basic",
       "covers": [
         "read",
         "STRING"
+      ]
+    },
+    {
+      "path": "io/read-symbol-delimiters-and-special-tokens.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
       ]
     },
     {
@@ -367,6 +507,62 @@
       "covers": [
         "read",
         "tokenization"
+      ]
+    },
+    {
+      "path": "io/read-unterminated-quote-per-line.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-unterminated-terminal-backslash.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/346"
+        ],
+        "summary": "Documented divergence: CLIPS stores the byte of an escaped end of input, which is not UTF-8; Ferric strings are UTF-8 and hold U+FFFD",
+        "observed": {
+          "phase": "complete",
+          "output": "first:FALSE:FALSE:TRUE:FALSE:[unfinished�]\neof:FALSE:FALSE:FALSE:TRUE:[EOF]\n",
+          "notices": "\n[SCANNER1] Encountered End-Of-File while scanning a string\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "io/read-valid-first-ignores-malformed-tail.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "io/read-vertical-tab-and-formfeed.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "read",
+        "stringp",
+        "symbolp"
       ]
     },
     {
@@ -1929,6 +2125,456 @@
         "defglobal",
         "sort"
       ]
+    },
+    {
+      "path": "stdlib/080_string_to_field_numeric_token_types.clp",
+      "level": "basic",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/081_string_to_field_numeric_looking_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/082_string_to_field_symbol_token_delimiters.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/083_string_to_field_quoted_strings_and_escapes.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/084_string_to_field_whitespace_comments_and_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/085_string_to_field_nonvalue_first_tokens.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/086_string_to_field_valid_first_ignores_malformed_tail.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/087_string_to_field_symbol_input_argument.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "sym-cat",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/088_string_to_field_argument_evaluated_once.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "defglobal",
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/089_string_to_field_bound_and_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/090_string_to_field_instance_name_token.clp",
+      "level": "basic",
+      "covers": [
+        "floatp",
+        "instance-namep",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/091_string_to_field_ascii_whitespace_controls.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/092_string_to_field_control_whitespace_edges.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/093_explode_numeric_field_types.clp",
+      "level": "basic",
+      "covers": [
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "progn$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/094_explode_ordinary_and_empty_fields.clp",
+      "level": "basic",
+      "covers": [
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "progn$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/095_explode_quoted_adjacency_and_escapes.clp",
+      "level": "boundary",
+      "covers": [
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "progn$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/096_explode_whitespace_and_comments.clp",
+      "level": "boundary",
+      "covers": [
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "progn$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/097_explode_nonvalue_tokens_and_delimiters.clp",
+      "level": "boundary",
+      "covers": [
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "progn$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/098_explode_argument_evaluated_once.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "defglobal",
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/099_explode_bound_and_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "explode$",
+        "floatp",
+        "integerp",
+        "length$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/100_explode_instance_name_field.clp",
+      "level": "basic",
+      "covers": [
+        "explode$",
+        "floatp",
+        "instance-namep",
+        "integerp",
+        "length$",
+        "nth$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/101_implode_quoted_round_trip.clp",
+      "level": "interaction",
+      "covers": [
+        "eq",
+        "explode$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/102_implode_typed_round_trip.clp",
+      "level": "interaction",
+      "covers": [
+        "defglobal",
+        "eq",
+        "explode$",
+        "implode$",
+        "instance-namep"
+      ]
+    },
+    {
+      "path": "stdlib/103_format_integer_zero_width_sign.clp",
+      "level": "basic",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/104_format_integer_flags.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/105_format_integer_precision.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/106_format_integer_boundaries.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/107_format_float_zero_and_precision.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/108_format_ordinary_directives.clp",
+      "level": "basic",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/109_format_evaluation_once.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "defglobal",
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/110_format_empty_format.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/111_format_radix_directives.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/112_format_character_directive.clp",
+      "level": "basic",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/113_format_trailing_percent_no_data.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/114_format_c_string.clp",
+      "level": "basic",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/115_format_bound_callable_return_type.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "format",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/116_format_unicode_width_and_precision.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/340"
+        ],
+        "summary": "Documented divergence: %.1s cuts a UTF-8 character; CLIPS emits the partial byte, Ferric U+FFFD",
+        "observed": {
+          "phase": "complete",
+          "output": "[  é|é|�]\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "stdlib/117_format_general_precision_and_cutovers.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/118_format_nonfinite_padding.clp",
+      "level": "boundary",
+      "covers": [
+        "format",
+        "sin"
+      ]
+    },
+    {
+      "path": "stdlib/119_format_scientific_exponent_and_fixed_ties.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/120_format_repeated_and_misordered_modifiers.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/340"
+        ],
+        "summary": "Documented divergence: CLIPS hands malformed directives such as %5-3d to printf, which echoes them; Ferric reports a format error",
+        "observed": {
+          "phase": "complete",
+          "output": "a:[7    ]\nb:[7    ]\n",
+          "diagnostics": [
+            "expression evaluation error: unsupported operation `format`: unsupported format directive `%5-3d` at line 4:19"
+          ]
+        }
+      }
+    },
+    {
+      "path": "stdlib/121_format_character_nul_and_bytes.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/340"
+        ],
+        "summary": "Documented divergence: %c of a byte of 128 or more; CLIPS emits the raw byte, Ferric U+FFFD",
+        "observed": {
+          "phase": "complete",
+          "output": "precision:[A|A|   A|A   ]\nempty:[|   |:end]\nzero:[|   |:end]\nbytes:[�|  �|�|�]\n",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }

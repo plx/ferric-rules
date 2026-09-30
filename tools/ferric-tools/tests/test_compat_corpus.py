@@ -38,6 +38,13 @@ def test_rejects_clips_diagnostics_even_on_successful_process_exit():
         extract_output("BEGIN\n[PRNTUTIL7] divide by zero\nEND\n", "", "BEGIN", "END")
 
 
+def test_scanner_notices_are_output_not_protocol_failures():
+    notice = "[SCANNER1] WARNING: Over or underflow of long long integer.\n"
+    assert extract_output(f"BEGIN\n{notice}x\nEND\n", "", "BEGIN", "END") == notice + "x\n"
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output("BEGIN\n[SCANNER1] other\nEND\n", "", "BEGIN", "END")
+
+
 def test_literal_bracket_text_inside_output_is_not_a_diagnostic():
     assert extract_output("BEGIN\n[USER123]\nEND\n", "", "BEGIN", "END") == "[USER123]\n"
 
@@ -121,7 +128,7 @@ def test_reference_container_is_isolated_and_can_read_generated_batch(tmp_path, 
         end = f"CORPUS_END_{token}"
         framed = framed_run("", index=0).replace("BEGIN", begin).replace("END", end)
         stdout = f"{begin}\n{framed}{end}\n"
-        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout=stdout.encode(), stderr=b"")
 
     monkeypatch.setattr(corpus.subprocess, "run", run)
 

@@ -46,7 +46,58 @@ struct Gap {
 struct Observation {
     phase: String,
     output: String,
+    /// `[SCANNER1]` notices, as written to `wwarning` then `werror`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    notices: String,
     diagnostics: Vec<String>,
+}
+
+/// CLIPS scanner notices. CLIPS writes them to its warning and error routers,
+/// which share stdout with `t` in the reference run; Ferric keeps routers apart.
+const NOTICES: [(&str, &str); 2] = [
+    (
+        "wwarning",
+        "[SCANNER1] WARNING: Over or underflow of long long integer.\n",
+    ),
+    (
+        "werror",
+        "\n[SCANNER1] Encountered End-Of-File while scanning a string\n",
+    ),
+];
+
+/// A CLIPS golden split into `t` output and its notices (warnings, then
+/// errors). Bytes stay exact: a golden need not be valid UTF-8.
+struct Golden {
+    output: Vec<u8>,
+    notices: Vec<u8>,
+}
+
+fn golden(bytes: &[u8]) -> Golden {
+    let mut output = Vec::new();
+    let mut found: [Vec<u8>; 2] = Default::default();
+    let mut rest = bytes;
+    'scan: while let Some((&first, tail)) = rest.split_first() {
+        for (index, (_, notice)) in NOTICES.iter().enumerate() {
+            if let Some(after) = rest.strip_prefix(notice.as_bytes()) {
+                found[index].extend_from_slice(notice.as_bytes());
+                rest = after;
+                continue 'scan;
+            }
+        }
+        output.push(first);
+        rest = tail;
+    }
+    let [warnings, errors] = found;
+    Golden {
+        output,
+        notices: [warnings, errors].concat(),
+    }
+}
+
+/// Frame input as CLIPS reads `stdin` lines: a CR or an LF ends each line.
+fn input_lines(input: &str) -> impl Iterator<Item = &str> {
+    let body = input.strip_suffix(['\r', '\n']).unwrap_or(input);
+    body.split(['\r', '\n']).filter(move |_| !input.is_empty())
 }
 
 fn corpus_root() -> PathBuf {
@@ -63,6 +114,7 @@ fn observe(source: &str, resets: usize, input: Option<&str>) -> Observation {
     let mut observation = Observation {
         phase: "complete".into(),
         output: String::new(),
+        notices: String::new(),
         diagnostics: Vec::new(),
     };
     if let Err(errors) = engine.load_str(source) {
@@ -78,7 +130,7 @@ fn observe(source: &str, resets: usize, input: Option<&str>) -> Observation {
         }
         engine.clear_output_channel("t");
         if let Some(input) = input {
-            for line in input.lines() {
+            for line in input_lines(input) {
                 engine.push_input(line);
             }
         }
@@ -98,6 +150,12 @@ fn observe(source: &str, resets: usize, input: Option<&str>) -> Observation {
         observation
             .output
             .push_str(engine.get_output("t").unwrap_or(""));
+        for (router, _) in NOTICES {
+            observation
+                .notices
+                .push_str(engine.get_output(router).unwrap_or(""));
+            engine.clear_output_channel(router);
+        }
         observation
             .diagnostics
             .extend(engine.action_diagnostics().iter().map(ToString::to_string));
@@ -158,9 +216,9 @@ fn manifest_covers_every_program() {
         assert!((1..=3).contains(&case.resets));
         let golden = root.join(&case.path).with_extension("out");
         assert!(golden.is_file(), "missing oracle for {}", case.path);
-        let expected = std::fs::read_to_string(&golden).unwrap();
+        let expected = std::fs::read(&golden).unwrap();
         assert!(
-            !expected.is_empty() && expected.ends_with('\n'),
+            !expected.is_empty() && expected.ends_with(b"\n"),
             "empty/vacuous oracle: {}",
             case.path
         );
@@ -203,21 +261,21 @@ fn characterize_corpus() {
         .filter(|case| case.path.contains(&filter) && (level.is_empty() || case.level == level))
     {
         let source = std::fs::read_to_string(root.join(&case.path)).unwrap();
-        let output = std::fs::read_to_string(root.join(&case.path).with_extension("out")).unwrap();
-        let expected = Observation {
-            phase: "complete".into(),
-            output,
-            diagnostics: Vec::new(),
-        };
+        let expected = golden(&std::fs::read(root.join(&case.path).with_extension("out")).unwrap());
         let input_path = root.join(&case.path).with_extension("in");
         let input = input_path
             .is_file()
             .then(|| std::fs::read_to_string(input_path).unwrap());
         let actual = observe(&source, case.resets, input.as_deref());
         report.insert(case.path.clone(), serde_json::to_value(&actual).unwrap());
+        // Compare bytes, so a golden that is not valid UTF-8 never matches.
+        let matches = actual.phase == "complete"
+            && actual.diagnostics.is_empty()
+            && actual.output.as_bytes() == expected.output
+            && actual.notices.as_bytes() == expected.notices;
         if let Some(gap) = &case.gap {
             gaps += 1;
-            if actual == expected {
+            if matches {
                 failures.push(format!(
                     "{}: unexpected CLIPS match; remove/update gap {}",
                     case.path,
@@ -233,10 +291,12 @@ fn characterize_corpus() {
             }
         } else {
             passing += 1;
-            if actual != expected {
+            if !matches {
                 failures.push(format!(
-                    "{}: CLIPS mismatch\nexpected {expected:#?}\nactual {actual:#?}",
-                    case.path
+                    "{}: CLIPS mismatch\nexpected output {:?}\nexpected notices {:?}\nactual {actual:#?}",
+                    case.path,
+                    String::from_utf8_lossy(&expected.output),
+                    String::from_utf8_lossy(&expected.notices),
                 ));
             }
         }
