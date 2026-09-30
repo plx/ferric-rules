@@ -14,7 +14,6 @@
 #include <string.h>
 
 static int failures = 0;
-static int callback_count = 0;
 
 #define CHECK(condition, message)                                              \
     do {                                                                       \
@@ -52,14 +51,6 @@ static void check_global_message(const char *function_name) {
                   "global channel must contain exactly one stable panic report");
 }
 
-static void completion(void *context, enum FerricError code,
-                       struct FerricPinnedResult *result) {
-    (void)context;
-    (void)code;
-    callback_count++;
-    ferric_pinned_result_free(result);
-}
-
 int main(void) {
     struct FerricEngine *raw = ferric_engine_new();
     CHECK(raw != NULL, "raw engine construction must succeed");
@@ -93,46 +84,10 @@ int main(void) {
           "FerricValue-returning export must use a Void sentinel");
     check_global_message("ferric_value_integer");
 
-    select_panic("ferric_pinned_result_request_id");
-    uint64_t request_id = ferric_pinned_result_request_id(NULL);
-    clear_panic();
-    CHECK(request_id == 0, "integer-returning export must use a zero sentinel");
-    check_global_message("ferric_pinned_result_request_id");
-
     select_panic("ferric_string_free");
     ferric_string_free(NULL);
     clear_panic();
     check_global_message("ferric_string_free");
-
-    struct FerricPinnedEngine *pinned = ferric_pinned_engine_new(NULL);
-    CHECK(pinned != NULL, "pinned engine construction must succeed");
-    if (pinned != NULL) {
-        select_panic("ferric_pinned_engine_is_closed");
-        bool closed = ferric_pinned_engine_is_closed(pinned);
-        clear_panic();
-        CHECK(!closed, "bool-returning export must use a false sentinel");
-        check_global_message("ferric_pinned_engine_is_closed");
-        check_message(ferric_pinned_engine_last_error(pinned),
-                      "ferric_pinned_engine_is_closed",
-                      "pinned-engine channel must mirror the panic report");
-
-        select_panic("ferric_pinned_engine_run_async");
-        status = ferric_pinned_engine_run_async(pinned, -1, 77, NULL,
-                                                completion);
-        clear_panic();
-        CHECK(status == FERRIC_ERROR_INTERNAL_ERROR,
-              "callback-based submission must report synchronous panic");
-        CHECK(callback_count == 0,
-              "a synchronously rejected callback submission must not fire");
-        check_global_message("ferric_pinned_engine_run_async");
-        check_message(ferric_pinned_engine_last_error(pinned),
-                      "ferric_pinned_engine_run_async",
-                      "callback panic must update the pinned-engine channel");
-        CHECK(ferric_pinned_engine_reset(pinned) == FERRIC_ERROR_OK,
-              "pinned engine must remain usable after contained panics");
-        CHECK(ferric_pinned_engine_free(pinned) == FERRIC_ERROR_OK,
-              "pinned engine cleanup must succeed");
-    }
 
     CHECK(ferric_engine_free(raw) == FERRIC_ERROR_OK,
           "raw engine cleanup must succeed");

@@ -351,7 +351,7 @@ func TestManualNilEngineErrorBranches(t *testing.T) {
 		t.Fatal("Step: expected error")
 	}
 	assertErr("Reset", e.Reset())
-	if _, err := e.Serialize(FormatBincode); err == nil {
+	if _, err := e.Serialize(FormatCBOR); err == nil {
 		t.Fatal("Serialize: expected error")
 	}
 	if err := e.SerializeToFile("unused", Format(99)); !errors.Is(err, ErrInvalidArgument) {
@@ -610,7 +610,7 @@ func TestManualHookedNewEngineNativeFallbacks(t *testing.T) {
 		ffiEngineDeserializeAs = func([]byte, ffi.SerializationFormat) (ffi.EngineHandle, ffi.ErrorCode) {
 			return nil, ffi.ErrOK
 		}
-		_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatBincode))
+		_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatCBOR))
 		var fe *FerricError
 		if !errors.As(err, &fe) || !strings.Contains(err.Error(), "snapshot") {
 			t.Fatalf("snapshot nil handle error = %v, want *FerricError mentioning snapshot", err)
@@ -1035,11 +1035,8 @@ func TestPropertyEngineSurfaceSweep(t *testing.T) {
 		id := rapid.Int64Range(1, 1000).Draw(rt, "id")
 		value := rapid.Float64Range(0.1, 1000.0).Draw(rt, "value")
 		format := rapid.SampledFrom([]Format{
-			FormatBincode,
 			FormatJSON,
 			FormatCBOR,
-			FormatMessagePack,
-			FormatPostcard,
 		}).Draw(rt, "format")
 
 		e, err := NewEngine(
@@ -1437,7 +1434,7 @@ func TestManualHookedMutationAndAccessorErrors(t *testing.T) {
 			},
 			check: func(t *testing.T, e *Engine) {
 				t.Helper()
-				if _, err := e.Serialize(FormatBincode); !errors.Is(err, ErrRuntime) {
+				if _, err := e.Serialize(FormatCBOR); !errors.Is(err, ErrRuntime) {
 					t.Fatalf("Serialize err = %v, want ErrRuntime", err)
 				}
 			},

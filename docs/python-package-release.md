@@ -8,8 +8,8 @@ Changes to either document must keep package metadata, CI, validators, and
 consumer smoke tests in agreement.
 
 This contract covers the retained Python artifact targets and clean-consumer
-checks. The finite rehabilitation scope requires locally usable artifacts and
-truthful validation, without public publication or a new platform matrix.
+checks: locally usable artifacts and truthful validation, without public
+publication or a new platform matrix.
 
 ## Package identity and support boundary
 
@@ -141,8 +141,10 @@ The Python artifact workflow must fail closed through this sequence:
 3. Verify the archive layout, distribution metadata, license files, ABI and
    platform tags, native dependencies, and `RECORD` hashes. Record its SHA-256
    digest in the release manifest.
-4. Download that exact artifact into clean consumer jobs for CPython 3.9 through
-   3.13. Install with `pip --no-index --no-deps --only-binary=:all:` from a
+4. Download that exact artifact into a clean consumer job on one supported
+   CPython (currently 3.13; `abi3audit` enforces the 3.9 stable-ABI floor and
+   `ci.yml` tests 3.9 and 3.13 from source). Install with
+   `pip --no-index --no-deps --only-binary=:all:` from a
    directory outside the checkout, then import, load and run rules,
    serialize/restore, and close all engines.
 5. Normalize and deterministically repack Maturin's raw workspace sdist as
@@ -169,9 +171,8 @@ non-mutating registry dry run are permitted staging steps. Stable publication
 to PyPI is an irreversible action and is not authorized by this contract or by
 the existence of a successful workflow run.
 
-Public publication is outside the rehabilitation task. Any future publication
-requires explicit maintainer authorization for the verified artifacts; the
-retired production-readiness audit is not an active release prerequisite.
+Public publication is not currently planned. Any future publication requires
+explicit maintainer authorization for the verified artifacts.
 
 ## Updating the contract
 

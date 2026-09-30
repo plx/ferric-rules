@@ -1,4 +1,4 @@
-//! Tests for FFI execution and fact mutation APIs (Pass 005).
+//! Tests for FFI execution and fact mutation APIs.
 
 use crate::engine::{
     ferric_engine_assert_string, ferric_engine_fact_count, ferric_engine_free,

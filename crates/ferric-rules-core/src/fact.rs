@@ -323,7 +323,7 @@ fn structural_fingerprint(fact: &Fact) -> u64 {
             1_u8.hash(&mut hasher);
             template.template_id.hash(&mut hasher);
             template.slots.len().hash(&mut hasher);
-            for value in &template.slots {
+            for value in template.slots.iter() {
                 hash_value_structurally(value, &mut hasher);
             }
         }

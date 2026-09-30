@@ -42,8 +42,9 @@ effective ceiling of 32 user calls even when a higher limit is requested.
 Static factories always return `Engine`, including calls through subclasses.
 
 Pre-1.0 migration: the runtime minimum is now Node 22; implicit snapshots now use
-CBOR. Other explicitly selected formats remain experimental and obey the native
-snapshot version policy. Incompatible legacy raw snapshots are rejected rather
+CBOR. `Format.Json` remains available for debugging and inspection; the
+experimental `Bincode`, `MessagePack` and `Postcard` formats were removed.
+Snapshots obey the native version policy. Incompatible legacy raw snapshots are rejected rather
 than erased or silently migrated. Syntax/interpretation failures use
 `FerricParseError`, unsupported/invalid constructs use `FerricCompileError`,
 file failures use `FerricIOError`, and action/runtime failures preserve their

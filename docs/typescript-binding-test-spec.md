@@ -5,8 +5,8 @@ Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
 Status: Required for reimplementation
 
 Companion documents:
-- [Normative Contract](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-normative-contract.md)
-- [Conformance Matrix](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-conformance-matrix.md)
+- [Normative Contract](typescript-binding-normative-contract.md)
+- [Conformance Matrix](typescript-binding-conformance-matrix.md)
 
 ## 1. Purpose
 Define mandatory automated test coverage for the TypeScript bindings.

@@ -172,10 +172,6 @@ fn infer_panic_target(
         Ok(quote!(crate::boundary::PanicTarget::RawEngine(
             engine as *const crate::engine::FerricEngine,
         )))
-    } else if type_name == "FerricPinnedEngine" {
-        Ok(quote!(crate::boundary::PanicTarget::PinnedEngine(
-            engine as *const crate::pinned::FerricPinnedEngine,
-        )))
     } else {
         Err(syn::Error::new_spanned(
             type_name,

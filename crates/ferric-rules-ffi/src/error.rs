@@ -9,14 +9,14 @@ use ferric_rules_ffi_macros::ffi_export;
 /// C-facing error codes returned by all fallible FFI entry points.
 ///
 /// Stable numeric values — new codes may be added but existing values
-/// must never change.
+/// must never change or be reused.
 ///
 /// Numeric ranges:
 ///
 /// - `0`           : success
-/// - `1..=10`      : raw engine + pre-pinned errors (stable)
-/// - `11..=19`     : pinned-execution errors (reserved range)
-/// - `20..=98`     : reserved for future growth
+/// - `1..=10`      : engine errors (`2`, the old thread-violation code, is retired)
+/// - `11..=15`     : retired (the removed `ferric_pinned_*` API); never reused
+/// - `16..=98`     : reserved for future growth
 /// - `99`          : internal/unexpected error
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,8 @@ pub enum FerricError {
     Ok = 0,
     /// A required pointer argument was null.
     NullPointer = 1,
-    /// Engine called from wrong thread.
+    /// Retired: never returned. Engines are `Send + Sync` and carry no
+    /// thread affinity. The value stays reserved so it is never reused.
     ThreadViolation = 2,
     /// Requested fact/item not found.
     NotFound = 3,
@@ -43,16 +44,6 @@ pub enum FerricError {
     InvalidArgument = 9,
     /// Serialization or deserialization error.
     SerializationError = 10,
-    /// Pinned engine handle has been closed.
-    PinnedClosed = 11,
-    /// Pinned engine request was canceled before completion.
-    PinnedCanceled = 12,
-    /// Pinned engine bounded queue rejected a new request (queue full).
-    PinnedQueueFull = 13,
-    /// Pinned engine worker thread stopped unexpectedly (panicked or vanished).
-    PinnedDispatchFailed = 14,
-    /// A synchronous pinned call was attempted from that engine's worker thread.
-    PinnedReentrantCall = 15,
     /// Internal/unexpected error.
     InternalError = 99,
 }
@@ -151,7 +142,6 @@ use ferric_rules_runtime::loader::LoadError;
 /// Map a runtime [`EngineError`] to an FFI error code.
 pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
     match err {
-        EngineError::WrongThread { .. } => FerricError::ThreadViolation,
         EngineError::FactNotFound(_)
         | EngineError::ModuleNotFound(_)
         | EngineError::TemplateNotFound(_)
@@ -308,30 +298,5 @@ pub(crate) unsafe fn copy_error_to_buffer(
         *buf.add(copy_len) = 0;
         *out_len = needed;
         FerricError::BufferTooSmall
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Pinned-engine error mapping
-// ---------------------------------------------------------------------------
-
-use ferric_rules_pinned::PinnedError;
-
-/// Map a [`PinnedError`] to an FFI error code.
-pub(crate) fn map_pinned_error(err: &PinnedError) -> FerricError {
-    match err {
-        PinnedError::Closed => FerricError::PinnedClosed,
-        PinnedError::Canceled => FerricError::PinnedCanceled,
-        PinnedError::QueueFull => FerricError::PinnedQueueFull,
-        PinnedError::DispatchFailed => FerricError::PinnedDispatchFailed,
-        PinnedError::Internal => FerricError::InternalError,
-        PinnedError::ReentrantCall => FerricError::PinnedReentrantCall,
-        PinnedError::Init(_) => FerricError::InternalError,
-        PinnedError::Load(errors) => errors
-            .first()
-            .map_or(FerricError::CompileError, map_load_error),
-        PinnedError::Engine(e) => map_engine_error(e),
-        #[cfg(feature = "serde")]
-        PinnedError::Serialization(_) => FerricError::SerializationError,
     }
 }

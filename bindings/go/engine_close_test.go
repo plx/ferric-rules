@@ -142,11 +142,11 @@ func TestEngineMethodsAfterClose(t *testing.T) {
 		{"Reset", func() error { return wantClosed(e.Reset()) }},
 		{"Clear", func() error { return wantClosed(e.Clear()) }},
 		{"Serialize", func() error {
-			value, err := e.Serialize(FormatBincode)
+			value, err := e.Serialize(FormatCBOR)
 			return wantNil("snapshot", value, err)
 		}},
 		{"SerializeToFile", func() error {
-			return wantClosed(e.SerializeToFile(t.TempDir()+"/snapshot.bin", FormatBincode))
+			return wantClosed(e.SerializeToFile(t.TempDir()+"/snapshot.bin", FormatCBOR))
 		}},
 		{"Rules", func() error {
 			if value := e.Rules(); value != nil {

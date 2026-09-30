@@ -1,4 +1,4 @@
-//! Tests for the FFI error model (Pass 003).
+//! Tests for the FFI error model.
 
 use crate::error::{
     clear_global_error, ferric_clear_error_global, ferric_last_error_global, map_engine_error,
@@ -85,16 +85,6 @@ fn engine_error_state_clear() {
     state.set("error".to_string());
     state.clear();
     assert!(state.message().is_none());
-}
-
-#[test]
-fn map_engine_wrong_thread() {
-    use ferric_rules_runtime::engine::EngineError;
-    let err = EngineError::WrongThread {
-        creator: std::thread::current().id(),
-        current: std::thread::current().id(),
-    };
-    assert_eq!(map_engine_error(&err), FerricError::ThreadViolation);
 }
 
 #[test]

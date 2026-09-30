@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 202
+- MIT License: 191
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -914,35 +914,6 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- cobs 0.3.0 (`MIT OR Apache-2.0`) - https://github.com/jamesmunns/cobs.rs
-
-```text
-Copyright (c) 2015 The cobs.rs Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
 - quick-error 1.2.3 (`MIT OR Apache-2.0`) - http://github.com/tailhook/quick-error
 
 ```text
@@ -1391,41 +1362,6 @@ Used by:
 ```text
 Copyright (c) 2018-2024 The rust-random Project Developers
 Copyright (c) 2014 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
-- postcard 1.1.3 (`MIT OR Apache-2.0`) - https://github.com/jamesmunns/postcard
-
-```text
-Copyright (c) 2019 Anthony James Munns
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -1958,38 +1894,6 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- rmp-serde 1.3.0 (`MIT`) - https://github.com/3Hren/msgpack-rust
-- rmp 0.8.14 (`MIT`) - https://github.com/3Hren/msgpack-rust
-
-```text
-MIT License
-
-Copyright (c) 2017 Evgeny Safronov
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
 - convert_case 0.6.0 (`MIT`) - https://github.com/rutrum/convert-case
 
 ```text
@@ -2067,7 +1971,6 @@ Used by:
 - ferric-rules-ffi-macros 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-napi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-parser 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
-- ferric-rules-pinned 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-runtime 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - users-guide-01-minimal-embedding 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-02-ordered-vs-template 0.1.0 (`MIT OR Apache-2.0`)
@@ -2091,8 +1994,6 @@ Used by:
 - napi-derive 2.16.13 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi-sys 2.4.0 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi 2.16.17 (`MIT`) - https://github.com/napi-rs/napi-rs
-- objc2-encode 4.1.0 (`MIT`) - https://github.com/madsmtm/objc2
-- objc2 0.6.4 (`MIT`) - https://github.com/madsmtm/objc2
 - plotters-backend 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters
 - plotters-svg 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters.git
 - plotters 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters
@@ -2258,7 +2159,6 @@ Used by:
 - linux-raw-sys 0.12.1 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/sunfishcode/linux-raw-sys
 - linux-raw-sys 0.4.15 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/sunfishcode/linux-raw-sys
 - once_cell 1.21.4 (`MIT OR Apache-2.0`) - https://github.com/matklad/once_cell
-- paste 1.0.15 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/paste
 - pin-project-lite 0.2.17 (`Apache-2.0 OR MIT`) - https://github.com/taiki-e/pin-project-lite
 - portable-atomic 1.14.0 (`Apache-2.0 OR MIT`) - https://github.com/taiki-e/portable-atomic
 - proc-macro2 1.0.107 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/proc-macro2
@@ -2417,7 +2317,6 @@ SOFTWARE.
 Used by:
 
 - aho-corasick 1.1.4 (`Unlicense OR MIT`) - https://github.com/BurntSushi/aho-corasick
-- byteorder 1.5.0 (`Unlicense OR MIT`) - https://github.com/BurntSushi/byteorder
 - memchr 2.8.3 (`Unlicense OR MIT`) - https://github.com/BurntSushi/memchr
 - walkdir 2.5.0 (`Unlicense OR MIT`) - https://github.com/BurntSushi/walkdir
 
@@ -2640,7 +2539,6 @@ SOFTWARE.
 
 Used by:
 
-- crossbeam-channel 0.5.16 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-deque 0.8.7 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-epoch 0.9.20 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-utils 0.8.22 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
@@ -2778,37 +2676,6 @@ The MIT License (MIT)
 
 Copyright (c) 2014 Benjamin Sago
 Copyright (c) 2021-2022 The Nushell Project Developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
-- bincode 1.3.3 (`MIT`) - https://github.com/servo/bincode
-
-```text
-The MIT License (MIT)
-
-Copyright (c) 2014 Ty Overby
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

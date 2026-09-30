@@ -355,7 +355,7 @@ test("D-001 direct worker diagnostics and unknown-method errors are structured",
 // ---------------------------------------------------------------------------
 test("D-001 direct worker rejects normal methods before __init", async () => {
   await withWorker(async (worker) => {
-    // This protects the worker thread-affinity setup: no engine method can run
+    // This protects the worker initialization protocol: no engine method can run
     // until the main thread has sent the initialization payload.
     await assert.rejects(
       () => request(worker, "facts", []),

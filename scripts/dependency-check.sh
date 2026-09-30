@@ -19,7 +19,7 @@ check() {
 check rust cargo deny --locked --all-features check advisories bans licenses sources
 check notices ./scripts/license-notices.sh check
 
-for project in packages/ferric crates/ferric-rules-napi documentation site; do
+for project in packages/ferric crates/ferric-rules-napi site; do
     check "${project//\//-}" npm --prefix "$project" audit --package-lock-only \
         --json --audit-level=info --include=dev --include=optional --include=peer \
         --registry=https://registry.npmjs.org/

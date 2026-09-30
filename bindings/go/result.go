@@ -27,19 +27,17 @@ const (
 )
 
 // Format selects the serialization format for Engine.SerializeAs / WithSnapshotAs.
+//
+// There is no default: the zero value Format(0) is invalid, so callers must
+// pass FormatCBOR or FormatJSON explicitly. Values 0, 3 and 4 belonged to
+// removed codecs (bincode, MessagePack, Postcard) and are rejected.
 type Format int
 
 const (
-	// FormatBincode uses compact binary encoding (default, fast and small).
-	FormatBincode Format = iota
-	// FormatJSON uses human-readable JSON encoding.
-	FormatJSON
-	// FormatCBOR uses CBOR (Concise Binary Object Representation).
-	FormatCBOR
-	// FormatMessagePack uses MessagePack encoding.
-	FormatMessagePack
-	// FormatPostcard uses Postcard encoding (compact, no_std-friendly).
-	FormatPostcard
+	// FormatJSON uses human-readable JSON encoding (debugging and inspection).
+	FormatJSON Format = 1
+	// FormatCBOR uses CBOR (Concise Binary Object Representation). Recommended.
+	FormatCBOR Format = 2
 )
 
 // HaltReason describes why engine execution stopped.

@@ -18,10 +18,6 @@
 //! The NCC partner node sits at the bottom of the subnetwork. When a token
 //! reaches the partner, it signals the NCC node to increment the result count
 //! for the corresponding parent token.
-//!
-//! ## Phase 2 implementation
-//!
-//! - Pass 010: NCC node, NCC partner, and NCC memory
 
 use rustc_hash::FxHashMap as HashMap;
 

@@ -57,36 +57,26 @@ impl From<Encoding> for ferric_rules_core::StringEncoding {
 }
 
 /// Serialization format for engine snapshots.
+///
+/// Values 0, 3 and 4 belonged to removed codecs and are not reused.
 #[cfg(feature = "serde")]
 #[pyclass(eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
-    /// Compact binary (bincode). Fast and small.
-    #[pyo3(name = "BINCODE")]
-    Bincode = 0,
-    /// JSON (human-readable, larger output).
+    /// JSON (human-readable, larger output; for debugging and inspection).
     #[pyo3(name = "JSON")]
     Json = 1,
-    /// CBOR (Concise Binary Object Representation).
+    /// CBOR (Concise Binary Object Representation). Recommended default.
     #[pyo3(name = "CBOR")]
     Cbor = 2,
-    /// `MessagePack` (compact binary, JSON-like schema).
-    #[pyo3(name = "MSGPACK")]
-    MessagePack = 3,
-    /// Postcard (compact, no_std-friendly binary).
-    #[pyo3(name = "POSTCARD")]
-    Postcard = 4,
 }
 
 #[cfg(feature = "serde")]
 impl From<Format> for ferric_rules_runtime::SerializationFormat {
     fn from(f: Format) -> Self {
         match f {
-            Format::Bincode => Self::Bincode,
             Format::Json => Self::Json,
             Format::Cbor => Self::Cbor,
-            Format::MessagePack => Self::MessagePack,
-            Format::Postcard => Self::Postcard,
         }
     }
 }

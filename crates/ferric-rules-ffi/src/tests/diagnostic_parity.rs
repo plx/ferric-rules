@@ -1,4 +1,4 @@
-//! Tests for Phase 4 diagnostic parity through FFI (Pass 012).
+//! Tests for runtime diagnostic parity through FFI.
 //!
 //! These tests verify that runtime diagnostics (parse errors, compile errors,
 //! module visibility failures) propagate through the FFI layer without

@@ -1,6 +1,4 @@
-//! Phase 3 integration tests: language completion end-to-end.
-//!
-//! These tests exercise the Phase 3 pipeline additions:
+//! Integration tests for the language surface, end to end:
 //! - Expression evaluation (shared path for RHS and test CE)
 //! - Template-aware modify/duplicate
 //! - Real printout behavior
@@ -8,9 +6,6 @@
 //! - defmodule import/export and focus
 //! - defgeneric/defmethod dispatch
 //! - forall CE semantics
-//!
-//! Tests are added incrementally as passes land. Commented-out tests
-//! serve as scaffolding and contract documentation for upcoming passes.
 
 #[cfg(test)]
 mod tests {
@@ -21,11 +16,8 @@ mod tests {
     };
 
     // =======================================================================
-    // Phase 3 baseline: unsupported form diagnostics
+    // Construct loading smoke tests
     // =======================================================================
-    //
-    // These tests verify that Phase 3 constructs currently produce explicit
-    // diagnostic errors (not silent degradation) before their passes land.
 
     #[test]
     fn deffunction_loads_successfully() {
@@ -75,11 +67,11 @@ mod tests {
     }
 
     // =======================================================================
-    // Phase 3 baseline: Phase 2 behavior preservation
+    // Core rule behaviour canaries
     // =======================================================================
     //
-    // These tests verify that Phase 2 capabilities remain intact as Phase 3
-    // passes land. They are the "canary" tests for regression detection.
+    // Basic assert/negation/exists/NCC/retract/reset behaviour, kept as quick
+    // regression canaries alongside the richer language tests below.
 
     #[test]
     fn phase2_rule_assert_chain_still_works() {
@@ -203,7 +195,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 002: Expression evaluation
+    // Expression evaluation
     // =======================================================================
 
     #[test]
@@ -1387,7 +1379,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 003: Template-aware modify/duplicate
+    // Template-aware modify/duplicate
     // =======================================================================
 
     #[test]
@@ -1539,7 +1531,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 004: Printout runtime
+    // Printout runtime
     // =======================================================================
 
     #[test]
@@ -1671,7 +1663,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 006: User-defined function environment and execution
+    // User-defined function environment and execution
     // =======================================================================
 
     #[test]
@@ -1957,7 +1949,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 008: Defmodule import/export and focus semantics
+    // defmodule import/export and focus semantics
     // =======================================================================
 
     #[test]
@@ -2492,7 +2484,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 009: defgeneric/defmethod dispatch
+    // defgeneric/defmethod dispatch
     // =======================================================================
     //
     // Design note: method bodies are evaluated through the expression evaluator,
@@ -2745,7 +2737,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 010: forall CE
+    // forall CE
     // =======================================================================
 
     #[test]
@@ -2936,7 +2928,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 011: fixture-driven integration tests
+    // Fixture-driven integration tests
     // =======================================================================
 
     #[test]
@@ -3023,7 +3015,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 011: cross-feature interaction tests
+    // Cross-feature interaction tests
     // =======================================================================
 
     #[test]
@@ -3182,7 +3174,7 @@ mod tests {
     }
 
     // =======================================================================
-    // Pass 011: unsupported construct diagnostics
+    // Unsupported construct diagnostics
     // =======================================================================
 
     #[test]

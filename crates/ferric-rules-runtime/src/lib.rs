@@ -5,51 +5,36 @@
 //! This crate is not intended for direct use by end-users; prefer the
 //! `ferric-rules` facade crate instead.
 //!
-//! ## Phase 2 complete
+//! ## Capabilities
 //!
-//! - Stage 2 AST and semantic interpretation for defrule, deftemplate, deffacts.
-//! - Rule compilation from Stage 2 AST into shared rete network.
-//! - Execution loop: `run`, `step`, `halt`, `reset`.
-//! - Basic RHS action execution: `assert`, `retract`, `modify`, `duplicate`, `halt`.
-//! - NCC (not/and), exists, and negative node types in rete.
-//! - Pattern validation (nesting depth, unsupported combinations).
-//! - Agenda conflict strategies: Depth, Breadth, LEX, MEA.
-//!
-//! ## Phase 3 complete
-//!
-//! - Shared expression evaluator for RHS actions and `test` CEs (Pass 002).
-//! - `test` CEs compile into predicate nodes and evaluate during matching.
-//! - Nested function calls in RHS (arithmetic, comparison, boolean, type predicates).
-//! - Template-aware `modify`/`duplicate` (Pass 003).
-//! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
-//! - `deffunction` runtime: user-defined functions callable from rules and
-//!   other functions, with parameter binding and recursion limits (Pass 006).
-//! - `defglobal` runtime: global variable read/write via `bind`, with
-//!   reset re-initialization (Pass 006).
-//! - `defmodule` runtime: module registry, focus stack, focus-aware `run()`,
-//!   `focus` RHS action, and cross-module template visibility (Pass 008).
-//! - `defgeneric`/`defmethod` runtime: type-based method dispatch with
-//!   index ordering and auto-index assignment (Pass 009).
-//! - `forall` CE: limited subset (single condition + single then-clause),
-//!   desugared to NCC, vacuous truth, and empty-prefix support (Pass 010).
-//!
-//! ## Phase 4 complete
-//!
-//! - Module-qualified `MODULE::name` resolution for callables and globals.
-//! - Cross-module `deffunction`/`defglobal` visibility enforcement.
-//! - `deffunction`/`defgeneric` same-name conflict diagnostics.
-//! - CLIPS-style generic specificity ranking and `call-next-method`.
-//! - Full Section 10.2 builtin surface: predicate/math/type, string/symbol,
-//!   multifield, I/O (`format`, `read`, `readline`), environment (`reset`,
-//!   `clear`), agenda/focus query functions.
+//! - Loading: Stage 2 constructs (`deftemplate`, `defrule`, `deffacts`,
+//!   `deffunction`, `defglobal`, `defmodule`, `defgeneric`, `defmethod`) are
+//!   translated and compiled into a shared Rete network, with pattern
+//!   validation and source-located diagnostics.
+//! - Matching: ordered and template patterns, `test` CEs (predicate nodes),
+//!   `not`, `exists`, NCC, and `forall` (desugared to NCC, including vacuous
+//!   truth).
+//! - Execution: `run`, `step`, `halt`, `reset`, and `clear`; Depth, Breadth,
+//!   LEX, and MEA conflict strategies; a module focus stack.
+//! - Actions and expressions: a shared evaluator for RHS actions, `test` CEs,
+//!   and callable bodies; `assert`/`retract`/`modify`/`duplicate`, `bind`,
+//!   `if`/`while`/`loop-for-count`, and `printout` with per-channel output
+//!   capture via `OutputRouter`.
+//! - Callables: `deffunction`s, generic dispatch with CLIPS-style specificity
+//!   ranking and `call-next-method`, module-qualified `MODULE::name`
+//!   resolution, and cross-module visibility enforcement.
+//! - The builtin function library (math, string/symbol, multifield, I/O,
+//!   environment, and agenda/focus queries).
 //!
 //! ## Known limitations
 //!
-//! - `forall` limited to single condition + single then-clause.
-//! - No truth maintenance / logical support.
-//! - `defclass`/`definstances`/`defmessage-handler` not implemented.
-//! - `if`/`then`/`else` expression form not supported.
-//! - `sub-string` uses Unicode scalar value positions (not grapheme clusters).
+//! - No truth maintenance: `logical` CEs are rejected at load time.
+//! - `defclass`/`definstances`/`defmessage-handler` (COOL) are not implemented.
+//! - `forall` supports a single condition and a single then-clause, and
+//!   cannot be nested.
+//!
+//! See `docs/compatibility.md` in the repository for the full supported
+//! subset and known differences from CLIPS.
 
 mod tracing_support;
 

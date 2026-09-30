@@ -84,9 +84,10 @@ func TestSourceAndSnapshotOptionsTrackPresenceIndependentlyFromValues(t *testing
 	})
 
 	t.Run("nil-snapshot", func(t *testing.T) {
-		got := applyEngineOptions(WithSnapshot(nil, FormatBincode))
+		got := applyEngineOptions(WithSnapshot(nil, FormatCBOR))
 		want := defaultEngineConfig()
 		want.snapshotSet = true
+		want.snapshotFormat = FormatCBOR
 		assertEngineConfigEqual(t, got, want)
 		if !got.snapshotSet {
 			t.Fatal("explicit nil snapshot lost its presence bit")
@@ -158,7 +159,7 @@ func TestEngineOptionConstructorSelection(t *testing.T) {
 	})
 
 	t.Run("snapshot-alone", func(t *testing.T) {
-		if got := observeEngineConstructor(t, WithSnapshot([]byte("snapshot"), FormatBincode)); got != "snapshot" {
+		if got := observeEngineConstructor(t, WithSnapshot([]byte("snapshot"), FormatCBOR)); got != "snapshot" {
 			t.Fatalf("constructor = %q, want snapshot", got)
 		}
 	})
@@ -173,7 +174,7 @@ func TestEngineOptionPairsAreOrderIndependent(t *testing.T) {
 		{"encoding", WithEncoding(EncodingASCIISymbolsUTF8Strings)},
 		{"max-call-depth", WithMaxCallDepth(257)},
 		{"source", WithSource("(deffacts startup (ready))")},
-		{"snapshot", WithSnapshot([]byte("snapshot"), FormatMessagePack)},
+		{"snapshot", WithSnapshot([]byte("snapshot"), FormatJSON)},
 	}
 
 	for i := range options {
@@ -215,11 +216,11 @@ func TestInvalidEngineOptionsFailBeforeNativeConstruction(t *testing.T) {
 			return err
 		}},
 		{"snapshot", func(opt EngineOption) error {
-			_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatBincode), opt)
+			_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatCBOR), opt)
 			return err
 		}},
 		{"snapshot-file", func(opt EngineOption) error {
-			_, err := NewEngineFromFile(snapshotPath, FormatBincode, opt)
+			_, err := NewEngineFromFile(snapshotPath, FormatCBOR, opt)
 			return err
 		}},
 	}
@@ -253,7 +254,7 @@ func TestInvalidEngineOptionsFailBeforeNativeConstruction(t *testing.T) {
 
 func TestEmptySnapshotValidationFailsBeforeNativeConstruction(t *testing.T) {
 	calls := recordEngineConstructors(t)
-	_, err := NewEngine(WithSnapshot(make([]byte, 0), FormatBincode))
+	_, err := NewEngine(WithSnapshot(make([]byte, 0), FormatCBOR))
 	var invalid *InvalidArgumentError
 	if !errors.As(err, &invalid) || invalid.Code != int(ffi.ErrInvalidArgument) ||
 		invalid.Message != "snapshot data is empty" {
@@ -266,8 +267,8 @@ func TestEmptySnapshotValidationFailsBeforeNativeConstruction(t *testing.T) {
 
 func TestSnapshotInputsReachDeserializerUnchanged(t *testing.T) {
 	directData := []byte("direct\x00snapshot")
-	assertSnapshotInput(t, directData, FormatMessagePack, func() error {
-		_, err := NewEngine(WithSnapshot(directData, FormatMessagePack))
+	assertSnapshotInput(t, directData, FormatJSON, func() error {
+		_, err := NewEngine(WithSnapshot(directData, FormatJSON))
 		return err
 	})
 

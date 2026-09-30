@@ -53,12 +53,8 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * - FerricError: FERRIC_ERROR_INTERNAL_ERROR
  * - pointers: NULL
  * - FerricValue: Void
- * - bool: false
- * - integer/count: 0
  * - void: return after recording the diagnostic
  *
- * A panic in an async submission wrapper is a synchronous rejection:
- * it returns FERRIC_ERROR_INTERNAL_ERROR and does not fire completion.
  * The guarantee cannot contain non-unwinding termination such as an
  * allocator abort/OOM or an explicit process abort. Host callbacks must
  * still obey their documented no-unwind contract.
@@ -162,52 +158,6 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *   the next chunk that can run. Query ferric_engine_is_halted() if
  *   that distinction matters. ferric_engine_run_ex() clears the flag
  *   either way when it starts the next logical run.
- *
- * ============================================================
- * PINNED EXECUTION (ferric_pinned_*)
- * ============================================================
- *
- * FerricPinnedEngine owns a dedicated Rust worker thread plus
- * one engine. The handle is safe to use from any thread; calls
- * are serialized through a bounded FIFO queue on the worker.
- *
- * - Sync entry points (ferric_pinned_engine_load_string, _reset,
- *   _run, _serialize_as) block the caller until the worker
- *   completes the operation, then write outputs into caller-
- *   provided pointers.
- *
- * - Async entry points (ferric_pinned_engine_run_async,
- *   _load_string_async) return immediately on successful
- *   submission and later invoke the supplied
- *   FerricPinnedCompletionFn with an owned FerricPinnedResult
- *   carrying the echoed request_id.
- *   Every accepted operation removes its registry entry and
- *   invokes completion exactly once across success, error,
- *   cancellation, close, and contained operation panic. A
- *   contained operation panic reports
- *   FERRIC_ERROR_INTERNAL_ERROR. Cleanup happens before callback
- *   invocation, so the request_id is reusable from the callback.
- *
- * The async completion callback runs ON THE WORKER THREAD.
- * It must be transport-only: resume a continuation, signal an
- * event, post to an actor / event loop. It must NOT call back
- * into the same FerricPinnedEngine synchronously, perform long
- * work, or block, and must not unwind across the FFI boundary.
- * The owned FerricPinnedResult outlives the callback; the caller
- * is responsible for ferric_pinned_result_free.
- *
- * Halt: ferric_pinned_engine_halt() requests cancellation of
- * the active run, which checks between bounded chunks of rule
- * firings (cooperative cancellation, not hard preemption). If
- * no run is active, halt has no effect and does not latch onto
- * queued or future runs.
- *
- * ferric_pinned_engine_cancel_request() targets one async
- * request by ID. Capacity waiters wake without being admitted,
- * admitted pending requests are canceled before dispatch, and
- * an active run is interrupted cooperatively at a chunk boundary.
- * A successful cancel does not guarantee that a concurrent
- * submission succeeds; any failed submission fires no completion.
  */";
 
 /// Bounds-safety annotation macros injected after the standard includes.
@@ -291,8 +241,6 @@ FERRIC_STATIC_ASSERT(sizeof(((FerricConfig *)0)->string_encoding) == 4,
                      "FerricConfig.string_encoding must be a 32-bit integer");
 FERRIC_STATIC_ASSERT(sizeof(((FerricConfig *)0)->strategy) == 4,
                      "FerricConfig.strategy must be a 32-bit integer");
-FERRIC_STATIC_ASSERT(sizeof(((FerricPinnedEngineOptions *)0)->autorelease_policy) == 4,
-                     "FerricPinnedEngineOptions.autorelease_policy must be a 32-bit integer");
 
 /* C enum object widths for every enum crossing the ABI (as return values
  * or out-parameters). Rust emits these as 32-bit values; a consumer
@@ -306,8 +254,6 @@ FERRIC_STATIC_ASSERT(sizeof(enum FerricConflictStrategy) == 4,
                      "enum FerricConflictStrategy must be 32 bits");
 FERRIC_STATIC_ASSERT(sizeof(enum FerricFactType) == 4, "enum FerricFactType must be 32 bits");
 FERRIC_STATIC_ASSERT(sizeof(enum FerricHaltReason) == 4, "enum FerricHaltReason must be 32 bits");
-FERRIC_STATIC_ASSERT(sizeof(enum FerricPinnedAutoreleasePolicy) == 4,
-                     "enum FerricPinnedAutoreleasePolicy must be 32 bits");
 
 /* FerricValueType: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_VOID == 0, "FERRIC_VALUE_TYPE_VOID must be 0");
@@ -346,14 +292,6 @@ FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_HALT_REQUESTED == 2,
 FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_ACTION_ERROR == 3,
                      "FERRIC_HALT_REASON_ACTION_ERROR must be 3");
 
-/* FerricPinnedAutoreleasePolicy: stable numeric values. */
-FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_NONE == 0,
-                     "FERRIC_PINNED_AUTORELEASE_POLICY_NONE must be 0");
-FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM == 1,
-                     "FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM must be 1");
-FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH == 2,
-                     "FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH must be 2");
-
 /* FerricError: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_ERROR_OK == 0, "FERRIC_ERROR_OK must be 0");
 FERRIC_STATIC_ASSERT(FERRIC_ERROR_NULL_POINTER == 1, "FERRIC_ERROR_NULL_POINTER must be 1");
@@ -367,30 +305,16 @@ FERRIC_STATIC_ASSERT(FERRIC_ERROR_BUFFER_TOO_SMALL == 8, "FERRIC_ERROR_BUFFER_TO
 FERRIC_STATIC_ASSERT(FERRIC_ERROR_INVALID_ARGUMENT == 9, "FERRIC_ERROR_INVALID_ARGUMENT must be 9");
 FERRIC_STATIC_ASSERT(FERRIC_ERROR_SERIALIZATION_ERROR == 10,
                      "FERRIC_ERROR_SERIALIZATION_ERROR must be 10");
-FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_CLOSED == 11, "FERRIC_ERROR_PINNED_CLOSED must be 11");
-FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_CANCELED == 12, "FERRIC_ERROR_PINNED_CANCELED must be 12");
-FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_QUEUE_FULL == 13,
-                     "FERRIC_ERROR_PINNED_QUEUE_FULL must be 13");
-FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_DISPATCH_FAILED == 14,
-                     "FERRIC_ERROR_PINNED_DISPATCH_FAILED must be 14");
-FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_REENTRANT_CALL == 15,
-                     "FERRIC_ERROR_PINNED_REENTRANT_CALL must be 15");
 FERRIC_STATIC_ASSERT(FERRIC_ERROR_INTERNAL_ERROR == 99, "FERRIC_ERROR_INTERNAL_ERROR must be 99");
 
 #if defined(FERRIC_SERDE)
 /* FerricSerializationFormat: enum object width and stable numeric values. */
 FERRIC_STATIC_ASSERT(sizeof(enum FerricSerializationFormat) == 4,
                      "enum FerricSerializationFormat must be 32 bits");
-FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_BINCODE == 0,
-                     "FERRIC_SERIALIZATION_FORMAT_BINCODE must be 0");
 FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_JSON == 1,
                      "FERRIC_SERIALIZATION_FORMAT_JSON must be 1");
 FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_CBOR == 2,
                      "FERRIC_SERIALIZATION_FORMAT_CBOR must be 2");
-FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK == 3,
-                     "FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK must be 3");
-FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_POSTCARD == 4,
-                     "FERRIC_SERIALIZATION_FORMAT_POSTCARD must be 4");
 #endif
 
 "#;
@@ -546,12 +470,6 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "const char * FERRIC_NULL_TERMINATED channel,\n                                               char *buf,",
         "const char * FERRIC_NULL_TERMINATED channel,\n                                               char *buf FERRIC_SIZED_BY(buf_len),",
-    ),
-    // ferric_pinned_engine_last_error_copy: buf is a byte buffer of buf_len bytes.
-    // (multi-line signature — pattern spans the line break)
-    (
-        "ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf,",
-        "ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),",
     ),
     // ferric_engine_action_diagnostic_copy: buf is a byte buffer of buf_len bytes.
     // (multi-line signature — pattern spans the line break)
