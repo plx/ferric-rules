@@ -310,10 +310,11 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded version-one envelope; CBOR is recommended and is the
-  default for CLI, TypeScript, Python and Swift consumers. Legacy unversioned
-  snapshots are rejected explicitly. Export durable application data through
-  the producing version before upgrading; see [snapshots.md](snapshots.md).
+- Snapshots use a bounded, versioned envelope (schema 2); CBOR is recommended
+  and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
+  unversioned and schema-1 snapshots are rejected explicitly. Export durable
+  application data through the producing version before upgrading; see
+  [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
   Python `None`, Node `null`, and Swift `.void` cannot be stored in facts.
