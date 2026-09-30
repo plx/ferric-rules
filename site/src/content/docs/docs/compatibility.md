@@ -40,13 +40,14 @@ FLOAT output uses up to 15 significant decimal digits, preserving `-0.0`.
 Rounded decimal exponents from -4 through 14 use fixed notation; other values
 use scientific notation such as `1e-05` and `1e+15`. Integral fixed-form
 FLOATs include `.0`; nonfinite spellings are `nan.0`, `inf.0`, and `-inf.0`.
-INTEGER spelling remains exact. These rules do not change `str-cat`,
-`sym-cat`, `format`, or `save-facts` formatting.
+INTEGER spelling remains exact. `str-cat` and `sym-cat` spell FLOATs the
+same way; `save-facts` keeps its own formatting.
 
-Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
-INTEGERs are printed as integers and host ExternalAddress values retain an
-opaque placeholder. This output contract does not cover arbitrary invalid
-UTF8 strings or general source round-tripping.
+INSTANCE-NAME values such as `[widget]` print with their brackets. Ferric has
+no object system, so an instance name names no instance. Typed FACT-ADDRESS
+print forms remain a representation gap; INTEGERs are printed as integers and
+host ExternalAddress values retain an opaque placeholder. This output contract
+does not cover general source round-tripping.
 
 ## Multifield Text
 
@@ -63,14 +64,21 @@ their raw spelling, including `crlf`, `tab`, `vtab`, and `ff`.
 INTEGER spelling stays exact. FLOATs share direct output's 15-significant-digit
 format, including `-0.0`, exponents, and nonfinite spellings. The operand is
 evaluated once after the argument-count check; a scalar result produces a type
-error. Rendering leaves input values and the separate `str-cat`, `sym-cat`,
-`format`, and `save-facts` formatters unchanged.
+error. Rendering leaves input values unchanged.
 
-Quoted STRING-field round-tripping through `explode$` still depends on
-[#339](https://github.com/plx/ferric-rules/issues/339). Arbitrary generated
-SYMBOL spellings have no general source round-trip guarantee. The typed-value
-and invalid-UTF8 boundaries described for direct output apply here too;
-INTEGERs are never reinterpreted as fact addresses.
+`explode$` of an `implode$` result returns the original fields, including
+quoted STRINGs, numbers and instance names. `string-to-field`, `explode$` and
+`read` scan text with the CLIPS field scanner. Arbitrary generated SYMBOL
+spellings have no general source round-trip guarantee, and INTEGERs are never
+reinterpreted as fact addresses.
+
+## UTF-8 Text
+
+Ferric strings are UTF-8. In the few places where CLIPS produces bytes that
+are not UTF-8, Ferric produces U+FFFD instead: `format` with `%.Ns` cutting a
+UTF-8 character or `%c` of a byte of 128 or more, and a scanned string
+that ends in a backslash at the end of input. `format` also reports an error
+for a malformed directive such as `%5-3d`, which CLIPS passes to `printf`.
 
 ## Conflict Resolution
 

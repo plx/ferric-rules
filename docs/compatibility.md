@@ -44,7 +44,16 @@ the same value types and working-memory semantics as CLIPS.
 | `FLOAT` | 64-bit IEEE 754 double |
 | `SYMBOL` | Interned identifier (e.g., `red`, `TRUE`) |
 | `STRING` | Quoted string (e.g., `"hello"`) |
+| `INSTANCE-NAME` | Bracketed name (e.g., `[widget]`), distinct from SYMBOL |
 | `MULTIFIELD` | Ordered sequence of values |
+
+Instance names are values only: Ferric has no object system, so `[widget]`
+names no instance. They match, compare, print and round-trip through
+`explode$`/`implode$` as in CLIPS, and a template slot may declare
+`(type INSTANCE-NAME)` (derived default `[nil]`). Hosts create them with
+`Engine::instance_name_value`; the bindings expose an `InstanceName` type and
+the C ABI uses value type `7` with the spelling (without brackets) in
+`string_ptr`.
 
 ### Ordered Facts
 
@@ -881,6 +890,7 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 | `symbolp` | Argument is a SYMBOL |
 | `stringp` | Argument is a STRING |
 | `lexemep` | Argument is a SYMBOL or STRING |
+| `instance-namep` | Argument is an INSTANCE-NAME |
 | `multifieldp` | Argument is a MULTIFIELD |
 | `evenp` | Argument is an even integer |
 | `oddp` | Argument is an odd integer |
@@ -897,9 +907,22 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
-| `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
-| `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
+| `string-to-field` | First CLIPS field of a STRING, SYMBOL or INSTANCE-NAME | `(string-to-field "42 rest")` => `42` |
+| `explode$` | Every CLIPS field of a STRING, as a multifield | `(explode$ "a \"b c\" 3")` => `(a "b c" 3)` |
+| `symbol-to-instance-name` | SYMBOL to INSTANCE-NAME | `(symbol-to-instance-name x)` => `[x]` |
+| `instance-name-to-symbol` | INSTANCE-NAME (or SYMBOL) to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
+
+`string-to-field`, `explode$` and `read` use the CLIPS 6.30 field scanner:
+quoted strings (with `\` escapes) are one STRING field, numbers keep their
+INTEGER or FLOAT type, `[name]` is an INSTANCE-NAME, `;` starts a comment, and
+tokens that are not values, such as `(` or `?x`, become STRINGs of their
+spelling. `string-to-field` ignores the text after the first field and returns
+`EOF` for empty input. Integers outside the 64-bit range saturate, and an
+unterminated string keeps its text; for these CLIPS writes a `[SCANNER1]`
+notice to the `wwarning` or `werror` router, and so does Ferric. The one
+difference: a string that ends in a backslash at the end of input gives CLIPS
+a byte that is not UTF-8, which Ferric's UTF-8 strings hold as U+FFFD.
 
 `str-index` accepts STRING or SYMBOL needle and haystack arguments. It evaluates
 and validates each argument once, from left to right, including the haystack when
@@ -955,17 +978,15 @@ the argument-count check precedes operand evaluation.
 
 INTEGERs retain their exact decimal spelling. FLOATs use the same
 15-significant-digit representation as direct output, including `-0.0`,
-scientific notation, and the documented nonfinite spellings below. These
-field rules apply to the supplied slice or capture and leave the input values
-unchanged. The separate `str-cat`, `sym-cat`, `format`, and `save-facts`
-formatters retain their existing behavior.
+scientific notation, and the documented nonfinite spellings below.
+INSTANCE-NAMEs print as `[name]`. These field rules apply to the supplied
+slice or capture and leave the input values unchanged.
 
-Quoted STRING-field round-tripping through `explode$` still depends on the
-tokenizer repair in [#339](https://github.com/plx/ferric-rules/issues/339).
-Arbitrary generated SYMBOL spellings are not a general source round-trip
-contract. The INSTANCE-NAME, typed FACT-ADDRESS, opaque host-address, and
-invalid-UTF8 boundaries described under direct output also apply to `implode$`;
-no INTEGER is reinterpreted as an address.
+`explode$` of an `implode$` result returns the original fields, including
+quoted STRINGs, numbers and instance names. Arbitrary generated SYMBOL
+spellings are not a general source round-trip contract. The typed
+FACT-ADDRESS and opaque host-address boundaries described under direct output
+also apply to `implode$`; no INTEGER is reinterpreted as an address.
 
 `(sort <predicate> <value>...)` takes a function name SYMBOL (a builtin, or a
 deffunction or defgeneric visible from the calling module) followed by zero or
@@ -997,7 +1018,7 @@ Ferric does not reproduce that recovery.
 |----------|-------------|
 | `printout` | Write to a named channel |
 | `format` | Printf-style formatting (returns string; does not write to router) |
-| `read` | Read a single value from input |
+| `read` | Read the first CLIPS field of the next nonblank input line |
 | `readline` | Read a line from input |
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
@@ -1023,18 +1044,30 @@ fixed notation for rounded decimal exponents from -4 through 14 and scientific
 notation otherwise. Integral fixed-form FLOATs include `.0`; for example,
 `1.0`, `-0.0`, `1e-05`, and `1e+15`. Nonfinite spellings are `nan.0`, `inf.0`,
 and `-inf.0`. INTEGERs retain exact decimal spelling, including values above
-2^53. This output formatter leaves `str-cat`, `sym-cat`, `format`, and
-`save-facts` formatting unchanged.
+2^53. `str-cat` and `sym-cat` spell FLOATs the same way (this is CLIPS's
+`%.15g`); `save-facts` keeps its own formatting.
 
-This contract covers Ferric's supported numeric, lexeme, and multifield values.
-Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
-ordinary INTEGERs are never interpreted as addresses while printing. Host
-ExternalAddress values retain Ferric's opaque placeholder. Arbitrary invalid
-UTF8 string bytes and general source round-tripping are outside this contract.
+This contract covers Ferric's supported numeric, lexeme, instance-name and
+multifield values; INSTANCE-NAMEs print as `[name]`. Typed FACT-ADDRESS print
+forms remain a representation gap; ordinary INTEGERs are never interpreted as
+addresses while printing. Host ExternalAddress values retain Ferric's opaque
+placeholder. General source round-tripping is outside this contract.
 
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
 `(printout t (format nil "n=%d" 42) crlf)` to produce output.
+
+`format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
+`%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME), `%c`
+(INTEGER low byte or the first byte of a STRING or SYMBOL), and `%n %r %t %v
+%%`, with `-` and `0` flags, width and precision. The control string is
+checked and the argument count must match its directives before any argument
+is evaluated; an incomplete directive such as a trailing `%` is literal text.
+Width and precision count bytes, as in C. Ferric differs where C would emit
+bytes that are not UTF-8: `%.Ns` that cuts a multibyte character and `%c` of a
+byte of 128 or more produce U+FFFD. CLIPS hands a malformed directive such as
+`%5-3d` to `printf`, which echoes it; Ferric reports a format error instead,
+and it also rejects a width or precision above 4096.
 
 ### Agenda / Focus Functions
 
@@ -1051,7 +1084,7 @@ The following features are explicitly out of scope.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| COOL object system | Not planned | Classes, instances, message-passing |
+| COOL object system | Not planned | Classes, instances, message-passing; INSTANCE-NAME values exist without objects |
 | Certainty factors | Not planned | Probabilistic/fuzzy reasoning |
 | Distributed evaluation | Not planned | Networked rule engines |
 | `Simplicity` strategy | Deferred | Until fully specified |

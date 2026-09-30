@@ -47,6 +47,26 @@ and JSON remain, with unchanged numeric values (JSON `1`, CBOR `2`); the removed
 values `0`, `3` and `4` are now rejected. To keep a snapshot written with a
 removed codec, restore it with the producing version and re-save it as CBOR.
 
+## Pre-1.0 instance names and CLIPS text functions
+
+`Value` has a new `InstanceName` variant for CLIPS instance names such as
+`[widget]` (Ferric still has no object system), and the parser's
+`LiteralKind`/`Atom` and `SlotValueType` gained matching variants. Exhaustive
+matches on these enums need a new arm. The C ABI adds value type
+`FERRIC_VALUE_TYPE_INSTANCE_NAME = 7` (a `string_ptr` holding the spelling
+without brackets) and `ferric_value_instance_name_bytes`; C and Go hosts that
+switch on `value_type` should handle it. The bindings return instance names as
+`InstanceName` values (`FerricInstanceName` in TypeScript,
+`Value.instanceName` in Swift) where they previously could not appear.
+
+Several functions now follow CLIPS instead of Ferric's earlier approximations.
+`string-to-field`, `explode$` and `read` scan text with the CLIPS field
+scanner, so quoted strings stay one STRING field and `read` no longer stops at
+the first space. `format` rejects an argument count that does not match its
+directives, `%s` of a number, and a malformed directive such as `%5-3d`, where
+it previously formatted something. `str-cat` and `sym-cat` spell FLOATs like
+`printout` (`(str-cat 1e20)` is now `"1e+20"`).
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:
