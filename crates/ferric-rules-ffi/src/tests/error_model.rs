@@ -88,16 +88,6 @@ fn engine_error_state_clear() {
 }
 
 #[test]
-fn map_engine_wrong_thread() {
-    use ferric_rules_runtime::engine::EngineError;
-    let err = EngineError::WrongThread {
-        creator: std::thread::current().id(),
-        current: std::thread::current().id(),
-    };
-    assert_eq!(map_engine_error(&err), FerricError::ThreadViolation);
-}
-
-#[test]
 fn map_engine_module_not_found() {
     use ferric_rules_runtime::engine::EngineError;
     let err = EngineError::ModuleNotFound("MAIN".to_string());

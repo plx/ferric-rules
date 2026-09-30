@@ -1033,8 +1033,8 @@ runtime calls, including reads, and protect the allocation's lifetime:
   and use of borrowed pointers. Admission is not a handle registry and cannot
   make a stale pointer safe. `ferric_engine_free_unchecked` remains an ABI
   compatibility alias with the same lifetime obligations as ordinary free.
-- `FERRIC_ERROR_THREAD_VIOLATION` retains its numeric ABI value for compatibility;
-  ordinary raw-handle calls no longer emit it based on the creating thread.
+- `FERRIC_ERROR_THREAD_VIOLATION` keeps its numeric ABI value but is never
+  returned.
 
 Global error functions use thread-local storage. Retrieve or copy a global
 error on the same OS thread as the failing call, before another call can
@@ -1204,7 +1204,7 @@ reach the C ABI.
 
 A contained panic records a stable message naming the export, without
 formatting or downcasting the panic payload. The calling thread's global error
-channel is always updated; a supplied live raw or pinned engine also receives
+channel is always updated; a supplied live engine also receives
 the same per-engine message. Ownership-consuming free functions update only
 the global channel because a panic can make the handle's remaining lifetime
 indeterminate.
@@ -1216,23 +1216,8 @@ Return sentinels are fixed by category:
 | `FerricError` | `FERRIC_ERROR_INTERNAL_ERROR` |
 | Any pointer | NULL |
 | `FerricValue` | Void |
-| `bool` | false |
-| Integer/count | 0 |
 | `void` | Return after recording the diagnostic |
 
-An async submission-wrapper panic is a synchronous rejection: it returns
-`FERRIC_ERROR_INTERNAL_ERROR` and does not invoke the completion callback.
-After a pinned async submission returns `FERRIC_ERROR_OK`, an ordinary Rust
-panic while executing that accepted request is instead a terminal asynchronous
-result: the registry entry is removed, the callback fires exactly once with
-`FERRIC_ERROR_INTERNAL_ERROR`, and later work continues on the same worker.
-Registry cleanup happens before callback invocation, so the completed
-`request_id` is reusable at that point.
-The terminal diagnostic is carried by the result handle rather than written to
-the global or per-engine last-error channel. Although the worker remains
-available, the panic may have left logical engine state partially updated;
-consumers that require a known state should reset or recreate the engine before
-relying on later results.
 Containment does not cover non-unwinding termination such as allocator
 abort/OOM or an explicit process abort. Foreign callbacks must still return
 normally and obey their own no-unwind contract.

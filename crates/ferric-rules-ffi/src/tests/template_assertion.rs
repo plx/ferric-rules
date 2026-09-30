@@ -400,7 +400,7 @@ fn free_unchecked_works_on_creating_thread() {
 
 #[test]
 fn free_unchecked_works_from_different_thread() {
-    // This is the key test: free_unchecked should NOT return ThreadViolation.
+    // Engines carry no thread affinity; freeing from another thread succeeds.
     unsafe {
         let engine = ferric_engine_new();
         assert!(!engine.is_null());

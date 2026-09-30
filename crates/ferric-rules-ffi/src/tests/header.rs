@@ -109,15 +109,6 @@ fn committed_ffi_headers_are_identical() {
 }
 
 #[test]
-fn header_documents_active_only_pinned_halt() {
-    let header = read_committed_header();
-    assert!(
-        header.contains("does not latch onto\n * queued or future runs"),
-        "Pinned halt docs must state that idle calls do not latch"
-    );
-}
-
-#[test]
 fn header_documents_logical_run_continuation_contract() {
     let header = read_committed_header();
     for required in [
@@ -139,72 +130,12 @@ fn header_documents_logical_run_continuation_contract() {
 }
 
 #[test]
-fn header_contains_capacity_wait_async_entry_points() {
-    let header = read_committed_header();
-    assert!(
-        header.contains("ferric_pinned_engine_run_async_wait_for_capacity"),
-        "Missing capacity-waiting pinned run entry point"
-    );
-    assert!(
-        header.contains("ferric_pinned_engine_load_string_async_wait_for_capacity"),
-        "Missing capacity-waiting pinned load entry point"
-    );
-    assert!(
-        header.contains("queue_wait_ms"),
-        "Capacity-wait entry points must expose queue_wait_ms"
-    );
-    assert!(
-        header.contains("request was not admitted") && header.contains("not fire."),
-        "Capacity-wait docs must define the no-completion-on-rejection contract"
-    );
-}
-
-#[test]
-fn header_documents_cancel_and_submission_race() {
-    let header = read_committed_header();
-    assert!(
-        header.contains("does not guarantee that a concurrent submission succeeds"),
-        "Cancellation docs must weaken the concurrent-submission promise"
-    );
-    assert!(
-        header.contains("failed submission fires no completion"),
-        "Cancellation docs must retain the no-completion-on-rejection contract"
-    );
-}
-
-#[test]
-fn header_documents_exactly_once_async_terminal_contract() {
-    let header = read_committed_header();
-    for required in [
-        "Every accepted operation removes its registry entry",
-        "invokes completion exactly once",
-        "contained operation panic reports",
-        "FERRIC_ERROR_INTERNAL_ERROR",
-        "request_id is reusable from the callback",
-    ] {
-        assert!(
-            header.contains(required),
-            "pinned async terminal contract is missing from ferric.h: {required}"
-        );
-    }
-}
-
-#[test]
-fn header_documents_completion_callback_unwind_contract() {
-    let header = read_committed_header();
-    assert!(
-        header.contains("must not unwind across the FFI boundary"),
-        "Completion callback docs must forbid unwinding into Rust"
-    );
-}
-
-#[test]
 fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let source_dir = crate_dir.join("src");
     let mut exports = Vec::new();
 
-    for file in ["engine.rs", "error.rs", "pinned.rs", "types.rs"] {
+    for file in ["engine.rs", "error.rs", "types.rs"] {
         let source = std::fs::read_to_string(source_dir.join(file))
             .unwrap_or_else(|_| panic!("could not read FFI source file {file}"));
         let lines: Vec<_> = source.lines().collect();
@@ -236,7 +167,7 @@ fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
     exports.dedup();
     assert_eq!(
         exports.len(),
-        101,
+        79,
         "the export audit count changed; verify every new return category has a panic sentinel"
     );
 }
@@ -249,7 +180,6 @@ fn header_documents_panic_containment_and_sentinels() {
         "generated wrapper around a non-extern",
         "FERRIC_ERROR_INTERNAL_ERROR",
         "FerricValue: Void",
-        "integer/count: 0",
         "allocator abort/OOM",
     ] {
         assert!(
@@ -287,10 +217,6 @@ fn header_contains_ferric_error_enum() {
     assert!(
         header.contains("FERRIC_ERROR_BUFFER_TOO_SMALL"),
         "Missing FERRIC_ERROR_BUFFER_TOO_SMALL variant"
-    );
-    assert!(
-        header.contains("FERRIC_ERROR_PINNED_REENTRANT_CALL"),
-        "Missing FERRIC_ERROR_PINNED_REENTRANT_CALL variant"
     );
 }
 
@@ -409,7 +335,6 @@ fn header_has_abi_static_assertions() {
         "((FerricValue *)0)->external_type_id",
         "((FerricConfig *)0)->string_encoding",
         "((FerricConfig *)0)->strategy",
-        "((FerricPinnedEngineOptions *)0)->autorelease_policy",
     ] {
         assert!(
             header.contains(&format!("FERRIC_STATIC_ASSERT(sizeof({field}) == 4")),
@@ -425,7 +350,6 @@ fn header_has_abi_static_assertions() {
         "FerricConflictStrategy",
         "FerricFactType",
         "FerricHaltReason",
-        "FerricPinnedAutoreleasePolicy",
         "FerricSerializationFormat",
     ] {
         assert!(
@@ -600,10 +524,6 @@ fn header_contains_error_functions() {
         "Missing ferric_engine_last_error_copy"
     );
     assert!(
-        header.contains("ferric_pinned_engine_last_error_copy"),
-        "Missing ferric_pinned_engine_last_error_copy"
-    );
-    assert!(
         header.contains("ferric_engine_clear_error"),
         "Missing ferric_engine_clear_error"
     );
@@ -725,12 +645,6 @@ fn header_has_counted_by_and_sized_by_annotations() {
     assert!(
         header.contains("*buf FERRIC_SIZED_BY(buf_len),\n                                               uintptr_t buf_len,\n                                               uintptr_t *out_len);"),
         "Missing FERRIC_SIZED_BY on ferric_engine_last_error_copy buf parameter"
-    );
-
-    // ferric_pinned_engine_last_error_copy: buf sized_by buf_len
-    assert!(
-        header.contains("ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),"),
-        "Missing FERRIC_SIZED_BY on ferric_pinned_engine_last_error_copy buf parameter"
     );
 
     // ferric_engine_action_diagnostic_copy: buf sized_by buf_len

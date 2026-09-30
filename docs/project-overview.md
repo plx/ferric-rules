@@ -18,7 +18,6 @@ linked from [§6](#6-documentation-docs).
 | `ferric-rules-ffi-macros` | Proc macro that wraps each exported C function in panic containment. |
 | `ferric-rules-napi` | napi-rs native addon used by the TypeScript package. |
 | `ferric-rules-python` | PyO3 extension module `ferric`, built with `maturin`; tests in `tests/*.py`. |
-| `ferric-rules-pinned` | Worker-thread wrapper that owns an `Engine` and serves requests from a FIFO queue. |
 | `ferric-rules-bench-gen` | Generates benchmark inputs. |
 
 `Engine` is `Send + Sync`: ownership can move between threads, shared
@@ -105,8 +104,8 @@ that touch Rust crates or Cargo manifests (`scaling.yml`).
 - `.github/workflows/` — CI:
   - every pull request to `main`: `ci.yml` (Rust format/clippy/tests plus the
     tracing checks and users-guide examples, MSRV 1.75, Python/Node/Go
-    bindings, FFI sanitizer harnesses, pinned async TSan, cross-binding
-    conformance, Python tools; skipped for site-only changes),
+    bindings, FFI sanitizer harnesses, cross-binding conformance, Python
+    tools; skipped for site-only changes),
     `pr-assessment.yml` (base-vs-head CLIPS compatibility comparison through
     `compat-compare.yml`; its `PR Compatibility Gate` check is required), and
     `dependency-policy.yml` (advisory, license, and notices checks; also

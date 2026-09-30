@@ -7,7 +7,6 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::thread::ThreadId;
 use thiserror::Error;
 
 use ferric_rules_core::beta::RuleId;
@@ -1020,14 +1019,6 @@ impl Engine {
         rule_index_get(&self.rule_info, rule_id).map(|info| info.name.as_str())
     }
 
-    /// Compatibility shim for the former thread-affinity contract.
-    ///
-    /// Always succeeds: an exclusively owned engine may be used on any thread.
-    #[deprecated(note = "Engine is Send; thread-affinity checks are no longer necessary")]
-    pub fn check_thread_affinity(&self) -> Result<(), EngineError> {
-        Ok(())
-    }
-
     /// Execute RHS actions for a rule activation.
     ///
     /// Returns `(logically_fired, reset_requested, clear_requested, action_error)`.
@@ -1092,12 +1083,6 @@ impl Engine {
         self.action_diagnostics.extend(errors);
         (fired, reset_requested, clear_requested, action_error)
     }
-
-    /// Compatibility shim for the former explicit ownership-transfer operation.
-    ///
-    /// This is a no-op; ordinary Rust ownership transfer is sufficient.
-    #[deprecated(note = "Engine is Send; move it directly to the receiving thread")]
-    pub fn move_to_current_thread(&mut self) {}
 
     /// Pop the next activation eligible under current focus semantics.
     ///
@@ -1782,14 +1767,6 @@ pub enum EngineError {
 
     #[error("the internal initial-fact is protected and cannot be retracted")]
     ProtectedInitialFact,
-
-    /// Retained for wrappers that impose their own thread-affinity contract.
-    /// The Rust engine does not produce this error.
-    #[error("engine called from wrong thread (created on {creator:?}, called from {current:?})")]
-    WrongThread {
-        creator: ThreadId,
-        current: ThreadId,
-    },
 
     #[error("module not found: {0}")]
     ModuleNotFound(String),

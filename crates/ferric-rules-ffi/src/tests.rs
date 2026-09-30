@@ -70,9 +70,6 @@ mod logical_run_continuation;
 mod template_assertion;
 
 #[cfg(test)]
-mod pinned;
-
-#[cfg(test)]
 mod thread_transfer;
 
 #[cfg(test)]

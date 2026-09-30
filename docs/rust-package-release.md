@@ -11,7 +11,6 @@ Rust converts package hyphens to import underscores:
 | `ferric-rules-core` | `ferric_rules_core` | yes |
 | `ferric-rules-parser` | `ferric_rules_parser` | yes |
 | `ferric-rules-runtime` | `ferric_rules_runtime` | yes |
-| `ferric-rules-pinned` | `ferric_rules_pinned` | yes |
 | `ferric-rules-cli` | binary remains `ferric` | yes |
 | `ferric-rules-ffi` | `ferric_rules_ffi` | yes |
 | `ferric-rules-ffi-macros` | internal proc-macro dependency | yes |
@@ -127,10 +126,7 @@ cargo publish -p ferric-rules-runtime --locked
 
 # Tier 3: depends on runtime
 cargo publish -p ferric-rules --locked
-cargo publish -p ferric-rules-pinned --locked
 cargo publish -p ferric-rules-cli --locked
-
-# Tier 4: also depends on pinned
 cargo publish -p ferric-rules-ffi --locked
 ```
 
