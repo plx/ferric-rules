@@ -438,7 +438,7 @@ test-go:
 test-go-race:
     cd bindings/go && go test -race -v ./...
 
-# Run Go binding tests repeatedly to detect affinity-sensitive flakes (default: 10 iterations)
+# Run Go binding tests repeatedly under -race to surface intermittent lifecycle races (default: 10 iterations)
 test-go-stress count="10":
     cd bindings/go && go test -race -count={{count}} -v ./...
 
