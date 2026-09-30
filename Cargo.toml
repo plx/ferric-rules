@@ -8,7 +8,6 @@ members = [
     "crates/ferric-rules-ffi-macros",
     "crates/ferric-rules-napi",
     "crates/ferric-rules-parser",
-    "crates/ferric-rules-pinned",
     "crates/ferric-rules-runtime",
     "crates/ferric-rules-python",
     "examples/users-guide/*",
@@ -60,9 +59,6 @@ smallvec = { version = "1", features = ["serde"] }
 # Faster internal hash tables/sets
 rustc-hash = "2"
 
-# Bounded channels with cancel-aware and timeout-aware admission.
-crossbeam-channel = "0.5"
-
 # PyO3 Python bindings. The Python distribution targets CPython's stable ABI
 # from 3.9 onward; keep this feature aligned with wheel-targets.json.
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
@@ -88,9 +84,6 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
 tracing-chrome = "0.7"
 
-# Apple Objective-C runtime (Apple targets only, used by ferric-rules-pinned for autorelease pools)
-objc2 = { version = "0.6" }
-
 # Internal crates. Exact synchronized versions are required because Cargo
 # removes `path` when these packages are published to a registry.
 ferric-rules = { version = "=0.1.0", path = "crates/ferric-rules" }
@@ -99,7 +92,6 @@ ferric-rules-ffi = { version = "=0.1.0", path = "crates/ferric-rules-ffi" }
 ferric-rules-ffi-macros = { version = "=0.1.0", path = "crates/ferric-rules-ffi-macros" }
 ferric-rules-cli = { version = "=0.1.0", path = "crates/ferric-rules-cli" }
 ferric-rules-parser = { version = "=0.1.0", path = "crates/ferric-rules-parser" }
-ferric-rules-pinned = { version = "=0.1.0", path = "crates/ferric-rules-pinned" }
 ferric-rules-runtime = { version = "=0.1.0", path = "crates/ferric-rules-runtime" }
 
 [workspace.lints.rust]

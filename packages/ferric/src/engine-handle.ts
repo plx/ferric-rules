@@ -183,7 +183,7 @@ export class EngineHandle {
   /**
    * Create an EngineHandle backed by a new Worker thread.
    *
-   * The Engine is created on the worker's OS thread, satisfying thread affinity.
+   * The Engine is created on, and owned by, the worker thread.
    * If `options.source` is provided, the source is loaded and reset() is called.
    * If `options.snapshot` is provided, the engine is restored from the snapshot.
    * If initialization fails after the Worker starts, create() awaits termination

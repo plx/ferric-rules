@@ -77,7 +77,6 @@ pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
         EngineError::FactTimestampExhausted(_)
         | EngineError::ForeignHandle
         | EngineError::InvalidHostValue(_)
-        | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }

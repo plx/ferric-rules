@@ -175,20 +175,6 @@ fn ordinary_access_on_creating_thread() {
 }
 
 #[test]
-fn thread_violation_error_mapping() {
-    // Test that EngineError::WrongThread maps to FerricError::ThreadViolation.
-    // Preserve this legacy discriminant for ABI compatibility.
-    use crate::error::map_engine_error;
-    use ferric_rules_runtime::engine::EngineError;
-
-    let err = EngineError::WrongThread {
-        creator: std::thread::current().id(),
-        current: std::thread::current().id(),
-    };
-    assert_eq!(map_engine_error(&err), FerricError::ThreadViolation);
-}
-
-#[test]
 fn serialized_reset_from_another_thread() {
     // The owner retains the allocation and performs no access until join.
     unsafe {

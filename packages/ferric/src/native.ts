@@ -206,8 +206,9 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
 /**
  * The native Engine class exported by the napi-rs addon.
  *
- * This is the synchronous, thread-affine engine. All methods execute on
- * the calling thread. Use EngineHandle for async worker-backed access.
+ * This is the synchronous engine. All methods execute on (and block) the
+ * calling thread. Use EngineHandle for async worker-backed access that keeps
+ * the event loop free.
  *
  * All methods are wrapped with error conversion — napi-rs errors are
  * converted to the correct FerricError subclass.

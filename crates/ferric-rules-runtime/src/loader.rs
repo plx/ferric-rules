@@ -335,7 +335,7 @@ impl Engine {
     /// Returns a vector of errors if:
     /// - Parse errors occur
     /// - Top-level forms are invalid or unsupported
-    /// - Engine operations fail (e.g., encoding errors, wrong thread)
+    /// - Engine operations fail (e.g., encoding errors)
     ///
     /// # Examples
     ///
