@@ -21,19 +21,27 @@ go get github.com/plx/ferric-rules/bindings/go
 ```
 
 The static library must match the source/header revision and target. Cross
-platform bundled Go distribution and expanded feature parity are deferred.
-Existing `Engine`, `PinnedEngine`, `Manager`, and `Coordinator` APIs remain
-available; their cancellation and worker behavior is described in Go API docs.
+platform bundled Go distribution is deferred.
 
-## Input and shutdown changes
+## API
 
-`RunWithLimit` and `EvaluateRequest.Limit` accept zero for unlimited work and
-positive limits. Negative limits now return a typed `InvalidArgumentError`
-before running or queuing work.
+The package exposes one type, `Engine`, created with `NewEngine` (optionally
+`WithSource`, `WithSnapshot`, `WithStrategy`, `WithEncoding`,
+`WithMaxCallDepth`) and released with `Close`. Engine methods serialize native
+access internally, so a single `Engine` may be used from several goroutines;
+for parallel work, create one `Engine` per goroutine. See the package examples
+(`example_test.go`) for typical use.
 
-`WithSnapshot` rejects nil/empty bytes, combination with `WithSource` (even an
-empty source), and explicit configuration overrides. A restored engine uses
-its saved configuration. Supply only the snapshot and its matching format.
-Every concurrent `Coordinator.Close` call waits for admitted work and worker
-cleanup to finish; shutdown remains idempotent. Call coordinator shutdown
-outside its own `Manager.Do` callbacks, since it waits for those callbacks.
+- `Run` and `RunWithLimit` take a `context.Context`. A cancelable context is
+  checked between batches of at most 100 rule firings; cancellation returns
+  the partial `RunResult` and an error wrapping `ctx.Err()`.
+- `RunWithLimit` accepts zero for unlimited work and positive limits. Negative
+  limits return a typed `InvalidArgumentError` before running.
+- `Step` fires at most one activation and reports whether a rule fired.
+- `Serialize` / `WithSnapshot` round-trip an engine. `WithSnapshot` rejects
+  nil/empty bytes, combination with `WithSource` (even an empty source), and
+  explicit configuration overrides; a restored engine uses its saved
+  configuration.
+- Methods that return only a value (for example `Rules`, `AgendaSize`,
+  `GetOutput`) have `...E` variants that also report errors such as
+  `ErrEngineClosed`.

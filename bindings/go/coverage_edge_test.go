@@ -2,16 +2,13 @@
 package ferric
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"math"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
@@ -70,7 +67,6 @@ func resetFFIHooks() {
 	ffiValueStringBytes = ffi.ValueStringBytes
 	ffiValueMultifieldCopy = ffi.ValueMultifieldCopy
 	ffiValueFree = ffi.ValueFree
-	factsToWire = FactsToWire
 }
 
 func withFFIHooks(t *testing.T) {
@@ -78,15 +74,6 @@ func withFFIHooks(t *testing.T) {
 	resetFFIHooks()
 	t.Cleanup(resetFFIHooks)
 }
-
-type doneOnlyContext struct {
-	done chan struct{}
-}
-
-func (c doneOnlyContext) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (c doneOnlyContext) Done() <-chan struct{}       { return c.done }
-func (c doneOnlyContext) Err() error                  { return nil }
-func (c doneOnlyContext) Value(any) any               { return nil }
 
 func TestManualConfigurationValidationBranches(t *testing.T) {
 	// These checks exercise the enum and integer validation that runs before
@@ -218,60 +205,6 @@ func TestManualErrorTypesAndTranslations(t *testing.T) {
 	var fe *FerricError
 	if err := errorFromFFI(ffi.ErrNullPointer, nil); !errors.As(err, &fe) || fe.Code != int(ffi.ErrNullPointer) {
 		t.Fatalf("errorFromFFI(null) = %#v, want *FerricError with code %d", fe, int(ffi.ErrNullPointer))
-	}
-}
-
-func TestManualWireConversionEdges(t *testing.T) {
-	// These examples cover every supported scalar shape plus the recursive
-	// error paths. They document what callers may pass to wire conversion.
-	cases := []struct {
-		in   any
-		want WireValue
-	}{
-		{int(7), WireValue{Kind: WireValueInteger, Integer: 7}},
-		{int32(8), WireValue{Kind: WireValueInteger, Integer: 8}},
-		{float32(1.25), WireValue{Kind: WireValueFloat, Float: float64(float32(1.25))}},
-		{true, WireValue{Kind: WireValueSymbol, Text: "TRUE"}},
-		{false, WireValue{Kind: WireValueSymbol, Text: "FALSE"}},
-		{[]any{int32(1), false}, MultifieldValue(IntValue(1), SymbolValue("FALSE"))},
-	}
-	for _, tc := range cases {
-		got, err := NativeToWireValue(tc.in)
-		if err != nil {
-			t.Fatalf("NativeToWireValue(%T) unexpected error: %v", tc.in, err)
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("NativeToWireValue(%#v) = %#v, want %#v", tc.in, got, tc.want)
-		}
-	}
-
-	if _, err := NativeToWireValue(struct{}{}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("unsupported native type should fail, got %v", err)
-	}
-	if _, err := NativeToWireValue([]any{int64(1), struct{}{}}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("unsupported nested native type should fail, got %v", err)
-	}
-	unknown := WireValue{Kind: WireValueKind("bogus")}
-	if _, err := WireToNativeValue(unknown); !errors.Is(err, errUnknownWireValueKind) {
-		t.Fatalf("unknown wire kind should fail, got %v", err)
-	}
-	if _, err := WireToNativeValue(MultifieldValue(unknown)); !errors.Is(err, errUnknownWireValueKind) {
-		t.Fatalf("unknown nested wire kind should fail, got %v", err)
-	}
-	if _, err := WireSliceToNative([]WireValue{unknown}); !errors.Is(err, errUnknownWireValueKind) {
-		t.Fatalf("bad wire slice should fail, got %v", err)
-	}
-	if _, err := WireMapToNative(map[string]WireValue{"bad": unknown}); !errors.Is(err, errUnknownWireValueKind) {
-		t.Fatalf("bad wire map should fail, got %v", err)
-	}
-	if _, err := FactToWire(Fact{Type: FactTemplate, Slots: map[string]any{"bad": struct{}{}}}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("bad template fact should fail, got %v", err)
-	}
-	if _, err := FactToWire(Fact{Type: FactOrdered, Fields: []any{struct{}{}}}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("bad ordered fact should fail, got %v", err)
-	}
-	if _, err := FactsToWire([]Fact{{Type: FactOrdered, Fields: []any{struct{}{}}}}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("bad fact slice should fail, got %v", err)
 	}
 }
 
@@ -603,218 +536,6 @@ func TestManualCancelableRunBatchesAndHaltReason(t *testing.T) {
 	}
 	if cancelableHalt.HaltReason != HaltRequested {
 		t.Fatalf("cancelable halted run reason = %v, want HaltRequested", cancelableHalt.HaltReason)
-	}
-}
-
-func TestManualCoordinatorWorkerAndManagerErrorBranches(t *testing.T) {
-	// These checks cover coordinator/manager failures that occur before or
-	// during worker cold-start, where user input names an unknown or invalid spec.
-	if got := (roundRobinPolicy{}).PickWorker(RouteHint{}, 0, 10); got != 0 {
-		t.Fatalf("round robin with no workers = %d, want 0", got)
-	}
-
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{}))
-	o := newObs(&coordConfig{logger: logger})
-	w := &worker{
-		specs:    map[string][]EngineOption{"bad": {WithSource("(defrule bad")}},
-		engines:  make(map[string]*Engine),
-		requests: newRequestQueue[workerRequest](1),
-		done:     make(chan struct{}),
-		obs:      o,
-	}
-	if _, err := w.getOrCreateEngine("missing"); !errors.Is(err, errUnknownEngineSpec) {
-		t.Fatalf("missing worker spec should report errUnknownEngineSpec, got %v", err)
-	}
-	if _, err := w.getOrCreateEngine("bad"); err == nil || !strings.Contains(err.Error(), "creating engine") {
-		t.Fatalf("bad worker spec should fail cold start, got %v", err)
-	}
-	if !strings.Contains(buf.String(), "engine cold start failed") {
-		t.Fatalf("expected cold-start failure log, got %q", buf.String())
-	}
-
-	call, responses := newWorkerCall(func(*Engine) (struct{}, error) {
-		return struct{}{}, nil
-	})
-	w.handle(workerRequest{specName: "missing", call: call})
-	if response := <-responses; !errors.Is(response.err, errUnknownEngineSpec) {
-		t.Fatalf("worker handle missing spec = %v", response.err)
-	}
-
-	mgr, err := NewManager(WithSource(`(defrule r => (assert (ok)))`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, mgr)
-	var nilMgrCtx context.Context
-	if err := mgr.Do(nilMgrCtx, func(*Engine) error { return nil }); !errors.Is(err, errNilContext) {
-		t.Fatalf("Do nil context = %v", err)
-	}
-	if _, err := mgr.Evaluate(context.Background(), nil); !errors.Is(err, errNilEvaluateRequest) {
-		t.Fatalf("Evaluate nil request = %v", err)
-	}
-	if _, err := mgr.EvaluateNative(context.Background(), nil); !errors.Is(err, errNilEvaluateRequest) {
-		t.Fatalf("EvaluateNative nil request = %v", err)
-	}
-
-	badMgr, err := NewManager(WithSource("(defrule bad"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, badMgr)
-	if _, err := badMgr.Evaluate(context.Background(), &EvaluateRequest{}); err == nil {
-		t.Fatal("Evaluate with invalid source should fail during worker cold-start")
-	}
-	if _, err := badMgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{}); err == nil {
-		t.Fatal("EvaluateNative with invalid source should fail during worker cold-start")
-	}
-}
-
-func TestManualAssertWireFactsAndEvaluateNativeErrors(t *testing.T) {
-	// The request conversion layer rejects malformed wire facts before running
-	// rules. These examples cover each validation branch and native conversion.
-	lockThread(t)
-	e, err := NewEngine(WithSource(`(deftemplate sensor (slot id))`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, e)
-
-	if err := assertWireFacts(e, []WireFactInput{{Kind: WireFactKindOrdered}}); !errors.Is(err, errOrderedFactPayloadMissing) {
-		t.Fatalf("missing ordered payload = %v", err)
-	}
-	if err := assertWireFacts(e, []WireFactInput{OrderedFact("x", WireValue{Kind: "bad"})}); !errors.Is(err, errUnknownWireValueKind) {
-		t.Fatalf("bad ordered field = %v", err)
-	}
-	if err := assertWireFacts(&Engine{}, []WireFactInput{OrderedFact("x", IntValue(1))}); err == nil {
-		t.Fatal("ordered assertion through nil engine should fail")
-	}
-	if err := assertWireFacts(e, []WireFactInput{{Kind: WireFactKindTemplate}}); !errors.Is(err, errTemplateFactPayloadMissing) {
-		t.Fatalf("missing template payload = %v", err)
-	}
-	if err := assertWireFacts(e, []WireFactInput{TemplateFact("sensor", map[string]WireValue{"id": {Kind: "bad"}})}); !errors.Is(err, errUnknownWireValueKind) {
-		t.Fatalf("bad template slot = %v", err)
-	}
-	if err := assertWireFacts(&Engine{}, []WireFactInput{TemplateFact("sensor", map[string]WireValue{"id": IntValue(1)})}); err == nil {
-		t.Fatal("template assertion through nil engine should fail")
-	}
-	if err := assertWireFacts(e, []WireFactInput{{Kind: WireFactKind("bogus")}}); !errors.Is(err, errUnsupportedFactKind) {
-		t.Fatalf("unsupported fact kind = %v", err)
-	}
-
-	mgr, err := NewManager(WithSource(`(deftemplate sensor (slot id))`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, mgr)
-	if _, err := mgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{
-		Facts: []NativeFactInput{{TemplateName: "sensor", Slots: map[string]any{"id": struct{}{}}}},
-	}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("bad native slot = %v", err)
-	}
-	if _, err := mgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{
-		Facts: []NativeFactInput{{Relation: "x", Fields: []any{struct{}{}}}},
-	}); !errors.Is(err, errUnsupportedWireConversionType) {
-		t.Fatalf("bad native field = %v", err)
-	}
-
-	if _, err := mgr.Evaluate(context.Background(), &EvaluateRequest{
-		Facts: []WireFactInput{{Kind: WireFactKindOrdered}},
-	}); !errors.Is(err, errOrderedFactPayloadMissing) {
-		t.Fatalf("Evaluate bad wire fact = %v", err)
-	}
-
-	stderrMgr, err := NewManager(WithSource(`(defrule warn => (printout stderr "warn" crlf))`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, stderrMgr)
-	result, err := stderrMgr.Evaluate(context.Background(), &EvaluateRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Output["stderr"] != "warn\n" {
-		t.Fatalf("stderr output = %q, want warn", result.Output["stderr"])
-	}
-
-	if _, err := buildEvaluateResult(&Engine{}, &RunResult{}); err == nil {
-		t.Fatal("buildEvaluateResult should fail when Facts fails")
-	}
-}
-
-func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
-	// PinnedEngine should forward file serialization and preserve the real
-	// callback result once an already-dispatched operation has started.
-	p, err := NewPinnedEngine(WithSource(`(defrule r => (assert (ok)))`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, p)
-
-	path := t.TempDir() + "/snapshot.bin"
-	if err := p.SerializeToFile(path, FormatBincode); err != nil {
-		t.Fatalf("SerializeToFile failed: %v", err)
-	}
-	var nilPinnedCtx context.Context
-	if err := p.Do(nilPinnedCtx, func(*Engine) error { return nil }); !errors.Is(err, errNilContext) {
-		t.Fatalf("PinnedEngine.Do nil context = %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
-	release := make(chan struct{})
-	released := false
-	defer func() {
-		if !released {
-			close(release)
-		}
-	}()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- p.Do(ctx, func(*Engine) error {
-			close(started)
-			<-release
-			return nil
-		})
-	}()
-	<-started
-	cancel()
-	select {
-	case earlyErr := <-errCh:
-		t.Fatalf("started PinnedEngine.Do returned before its callback settled: %v", earlyErr)
-	case <-time.After(25 * time.Millisecond):
-	}
-	close(release)
-	released = true
-	select {
-	case err = <-errCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("started PinnedEngine.Do did not settle after callback release")
-	}
-	if err != nil {
-		t.Fatalf("started PinnedEngine.Do result after cancellation = %v, want callback result", err)
-	}
-
-	if err := p.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Do(context.Background(), func(*Engine) error { return nil }); !errors.Is(err, errPinnedEngineClosed) {
-		t.Fatalf("PinnedEngine.Do after close = %v", err)
-	}
-
-	blocked := &PinnedEngine{
-		requests: newRequestQueue[pinnedRequest](0),
-		done:     make(chan struct{}),
-	}
-	blockedCtx, blockedCancel := context.WithCancel(context.Background())
-	blockedErr := make(chan error, 1)
-	go func() {
-		_, err := blocked.tryEnqueue(blockedCtx, pinnedRequest{})
-		blockedErr <- err
-	}()
-	blockedCancel()
-	if err := <-blockedErr; err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("blocked tryEnqueue canceled before dispatch = %v", err)
 	}
 }
 
@@ -1242,63 +963,6 @@ func TestManualHookedBuildFactErrors(t *testing.T) {
 	}
 }
 
-func TestManualHookedEvaluateAndPinnedEdges(t *testing.T) {
-	// Evaluate's closure is normally backed by a healthy worker engine. Hooks
-	// let us cover reset, run, and result-conversion failures deterministically.
-	t.Run("reset failure", func(t *testing.T) {
-		withFFIHooks(t)
-		ffiEngineReset = func(ffi.EngineHandle) ffi.ErrorCode { return ffi.ErrRuntimeError }
-		mgr, err := NewManager()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer mustClose(t, mgr)
-		if _, err := mgr.Evaluate(context.Background(), &EvaluateRequest{}); err == nil {
-			t.Fatal("Evaluate should fail when Reset fails")
-		}
-	})
-
-	t.Run("run failure", func(t *testing.T) {
-		withFFIHooks(t)
-		ffiEngineRunEx = func(ffi.EngineHandle, int64) (uint64, ffi.HaltReason, ffi.ErrorCode) {
-			return 0, 0, ffi.ErrRuntimeError
-		}
-		mgr, err := NewManager()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer mustClose(t, mgr)
-		if _, err := mgr.Evaluate(context.Background(), &EvaluateRequest{}); err == nil {
-			t.Fatal("Evaluate should fail when Run fails")
-		}
-	})
-
-	t.Run("wire conversion failure", func(t *testing.T) {
-		lockThread(t)
-		withFFIHooks(t)
-		factsToWire = func([]Fact) ([]WireFact, error) { return nil, errUnsupportedWireConversionType }
-		e, err := NewEngine()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer mustClose(t, e)
-		if _, err := buildEvaluateResult(e, &RunResult{}); err == nil {
-			t.Fatal("buildEvaluateResult should fail when factsToWire fails")
-		}
-	})
-
-	t.Run("pinned select cancellation", func(t *testing.T) {
-		withFFIHooks(t)
-		done := make(chan struct{})
-		close(done)
-		p := &PinnedEngine{requests: newRequestQueue[pinnedRequest](0), done: make(chan struct{})}
-		_, err := p.tryEnqueue(doneOnlyContext{done: done}, pinnedRequest{})
-		if err == nil {
-			t.Fatal("tryEnqueue should return an error from ctx.Done")
-		}
-	})
-}
-
 func TestPropertyConfigurationHelpers(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		n := rapid.IntRange(0, math.MaxInt).Draw(t, "max_call_depth")
@@ -1350,38 +1014,11 @@ func TestPropertyConfigurationHelpers(t *testing.T) {
 		if _, err := NewEngine(WithMaxCallDepth(-1)); !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("NewEngine invalid call depth error = %v", err)
 		}
-		if _, err := NewCoordinator(nil, Threads(0)); !errors.Is(err, errInvalidThreadCount) {
-			t.Fatalf("invalid coordinator thread count error = %v", err)
-		}
-		if got := (roundRobinPolicy{}).PickWorker(RouteHint{}, 0, rapid.Uint64().Draw(t, "counter")); got != 0 {
-			t.Fatalf("roundRobinPolicy empty pool = %d, want 0", got)
-		}
-	})
-}
-
-func TestPropertyWireConversionErrorSurfaces(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		kind := WireValueKind(rapid.String().Filter(func(s string) bool {
-			switch WireValueKind(s) {
-			case WireValueVoid, WireValueInteger, WireValueFloat, WireValueSymbol, WireValueString, WireValueMultifield:
-				return false
-			default:
-				return true
-			}
-		}).Draw(t, "kind"))
-		_, err := WireToNativeValue(WireValue{Kind: kind})
-		if !errors.Is(err, errUnknownWireValueKind) {
-			t.Fatalf("unknown kind %q error = %v", kind, err)
-		}
 	})
 }
 
 // TestPropertyEngineSurfaceSweep fuzzes the raw Engine API surface and the
-// serialize/restore round-trip across every format. It deliberately does NOT
-// spin up Manager/Coordinator/PinnedEngine per iteration — those wrappers each
-// start OS-thread-locked workers, and creating them 100x amplifies
-// thread-affinity churn for no extra signal (their surface is covered once by
-// TestManagerCoordinatorPinnedSurface and by their dedicated test files).
+// serialize/restore round-trip across every format.
 func TestPropertyEngineSurfaceSweep(t *testing.T) {
 	lockThread(t)
 
@@ -1424,7 +1061,7 @@ func TestPropertyEngineSurfaceSweep(t *testing.T) {
 		}
 		if fired, err := e.Step(); err != nil {
 			rt.Fatal(err)
-		} else if fired == nil {
+		} else if !fired {
 			rt.Fatal("expected a bootstrap rule to fire")
 		}
 
@@ -1552,7 +1189,9 @@ func TestPropertyEngineSurfaceSweep(t *testing.T) {
 			rt.Fatal(err)
 		}
 		e.Halt()
-		e.Clear()
+		if err := e.Clear(); err != nil {
+			rt.Fatal(err)
+		}
 		_ = HaltAgendaEmpty.String()
 		_ = HaltLimitReached.String()
 		_ = HaltRequested.String()
@@ -1560,134 +1199,8 @@ func TestPropertyEngineSurfaceSweep(t *testing.T) {
 	})
 }
 
-// TestManagerCoordinatorPinnedSurface exercises the Manager, Coordinator, and
-// PinnedEngine wrapper surfaces once with fixed inputs. It is deliberately not
-// a rapid property: these wrappers each start OS-thread-locked worker
-// goroutines, so running them under a 100-iteration property needlessly churns
-// OS threads (an affinity-flake amplifier) without exercising new behavior.
-// Concurrency correctness lives in manager_test.go / pinned_engine_test.go /
-// property_test.go; this test just walks the broad accessor surface.
-func TestManagerCoordinatorPinnedSurface(t *testing.T) {
-	const (
-		id     = int64(42)
-		value  = 3.14
-		format = FormatBincode
-		// Negative index exercises the ((idx % n) + n) % n clamp in pickWorker.
-		policyIndex = -1
-	)
-	tmpDir := t.TempDir()
-	source := `
-		(defglobal ?*threshold* = 10)
-		(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
-		(defrule bootstrap => (assert (booted)))
-		(defrule color-seen (color ?c) => (assert (matched ?c)) (printout t ?c crlf))
-		(defrule sensor-seen (sensor (id ?id) (value ?v)) => (assert (observed ?id)))
-	`
-
-	mgr, err := NewManager(WithSource(source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = mgr.Close() }()
-	req := &EvaluateRequest{Facts: []WireFactInput{
-		OrderedFact("color", SymbolValue("blue"), StringValue("label"), MultifieldValue(IntValue(id))),
-		TemplateFact("sensor", map[string]WireValue{"id": IntValue(id), "value": FloatValue(value)}),
-	}}
-	if _, err := mgr.Evaluate(context.Background(), req); err != nil {
-		t.Fatal(err)
-	}
-	req.Limit = 1
-	if _, err := mgr.Evaluate(context.Background(), req); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{Facts: []NativeFactInput{
-		{Relation: "color", Fields: []any{Symbol("green")}},
-		{TemplateName: "sensor", Slots: map[string]any{"id": id, "value": value}},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-
-	coord, err := NewCoordinator(
-		[]EngineSpec{{Name: "sweep", Options: []EngineOption{WithSource(source)}}},
-		Threads(2),
-		WithDispatchPolicy(fixedIndexPolicy{index: policyIndex}),
-		WithLogger(slog.New(slog.DiscardHandler)),
-		WithTracerProvider(nil),
-		WithMeterProvider(nil),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = coord.Close() }()
-	cm, err := coord.Manager("sweep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cm.Do(context.Background(), func(engine *Engine) error {
-		_, err := engine.Run(context.Background())
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	p, err := NewPinnedEngine(WithSource(source))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = p.Close() }()
-	if err := p.Load(`(defrule pinned-loaded => (assert (pinned-loaded)))`); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = p.Step()
-	pColorID, err := p.AssertString("(assert (color purple))")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.AssertFact("data", id); err != nil {
-		t.Fatal(err)
-	}
-	pSensorID, err := p.AssertTemplate("sensor", map[string]any{"id": id, "value": value})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.GetFact(pSensorID); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = p.Facts()
-	_, _ = p.FindFacts("data")
-	_, _ = p.FactCount()
-	_, _ = p.RunWithLimit(context.Background(), 1)
-	_, _ = p.Run(context.Background())
-	_, _ = p.Serialize(format)
-	if err := p.SerializeToFile(tmpDir+"/pinned-surface.bin", format); err != nil {
-		t.Fatal(err)
-	}
-	_ = p.Rules()
-	_ = p.Templates()
-	_, _ = p.GetGlobal("threshold")
-	_ = p.CurrentModule()
-	_, _ = p.Focus()
-	_ = p.FocusStack()
-	_ = p.AgendaSize()
-	_ = p.IsHalted()
-	_, _ = p.GetOutput("t")
-	p.ClearOutput("t")
-	p.PushInput("unused")
-	_ = p.Diagnostics()
-	p.ClearDiagnostics()
-	if err := p.Retract(pColorID); err != nil {
-		t.Fatal(err)
-	}
-	p.Halt()
-	p.Clear()
-}
-
 func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		text := rapid.String().Draw(t, "text")
 		ffiText := rapid.String().Filter(func(value string) bool {
 			return !strings.ContainsRune(value, '\x00')
 		}).Draw(t, "ffi_text")
@@ -1756,50 +1269,6 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 		*(*ffi.ValueType)(unsafe.Pointer(&unknown)) = ffi.ValueType(999) //nolint:gosec // intentional unsafe write of opaque ffi.Value type tag to exercise the unknown-type branch
 		if got := ffiValueToGo(&unknown); got != nil {
 			t.Fatalf("unknown FFI value = %v, want nil", got)
-		}
-
-		nativeCases := []any{
-			int(i),
-			i32,
-			i,
-			float32(f),
-			f,
-			Symbol(text),
-			text,
-			true,
-			false,
-			nil,
-			[]any{i, Symbol(text), text},
-		}
-		for _, value := range nativeCases {
-			wire, err := NativeToWireValue(value)
-			if err != nil {
-				t.Fatalf("NativeToWireValue(%T) failed: %v", value, err)
-			}
-			if _, err := WireToNativeValue(wire); err != nil {
-				t.Fatalf("WireToNativeValue(%v) failed: %v", wire, err)
-			}
-		}
-		if _, err := NativeToWireValue(struct{}{}); !errors.Is(err, errUnsupportedWireConversionType) {
-			t.Fatalf("unsupported native wire conversion error = %v", err)
-		}
-		if _, err := NativeToWireValue([]any{struct{}{}}); !errors.Is(err, errUnsupportedWireConversionType) {
-			t.Fatalf("unsupported nested native wire conversion error = %v", err)
-		}
-		if _, err := WireSliceToNative([]WireValue{{Kind: WireValueKind("bad")}}); !errors.Is(err, errUnknownWireValueKind) {
-			t.Fatalf("bad wire slice conversion error = %v", err)
-		}
-		if _, err := WireMapToNative(map[string]WireValue{"x": {Kind: WireValueKind("bad")}}); !errors.Is(err, errUnknownWireValueKind) {
-			t.Fatalf("bad wire map conversion error = %v", err)
-		}
-		if _, err := FactToWire(Fact{Type: FactOrdered, Fields: []any{struct{}{}}}); !errors.Is(err, errUnsupportedWireConversionType) {
-			t.Fatalf("bad ordered fact conversion error = %v", err)
-		}
-		if _, err := FactToWire(Fact{Type: FactTemplate, Slots: map[string]any{"x": struct{}{}}}); !errors.Is(err, errUnsupportedWireConversionType) {
-			t.Fatalf("bad template fact conversion error = %v", err)
-		}
-		if _, err := FactsToWire([]Fact{{Type: FactOrdered, Fields: []any{struct{}{}}}}); !errors.Is(err, errUnsupportedWireConversionType) {
-			t.Fatalf("bad facts conversion error = %v", err)
 		}
 	})
 }
@@ -1950,6 +1419,16 @@ func TestManualHookedMutationAndAccessorErrors(t *testing.T) {
 				t.Helper()
 				if _, err := e.Step(); !errors.Is(err, ErrRuntime) {
 					t.Fatalf("Step err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name:  "clear",
+			setup: func() { ffiEngineClear = func(ffi.EngineHandle) ffi.ErrorCode { return ffi.ErrRuntimeError } },
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if err := e.Clear(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Clear err = %v, want ErrRuntime", err)
 				}
 			},
 		},

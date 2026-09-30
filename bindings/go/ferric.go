@@ -1,7 +1,7 @@
 // Package ferric provides Go bindings for the ferric rules engine,
 // a high-performance CLIPS-compatible production rule system.
 //
-// For simple, single-engine use, create an Engine directly with NewEngine.
-// For concurrent, multi-engine-type use, create a Coordinator with
-// NewCoordinator and obtain Manager handles for each engine type.
+// Create an Engine with NewEngine and Close it when done. Engine methods
+// serialize native access internally, so one Engine may be used from several
+// goroutines; use one Engine per goroutine for parallel work.
 package ferric

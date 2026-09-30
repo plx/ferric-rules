@@ -1091,10 +1091,10 @@ The Go binding rejects embedded NUL before every legacy `C.CString`
 conversion. Rejections return `ErrInvalidArgument` through error-bearing APIs;
 their diagnostic identifies the offending argument and the byte offset of the
 first NUL. `Engine.GetOutputE`, `Engine.ClearOutputE`, and
-`Engine.PushInputE` (and their `PinnedEngine` counterparts) expose these
-errors for I/O arguments. The older convenience methods delegate to those
-error-aware methods and intentionally discard the error for compatibility;
-an invalid channel never aliases its prefix, and invalid input is not queued.
+`Engine.PushInputE` expose these errors for I/O arguments. The older
+convenience methods delegate to those error-aware methods and intentionally
+discard the error for compatibility; an invalid channel never aliases its
+prefix, and invalid input is not queued.
 
 Snapshot payloads remain byte-oriented and may contain NUL. Snapshot file
 paths are handled by Go's filesystem APIs rather than `C.CString`; invalid

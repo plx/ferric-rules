@@ -165,20 +165,15 @@ tests). Single `main.rs`.
 
 ### `bindings/go` — Go binding on top of `ferric-rules-ffi`
 
-- `engine.go`, `engine_options.go`, `pinned_engine.go` — engine façade;
-  dedicated-worker variant for FIFO dispatch and active-run cancellation.
-- `coordinator.go`, `coordinator_options.go`, `manager.go` — multi-engine-type
-  orchestration (`Coordinator` + per-type `Manager`).
+- `engine.go`, `engine_options.go` — the `Engine` façade and its options.
 - `fact.go`, `values.go`, `result.go`, `iterators.go` — Go-side value/fact
   model and iteration.
-- `wire_conv.go`, `wire_helpers.go`, `wire_types.go` — FFI marshaling layer.
-- `observability.go`, `errors.go`, `example_test.go`.
+- `errors.go`, `example_test.go`.
 - `internal/ffi/` — cgo wrapper:
   - `ffi.go`, `accessors.go`, `types.go`, `serialization.go`
   - `lib/` — vendored `libferric_rules_ffi.a` + `ferric.h` (copied by
     `just build-go-ffi`).
-- `temporal/` — Temporal.io activity wrappers (`activity.go`,
-  `activity_options.go`).
+- `cmd/bindings-conformance/` — Go adapter for the cross-binding corpus.
 - Test suite: `*_test.go` alongside sources; property tests, serialization
   tests, stress/race targets (`test-go-stress`).
 - `CI_POLICY.md` — binding CI rules.

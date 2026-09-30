@@ -56,5 +56,3 @@ var (
 	ffiValueMultifieldCopy          = ffi.ValueMultifieldCopy
 	ffiValueFree                    = ffi.ValueFree
 )
-
-var factsToWire = FactsToWire

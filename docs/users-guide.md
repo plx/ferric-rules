@@ -878,8 +878,8 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 - **C / C++ / Swift / Kotlin**: link against `libferric_rules_ffi` and include
   the generated `ferric.h`. See [`compatibility.md`](compatibility.md)
   §16.13 for the C contract.
-- **Go**: `bindings/go` provides an idiomatic façade (`Engine`,
-  `Coordinator`, `Manager`) plus a Temporal activity wrapper.
+- **Go**: `bindings/go` provides an idiomatic `Engine` façade; see its
+  [README](../bindings/go/README.md).
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through
   `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.13. Python 3.14,
   free-threaded CPython, subinterpreters, and other interpreters are not

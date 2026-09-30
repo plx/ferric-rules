@@ -229,10 +229,21 @@ requirement without adding an asynchronous operation queue.
 Go `Engine` now serializes its complete native operation and diagnostic-copy
 window internally, so callers may use it from different goroutines without a
 lifetime `runtime.LockOSThread`. Constructors pin temporarily for thread-local
-error retrieval. Raw `Halt` queues behind an active operation; use a cancelable
-run context or `PinnedEngine.Halt` for active-run cancellation. Existing worker
-queues and pool ownership rules remain in force, including not retaining an
-engine borrowed inside a manager callback.
+error retrieval. `Halt` queues behind an active operation; use a cancelable
+run context for active-run cancellation.
+
+Pre-1.0 breaking changes to the Go binding (September 2026): the package is
+now just the core `Engine`. `PinnedEngine`, `Coordinator`, `Manager`,
+`NewManager`, `Manager.Evaluate`/`EvaluateNative`, the `Wire*` types and
+conversion helpers, `PanicError`, the `WithLogger`/`WithTracerProvider`/
+`WithMeterProvider` observability options, and the `bindings/go/temporal`
+package were removed, along with their OpenTelemetry and Temporal module
+dependencies. Share one `Engine` across goroutines, or create one per
+goroutine for parallel work, and wrap it in your own queue or activity if you
+need one. `Engine.Clear` now returns an `error` (including `ErrEngineClosed`)
+instead of discarding it. `Engine.Step` now returns `(bool, error)`, reporting
+whether a rule fired; the `FiredRule` type was removed because its `RuleName`
+was never populated.
 
 ---
 
@@ -327,7 +338,7 @@ constraints, general static type inference, or dynamic constraint toggles.
 - Requested callable depth remains configurable and persists, while actual
   evaluation is capped at 32 calls and 64 expression frames. Excessive recursive
   work returns an action diagnostic; deeply nested definitions are rejected.
-- Go source imports use `github.com/plx/ferric-rules/bindings/go`. Raw operations
-  serialize across goroutines, while worker APIs retain offload and cancellation.
+- Go source imports use `github.com/plx/ferric-rules/bindings/go`. Engine
+  operations serialize across goroutines; the worker/pool APIs were removed.
   Swift's local package uses Swift 6, macOS 15 or iOS 18, with asynchronous native
   work and owned results; see [its build instructions](../bindings/swift/README.md).

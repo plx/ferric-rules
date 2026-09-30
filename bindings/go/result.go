@@ -56,15 +56,26 @@ const (
 	HaltActionError
 )
 
+// String returns a human-readable label for a HaltReason.
+func (h HaltReason) String() string {
+	switch h {
+	case HaltAgendaEmpty:
+		return "agenda_empty"
+	case HaltLimitReached:
+		return "limit_reached"
+	case HaltRequested:
+		return "requested"
+	case HaltActionError:
+		return "action_error"
+	default:
+		return "unknown"
+	}
+}
+
 // RunResult contains the outcome of an engine run.
 type RunResult struct {
 	RulesFired int
 	HaltReason HaltReason
-}
-
-// FiredRule identifies a single rule that fired during a step.
-type FiredRule struct {
-	RuleName string
 }
 
 // RuleInfo describes a registered rule.

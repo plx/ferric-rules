@@ -584,7 +584,7 @@ export class EngineHandle {
 
 ### EnginePool (concurrent evaluation)
 
-`EnginePool` manages multiple Worker threads for concurrent, stateless evaluation. It is the TypeScript equivalent of Go's `Coordinator` + `Manager` pattern.
+`EnginePool` manages multiple Worker threads for concurrent, stateless evaluation.
 
 Each worker lazily creates engines from named specs. Requests are dispatched round-robin across workers while the pool is healthy.
 Work assigned to one worker slot is admitted FIFO. A `do()` callback receives
@@ -1364,10 +1364,10 @@ packages/ferric/
 
 | Aspect | Python | Go | TypeScript |
 |--------|--------|----|------------|
-| Thread safety | Creator-thread-affine ordinary operations; selected native work releases the GIL | LockOSThread / Coordinator | Worker threads |
+| Thread safety | Creator-thread-affine ordinary operations; selected native work releases the GIL | Operations serialized per `Engine` | Worker threads |
 | Sync API | All methods sync | All methods sync | `Engine` (sync) |
 | Async API | N/A | `context.Context` on Run | `EngineHandle` (Promise + AbortSignal) |
-| Concurrency | No cross-thread queue | Coordinator + Manager | `EnginePool` |
+| Concurrency | No cross-thread queue | One `Engine` per goroutine | `EnginePool` |
 | Cancellation | Active-run halt / close | `context.Context` | `AbortSignal` |
 | Resource cleanup | Any-thread `close()` / context exit + final-reference drop | `Close()` (io.Closer) | `close()` + `Symbol.dispose` |
 | Value distinction | `Symbol` class / `ClipsString` class | `Symbol` type alias | `FerricSymbol` class |

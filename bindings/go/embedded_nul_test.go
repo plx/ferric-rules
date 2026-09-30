@@ -43,13 +43,6 @@ func TestNewEngineRejectsEmbeddedNULSource(t *testing.T) {
 			assertEmbeddedNULArgument(t, err, "source", source)
 		})
 	}
-
-	pinned, err := NewPinnedEngine(WithSource(source))
-	if pinned != nil {
-		_ = pinned.Close()
-		t.Fatal("NewPinnedEngine accepted an embedded-NUL source")
-	}
-	assertEmbeddedNULArgument(t, err, "source", source)
 }
 
 //nolint:funlen // One table keeps the public CString-boundary audit complete and reviewable.
@@ -253,44 +246,6 @@ func TestGetOutputEPreservesEmbeddedNULFromSnapshot(t *testing.T) {
 	output, found, err := restored.GetOutputE("t")
 	if err != nil || !found || output != "a\x00b" {
 		t.Fatalf("GetOutputE = (%q, %v, %v), want exact embedded-NUL output", output, found, err)
-	}
-}
-
-func TestPinnedAndManagerRejectEmbeddedNULAndRemainReusable(t *testing.T) {
-	pinned, err := NewPinnedEngine(WithSource(embeddedNULPublicFixture))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, pinned)
-	badRelation := "alias\x00suffix"
-	_, err = pinned.AssertFact(badRelation, "value")
-	assertEmbeddedNULArgument(t, err, "relation", badRelation)
-	if _, err = pinned.AssertFact("pinned-valid", "value"); err != nil {
-		t.Fatalf("PinnedEngine was not reusable: %v", err)
-	}
-
-	badChannel := "t\x00suffix"
-	_, _, err = pinned.GetOutputE(badChannel)
-	assertEmbeddedNULArgument(t, err, "output channel", badChannel)
-	assertEmbeddedNULArgument(t, pinned.ClearOutputE(badChannel), "output channel", badChannel)
-	badLine := "line\x00suffix"
-	assertEmbeddedNULArgument(t, pinned.PushInputE(badLine), "input line", badLine)
-
-	manager, err := NewManager(WithSource(embeddedNULPublicFixture))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mustClose(t, manager)
-	err = manager.Do(context.Background(), func(engine *Engine) error {
-		_, callErr := engine.AssertFact(badRelation, "value")
-		return callErr
-	})
-	assertEmbeddedNULArgument(t, err, "relation", badRelation)
-	if err = manager.Do(context.Background(), func(engine *Engine) error {
-		_, callErr := engine.AssertFact("manager-valid", "value")
-		return callErr
-	}); err != nil {
-		t.Fatalf("Manager worker was not reusable: %v", err)
 	}
 }
 

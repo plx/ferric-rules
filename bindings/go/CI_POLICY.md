@@ -2,9 +2,8 @@
 
 ## Repeat-Run Stress Testing
 
-Go bindings use CGo, serialized native ownership, and worker queues whose
-lifecycle races may not appear in a single run. The
-CI pipeline includes a **Go Stress Test** job that runs all Go binding tests
+Go bindings use CGo and serialized native ownership whose lifecycle races may
+not appear in a single run. The CI pipeline includes a **Go Stress Test** job that runs all Go binding tests
 repeatedly with the race detector enabled (`go test -race -count=10 ./...`).
 
 ### When stress testing is required

@@ -129,18 +129,18 @@ func TestEngineMethodsAfterClose(t *testing.T) {
 			return wantNil("result", value, err)
 		}},
 		{"Step", func() error {
-			value, err := e.Step()
-			return wantNil("fired rule", value, err)
+			fired, err := e.Step()
+			if fired {
+				return errors.New("fired = true, want false")
+			}
+			return wantClosed(err)
 		}},
 		{"Halt", func() error {
 			e.Halt()
 			return nil
 		}},
 		{"Reset", func() error { return wantClosed(e.Reset()) }},
-		{"Clear", func() error {
-			e.Clear()
-			return nil
-		}},
+		{"Clear", func() error { return wantClosed(e.Clear()) }},
 		{"Serialize", func() error {
 			value, err := e.Serialize(FormatBincode)
 			return wantNil("snapshot", value, err)
