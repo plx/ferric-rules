@@ -9,8 +9,8 @@ capture, and snapshot serialization.
 
 The repository builds locally installable wheels and source distributions and
 verifies their contents with clean consumer tests. Public registry publication
-is outside the current rehabilitation scope; no tagged or stable PyPI release
-is implied by those artifacts.
+is not currently planned; no tagged or stable PyPI release is implied by those
+artifacts.
 
 ## Supported Python and platforms
 

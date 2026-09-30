@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 195
+- MIT License: 191
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -1971,7 +1971,6 @@ Used by:
 - ferric-rules-ffi-macros 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-napi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-parser 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
-- ferric-rules-pinned 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-runtime 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - users-guide-01-minimal-embedding 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-02-ordered-vs-template 0.1.0 (`MIT OR Apache-2.0`)
@@ -1995,8 +1994,6 @@ Used by:
 - napi-derive 2.16.13 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi-sys 2.4.0 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi 2.16.17 (`MIT`) - https://github.com/napi-rs/napi-rs
-- objc2-encode 4.1.0 (`MIT`) - https://github.com/madsmtm/objc2
-- objc2 0.6.4 (`MIT`) - https://github.com/madsmtm/objc2
 - plotters-backend 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters
 - plotters-svg 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters.git
 - plotters 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters
@@ -2542,7 +2539,6 @@ SOFTWARE.
 
 Used by:
 
-- crossbeam-channel 0.5.16 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-deque 0.8.7 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-epoch 0.9.20 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-utils 0.8.22 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam

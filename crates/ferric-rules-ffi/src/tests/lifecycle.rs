@@ -1,4 +1,4 @@
-//! Tests for FFI engine lifecycle and serialized thread transfer (Pass 004).
+//! Tests for FFI engine lifecycle and serialized thread transfer.
 
 use crate::engine::{
     ferric_engine_clear_error, ferric_engine_free, ferric_engine_last_error,
@@ -172,20 +172,6 @@ fn ordinary_access_on_creating_thread() {
         assert_eq!(result, FerricError::Ok);
         ferric_engine_free(engine);
     }
-}
-
-#[test]
-fn thread_violation_error_mapping() {
-    // Test that EngineError::WrongThread maps to FerricError::ThreadViolation.
-    // Preserve this legacy discriminant for ABI compatibility.
-    use crate::error::map_engine_error;
-    use ferric_rules_runtime::engine::EngineError;
-
-    let err = EngineError::WrongThread {
-        creator: std::thread::current().id(),
-        current: std::thread::current().id(),
-    };
-    assert_eq!(map_engine_error(&err), FerricError::ThreadViolation);
 }
 
 #[test]

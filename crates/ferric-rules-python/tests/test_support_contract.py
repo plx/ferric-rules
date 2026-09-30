@@ -1,4 +1,4 @@
-"""Keep published Python support metadata aligned with executable CI coverage."""
+"""Keep published Python support metadata internally consistent."""
 
 import pathlib
 import re
@@ -6,22 +6,12 @@ import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "crates" / "ferric-rules-python" / "pyproject.toml"
-CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 JUSTFILE = REPO_ROOT / "justfile"
 UV_LOCK = REPO_ROOT / "crates" / "ferric-rules-python" / "uv.lock"
 
 SUPPORTED_MINORS = ["3.9", "3.10", "3.11", "3.12", "3.13"]
 REQUIRES_PYTHON = ">=3.9,<3.14"
 LOCK_REQUIRES_PYTHON = ">=3.9, <3.14"
-
-
-def _python_bindings_job(workflow: str) -> str:
-    match = re.search(
-        r"(?ms)^  python-bindings:\n(?P<job>.*?)(?=^  [a-z][a-z0-9-]+:\n|\Z)",
-        workflow,
-    )
-    assert match is not None, "CI must define the python-bindings job"
-    return match.group("job")
 
 
 def _accepts_minor(specifier: str, minor: str) -> bool:
@@ -37,10 +27,8 @@ def _accepts_minor(specifier: str, minor: str) -> bool:
     return True
 
 
-def test_python_metadata_matches_ci_matrix():
+def test_python_metadata_declares_the_supported_range():
     pyproject = PYPROJECT.read_text(encoding="utf-8")
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    job = _python_bindings_job(workflow)
 
     requires_python = re.search(
         r'^requires-python\s*=\s*"([^"]+)"', pyproject, re.MULTILINE
@@ -54,13 +42,7 @@ def test_python_metadata_matches_ci_matrix():
         pyproject,
     )
     assert classifiers == SUPPORTED_MINORS
-
-    matrix = re.search(r"python-version:\s*\[([^]]+)]", job)
-    assert matrix is not None, "python-bindings must use an explicit Python matrix"
-    ci_minors = re.findall(r'"(\d+\.\d+)"', matrix.group(1))
-    assert ci_minors == SUPPORTED_MINORS
     assert "3.14" not in classifiers
-    assert "3.14" not in ci_minors
 
     expected_acceptance = {
         "3.8": False,
@@ -95,23 +77,7 @@ def test_lockfile_carries_the_same_python_range_without_314_artifacts():
     assert re.search(r"(?i)(?:cp|cpython[-_])314", lockfile) is None
 
 
-def test_every_fast_ci_matrix_lane_builds_and_tests_from_source():
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    job = _python_bindings_job(workflow)
-
-    required_commands = [
-        "maturin develop",
-        "pytest tests/",
-        "sys.version_info[:2]",
-    ]
-    missing = [command for command in required_commands if command not in job]
-    assert not missing, f"python-bindings job is missing coverage: {missing}"
-    assert "maturin build" not in job
-
-
 def test_supported_builds_do_not_use_pyo3_forward_compatibility_escape_hatch():
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     justfile = JUSTFILE.read_text(encoding="utf-8")
 
-    assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in workflow
     assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in justfile

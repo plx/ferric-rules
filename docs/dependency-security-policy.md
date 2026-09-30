@@ -1,26 +1,23 @@
 # Dependency checks
 
 Run `just dependency-policy` to scan the locked Rust, npm, and Python dependencies
-and verify Rust licenses and notices. The same command runs in CI on changes and
-weekly against new advisories. Scanner errors and findings fail the job; reports
-are retained in `dependency-policy-evidence/` and uploaded even on failure.
-`just dependency-policy-test` exercises real scanner rejection of a vulnerable
-npm runtime dependency, a Python version hidden behind a non-host marker, and
-malformed Cargo/Python configuration.
+and verify Rust licenses and notices. The same command runs in CI on pull
+requests, pushes to `main`, and weekly against new advisories. Scanner errors and
+findings fail the job; scanner output appears in the job log and, locally, in
+`dependency-policy-evidence/`.
 
 The scanners own report parsing and advisory matching. There is no separate
 exception evaluator, workspace graph hash, SBOM reconciliation service, or
-calendar-based waiver renewal. The retired `dependency-policy.json` and Python
-policy engine are preserved in Git history; their expiry dates no longer control
-CI. This is a deliberate replacement of the former release-program contract,
-not a claim that its original exit criteria were completed.
+calendar-based waiver renewal. The earlier bespoke `dependency-policy.json` and
+Python policy engine remain available in the repository history (see
+[history](history.md)).
 
 ## Covered surfaces
 
 | Surface | Check |
 | --- | --- |
 | Cargo workspace, all features and targets, including development/build dependencies | `cargo deny --locked --all-features check advisories bans licenses sources`, configured in [`deny.toml`](../deny.toml) |
-| `packages/ferric`, `crates/ferric-rules-napi`, `documentation`, `site` | `npm audit --package-lock-only --audit-level=info`, including dev, optional, and peer dependencies |
+| `packages/ferric`, `crates/ferric-rules-napi`, `site` | `npm audit --package-lock-only --audit-level=info`, including dev, optional, and peer dependencies |
 | `crates/ferric-rules-python`, `tools/ferric-tools` | `uv export --locked --all-groups --all-extras --no-emit-project --format pylock.toml`, then `pip-audit --locked --strict` |
 | Rust third-party license texts | Existing `cargo-about` configuration and `just license-notices-check` |
 
@@ -78,5 +75,4 @@ Rust license allowlists, crate-specific MPL permission for the cbindgen build
 tool, and generated [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) remain.
 New npm/Python license enforcement and release-wide SBOM products are deferred;
 advisory scanning for their actual graphs remains active. Raw before/after
-scanner logs are local execution evidence, while CI retains the native reports
-for each checked revision.
+scanner logs are local execution evidence.

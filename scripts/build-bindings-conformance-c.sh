@@ -11,7 +11,7 @@ mkdir -p "$outdir"
 
 case "$(uname -s)" in
 Darwin)
-    platform_libs=(-framework Security -framework CoreFoundation -lobjc)
+    platform_libs=(-framework Security -framework CoreFoundation)
     ;;
 *)
     platform_libs=(-lpthread -ldl -lm)

@@ -1,8 +1,8 @@
 //! Integration tests for the full pipeline: parser → loader → engine → Rete → activation.
 //!
-//! These tests exercise the complete flow from CLIPS source code to rule activations.
-//! Phase 1 tests use manual rete construction. Phase 2 tests will use the
-//! compiler pipeline via shared helpers in `test_helpers`.
+//! These tests exercise the complete flow from CLIPS source code to rule activations,
+//! using both hand-built Rete networks and the compiler pipeline via shared
+//! helpers in `test_helpers`.
 
 #[cfg(test)]
 mod tests {

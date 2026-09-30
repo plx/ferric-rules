@@ -875,9 +875,17 @@ A non-exhaustive list worth internalizing:
 Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 (C ABI) and the higher-level wrappers built on it:
 
-- **C / C++ / Swift / Kotlin**: link against `libferric_rules_ffi` and include
+- **C / C++ / other FFI hosts**: link against `libferric_rules_ffi` and include
   the generated `ferric.h`. See [`compatibility.md`](compatibility.md)
   §16.13 for the C contract.
+- **TypeScript / Node.js**: `packages/ferric` (`@ferric-rules/node`, backed by
+  the `crates/ferric-rules-napi` native addon) provides a synchronous `Engine`,
+  a worker-backed `EngineHandle`, and an `EnginePool` for Node 22+. See
+  [its README](../packages/ferric/README.md) and the
+  [normative contract](typescript-binding-normative-contract.md).
+- **Swift**: `bindings/swift` is a local Swift 6 package over the C ABI for
+  macOS 15 and iOS 18 or newer. See
+  [its README](../bindings/swift/README.md) for building and use.
 - **Go**: `bindings/go` provides an idiomatic façade (`Engine`,
   `Coordinator`, `Manager`) plus a Temporal activity wrapper.
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through

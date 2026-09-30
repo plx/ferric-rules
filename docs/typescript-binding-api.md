@@ -3,17 +3,17 @@
 > [!WARNING]
 > This document is a legacy design draft and is **not** the normative implementation target.
 > Use the revised specification suite instead:
-> - [TypeScript Binding Architecture (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
-> - [TypeScript Binding Normative Contract (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-normative-contract.md)
-> - [TypeScript Binding Conformance Matrix](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-conformance-matrix.md)
-> - [TypeScript Binding Test Specification (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-test-spec.md)
+> - [TypeScript Binding Architecture (Revised)](typescript-binding-architecture.md)
+> - [TypeScript Binding Normative Contract (Revised)](typescript-binding-normative-contract.md)
+> - [TypeScript Binding Conformance Matrix](typescript-binding-conformance-matrix.md)
+> - [TypeScript Binding Test Specification (Revised)](typescript-binding-test-spec.md)
 
 ## Purpose
 
 Define a TypeScript-native API for ferric-rules that:
 
 1. Feels natural in Node.js and TypeScript (Promises, `AbortSignal`, `using`, iterators).
-2. Preserves Ferric's thread-affine engine contract.
+2. Keeps long-running engine work off the Node.js event loop. (The Rust engine is `Send + Sync`; workers exist for event-loop responsiveness, not thread affinity.)
 3. Provides both a synchronous low-level API and an async worker-backed API for non-blocking use.
 4. Implements via [napi-rs](https://napi.rs), linking directly to Rust — no C FFI hop.
 
@@ -52,7 +52,7 @@ This separation means:
 
 - The native addon is simple and stateless beyond the Engine itself.
 - Async orchestration, cancellation, and pooling are in TypeScript where they're easy to test, debug, and extend.
-- Worker threads each create their own `Engine` on their own OS thread, satisfying thread affinity automatically.
+- Each worker thread owns its own `Engine`, so long-running engine work never blocks the main event loop.
 
 ## Crate Structure
 
@@ -493,7 +493,7 @@ export interface EngineHandleOptions extends EngineOptions {
 export class EngineHandle {
   /**
    * Create an EngineHandle backed by a dedicated Worker thread.
-   * The Engine is created on the worker thread, satisfying thread affinity.
+   * The Engine is created and owned by the worker thread.
    * A failure after Worker construction rejects only after exactly-once Worker
    * teardown; the primary initialization error is preserved.
    */
@@ -1292,7 +1292,7 @@ pub struct Engine {
 - `close()` takes the engine out of the `Option`, dropping it.
 - All methods check `self.inner.is_some()` and throw if closed.
 - `Drop` for the napi-rs struct drops the inner engine if still present (handles GC without explicit close).
-- No thread-affinity enforcement needed in the napi-rs layer: the Rust `Engine` is used directly (no FFI thread check), and JS naturally calls methods on the thread that created the object.
+- No thread checks in the napi-rs layer: the Rust `Engine` is `Send + Sync` and is used directly, and each native object stays within the V8 isolate that created it.
 
 ### Worker Thread Bootstrap
 
@@ -1361,7 +1361,7 @@ packages/ferric/
 
 | Aspect | Python | Go | TypeScript |
 |--------|--------|----|------------|
-| Thread safety | Creator-thread-affine ordinary operations; selected native work releases the GIL | LockOSThread / Coordinator | Worker threads |
+| Thread safety | Any thread; calls are serialized and selected native work releases the GIL | LockOSThread / Coordinator | Worker threads |
 | Sync API | All methods sync | All methods sync | `Engine` (sync) |
 | Async API | N/A | `context.Context` on Run | `EngineHandle` (Promise + AbortSignal) |
 | Concurrency | No cross-thread queue | Coordinator + Manager | `EnginePool` |

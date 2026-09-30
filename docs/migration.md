@@ -214,7 +214,8 @@ C FFI surface. Key differences:
 - Raw engines may move between OS threads; the host must serialize runtime
   calls and protect borrowed-pointer use and destruction. Per-engine error
   copies are separately synchronized. Both free entry points now have the same
-  lifetime contract. The legacy thread-violation error discriminant is retained.
+  lifetime contract. The legacy thread-violation error code is reserved but
+  never returned.
 - Error handling uses return codes plus synchronized error channels. A failure
   involving a validated raw-engine handle updates both its per-engine snapshot
   and the calling thread's global fallback; pre-handle failures update only
@@ -342,3 +343,11 @@ constraints, general static type inference, or dynamic constraint toggles.
   serialize across goroutines, while worker APIs retain offload and cancellation.
   Swift's local package uses Swift 6, macOS 15 or iOS 18, with asynchronous native
   work and owned results; see [its build instructions](../bindings/swift/README.md).
+- The `ferric-rules-pinned` crate and the `ferric_pinned_*` C API are removed.
+  They only worked around the old thread-affine engine; `Engine` is now
+  `Send + Sync`, so move it to the thread that should run it or wrap it in your
+  own worker. The no-op `Engine::check_thread_affinity` and
+  `Engine::move_to_current_thread` shims and `EngineError::WrongThread` are
+  gone too. In C, `FERRIC_ERROR_THREAD_VIOLATION` (2) stays defined but is
+  never returned, and the former pinned error codes 11-15 are retired and will
+  not be reused.

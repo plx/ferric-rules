@@ -1,4 +1,4 @@
-//! Build matrix verification tests (Pass 009).
+//! Build matrix verification tests.
 //!
 //! These tests validate that FFI artifacts build correctly under all profiles
 //! and that every profile needed for containment retains unwind semantics.

@@ -4,7 +4,6 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::engine::FerricEngine;
 use crate::error::{try_set_global_error, FerricError};
-use crate::pinned::FerricPinnedEngine;
 use crate::types::FerricValue;
 
 /// Diagnostic target associated with one exported call.
@@ -14,8 +13,6 @@ pub(crate) enum PanicTarget {
     Global,
     /// A live raw-engine handle was supplied.
     RawEngine(*const FerricEngine),
-    /// A live pinned-engine handle was supplied.
-    PinnedEngine(*const FerricPinnedEngine),
 }
 
 /// Defined sentinel returned after a panic is contained.
@@ -44,18 +41,6 @@ impl<T> PanicSentinel for *mut T {
 impl PanicSentinel for FerricValue {
     fn panic_sentinel() -> Self {
         Self::void()
-    }
-}
-
-impl PanicSentinel for bool {
-    fn panic_sentinel() -> Self {
-        false
-    }
-}
-
-impl PanicSentinel for u64 {
-    fn panic_sentinel() -> Self {
-        0
     }
 }
 
@@ -93,9 +78,6 @@ where
                     PanicTarget::Global => {}
                     PanicTarget::RawEngine(engine) => {
                         crate::engine::record_boundary_panic(engine, message);
-                    }
-                    PanicTarget::PinnedEngine(engine) => {
-                        crate::pinned::record_boundary_panic(engine, message);
                     }
                 }
             })) {

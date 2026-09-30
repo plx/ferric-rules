@@ -1,3 +1,6 @@
+# Manual only (workflow_dispatch): base-vs-head Criterion comparison with a
+# CLIPS reference, or a bounded paired release audit (workload_set audit-*).
+# Not run on pull requests.
 name: Perf Compare
 
 on:
@@ -12,22 +15,7 @@ on:
         required: true
         type: string
       workload_set:
-        description: "Benchmark suite: standard, threading experiments, or bounded audit-* suites"
-        required: false
-        default: "standard"
-        type: string
-  workflow_call:
-    inputs:
-      base_sha:
-        description: "Base commit SHA"
-        required: true
-        type: string
-      head_sha:
-        description: "Head commit SHA"
-        required: true
-        type: string
-      workload_set:
-        description: "Benchmark suite: standard, threading experiments, or bounded audit-* suites"
+        description: "Benchmark suite: standard, or a bounded audit-* suite"
         required: false
         default: "standard"
         type: string
@@ -42,11 +30,11 @@ env:
 
 jobs:
   perf-compare:
-    if: ${{ !startsWith(inputs.workload_set, 'threading') && !startsWith(inputs.workload_set, 'audit-') }}
+    if: ${{ !startsWith(inputs.workload_set, 'audit-') }}
     name: Perf Comparison Report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -56,11 +44,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Install native CLIPS
         run: |
@@ -101,7 +89,7 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: perf-diff-report
           retention-days: 30
@@ -110,47 +98,20 @@ jobs:
             /tmp/base-perf-manifest.json
             /tmp/head-perf-manifest.json
 
-  threading-compare:
-    if: startsWith(inputs.workload_set, 'threading')
-    name: Paired threading measurements
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      RUSTFLAGS: ""
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: Compare identical validated workloads on this runner
-        env:
-          BASE_SHA: ${{ inputs.base_sha }}
-          HEAD_SHA: ${{ inputs.head_sha }}
-          WORKLOAD_SET: ${{ inputs.workload_set }}
-        run: scripts/bench-threading.sh "$BASE_SHA" "$HEAD_SHA" "$RUNNER_TEMP/threading-measurements" "$WORKLOAD_SET"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: threading-measurements
-          retention-days: 30
-          path: ${{ runner.temp }}/threading-measurements
-
   audit-compare:
     if: startsWith(inputs.workload_set, 'audit-')
     name: Paired release audit
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Measure identical workloads on both revisions
@@ -163,7 +124,7 @@ jobs:
         run: cat "$RUNNER_TEMP/paired-audit/report.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain estimates and build/measurement logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: paired-release-audit
           retention-days: 30

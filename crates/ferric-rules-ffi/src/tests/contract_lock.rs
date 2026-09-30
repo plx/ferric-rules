@@ -1,4 +1,4 @@
-//! FFI contract lock tests (Phase 6, Pass 005).
+//! FFI contract lock tests.
 //!
 //! These tests document and lock the stable C API surface against ABI drift.
 //! They serve as explicit regression guards — if any of these tests fail after
@@ -160,11 +160,7 @@ fn contract_lock_error_code_discriminants_are_stable() {
     assert_eq!(FerricError::IoError as i32, 7);
     assert_eq!(FerricError::BufferTooSmall as i32, 8);
     assert_eq!(FerricError::InvalidArgument as i32, 9);
-    assert_eq!(FerricError::PinnedClosed as i32, 11);
-    assert_eq!(FerricError::PinnedCanceled as i32, 12);
-    assert_eq!(FerricError::PinnedQueueFull as i32, 13);
-    assert_eq!(FerricError::PinnedDispatchFailed as i32, 14);
-    assert_eq!(FerricError::PinnedReentrantCall as i32, 15);
+    assert_eq!(FerricError::SerializationError as i32, 10);
     assert_eq!(FerricError::InternalError as i32, 99);
 }
 

@@ -1,0 +1,49 @@
+# Release-profile asymptotic scaling checks (`just scaling-check`). Runs on pull
+# requests and pushes to main that touch Rust crates or Cargo manifests, and on
+# manual dispatch.
+name: Scaling Checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/scaling.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/scaling.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: scaling-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  scaling:
+    name: Release Scaling Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: just scaling-check

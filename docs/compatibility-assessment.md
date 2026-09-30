@@ -257,7 +257,7 @@ instead of reporting every file as changed. Scanner changes are review evidence
 and do not fail CI; failure to generate the retained artifacts does fail the
 workflow.
 
-Standalone, pull-request comparison, and direct CI compatibility jobs all use
+The standalone (push to `main`) and pull-request comparison jobs both use
 the same scan → harness generation → harness verification → dual-engine run →
 policy-gate order. Core steps are blocking. Report finalization and artifact
 upload use GitHub Actions `always()` handling, so a missing reference image,

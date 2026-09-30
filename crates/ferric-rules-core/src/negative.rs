@@ -17,11 +17,6 @@
 //! token that copies the parent's facts and bindings. This pass-through token
 //! is stored in the negative node's beta memory and propagated to downstream
 //! children. When the token becomes blocked, the pass-through is cascade-retracted.
-//!
-//! ## Phase 2 implementation
-//!
-//! - Pass 006: Negative node (single-pattern) and blocker tracking
-//! - Pass 010: NCC and exists nodes extend this foundation
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;

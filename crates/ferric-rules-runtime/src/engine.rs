@@ -7,7 +7,6 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::thread::ThreadId;
 use thiserror::Error;
 
 use ferric_rules_core::beta::RuleId;
@@ -131,44 +130,16 @@ impl<Id: Copy> FactAssertionResult<Id> {
 /// assert_sync::<Engine>();
 /// ```
 ///
-/// ## Phase 2 complete
+/// ## Capabilities
 ///
-/// - Fact assertion/retraction (`assert_ordered`, `assert`, `retract`)
-/// - Fact query (`get_fact`, `facts`)
-/// - Symbol interning and string creation
-/// - Source loading (`load_str`, `load_file`) with Stage 2 interpretation
-/// - Rule compilation from Stage 2 AST into shared rete network
-/// - Execution loop (`run`, `step`, `halt`, `reset`)
-/// - RHS action execution (`assert`, `retract`, `modify`, `duplicate`, `halt`)
-/// - Agenda conflict strategy selection (Depth, Breadth, LEX, MEA)
-/// - Ownership transfer between threads with exclusive mutation
-///
-/// ## Phase 3 complete
-///
-/// - Expression evaluator for nested function calls in RHS and test CEs.
-/// - Template-aware `modify`/`duplicate` with slot validation.
-/// - `printout` with per-channel output capture via `OutputRouter`.
-/// - `deffunction` runtime: user-defined functions with parameter binding and
-///   recursion limits.
-/// - `defglobal` runtime: global variable read/write via `bind`, with reset
-///   re-initialization.
-/// - `defmodule` runtime: module registry, focus stack, focus-aware `run()`,
-///   `focus` RHS action, and cross-module template visibility.
-/// - `defgeneric`/`defmethod` runtime: type-based method dispatch with
-///   index ordering and auto-index assignment.
-/// - `forall` CE (limited): single condition + single then-clause,
-///   desugared to NCC, with vacuous truth and empty-prefix support.
-///
-/// ## Phase 4 complete
-///
-/// - Module-qualified `MODULE::name` resolution for callables and globals.
-/// - Cross-module `deffunction`/`defglobal` visibility enforcement.
-/// - `deffunction`/`defgeneric` same-name conflict diagnostics.
-/// - CLIPS-style generic specificity ranking and `call-next-method`.
-/// - Full Section 10.2 builtin surface: predicate/math/type, string/symbol,
-///   multifield, I/O (`format`, `read`, `readline`), environment (`reset`,
-///   `clear`), agenda/focus query functions (`get-focus`, `get-focus-stack`,
-///   `list-focus-stack`, `agenda`).
+/// - Source loading (`load_str`, `load_file`) and rule compilation into a
+///   shared Rete network; see the crate documentation for supported constructs.
+/// - Fact assertion, retraction, and queries (`assert_ordered`, `assert`,
+///   `retract`, `get_fact`, `facts`).
+/// - Execution (`run`, `step`, `halt`, `reset`, `clear`) with Depth, Breadth,
+///   LEX, and MEA conflict strategies and a module focus stack.
+/// - Per-channel output capture (`get_output`) and queued input (`push_input`)
+///   for `read` and `readline`.
 pub struct Engine {
     pub(crate) fact_base: FactBase,
     pub(crate) host: HostState,
@@ -1048,14 +1019,6 @@ impl Engine {
         rule_index_get(&self.rule_info, rule_id).map(|info| info.name.as_str())
     }
 
-    /// Compatibility shim for the former thread-affinity contract.
-    ///
-    /// Always succeeds: an exclusively owned engine may be used on any thread.
-    #[deprecated(note = "Engine is Send; thread-affinity checks are no longer necessary")]
-    pub fn check_thread_affinity(&self) -> Result<(), EngineError> {
-        Ok(())
-    }
-
     /// Execute RHS actions for a rule activation.
     ///
     /// Returns `(logically_fired, reset_requested, clear_requested, action_error)`.
@@ -1120,12 +1083,6 @@ impl Engine {
         self.action_diagnostics.extend(errors);
         (fired, reset_requested, clear_requested, action_error)
     }
-
-    /// Compatibility shim for the former explicit ownership-transfer operation.
-    ///
-    /// This is a no-op; ordinary Rust ownership transfer is sufficient.
-    #[deprecated(note = "Engine is Send; move it directly to the receiving thread")]
-    pub fn move_to_current_thread(&mut self) {}
 
     /// Pop the next activation eligible under current focus semantics.
     ///
@@ -1578,7 +1535,7 @@ impl Engine {
 
     /// Verify engine-level structural consistency.
     ///
-    /// This extends rete consistency checks with Phase 3 registries
+    /// This extends rete consistency checks with the construct registries
     /// (modules/focus, functions, globals, generics).
     #[cfg(any(test, debug_assertions))]
     #[allow(clippy::too_many_lines)]
@@ -1810,14 +1767,6 @@ pub enum EngineError {
 
     #[error("the internal initial-fact is protected and cannot be retracted")]
     ProtectedInitialFact,
-
-    /// Retained for wrappers that impose their own thread-affinity contract.
-    /// The Rust engine does not produce this error.
-    #[error("engine called from wrong thread (created on {creator:?}, called from {current:?})")]
-    WrongThread {
-        creator: ThreadId,
-        current: ThreadId,
-    },
 
     #[error("module not found: {0}")]
     ModuleNotFound(String),

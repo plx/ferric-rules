@@ -1,21 +1,9 @@
 //! Source code loader for CLIPS-compatible syntax.
 //!
 //! This module provides functionality to load CLIPS source code from strings
-//! or files and convert it into engine-level constructs.
-//!
-//! ## Phase 2 state
-//!
-//! - Full Stage 2 interpretation for `defrule`, `deftemplate`, `deffacts`.
-//! - Rule compilation from Stage 2 AST into rete network.
-//! - Pattern validation (nesting depth, unsupported combinations).
-//! - `(assert ...)` top-level forms for loading facts into working memory.
-//!
-//! ## Phase 3 scope
-//!
-//! - Add support for `deffunction`, `defglobal`, `defmodule`, `defgeneric`,
-//!   `defmethod` top-level forms.
-//! - `test` CE compilation (currently returns compile error).
-//! - Template pattern compilation (currently returns compile error).
+//! or files and convert it into engine-level constructs: Stage 2
+//! interpretation of every supported construct, pattern validation, rule
+//! compilation into the Rete network, and top-level `(assert ...)` forms.
 
 use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -23,8 +11,6 @@ use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 
-// Qualified name utilities: wired into construct loading in passes 003/004.
-#[allow(unused_imports)]
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
@@ -284,10 +270,9 @@ pub enum LoadError {
 
 /// A minimal rule definition stored at S-expression level.
 ///
-/// This is Phase 1's placeholder for rules — it captures the raw S-expression
-/// structure without full Stage 2 interpretation. Phase 2 replaces this with
-/// a Stage 2 AST that is compiled into the rete network. This type is retained
-/// for backward compatibility during the transition.
+/// Captures the raw S-expression structure without Stage 2 interpretation.
+/// The loader itself compiles typed Stage 2 constructs; this type is retained
+/// only as part of the public API.
 #[derive(Clone, Debug)]
 pub struct RuleDef {
     /// Rule name
@@ -307,9 +292,9 @@ pub struct LoadResult {
     pub rules: Vec<RuleConstruct>,
     /// Templates registered during loading.
     pub templates: Vec<TemplateConstruct>,
-    /// Functions parsed during loading (not yet executable; Pass 006 adds execution).
+    /// Functions parsed during loading.
     pub functions: Vec<FunctionConstruct>,
-    /// Globals parsed during loading (not yet active; Pass 006 adds execution).
+    /// Globals parsed during loading.
     pub globals: Vec<GlobalConstruct>,
     /// Modules parsed during loading.
     pub modules: Vec<ModuleConstruct>,
@@ -335,7 +320,7 @@ impl Engine {
     /// Returns a vector of errors if:
     /// - Parse errors occur
     /// - Top-level forms are invalid or unsupported
-    /// - Engine operations fail (e.g., encoding errors, wrong thread)
+    /// - Engine operations fail (e.g., encoding errors)
     ///
     /// # Examples
     ///
@@ -377,8 +362,8 @@ impl Engine {
         let mut result = LoadResult::default();
         let mut errors = Vec::new();
 
-        // Separate assert forms from constructs
-        // Assert forms are processed directly for Phase 1 compatibility
+        // Separate top-level (assert ...) forms from constructs; asserts are
+        // processed directly after the constructs load.
         let mut assert_forms = Vec::new();
         let mut construct_forms = Vec::new();
 
@@ -1672,7 +1657,7 @@ impl Engine {
             Atom::Float(f) => Some(Value::Float(*f)),
             Atom::String(s) => self.warned_string_value(s, line, result),
             Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
-            // Variables and connectives are not supported as fact values in Phase 1
+            // Variables and connectives are not valid fact values
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
             }
@@ -3601,13 +3586,13 @@ impl Engine {
                 Ok(CompilableCondition::Predicate { condition_index })
             }
             Pattern::Forall(sub_patterns, span) => {
-                // Phase 3 restriction: exactly 2 sub-patterns (condition + then-clause).
+                // forall takes exactly 2 sub-patterns (condition + then-clause).
                 if sub_patterns.len() != 2 {
                     return Err(Self::unsupported_pattern(
                         "forall",
                         span,
                         &format!(
-                            "Phase 3 forall supports exactly one condition and one then-clause, got {} sub-patterns",
+                            "forall supports exactly one condition and one then-clause, got {} sub-patterns",
                             sub_patterns.len()
                         ),
                     ));
@@ -4796,7 +4781,7 @@ impl Engine {
 
 /// Validate rule patterns before Rete compilation.
 ///
-/// Checks pattern restrictions according to Section 7.7 of the implementation plan:
+/// Checks pattern restrictions:
 /// - E0001: Nesting depth limit (not/exists)
 /// - E0005: Unsupported nesting combinations (exists containing not)
 ///
@@ -6559,7 +6544,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 007: defmodule / defgeneric / defmethod loader tests
+    // defmodule / defgeneric / defmethod loader tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -6655,7 +6640,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Pass 005: deffunction/defgeneric conflict diagnostics
+    // deffunction/defgeneric conflict diagnostics
     // -----------------------------------------------------------------------
 
     #[test]

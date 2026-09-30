@@ -12,7 +12,7 @@ mkdir -p "$outroot"
 
 case "$(uname -s)" in
 Darwin)
-    platform_libs=(-framework Security -framework CoreFoundation -lobjc)
+    platform_libs=(-framework Security -framework CoreFoundation)
     ;;
 *)
     platform_libs=(-lpthread -ldl -lm)
@@ -36,8 +36,8 @@ audit_symbols() {
 
     sed -nE 's/.*[ *](ferric_[a-z0-9_]+)\(.*/\1/p' \
         crates/ferric-rules-ffi/ferric.h | sort -u >"$expected"
-    if [[ $(wc -l <"$expected") -ne 95 ]]; then
-        echo "ffi-panic-harness: expected 95 header exports" >&2
+    if [[ $(wc -l <"$expected") -ne 73 ]]; then
+        echo "ffi-panic-harness: expected 73 header exports" >&2
         exit 1
     fi
     while IFS= read -r symbol; do

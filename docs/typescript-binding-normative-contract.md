@@ -2,7 +2,7 @@
 
 Date: 2026-04-11
 Updated: 2026-09-06 (bounded rehabilitation of values, lifecycle, and package consumers)
-Status: Implemented contract; validation and deliberate scope are tracked in [rehabilitation status](audits/rehabilitation-status.md).
+Status: Implemented contract. The September 2026 scope decisions are summarized in [project history](history.md).
 
 Companion documents:
 - [Architecture](typescript-binding-architecture.md)

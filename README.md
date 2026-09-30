@@ -248,9 +248,9 @@ The Swift build and CI check the header before consuming it.
 ## Rust version support
 
 Ferric's minimum supported Rust version (MSRV) is **1.75**. Every publishable
-workspace crate declares the same MSRV. CI uses the committed lockfile to check
-the default workspace, the CLI, and the serialization feature set, and runs the
-complete workspace test suite on Rust 1.75.
+workspace crate declares the same MSRV. CI's MSRV job uses the committed
+lockfile to check the workspace with default and with all features on Rust
+1.75; tests run on the pinned development toolchain.
 
 Dependency updates must retain that contract. Generate an MSRV-aware lockfile
 with a current Cargo, then validate it with the oldest supported toolchain:
@@ -259,9 +259,6 @@ with a current Cargo, then validate it with the oldest supported toolchain:
 cargo update --config 'resolver.incompatible-rust-versions="fallback"'
 cargo +1.75 check --workspace --locked
 cargo +1.75 check --workspace --all-features --locked
-cargo +1.75 test --workspace --locked
-cargo +1.75 check -p ferric-rules-runtime --features serde --locked
-cargo +1.75 check -p ferric-rules-cli --locked
 ```
 
 ## License
