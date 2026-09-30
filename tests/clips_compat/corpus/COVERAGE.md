@@ -31,17 +31,15 @@ advances from empty/existing matches to filtering, multiple fact variables,
 ordered traversal, and mutation during traversal. A passing nearby control is
 useful evidence when a boundary case reveals a gap.
 
-The expression fact-query forms `any-factp`, `find-fact`, and `find-all-facts`
-are explicitly rejected by the current supported subset. Their retained
-programs characterize this boundary against valid CLIPS behavior, including
-empty-result controls. The three action query forms are exercised separately.
+All six fact-query forms, expression and action, run as conformance cases,
+including empty results, ordering after mutation, and rejected declarations.
 
 ## Compatibility reference mapping
 
 | Reference area | Current characterization | Remaining coverage to add |
 |---|---|---|
 | **16.1 Facts** | [facts/](facts/): zero-field and typed ordered facts, exact arity, template slot defaults/order, duplicate suppression, retract, modify, duplicate. [queries/](queries/): live fact checks, indices, relations, and slot introspection. [agenda/](agenda/): refraction and retract/reassert identity. | Index monotonicity across longer churn sequences; full initial-fact ordering relative to multiple deffacts groups; mixed template/ordered mutations; fact identity and introspection after repeated modification. |
-| **16.2 Rules** | [patterns/](patterns/): variable equality, typed joins, `~`, `|`, `&`, wildcards, predicate and return-value constraints, test, not, exists, forall, and NCC. [agenda/](agenda/): salience, same-rule depth recency, activation cancellation, chaining, halt, and nested run. [procedural/](procedural/), [queries/](queries/), and [modules/](modules/) exercise RHS actions. | Breadth, LEX, and MEA through configurable host execution; explicit tie cases and multi-pattern recency; all supported constraint combinations; RHS reset/clear timing; textual agenda and focus-stack rendering. |
+| **16.2 Rules** | [patterns/](patterns/): variable equality, typed joins, `~`, `|`, `&`, wildcards, predicate and return-value constraints, test, not, exists, forall, and NCC. [agenda/](agenda/): salience, same-rule depth recency, activation cancellation, chaining, halt, and nested run; the `_breadth` pattern cases run under breadth. [procedural/](procedural/), [queries/](queries/), and [modules/](modules/) exercise RHS actions. | LEX and MEA through configurable host execution; explicit tie cases and multi-pattern recency; all supported constraint combinations; RHS reset/clear timing; textual agenda and focus-stack rendering. |
 | **16.3 Deftemplates** | [facts/](facts/): explicit/implicit defaults, partial slot patterns, slot order, omitted-slot preservation on modify/duplicate. [patterns/](patterns/): repeated slot bindings and multislot sequence matching. | Slot aliases, empty explicit multislots, dynamic/derived defaults and constraint facets where supported, multifield ambiguity, duplicate slot declarations, unknown slot and wrong-cardinality diagnostics. |
 | **16.4 Deffacts** | [facts/](facts/): multiple groups and duplicate assertions. [modules/qualified-deffacts.clp](modules/qualified-deffacts.clp): module qualification. [lifecycle/](lifecycle/): deffacts restoration and derived-fact removal on repeated reset. | Explicit initial-fact/deffacts ordering, several module-scoped groups in one reset, expression evaluation during repeated resets, and construct replacement. |
 | **16.5 Defrules** | [patterns/](patterns/) covers the documented single-level CEs, including forall vacuity/missing witnesses and NCC correlation. [modules/](modules/) covers focused module execution. [agenda/001_empty_lhs.clp](agenda/001_empty_lhs.clp) covers implicit startup activation. | Explicit top-level `and`, all supported connective precedence combinations, rule comments/redefinition, CE binding-scope rejection, and source-located invalid-pattern diagnostics. Unsupported nesting is excluded below. |
@@ -65,7 +63,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 | Implicit initial-fact for empty rules | Empty-LHS startup and repeated-reset refraction cases exist; direct initial-fact identity/order still needs coverage. |
 | Explicit `and` CE | NCC uses `not (and ...)`; an independent top-level `and` control is still missing. |
 | `field` slot alias | No dedicated corpus case yet; parser tests exist separately. |
-| Fact query macros | All six CLIPS query forms have focused cases plus empty/filter/order/mutation combinations. Expression forms characterize explicit subset rejection; action forms exercise execution. The cross-product of conditions and mutation behavior remains incomplete. |
+| Fact query macros | All six CLIPS query forms have focused cases plus empty/filter/order/mutation combinations and rejected declarations. The cross-product of conditions and mutation behavior remains incomplete. |
 | `if`, loops, foreach/progn$, switch | Basic, empty-range/iteration, truthiness, nested count, expression-return, and function-body cases exist. Early exit and error paths need further probes. |
 | Math, string, multifield, introspection, funcall | Broad ordinary-input coverage with selected boundary controls; function-by-function error matrices and generic funcall still need work. |
 | `load-facts` / `save-facts` | Not represented in this portable program corpus; runtime file-roundtrip tests exist separately. |
@@ -81,12 +79,16 @@ than assigned guessed oracle outputs. A later reference target or an explicit
 extension contract is needed to characterize them.
 
 Portable fixtures currently describe constructs with load/reset/run execution,
-optional deterministic input, and selected repeated reset/run cycles. They do
-not yet describe host-driven sequences such as incremental loading after facts
-already exist, clear/reload, run limits followed by resume, strategy changes,
-or inspecting host API return values. File paths and file-router lifetimes are
-also outside the present corpus protocol. These are coverage holes in the
-portable corpus, not evidence that the implementation lacks those features.
+optional deterministic input, selected repeated reset/run cycles, the breadth
+strategy, and programs CLIPS rejects at load or halts at run time. Ferric also
+replays each conforming program with rules loaded after reset and from restored
+snapshots, against the same CLIPS golden. The fixtures do not describe other
+host-driven sequences such as clear/reload, run limits followed by resume, or
+inspecting host API return values; a few such lifecycles are Rust tests in
+[`host.rs`](../../../crates/ferric-rules/tests/compat_corpus/host.rs). File paths
+and file-router lifetimes are also outside the present corpus protocol. These
+are coverage holes in the portable corpus, not evidence that the implementation
+lacks those features.
 
 Existing tests remain complementary: runtime
 [phase 2](../../../crates/ferric-rules-runtime/src/phase2_integration_tests.rs) and

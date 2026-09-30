@@ -4,18 +4,6 @@
 *.bat linguist-vendored
 *.tst linguist-vendored
 
-# Preserve exact fixture output and source markers on Windows checkouts.
-crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
-crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
-
-# Preserve literal CR and CRLF characters inside STRING test data.
-crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.clp -text
-crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.out -text
-crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.clp -text
-crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.out -text
-crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.clp -text
-crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.out -text
-
 # Keep checked-in text shipped by the Node package byte-identical on Windows.
 packages/ferric/package.json text eol=lf
 packages/ferric/README.md text eol=lf
@@ -46,3 +34,9 @@ tests/clips_compat/corpus/stdlib/091_string_to_field_ascii_whitespace_controls.c
 tests/clips_compat/corpus/stdlib/092_string_to_field_control_whitespace_edges.clp -text
 tests/clips_compat/corpus/stdlib/094_explode_ordinary_and_empty_fields.clp -text
 tests/clips_compat/corpus/stdlib/108_format_ordinary_directives.out -text
+tests/clips_compat/corpus/stdlib/136_implode_literal_control_characters.clp -text
+tests/clips_compat/corpus/stdlib/136_implode_literal_control_characters.out -text
+tests/clips_compat/corpus/stdlib/137_implode_literal_crlf_preservation.clp -text
+tests/clips_compat/corpus/stdlib/137_implode_literal_crlf_preservation.out -text
+tests/clips_compat/corpus/stdlib/180_printout_multifield_literal_control_bytes.clp -text
+tests/clips_compat/corpus/stdlib/180_printout_multifield_literal_control_bytes.out -text

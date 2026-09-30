@@ -2,6 +2,8 @@
 //! characterization assertions: neither a new failure nor an unexpected fix is
 //! silently accepted. See `tests/clips_compat/corpus/README.md`.
 
+mod host;
+
 use ferric_rules::core::ConflictResolutionStrategy;
 use ferric_rules::runtime::{
     Engine, EngineConfig, HaltReason, RunLimit, SerializationError, SerializationFormat,

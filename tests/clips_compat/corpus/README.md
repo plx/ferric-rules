@@ -1,11 +1,11 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 288 small programs progress from individual features to
+CLIPS subset. Its 562 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 284 clean conformance cases and 4 active
-characterizations of documented differences: CLIPS output that is not UTF-8,
-and malformed `format` directives.
+CLIPS-verified output oracle. There are 558 clean conformance cases, 37 of which
+reproduce a CLIPS error, and 4 active characterizations of documented
+differences: CLIPS output that is not UTF-8, and malformed `format` directives.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs
@@ -39,6 +39,9 @@ FERRIC_CORPUS_REPORT=/tmp/ferric-corpus.json just compat-corpus -- --nocapture
 
 `cargo test --workspace` automatically runs
 [`crates/ferric-rules/tests/compat_corpus/`](../../../crates/ferric-rules/tests/compat_corpus/main.rs).
+Its [`host.rs`](../../../crates/ferric-rules/tests/compat_corpus/host.rs) holds
+the few host-driven lifecycles this protocol cannot express: top-level
+assertions, host fact operations between runs, and Ferric's own run boundaries.
 The existing [semantic differential lane](../../examples/ferric-semantic/README.md)
 and [Ferric regression suite](../../../crates/ferric-rules/tests/ferric_semantic_regressions.rs)
 provide complementary coverage and retain their own execution protocols.

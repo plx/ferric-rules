@@ -5,7 +5,7 @@
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
     "ferric_revision": "d428e780894ac87a208475f13354ae68155311ed",
-    "verified_on": "2026-09-07",
+    "verified_on": "2026-09-30",
     "discovery_revision": "eb24cc50"
   },
   "cases": [
@@ -314,11 +314,180 @@
       ]
     },
     {
+      "path": "generics/unrestricted-bare-tail.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "defgeneric",
+        "defmethod",
+        "if",
+        "length$",
+        "nth$",
+        "str-cat",
+        "stringp"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-body-effects.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "defgeneric",
+        "defglobal",
+        "defmethod"
+      ]
+    },
+    {
       "path": "generics/unrestricted-fallback.clp",
       "level": "boundary",
       "covers": [
         "generics",
         "unrestricted-fallback"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-inapplicable-extra-argument.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "generics/unrestricted-inapplicable-missing-argument.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "generics/unrestricted-inapplicable-missing-before-wildcard.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "generics/unrestricted-inapplicable-typed-mismatch.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "generics/unrestricted-inapplicable-zero-parameters.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "generics/unrestricted-mixed.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod",
+        "str-cat"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-next-method.clp",
+      "level": "boundary",
+      "covers": [
+        "call-next-method",
+        "defgeneric",
+        "defmethod",
+        "str-cat"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-reject-anonymous-wildcard.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-reject-anonymous.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-reject-duplicate-cross-kind.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-reject-duplicate-name.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-reject-duplicate-wildcard.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-reject-nonterminal-wildcard.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-reject-parenthesized.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/unrestricted-wildcard.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod",
+        "length$"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-zero.clp",
+      "level": "boundary",
+      "covers": [
+        "defgeneric",
+        "defmethod"
       ]
     },
     {
@@ -1051,6 +1220,419 @@
       ]
     },
     {
+      "path": "patterns/036_ordered_cardinality_template_control.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts"
+      ]
+    },
+    {
+      "path": "patterns/037_ordered_cardinality_transitions.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "assert",
+        "deffacts",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/038_ordered_multifield_capture_joins.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "=",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "eq",
+        "length$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "patterns/039_ordered_multifield_indexed_joins.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "=",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/040_ordered_multifield_minimum.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/041_ordered_multifield_negative_transitions.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "and",
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/042_ordered_multifield_repeated_delimiters.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/043_ordered_multifield_retract_splits.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/044_ordered_multifield_split_order.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/045_ordered_multifield_three_captures.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/046_ordered_sequence_prefix_indexing.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        ">",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "if",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/047_template_multislot_anonymous_product.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/048_template_multislot_capture_joins.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "=",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "eq",
+        "length$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "patterns/049_template_multislot_connected_constraints.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        ">",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/050_template_multislot_cross_slot_equality.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/051_template_multislot_cross_slot_split_equality.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/052_template_multislot_declaration_order.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts"
+      ]
+    },
+    {
+      "path": "patterns/053_template_multislot_empty_exact.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/054_template_multislot_indexed_joins.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "=",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/055_template_multislot_middle_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/056_template_multislot_middle_nonempty.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "length$"
+      ]
+    },
+    {
+      "path": "patterns/057_template_multislot_mixed_types.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "floatp",
+        "integerp",
+        "length$",
+        "nth$",
+        "stringp"
+      ]
+    },
+    {
+      "path": "patterns/058_template_multislot_negative_transitions.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "and",
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/059_template_multislot_omitted_constraint.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/060_template_multislot_owner_lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "and",
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/061_template_multislot_repeated_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/062_template_multislot_retract_splits.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/063_template_multislot_reverse_order.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts"
+      ]
+    },
+    {
+      "path": "patterns/064_template_multislot_single_anonymous.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/065_template_multislot_single_slot_empty_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/066_template_multislot_single_slot_many_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/067_template_multislot_single_slot_multivariable_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/068_template_multislot_single_slot_wildcard.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts"
+      ]
+    },
+    {
+      "path": "patterns/069_template_multislot_split_order.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts"
+      ]
+    },
+    {
+      "path": "patterns/070_template_multislot_two_exact.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/071_template_multislot_whole_anonymous.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/072_template_multislot_single_element_join_key.clp",
+      "level": "interaction",
+      "covers": [
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/073_template_multislot_logical_slot_join_key.clp",
+      "level": "interaction",
+      "covers": [
+        "bind",
+        "deffacts",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "patterns/074_ordered_multifield_split_order_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "length$",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/075_template_multislot_declaration_order_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/076_template_multislot_reverse_order_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
@@ -1298,6 +1880,391 @@
       ]
     },
     {
+      "path": "procedural/037_local_bind_branches_and_last_bind_value.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/038_local_bind_caller_locals_do_not_seed_callee.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction",
+        "if"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/039_local_bind_colon_local_and_compact_member.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        "any-factp",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/040_local_bind_completed_call_unbound.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction",
+        "if"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/041_local_bind_completed_calls.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "call-next-method",
+        "create$",
+        "deffunction",
+        "defgeneric",
+        "defmethod"
+      ]
+    },
+    {
+      "path": "procedural/042_local_bind_early_return_isolation.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        "bind",
+        "deffunction",
+        "if",
+        "loop-for-count",
+        "return"
+      ]
+    },
+    {
+      "path": "procedural/043_local_bind_generic_method_local_and_next.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "call-next-method",
+        "create$",
+        "defgeneric",
+        "defmethod"
+      ]
+    },
+    {
+      "path": "procedural/044_local_bind_globals_and_locals_remain_distinct.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "procedural/045_local_bind_invalid_foreach_iterator_bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "create$",
+        "deffunction",
+        "foreach"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/046_local_bind_invalid_loop_iterator_bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction",
+        "loop-for-count"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/047_local_bind_invalid_progn_iterator_bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "create$",
+        "deffunction",
+        "progn$"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/048_local_bind_lazy_conditional_bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction",
+        "if"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/049_local_bind_local_unbind_is_unbound.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/050_local_bind_loop_progn_and_foreach_scopes.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "foreach",
+        "loop-for-count",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/051_local_bind_multifield_local_and_rest_parameter.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "create$",
+        "deffunction",
+        "length$"
+      ]
+    },
+    {
+      "path": "procedural/052_local_bind_nested_and_caller_isolation.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/053_local_bind_nested_bind_values.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/054_local_bind_parameter_unbind_falls_back.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/055_local_bind_progn_generated_index_scope.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/056_local_bind_progn_index_bind_runtime.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "create$",
+        "deffunction",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/057_local_bind_query_callee_compact_isolation.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "any-factp",
+        "bind",
+        "deffacts",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/058_local_bind_query_member_shadows_parameter.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        "any-factp",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/059_local_bind_query_member_shadows_rebound_parameter.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        "and",
+        "any-factp",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "procedural/060_local_bind_query_members_do_not_seed_callee.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp",
+        "bind",
+        "deffacts",
+        "deffunction",
+        "eq",
+        "if"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/061_local_bind_query_predicate_calls_local_function.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        "any-factp",
+        "bind",
+        "deffacts",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/062_local_bind_rebound_iterator_parameter_scopes.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "foreach",
+        "loop-for-count",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/063_local_bind_recursive_frame_isolation.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "-",
+        ">",
+        "bind",
+        "deffunction",
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/064_local_bind_rest_aliases.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "create$",
+        "deffunction",
+        "length$"
+      ]
+    },
+    {
+      "path": "procedural/065_local_bind_sibling_argument_local_updates.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/066_local_bind_switch_branch_local.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "switch"
+      ]
+    },
+    {
+      "path": "procedural/067_local_bind_while_and_loop_accumulation.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "<",
+        "bind",
+        "create$",
+        "deffunction",
+        "loop-for-count",
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/068_local_bind_while_condition_local_update.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "<",
+        "bind",
+        "create$",
+        "deffunction",
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/069_local_bind_zero_and_multi_value_bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffunction",
+        "length$"
+      ]
+    },
+    {
+      "path": "procedural/070_switch_branch_evaluation_order.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "switch"
+      ]
+    },
+    {
+      "path": "procedural/071_switch_no_match_without_default.clp",
+      "level": "boundary",
+      "covers": [
+        "switch"
+      ]
+    },
+    {
       "path": "queries/any-factp-empty.clp",
       "level": "boundary",
       "covers": [
@@ -1359,6 +2326,262 @@
       "covers": [
         "queries",
         "do-for-fact-first"
+      ]
+    },
+    {
+      "path": "queries/expression-query-deffunction-expression-positions.clp",
+      "level": "boundary",
+      "covers": [
+        ">",
+        "any-factp",
+        "deffacts",
+        "deffunction",
+        "fact-slot-value",
+        "find-all-facts",
+        "length$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-empty-and-no-match.clp",
+      "level": "boundary",
+      "covers": [
+        ">",
+        "any-factp",
+        "deffacts",
+        "find-all-facts",
+        "find-fact",
+        "length$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-flattened-tuples-and-first.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffacts",
+        "fact-slot-value",
+        "find-all-facts",
+        "find-fact",
+        "length$",
+        "nth$",
+        "progn$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-invalid-ambiguous-template.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp",
+        "defmodule"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-invalid-duplicate-members.clp",
+      "level": "boundary",
+      "covers": [
+        "find-all-facts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-invalid-empty-bindings.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-invalid-invisible-template.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp",
+        "defmodule"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-invalid-qualified-template.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp",
+        "deffacts",
+        "defmodule"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-invalid-unknown-template.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "assert",
+        "bind",
+        "deffacts",
+        "fact-slot-value",
+        "find-all-facts",
+        "find-fact",
+        "length$",
+        "nth$",
+        "progn$",
+        "retract"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "queries/expression-query-missing-slot.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffacts",
+        "find-all-facts"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/expression-query-module-callable-scope.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "defmodule",
+        "find-all-facts",
+        "length$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-module-imported.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "any-factp",
+        "deffacts",
+        "defmodule",
+        "find-all-facts",
+        "length$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-nested-distinct-predicate-scopes.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        ">",
+        "and",
+        "any-factp",
+        "bind",
+        "deffacts",
+        "do-for-all-facts",
+        "fact-slot-value",
+        "find-all-facts",
+        "length$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-nested-same-name-predicate-scope.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "and",
+        "any-factp",
+        "deffacts",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/expression-query-outer-rhs-local-scope.clp",
+      "level": "interaction",
+      "covers": [
+        ">",
+        "bind",
+        "deffacts",
+        "find-all-facts",
+        "length$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-predicate-global-bind-and-early-exit.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "and",
+        "any-factp",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "find-all-facts",
+        "find-fact",
+        "length$",
+        "or"
+      ]
+    },
+    {
+      "path": "queries/expression-query-predicate-local-bind-rejection.clp",
+      "level": "boundary",
+      "covers": [
+        "any-factp",
+        "bind",
+        "deffacts",
+        "progn"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/expression-query-rhs-expression-positions.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        ">=",
+        "any-factp",
+        "assert",
+        "deffacts",
+        "fact-slot-value",
+        "find-all-facts",
+        "find-fact",
+        "if",
+        "length$",
+        "not",
+        "nth$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-same-template-filtered-order.clp",
+      "level": "interaction",
+      "covers": [
+        "<",
+        "bind",
+        "deffacts",
+        "fact-slot-value",
+        "find-all-facts",
+        "find-fact",
+        "length$",
+        "nth$",
+        "progn$"
+      ]
+    },
+    {
+      "path": "queries/expression-query-typed-defmethod-expression-position.clp",
+      "level": "boundary",
+      "covers": [
+        ">",
+        "deffacts",
+        "defgeneric",
+        "defmethod",
+        "fact-slot-value",
+        "find-all-facts",
+        "length$",
+        "nth$"
       ]
     },
     {
@@ -1466,6 +2689,635 @@
       ]
     },
     {
+      "path": "queries/mutation-query-alias-modify-duplicate.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "=",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "do-for-all-facts",
+        "do-for-fact",
+        "duplicate",
+        "find-all-facts",
+        "length$",
+        "modify"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-alias.clp",
+      "level": "interaction",
+      "covers": [
+        "bind",
+        "deffacts",
+        "do-for-fact",
+        "find-all-facts",
+        "length$",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-append-during-query-delayed.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "assert",
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "if"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-append-during-query-immediate.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "assert",
+        "deffacts",
+        "do-for-all-facts",
+        "if"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-completed-resume.clp",
+      "level": "interaction",
+      "covers": [
+        "any-factp",
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts",
+        "do-for-all-facts",
+        "exists",
+        "find-all-facts",
+        "length$",
+        "retract"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "queries/mutation-query-control-return.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "do-for-fact",
+        "retract",
+        "return"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-delayed-duplicate.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts",
+        "do-for-all-facts",
+        "duplicate",
+        "find-all-facts",
+        "length$"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-delayed-modify-shared-member.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "do-for-all-facts",
+        "eq",
+        "fact-existp",
+        "modify"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-delayed-modify.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts",
+        "do-for-all-facts",
+        "modify"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-delayed-repeated-tuple-aliases.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "fact-existp",
+        "find-all-facts",
+        "length$",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-delayed-retained-stale-existence.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "do-for-fact",
+        "fact-existp",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-delayed-retained-stale-versus-replacement.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts",
+        "do-for-fact",
+        "eq",
+        "fact-existp",
+        "find-fact",
+        "if",
+        "nth$",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-downstream-rete.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "assert",
+        "deffacts",
+        "do-for-all-facts",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-empty-and-no-match.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "any-factp",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts",
+        "do-for-all-facts",
+        "do-for-fact",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-immediate-retract-current-inner.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "deffacts",
+        "do-for-all-facts",
+        "eq",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-immediate-retract-current-outer.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "deffacts",
+        "do-for-all-facts",
+        "eq",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-loop-alias.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "bind",
+        "deffacts",
+        "do-for-fact",
+        "fact-existp",
+        "find-all-facts",
+        "length$",
+        "loop-for-count",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-nested-scope-mutation.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "bind",
+        "deffacts",
+        "do-for-fact",
+        "fact-existp",
+        "find-all-facts",
+        "length$",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-original.clp",
+      "level": "basic",
+      "covers": [
+        "+",
+        "any-factp",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-predicate-global-delayed.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "delayed-do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-predicate-global-immediate.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-progn-other-address.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "bind",
+        "create$",
+        "deffacts",
+        "do-for-fact",
+        "fact-existp",
+        "find-all-facts",
+        "find-fact",
+        "length$",
+        "nth$",
+        "progn$",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-reassert-future-delayed.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "assert",
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "do-for-fact",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-reassert-future-immediate.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "assert",
+        "deffacts",
+        "do-for-all-facts",
+        "do-for-fact",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-reassert-future-tuples-delayed.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "assert",
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "do-for-fact",
+        "eq",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-reassert-future-tuples-immediate.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "assert",
+        "deffacts",
+        "do-for-all-facts",
+        "do-for-fact",
+        "eq",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-repeated-retract.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "do-for-fact",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-retract-future-delayed.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "do-for-fact",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-retract-future-immediate.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "deffacts",
+        "do-for-all-facts",
+        "do-for-fact",
+        "if",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-retract-partial-invalid-target.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "fact-existp",
+        "retract"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/mutation-query-retract-target-predicate-before-later-effect.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "bind",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-retract-target-predicate-not-after-later-effect.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "bind",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-self-retract-compact.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "do-for-fact",
+        "fact-existp",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-shadow-lhs.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "do-for-fact",
+        "fact-existp",
+        "find-all-facts",
+        "length$",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/mutation-query-shadow-progn-invalid.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffacts",
+        "do-for-fact",
+        "progn$",
+        "retract"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/pattern-address-alias.clp",
+      "level": "interaction",
+      "covers": [
+        "bind",
+        "deffacts",
+        "fact-existp",
+        "fact-index",
+        "fact-relation",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-local-shadowing.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "bind",
+        "create$",
+        "deffacts",
+        "do-for-fact",
+        "fact-index",
+        "fact-slot-value",
+        "loop-for-count",
+        "progn$"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-nested-contexts.clp",
+      "level": "interaction",
+      "covers": [
+        "=",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "do-for-fact",
+        "fact-existp",
+        "fact-index",
+        "if",
+        "loop-for-count",
+        "progn$",
+        "retract",
+        "switch",
+        "while"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-or-left.clp",
+      "level": "boundary",
+      "covers": [
+        "and",
+        "deffacts",
+        "fact-index",
+        "fact-relation",
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-or-right.clp",
+      "level": "boundary",
+      "covers": [
+        "and",
+        "deffacts",
+        "fact-index",
+        "fact-relation",
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-positive-mapping.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "deffacts",
+        "fact-index",
+        "fact-relation",
+        "not"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-resume.clp",
+      "level": "interaction",
+      "covers": [
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "fact-existp",
+        "fact-index",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/pattern-address-shadowing.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "bind",
+        "create$",
+        "deffacts",
+        "do-for-fact",
+        "fact-index",
+        "fact-slot-value",
+        "if",
+        "loop-for-count",
+        "progn$"
+      ]
+    },
+    {
+      "path": "queries/public-index-duplicates.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "and",
+        "assert",
+        "deffacts",
+        "do-for-fact",
+        "fact-index",
+        "fact-slot-value",
+        "set-fact-duplication"
+      ]
+    },
+    {
+      "path": "queries/public-index-later.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "deffacts",
+        "do-for-fact",
+        "fact-index",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/public-index-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "assert",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "do-for-fact",
+        "fact-index",
+        "fact-slot-value",
+        "retract"
+      ]
+    },
+    {
+      "path": "queries/public-index-nested.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defgeneric",
+        "defmethod",
+        "do-for-fact",
+        "fact-index",
+        "loop-for-count",
+        "progn$"
+      ]
+    },
+    {
+      "path": "queries/public-index-original.clp",
+      "level": "basic",
+      "covers": [
+        "deffacts",
+        "do-for-fact",
+        "fact-index"
+      ]
+    },
+    {
       "path": "queries/query-cartesian-product.clp",
       "level": "interaction",
       "covers": [
@@ -1479,6 +3331,258 @@
       "covers": [
         "queries",
         "query-fact-index"
+      ]
+    },
+    {
+      "path": "queries/query-order-cross-product.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "do-for-all-facts",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/query-order-delayed-order.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "delayed-do-for-all-facts",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/query-order-duplicates.clp",
+      "level": "interaction",
+      "covers": [
+        "assert",
+        "deffacts",
+        "do-for-all-facts",
+        "fact-slot-value",
+        "set-fact-duplication"
+      ]
+    },
+    {
+      "path": "queries/query-order-filtered-first.clp",
+      "level": "interaction",
+      "covers": [
+        "<",
+        "deffacts",
+        "do-for-fact",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/query-order-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "assert",
+        "deffacts",
+        "do-for-all-facts",
+        "do-for-fact",
+        "fact-slot-value",
+        "retract"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "queries/query-order-nonnumeric.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "do-for-all-facts",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/query-order-same-template-product.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "do-for-all-facts",
+        "fact-slot-value"
+      ]
+    },
+    {
+      "path": "queries/query-slot-bare-predicate.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffacts",
+        "do-for-all-facts",
+        "if"
+      ]
+    },
+    {
+      "path": "queries/query-slot-cartesian-count.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "<",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/query-slot-colon-named-bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffacts",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/query-slot-control-positions.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "do-for-all-facts",
+        "foreach",
+        "if",
+        "loop-for-count",
+        "progn$",
+        "switch",
+        "while"
+      ]
+    },
+    {
+      "path": "queries/query-slot-delayed-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        ">",
+        "bind",
+        "deffacts",
+        "delayed-do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/query-slot-filter-count.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        ">",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/query-slot-invalid-member-bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffacts",
+        "do-for-all-facts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/query-slot-invalid-nested-member-bind.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffacts",
+        "do-for-all-facts",
+        "if"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/query-slot-loop-shadowing.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "deffacts",
+        "do-for-all-facts",
+        "loop-for-count",
+        "progn$"
+      ]
+    },
+    {
+      "path": "queries/query-slot-missing-body.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "do-for-all-facts"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/query-slot-missing-predicate.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "do-for-all-facts"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/query-slot-mixed-slots.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        "=",
+        "and",
+        "deffacts",
+        "do-for-all-facts",
+        "implode$",
+        "length$"
+      ]
+    },
+    {
+      "path": "queries/query-slot-nested-scopes.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "=",
+        ">",
+        "bind",
+        "deffacts",
+        "defglobal",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/query-slot-outer-locals.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        ">",
+        "bind",
+        "deffacts",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/query-slot-short-circuit.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "=",
+        ">",
+        "and",
+        "bind",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "do-for-all-facts",
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "queries/query-slot-unique-first.clp",
+      "level": "boundary",
+      "covers": [
+        "=",
+        "deffacts",
+        "do-for-fact"
       ]
     },
     {
@@ -2575,6 +4679,897 @@
           "diagnostics": []
         }
       }
+    },
+    {
+      "path": "stdlib/122_extrema_comparison_follows_selected_type.clp",
+      "level": "boundary",
+      "covers": [
+        "eq",
+        "max",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/123_extrema_equal_integer_float_ties.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "max",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/124_extrema_float_winners.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "max",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/125_extrema_large_integer_exact_order.clp",
+      "level": "interaction",
+      "covers": [
+        "max",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/126_extrema_large_mixed_comparison_ties.clp",
+      "level": "boundary",
+      "covers": [
+        "eq",
+        "integerp",
+        "max",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/127_extrema_signed_zero_ties.clp",
+      "level": "boundary",
+      "covers": [
+        "integerp",
+        "max",
+        "min"
+      ]
+    },
+    {
+      "path": "stdlib/128_implode_bound_callable_method.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "defgeneric",
+        "defmethod",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/129_implode_empty_mf_evaluates_once.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/130_implode_empty_singleton_types.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/131_implode_flattened_generated_fields.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/132_implode_float_boundary_spellings.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/133_implode_float_rounding_cutovers.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/134_implode_generated_symbol_spellings.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/135_implode_integer_float_spellings.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/136_implode_literal_control_characters.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/137_implode_literal_crlf_preservation.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/138_implode_mixed_fields.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/139_implode_multifield_print_formatter_control.clp",
+      "level": "boundary",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/140_implode_quote_backslash_spacing.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/141_implode_slice_relative_fields.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$",
+        "subseq$"
+      ]
+    },
+    {
+      "path": "stdlib/142_implode_source_nonfinite_floats.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$",
+        "sin"
+      ]
+    },
+    {
+      "path": "stdlib/143_implode_string_special_symbol_controls.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$"
+      ]
+    },
+    {
+      "path": "stdlib/144_implode_unicode_fields.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "implode$",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/145_member_subsequence_alias.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/146_member_subsequence_argument_effects.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/147_member_subsequence_bound_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defgeneric",
+        "defmethod",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/148_member_subsequence_empty_operands.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/149_member_subsequence_field_types.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/150_member_subsequence_first_match.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/151_member_subsequence_generated_values.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "sym-cat",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/152_member_subsequence_range_shapes.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/153_member_subsequence_scalar_types.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/154_member_subsequence_slice_indices.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffunction",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "subseq$",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/155_member_subsequence_void_needle.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal",
+        "integerp",
+        "member$",
+        "multifieldp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/156_nth_indices_dynamic_float_evaluation.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/157_nth_indices_empty_and_extreme_indices.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffacts",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/158_nth_indices_evaluation_excessive.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/159_nth_indices_evaluation_negative.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/160_nth_indices_evaluation_valid.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/161_nth_indices_evaluation_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "/",
+        "bind",
+        "create$",
+        "deffacts",
+        "deffunction",
+        "defglobal",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/162_nth_indices_nth_alias_control.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "deffacts",
+        "nth"
+      ]
+    },
+    {
+      "path": "stdlib/163_nth_indices_result_types_and_nil.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffacts",
+        "deffunction",
+        "eq",
+        "floatp",
+        "integerp",
+        "nth$",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/164_nth_indices_runtime_float_index_conversion.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "deffacts",
+        "deffunction",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/165_nth_indices_slices_and_bound_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "nth$",
+        "subseq$"
+      ]
+    },
+    {
+      "path": "stdlib/166_numeric_chain_anchor_types.clp",
+      "level": "boundary",
+      "covers": [
+        "!=",
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">="
+      ]
+    },
+    {
+      "path": "stdlib/167_numeric_chain_binary_precision.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">="
+      ]
+    },
+    {
+      "path": "stdlib/168_numeric_chain_expression_contexts.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "<",
+        "<=",
+        "bind",
+        "deffacts",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/169_numeric_chain_false_prefix_trace.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">=",
+        "bind",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/170_numeric_chain_skips_invalid_tail.clp",
+      "level": "boundary",
+      "covers": [
+        "!=",
+        "+",
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">=",
+        "bind",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/171_numeric_chain_true_trace.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">=",
+        "bind",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/172_printout_multifield_bound_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts"
+      ]
+    },
+    {
+      "path": "stdlib/173_printout_multifield_callable_and_method_paths.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "deffunction",
+        "defgeneric",
+        "defmethod"
+      ]
+    },
+    {
+      "path": "stdlib/174_printout_multifield_control_symbol_context.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/175_printout_multifield_empty_flat_sliced.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "subseq$"
+      ]
+    },
+    {
+      "path": "stdlib/176_printout_multifield_evaluate_once.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/177_printout_multifield_float_rounding_cutovers.clp",
+      "level": "boundary",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/178_printout_multifield_generated_symbols_stay_raw.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/179_printout_multifield_integer_float_spellings.clp",
+      "level": "boundary",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/180_printout_multifield_literal_control_bytes.clp",
+      "level": "boundary",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/181_printout_multifield_source_nonfinite_floats.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "sin"
+      ]
+    },
+    {
+      "path": "stdlib/182_printout_multifield_top_and_multifield_strings.clp",
+      "level": "boundary",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/183_printout_multifield_unicode_fields.clp",
+      "level": "boundary",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/184_round_adjacent_halves.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/185_round_half_ladder.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/186_round_integer_identity.clp",
+      "level": "boundary",
+      "covers": [
+        "integerp",
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/187_round_large_integral_floats.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/188_round_ordinary_nonties.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/189_str_index_arguments_once.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/190_str_index_bound_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "integerp",
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/191_str_index_empty_lexemes.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/192_str_index_first_match_boundaries.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/193_str_index_unicode_positions.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/194_str_length_argument_once.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/195_str_length_ascii_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/196_str_length_bound_lexemes.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "integerp",
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/197_str_length_callable_lexemes.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/198_str_length_generated_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "str-length",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/199_substring_arguments_once.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/200_substring_both_clamps_extreme_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/201_substring_bound_and_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "stringp",
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/202_substring_bound_generated_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "deffacts",
+        "deffunction",
+        "stringp",
+        "sub-string",
+        "sym-cat"
+      ]
+    },
+    {
+      "path": "stdlib/203_substring_empty_and_nonempty_evaluation.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/204_substring_empty_and_reversed.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/205_substring_inclusive_boundaries.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/206_substring_lower_clipping.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/207_substring_skips_invalid_text.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "create$",
+        "deffunction",
+        "defglobal",
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/208_substring_symbol_literals.clp",
+      "level": "boundary",
+      "covers": [
+        "stringp",
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/209_substring_symbol_timing.clp",
+      "level": "boundary",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "sub-string"
+      ]
     }
   ]
 }

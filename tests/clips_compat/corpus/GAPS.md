@@ -9,9 +9,9 @@ A future fix must remove/update its manifest characterization.
 On engine snapshot `d428e780`, seven formerly divergent cases now conform to
 CLIPS. Expression fact queries are now explicitly rejected, so their two
 previously matching empty-result controls also carry characterizations under
-[#324](https://github.com/plx/ferric-rules/issues/324). The current totals are
-158 conformance cases and 61 active gap cases. Historical issue descriptions
-below are not a substitute for the updated manifest's exact observations.
+[#324](https://github.com/plx/ferric-rules/issues/324). Later fixes resolved
+the remaining listed gaps; the manifest records the current totals. Historical
+issue descriptions below are not a substitute for its exact observations.
 
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.
