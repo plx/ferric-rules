@@ -4384,21 +4384,6 @@ impl Engine {
                     AlphaEntryType::OrderedRelation(sym)
                 };
                 let mut constant_tests = Vec::new();
-                if matches!(entry_type, AlphaEntryType::OrderedRelation(_)) {
-                    // Single-field constraints consume exactly one field, even
-                    // when anonymous. Multifield constraints may consume none
-                    // or more, so only their fixed neighbors set a lower bound.
-                    let min = ordered
-                        .constraints
-                        .iter()
-                        .filter(|constraint| !Self::constraint_is_multifield(constraint))
-                        .count();
-                    let max = (min == ordered.constraints.len()).then_some(min);
-                    constant_tests.push(ConstantTest {
-                        slot: SlotIndex::Ordered(0),
-                        test_type: ConstantTestType::OrderedFieldCount { min, max },
-                    });
-                }
                 let mut variable_slots = Vec::new();
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
@@ -4425,8 +4410,7 @@ impl Engine {
                     .iter()
                     .any(Self::constraint_is_multifield)
                     .then(|| {
-                        // The first test is always the raw fact cardinality.
-                        let tests = constant_tests.split_off(1);
+                        let tests = std::mem::take(&mut constant_tests);
                         let segments = vec![SequenceSegment {
                             source: SequenceSource::Ordered,
                             fields: ordered
@@ -4437,6 +4421,26 @@ impl Engine {
                         }];
                         Self::sequence_pattern(segments, tests, &mut constant_tests)
                     });
+                if matches!(entry_type, AlphaEntryType::OrderedRelation(_)) {
+                    // Single-field constraints consume exactly one field, even
+                    // when anonymous. Multifield constraints may consume none
+                    // or more, so only their fixed neighbors set a lower bound.
+                    let min = ordered
+                        .constraints
+                        .iter()
+                        .filter(|constraint| !Self::constraint_is_multifield(constraint))
+                        .count();
+                    let max = (min == ordered.constraints.len()).then_some(min);
+                    // The count goes last: alpha paths share no prefixes, so a
+                    // leading count test would run once per pattern of the
+                    // relation. Value tests already fail on a missing field.
+                    if min > 0 || max.is_some() {
+                        constant_tests.push(ConstantTest {
+                            slot: SlotIndex::Ordered(0),
+                            test_type: ConstantTestType::OrderedFieldCount { min, max },
+                        });
+                    }
+                }
 
                 Ok(CompilablePattern {
                     entry_type,

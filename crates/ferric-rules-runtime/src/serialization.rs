@@ -2005,9 +2005,11 @@ mod tests {
         let result = alter_state(&alpha, |state| {
             let nodes = state["rete"]["alpha"]["nodes"].as_array_mut().unwrap();
             let id = nodes.len();
-            let appended = nodes.last().unwrap().clone();
+            // The path ends with its field-count test; append a 65th value test.
+            let mut appended = nodes[id - 2].clone();
             let previous = nodes.last_mut().unwrap().get_mut("ConstantTest").unwrap();
-            previous["memory"] = serde_json::Value::Null;
+            appended["ConstantTest"]["memory"] = previous["memory"].take();
+            appended["ConstantTest"]["children"] = serde_json::json!([]);
             previous["children"] = serde_json::json!([id]);
             nodes.push(appended);
             state["rete"]["alpha"]["next_node_id"] = serde_json::json!(id + 1);
