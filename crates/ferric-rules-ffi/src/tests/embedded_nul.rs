@@ -206,7 +206,7 @@ fn snapshot_round_trip_preserves_nul_before_legacy_egress_rejects_it() {
         let mut data = std::ptr::null_mut();
         let mut len = 0;
         assert_eq!(
-            ferric_engine_serialize_cbor(engine, None, std::ptr::null_mut(), &mut data, &mut len,),
+            ferric_engine_serialize_cbor(engine, None, std::ptr::null_mut(), &mut data, &mut len),
             FerricError::Ok
         );
         assert!(!data.is_null());

@@ -28,8 +28,9 @@ const (
 
 // Format selects the serialization format for Engine.SerializeAs / WithSnapshotAs.
 //
-// Values 0, 3 and 4 belonged to removed codecs (bincode, MessagePack,
-// Postcard) and are rejected.
+// There is no default: the zero value Format(0) is invalid, so callers must
+// pass FormatCBOR or FormatJSON explicitly. Values 0, 3 and 4 belonged to
+// removed codecs (bincode, MessagePack, Postcard) and are rejected.
 type Format int
 
 const (

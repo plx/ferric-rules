@@ -69,13 +69,10 @@ changes do not create new renewal work.
 The baseline scan at `a38de6a852cce3f503467cd000ba7b182c4b5b30` reproduced
 all 19 previous exception records. Compatible npm lock updates patched esbuild,
 fast-uri, js-yaml, nanoid, and postcss. Targeted uv updates patched click,
-Pygments, and pytest on Python >=3.10. Disabling postcard's unused default
-`heapless-cas` feature removed atomic-polyfill (RUSTSEC-2023-0089) and its
-transitive graph; Ferric uses postcard's `alloc` APIs. No snapshot format changed.
-Five exceptions remained after that scan. The bincode (RUSTSEC-2025-0141) and
-paste/rmp (RUSTSEC-2024-0436) exceptions were later dropped together with the
-experimental bincode, MessagePack and Postcard snapshot codecs, leaving the
-entries above.
+Pygments, and pytest on Python >=3.10. Removing the experimental bincode,
+MessagePack and Postcard snapshot codecs later removed bincode
+(RUSTSEC-2025-0141), paste/rmp (RUSTSEC-2024-0436) and postcard from the
+dependency graph, leaving the entries above.
 
 Rust license allowlists, crate-specific MPL permission for the cbindgen build
 tool, and generated [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) remain.
