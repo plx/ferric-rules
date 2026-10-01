@@ -731,12 +731,14 @@ impl ReteCompiler {
         ));
     }
 
-    /// Ensure an alpha path exists for a pattern, reusing cached paths when possible.
+    /// Ensure an alpha path exists for a pattern, reusing cached paths when
+    /// possible. A new path's memory is filled from the current facts.
     fn ensure_alpha_path(
         &mut self,
         alpha: &mut AlphaNetwork,
         pattern: &CompilablePattern,
-    ) -> (AlphaMemoryId, bool) {
+        fact_base: &FactBase,
+    ) -> AlphaMemoryId {
         let mut tests = pattern.constant_tests.clone();
         // Facts without a split that passes the plan's constants never
         // reach the joins, which then enumerate splits only for candidates.
@@ -756,7 +758,7 @@ impl ReteCompiler {
         };
 
         if let Some(&mem_id) = self.alpha_path_cache.get(&key) {
-            return (mem_id, false);
+            return mem_id;
         }
 
         // Build the path: entry node → constant test chain → memory
@@ -768,8 +770,11 @@ impl ReteCompiler {
         }
 
         let mem_id = alpha.create_memory(current_node);
+        if !fact_base.is_empty() {
+            alpha.backfill_memory(mem_id, &key.entry_type, &key.tests, fact_base);
+        }
         self.alpha_path_cache.insert(key, mem_id);
-        (mem_id, true)
+        mem_id
     }
 
     /// Ensure a positive join node exists for the given structure.
@@ -811,16 +816,8 @@ impl ReteCompiler {
         bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> NodeId {
-        let (alpha_mem, alpha_created) = self.ensure_alpha_path(&mut rete.alpha, pattern);
+        let alpha_mem = self.ensure_alpha_path(&mut rete.alpha, pattern, fact_base);
         alpha_memories.push(alpha_mem);
-        if alpha_created && !fact_base.is_empty() {
-            rete.alpha.backfill_memory(
-                alpha_mem,
-                &pattern.entry_type,
-                &pattern.constant_tests,
-                fact_base,
-            );
-        }
 
         let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
         let mut binding_extractions = SmallVec::<[(SlotIndex, VarId); 8]>::new();

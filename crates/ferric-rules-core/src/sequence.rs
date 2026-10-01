@@ -231,9 +231,10 @@ impl SequencePattern {
     /// and each capture tries its longest length first, so splits arrive in
     /// the order CLIPS inserts them. A test runs as soon as every field it
     /// reads is placed, so a failing constant prunes every split sharing that
-    /// prefix. `visit` sees [`SplitEvent::Step`] before each capture length is
-    /// tried, which lets callers bound the work, and [`SplitEvent::Match`] for
-    /// each accepted split. Returning `Break` stops the search.
+    /// prefix. `visit` sees [`SplitEvent::Step`] before each length a capture
+    /// tries, which lets callers bound the work (a segment's last capture takes
+    /// the remaining fields without a step), and [`SplitEvent::Match`] for each
+    /// accepted split. Returning `Break` stops the search.
     pub fn search<'a, B>(
         &'a self,
         fact: &'a Fact,
@@ -335,7 +336,7 @@ impl SequencePattern {
 
 /// What a split search reports to its visitor.
 pub enum SplitEvent<'s, 'a> {
-    /// One capture length is about to be tried.
+    /// A capture with a choice of lengths is about to try one.
     Step,
     /// A complete split that passes every test of the plan.
     Match(&'s SplitView<'a>),
@@ -442,7 +443,9 @@ impl<'a> SplitSearch<'_, 'a> {
                 .all(|field| *field == SequenceField::Single);
             let shortest = if last { extra } else { 0 };
             for length in (shortest..=extra).rev() {
-                visit(SplitEvent::Step)?;
+                if !last {
+                    visit(SplitEvent::Step)?;
+                }
                 self.split.fields.push((
                     FieldRef::Multi(&values[offset..offset + length]),
                     OnceCell::new(),
