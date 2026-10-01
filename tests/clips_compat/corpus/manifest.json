@@ -5800,6 +5800,21 @@
         "str-cat",
         "sym-cat"
       ]
+    },
+    {
+      "path": "stdlib/233_format_directive_capacity.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/234_scanner_control_characters.clp",
+      "level": "boundary",
+      "covers": [
+        "explode$",
+        "string-to-field"
+      ]
     }
   ]
 }
