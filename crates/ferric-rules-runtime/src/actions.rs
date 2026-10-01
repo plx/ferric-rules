@@ -63,19 +63,21 @@ impl ActionEvalEnv {
         names: impl IntoIterator<Item = &'a str>,
         execute: impl FnOnce(&mut Self) -> Result<T, ActionError>,
     ) -> Result<T, ActionError> {
-        let mut saved = HashMap::new();
+        // Scopes hold a few names and are entered once per query candidate,
+        // so a small list beats a map here.
+        let mut saved = smallvec::SmallVec::<[(&str, Option<Value>); 4]>::new();
         for name in names {
             let name = name.strip_prefix("$?").unwrap_or(name);
-            saved
-                .entry(name.to_string())
-                .or_insert_with(|| self.runtime_bindings.remove(name));
+            if saved.iter().all(|(seen, _)| *seen != name) {
+                saved.push((name, self.runtime_bindings.remove(name)));
+            }
         }
         let result = execute(self);
         for (name, previous) in saved {
             if let Some(value) = previous {
-                self.runtime_bindings.insert(name, value);
+                self.runtime_bindings.insert(name.to_string(), value);
             } else {
-                self.runtime_bindings.remove(&name);
+                self.runtime_bindings.remove(name);
             }
         }
         result
@@ -88,17 +90,25 @@ impl ActionEvalEnv {
         bindings: &[(String, CompactFactBinding)],
         execute: impl FnOnce(&mut Self) -> Result<T, ActionError>,
     ) -> Result<T, ActionError> {
-        let mut saved = HashMap::new();
-        for (name, fact_id) in bindings {
-            let previous = self.compact_facts.insert(name.clone(), fact_id.clone());
-            saved.entry(name.clone()).or_insert(previous);
+        let mut saved = smallvec::SmallVec::<[(&str, Option<CompactFactBinding>); 4]>::new();
+        for (name, binding) in bindings {
+            let previous = match self.compact_facts.get_mut(name.as_str()) {
+                Some(current) => Some(std::mem::replace(current, binding.clone())),
+                None => {
+                    self.compact_facts.insert(name.clone(), binding.clone());
+                    None
+                }
+            };
+            if saved.iter().all(|(seen, _)| *seen != name) {
+                saved.push((name, previous));
+            }
         }
         let result = execute(self);
         for (name, previous) in saved {
-            if let Some(fact_id) = previous {
-                self.compact_facts.insert(name, fact_id);
+            if let Some(binding) = previous {
+                self.compact_facts.insert(name.to_string(), binding);
             } else {
-                self.compact_facts.remove(&name);
+                self.compact_facts.remove(name);
             }
         }
         result
@@ -1380,7 +1390,7 @@ struct ActionQueryCursor {
     members: Vec<(String, TemplateId)>,
     after: Vec<Option<u64>>,
     current: Vec<Option<CompactFactBinding>>,
-    retained: HashMap<FactId, Arc<Fact>>,
+    retained: rustc_hash::FxHashMap<FactId, Arc<Fact>>,
     level: usize,
     finished: bool,
 }
@@ -1425,7 +1435,7 @@ impl ActionQueryCursor {
             after: vec![None; members.len()],
             current: vec![None; members.len()],
             members,
-            retained: HashMap::new(),
+            retained: rustc_hash::FxHashMap::default(),
             level: 0,
             finished,
         })
@@ -1507,22 +1517,23 @@ fn with_query_candidate<T>(
         &mut ActionEvalEnv,
     ) -> Result<T, ActionError>,
 ) -> Result<T, ActionError> {
+    // One copy of the frame per candidate, extended in place for each member.
     let mut aug_token = token.clone();
     let mut aug_rule_info = rule_info_clone_light(rule_info);
     for (name, member) in candidate {
-        let value = Value::Integer(i64::from_ne_bytes(
-            member.fact_id().data().as_ffi().to_ne_bytes(),
-        ));
-        let (next_token, next_rule, _) = augment_bindings_with_var(
-            &aug_token,
-            &aug_rule_info,
-            name,
-            value,
-            &mut context.engine.symbol_table,
-            &context.engine.config,
-        )?;
-        aug_token = next_token;
-        aug_rule_info = next_rule;
+        let symbol = context
+            .engine
+            .symbol_table
+            .intern_symbol(name, context.engine.config.string_encoding)
+            .map_err(ActionError::from)?;
+        let var_id = aug_rule_info
+            .var_map
+            .get_or_create(symbol)
+            .map_err(|_| ActionError::EvalError(format!("query: too many variables for {name}")))?;
+        let address = i64::from_ne_bytes(member.fact_id().data().as_ffi().to_ne_bytes());
+        aug_token
+            .bindings
+            .set(var_id, ValueRef::new(Value::Integer(address)));
     }
     eval_env.with_local_scope(
         candidate.iter().map(|(name, _)| name.as_str()),
