@@ -1,0 +1,10 @@
+(defglobal ?*trace* = 0)
+(deffunction mark (?digit ?value) (bind ?*trace* (+ (* ?*trace* 10) ?digit)) ?value)
+(defrule probe =>
+ (bind ?*trace* 0)
+ (printout t "[" (sub-string (mark 1 0) (mark 2 0) (mark 3 42)) "]:" ?*trace* crlf)
+ (bind ?*trace* 0)
+ (printout t "[" (sub-string (mark 1 3) (mark 2 -1) (mark 3 1.5)) "]:" ?*trace* crlf)
+ (bind ?*trace* 0)
+ (printout t "[" (sub-string (mark 1 -2) (mark 2 -9223372036854775808) (mark 3 (create$ 1 2))) "]:" ?*trace* crlf)
+)

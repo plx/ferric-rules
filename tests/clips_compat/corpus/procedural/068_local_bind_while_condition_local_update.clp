@@ -1,0 +1,6 @@
+(deffunction count-up ()
+  (bind ?i 0)
+  (bind ?sum 0)
+  (while (< (bind ?i (+ ?i 1)) 4) do (bind ?sum (+ ?sum ?i)))
+  (create$ ?sum ?i))
+(defrule probe => (printout t (count-up) crlf))

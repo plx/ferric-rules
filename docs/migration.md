@@ -47,6 +47,71 @@ and JSON remain, with unchanged numeric values (JSON `1`, CBOR `2`); the removed
 values `0`, `3` and `4` are now rejected. To keep a snapshot written with a
 removed codec, restore it with the producing version and re-save it as CBOR.
 
+## Pre-1.0 instance names
+
+`Value` has a new `InstanceName` variant for CLIPS instance names such as
+`[widget]` (Ferric still has no object system), and the parser's
+`LiteralKind`/`Atom` and `SlotValueType` gained matching variants. Exhaustive
+matches on these enums need a new arm. The C ABI adds value type
+`FERRIC_VALUE_TYPE_INSTANCE_NAME = 7` (a `string_ptr` holding the spelling
+without brackets) and `ferric_value_instance_name_bytes`; C and Go hosts that
+switch on `value_type` should handle it. The bindings return instance names as
+`InstanceName` values (`FerricInstanceName` in TypeScript,
+`Value.instanceName` in Swift). Earlier versions returned `[widget]` as a
+SYMBOL spelled with its brackets, so a host that compares with that symbol
+(`Symbol("[widget]")`, `FerricSymbol("[widget]")`, `.symbol("[widget]")`) no
+longer matches and should compare with the instance-name value instead.
+
+In the parser, the lexer has a new `Token::InstanceName`, and
+`SlotConstraint::constraint` is now `constraints: Vec<Constraint>`, because a
+multislot pattern holds a sequence of field constraints. In the core,
+`CompilablePattern` has a new `sequence` field, so struct literals need it
+(`sequence: None` for a pattern without multifield fields).
+
+## Pre-1.0 snapshot schema 2
+
+Snapshots are written with schema 2, and schema 1 snapshots are rejected with
+`UnsupportedVersion(1)`: their compiled patterns did not check field counts.
+Restore an old snapshot with the version that produced it, export the
+application data, and assert it into a new engine; see
+[snapshots.md](snapshots.md).
+
+## Pre-1.0 CLIPS behavior fixes
+
+The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
+Programs that relied on the earlier behavior need changes:
+
+- An ordered pattern matches only facts with the same number of fields:
+  `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
+- A multislot pattern matches the whole multislot: `(tags ?t)` needs exactly
+  one value. Use `(tags $? ?t $?)` to match any member.
+- `sort` asks its predicate whether two fields should be exchanged, so
+  `(sort > ...)` sorts ascending and `(sort < ...)` descending.
+- `string-to-field`, `explode$` and `read` use the CLIPS field scanner: a
+  quoted string that contains spaces stays one STRING field. `read` still
+  returns only the first field of its line.
+- `format` rejects an argument count that does not match its directives, `%s`
+  of a number, and a malformed directive such as `%5-3d`.
+- `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
+  `"1e+20"`), and `printout` quotes STRING fields inside a multifield.
+- `round` breaks half ties toward the lower integer, and `min`/`max` return the
+  selected operand with its own type.
+- `str-length`, `sub-string` and `str-index` count characters and accept
+  SYMBOLs, `sub-string` clips out-of-range positions, and `nth$` returns `nil`
+  for a missing position.
+- `fact-index` returns the public assertion index, and `fact-existp`,
+  `fact-relation`, `fact-slot-value`, `fact-slot-names` and `retract` accept
+  that index as well as a fact address. An INTEGER was previously read as an
+  internal fact handle.
+- `halt` inside a loop or query body no longer skips the rest of the body or
+  later loops; the run stops when the RHS finishes.
+- Each fact visited by a query counts against
+  `EngineConfig::max_action_loop_iterations`, like a loop iteration.
+- These are now load errors, as in CLIPS: a parenthesized `defmethod`
+  parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
+  several field constraints such as `(color red green)`, and a slot that
+  appears twice in one template pattern.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:
@@ -193,8 +258,8 @@ Ferric uses byte-equality comparison with no Unicode normalization:
 - ASCII content: behavior identical to CLIPS.
 - Non-ASCII content: ensure inputs are normalized to a consistent form
   (e.g., NFC) before asserting.
-- `sub-string` uses byte indices. For ASCII, this is identical to CLIPS
-  character indices.
+- `sub-string` counts Unicode scalar values with one-based, inclusive positions.
+  It clips starts below one and ends beyond the STRING or SYMBOL text.
 
 ## Step 8: Test Incrementally
 
@@ -265,7 +330,7 @@ was never populated.
 |--------|--------|
 | `=` vs `eq` | `=` is numeric (coerces types); `eq` is value+type sensitive |
 | `format` writes nowhere | `format` returns a string; use `(printout t (format nil ...) crlf)` |
-| `sub-string` byte indices | Byte-based, not codepoint-based; identical for ASCII |
+| `sub-string` positions | One-based, inclusive Unicode scalar positions; bounds clip to the text |
 | Function bodies are evaluator expressions | Put fact mutation and agenda/focus control in rule RHS code |
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
 | `reset`/`clear` are deferred | Flag is set and checked after the current action sequence completes |
@@ -333,10 +398,11 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded version-one envelope; CBOR is recommended and is the
-  default for CLI, TypeScript, Python and Swift consumers. Legacy unversioned
-  snapshots are rejected explicitly. Export durable application data through
-  the producing version before upgrading; see [snapshots.md](snapshots.md).
+- Snapshots use a bounded, versioned envelope (schema 2); CBOR is recommended
+  and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
+  unversioned and schema-1 snapshots are rejected explicitly. Export durable
+  application data through the producing version before upgrading; see
+  [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
   Python `None`, Node `null`, and Swift `.void` cannot be stored in facts.

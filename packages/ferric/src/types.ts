@@ -35,10 +35,27 @@ export interface FerricSymbolInstance {
 }
 
 /**
+ * Structural interface matching native FerricInstanceName instances. `value`
+ * is the CLIPS instance name's spelling without brackets.
+ */
+export interface FerricInstanceNameInstance {
+  readonly value: string;
+  toString(): string;
+  valueOf(): string;
+}
+
+/** Wire-form representation of a FerricInstanceName. */
+export interface WireInstanceNameObject {
+  __type: "FerricInstanceName";
+  value: string;
+}
+
+/**
  * Union of all value types that can appear in CLIPS facts and expressions.
  *
  * Conversion rules (JS → CLIPS):
  *   FerricSymbol / WireSymbolObject  → CLIPS symbol
+ *   FerricInstanceName               → CLIPS instance name
  *   string                           → CLIPS string (quoted)
  *   number (safe integer)            → CLIPS integer; unsafe integers rejected
  *   number (float)                   → CLIPS float
@@ -49,6 +66,7 @@ export interface FerricSymbolInstance {
  *
  * Conversion rules (CLIPS → JS):
  *   CLIPS symbol    → FerricSymbol (native) or WireSymbolObject (across postMessage)
+ *   CLIPS instance name → FerricInstanceName (native) or its wire form
  *   CLIPS string    → string
  *   CLIPS integer   → number (if within safe-integer range) or bigint
  *   CLIPS float     → number
@@ -58,6 +76,8 @@ export interface FerricSymbolInstance {
 export type ClipsValue =
   | FerricSymbolInstance
   | WireSymbolObject
+  | FerricInstanceNameInstance
+  | WireInstanceNameObject
   | string
   | number
   | bigint

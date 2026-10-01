@@ -61,6 +61,7 @@ export {
 export {
   Engine,
   FerricSymbol,
+  FerricInstanceName,
 } from "./native";
 
 export type {
@@ -68,6 +69,8 @@ export type {
   NativeEngineConstructor,
   NativeFerricSymbol,
   NativeFerricSymbolConstructor,
+  NativeFerricInstanceName,
+  NativeFerricInstanceNameConstructor,
 } from "./native";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +94,7 @@ export type {
 
 export {
   isWireSymbol,
+  isWireInstanceName,
   toWire,
   fromWire,
   ABORT_FLAG_INDEX,
@@ -100,6 +104,7 @@ export {
 
 export type {
   WireSymbol,
+  WireInstanceName,
   WorkerRequest,
   WorkerResponse,
   WorkerErrorPayload,

@@ -37,6 +37,8 @@ pub enum Token {
     Equals,
     /// `<-` (left arrow / assignment)
     LeftArrow,
+    /// Bracketed instance-name literal such as `[widget]`, stored without brackets.
+    InstanceName(String),
 }
 
 /// A token paired with its source location.
@@ -450,9 +452,16 @@ impl<'a> Lexer<'a> {
     fn lex_symbol(&mut self) {
         let start = self.position;
         let mut symbol = String::new();
+        let bracket_prefix = self.chars.peek().is_some_and(|&(_, ch)| ch == '[');
 
         while let Some(&(_, ch)) = self.chars.peek() {
-            if is_symbol_char(ch) {
+            if bracket_prefix {
+                if !is_bracket_symbol_char(ch) {
+                    break;
+                }
+                symbol.push(ch);
+                self.advance();
+            } else if is_symbol_char(ch) {
                 symbol.push(ch);
                 self.advance();
             } else if ch == ':' {
@@ -476,13 +485,25 @@ impl<'a> Lexer<'a> {
         }
 
         let span = Span::new(start, self.position, self.file_id);
-        self.tokens
-            .push(SpannedToken::new(Token::Symbol(symbol), span));
+        let token = if symbol.len() > 2 && symbol.starts_with('[') && symbol.ends_with(']') {
+            Token::InstanceName(symbol[1..symbol.len() - 1].to_owned())
+        } else {
+            Token::Symbol(symbol)
+        };
+        self.tokens.push(SpannedToken::new(token, span));
     }
 }
 
 fn is_symbol_start(ch: char) -> bool {
     is_symbol_char(ch)
+}
+
+/// CLIPS 6.30 `ScanSymbol` continues a `[`-prefixed token through every
+/// printable non-delimiter ASCII character and every non-ASCII character, so a
+/// bracketed instance name may contain `?`, `\\` or Unicode spaces.
+fn is_bracket_symbol_char(ch: char) -> bool {
+    !ch.is_ascii()
+        || (ch.is_ascii_graphic() && !matches!(ch, '<' | '"' | '(' | ')' | '&' | '|' | '~' | ';'))
 }
 
 fn is_symbol_char(ch: char) -> bool {
@@ -652,6 +673,27 @@ mod tests {
         let tokens = lex("Templates[1]", file()).unwrap();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "Templates[1]"));
+    }
+
+    #[test]
+    fn lex_instance_names_follow_clips_bracket_continuation() {
+        let tokens = lex(
+            "[widget] [] [x]tail [a?b] [DATA::é] [a\u{a0}b] [a<b]",
+            file(),
+        )
+        .unwrap();
+        let expected = [
+            Token::InstanceName("widget".into()),
+            Token::Symbol("[]".into()),
+            Token::Symbol("[x]tail".into()),
+            Token::InstanceName("a?b".into()),
+            Token::InstanceName("DATA::é".into()),
+            Token::InstanceName("a\u{a0}b".into()),
+            Token::Symbol("[a".into()),
+            Token::Symbol("<b]".into()),
+        ];
+        let actual: Vec<_> = tokens.into_iter().map(|token| token.token).collect();
+        assert_eq!(actual, expected);
     }
 
     #[test]

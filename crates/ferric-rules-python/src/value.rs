@@ -43,6 +43,42 @@ impl Symbol {
     }
 }
 
+/// A CLIPS instance name such as `[widget]`, holding the spelling without
+/// brackets. Distinct from `Symbol`; Ferric has no object system.
+#[pyclass(name = "InstanceName", module = "ferric")]
+#[derive(Clone, Debug)]
+pub struct InstanceName {
+    #[pyo3(get)]
+    pub value: String,
+}
+
+#[pymethods]
+impl InstanceName {
+    #[new]
+    fn new(value: String) -> Self {
+        Self { value }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("InstanceName({:?})", self.value)
+    }
+
+    fn __str__(&self) -> String {
+        format!("[{}]", self.value)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        if let Ok(name) = other.downcast::<InstanceName>() {
+            return self.value == name.borrow().value;
+        }
+        false
+    }
+
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        PyTuple::new(py, ["ferric.InstanceName", &self.value])?.hash()
+    }
+}
+
 /// A CLIPS string value (distinct from a symbol).
 ///
 /// Plain Python `str` also maps to a CLIPS string literal.
@@ -93,6 +129,17 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
         Value::Symbol(sym) => {
             let s = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
             Ok(Symbol {
+                value: s.to_owned(),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
+        }
+        Value::InstanceName(name) => {
+            let s = engine
+                .resolve_core_symbol(name.as_symbol())
+                .unwrap_or("<unknown>");
+            Ok(InstanceName {
                 value: s.to_owned(),
             }
             .into_pyobject(py)?
@@ -167,6 +214,13 @@ impl PythonValueBudget {
             let val = sym.borrow().value.clone();
             return engine
                 .symbol_value(&val)
+                .map_err(crate::error::engine_error_to_pyerr);
+        }
+
+        if let Ok(name) = obj.downcast::<InstanceName>() {
+            let val = name.borrow().value.clone();
+            return engine
+                .instance_name_value(&val)
                 .map_err(crate::error::engine_error_to_pyerr);
         }
 

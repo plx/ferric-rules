@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 1")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 2")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,6 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
+const SCHEMA_VERSION: u16 = 2;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -131,9 +132,9 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     }
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 1.
+    bytes.push(0); // No optional capabilities in schema 2.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -156,7 +157,7 @@ fn open_envelope(data: &[u8], format: SerializationFormat) -> Result<&[u8], Seri
         ));
     }
     let version = u16::from_le_bytes([data[8], data[9]]);
-    if version != 1 {
+    if version != SCHEMA_VERSION {
         return Err(SerializationError::UnsupportedVersion(version));
     }
     if data[10] != format_id(format) {
@@ -523,6 +524,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_reject_iterator_binds_even_in_unexecuted_callable_bodies() {
+        fn replace_bind_target(value: &mut serde_json::Value) -> usize {
+            if let Some(call) = value.get_mut("FunctionCall") {
+                if call["name"] == "bind" {
+                    assert_eq!(call["args"][0]["Variable"][0], "scratch");
+                    call["args"][0]["Variable"][0] = serde_json::json!("i");
+                    return 1;
+                }
+            }
+            match value {
+                serde_json::Value::Array(entries) => {
+                    entries.iter_mut().map(replace_bind_target).sum()
+                }
+                serde_json::Value::Object(entries) => {
+                    entries.values_mut().map(replace_bind_target).sum()
+                }
+                _ => 0,
+            }
+        }
+
+        for definition in ["deffunction keep", "defmethod keep 1"] {
+            for (body, diagnostic) in [
+                ("(loop-for-count (?i 2 1) (bind ?scratch 9))", "PRCDRPSR1"),
+                ("(progn$ (?i (create$)) (bind ?scratch 9))", "MULTIFUN2"),
+                ("(foreach ?i (create$) (bind ?scratch 9))", "MULTIFUN2"),
+            ] {
+                let engine = Engine::with_rules(&format!("({definition} () {body} 7)")).unwrap();
+                // These empty loops never reach the evaluator's runtime guard.
+                // A checksummed payload must still obey source-time protection.
+                let result = alter_state(&engine, |state| {
+                    assert_eq!(replace_bind_target(state), 1);
+                });
+                assert!(
+                    matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(diagnostic)),
+                    "{definition}: {body}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_rejects_nonroot_root_without_panicking() {
         let engine = Engine::with_rules("(defrule ready (ready) =>)").unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -634,6 +676,75 @@ mod tests {
             again
                 .assert_ordered("after-reset", Vec::<Value>::new())
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn public_fact_indices_preserve_wide_snapshot_chronology() {
+        let engine = Engine::with_rules(
+            "(deftemplate item (slot value))
+             (defrule index =>
+               (do-for-fact ((?f item)) TRUE (printout t (fact-index ?f) crlf)))",
+        )
+        .unwrap();
+        let maximum = u64::try_from(i64::MAX).unwrap();
+        for timestamp in [maximum - 1, maximum, maximum + 1, u64::MAX - 1] {
+            let mut wide = alter_state(&engine, |state| {
+                state["fact_base"]["next_timestamp"] = serde_json::json!(timestamp);
+            })
+            .unwrap();
+            wide.assert_template("item", &["value"], [7_i64]).unwrap();
+
+            for &format in SerializationFormat::ALL {
+                let mut restored =
+                    Engine::deserialize(&wide.serialize(format).unwrap(), format).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                if timestamp <= maximum {
+                    assert!(restored.action_diagnostics().is_empty());
+                    assert_eq!(restored.get_output("t").unwrap(), format!("{timestamp}\n"));
+                } else {
+                    assert!(matches!(restored.action_diagnostics(),
+                        [crate::ActionError::Evaluator(crate::evaluator::EvalError::UnsupportedOperation {
+                            operation, reason, ..
+                        })] if operation == "fact-index" && reason.contains("signed 64-bit")));
+                    assert_eq!(restored.get_output("t").unwrap_or(""), "");
+                }
+                // Introspection overflow does not corrupt or invalidate the
+                // supported u64 chronology, even at assertion exhaustion.
+                let mut again =
+                    Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+                let handle = again.facts().unwrap().next().unwrap().0;
+                again.retract(handle).unwrap();
+                again.reset().unwrap();
+                again.assert_template("item", &["value"], [8_i64]).unwrap();
+                assert_eq!(again.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                assert!(again.action_diagnostics().is_empty());
+                assert_eq!(again.get_output("t").unwrap(), "1\n");
+            }
+        }
+    }
+
+    #[test]
+    fn exhausted_initial_fact_installation_does_not_adopt_a_user_fact() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let mut restored = alter_state(&engine, |state| {
+            state["fact_base"]["next_timestamp"] = serde_json::json!(u64::MAX);
+        })
+        .unwrap();
+        assert!(matches!(
+            restored.ensure_initial_fact(),
+            Err(crate::EngineError::FactTimestampExhausted(_))
+        ));
+        assert!(restored.initial_fact_id.is_none());
+        assert_eq!(restored.fact_count(), 1);
+        assert_eq!(restored.facts().unwrap().count(), 1);
+        for &format in SerializationFormat::ALL {
+            let again = Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+            assert!(again.initial_fact_id.is_none());
+            assert_eq!(again.fact_count(), 1);
         }
     }
 
@@ -779,10 +890,10 @@ mod tests {
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
             let mut changed = bytes.clone();
-            changed[8..10].copy_from_slice(&2_u16.to_le_bytes());
+            changed[8..10].copy_from_slice(&(SCHEMA_VERSION + 1).to_le_bytes());
             assert!(matches!(
                 Engine::deserialize(&changed, format),
-                Err(SerializationError::UnsupportedVersion(2))
+                Err(SerializationError::UnsupportedVersion(version)) if version == SCHEMA_VERSION + 1
             ));
             changed = bytes.clone();
             changed[11] = 1;
@@ -834,11 +945,23 @@ mod tests {
 
     #[test]
     fn legacy_raw_fixture_has_an_explicit_rejection_path() {
+        #[derive(serde::Deserialize)]
+        struct LegacyData {
+            fact_base: FactBase,
+            symbol_table: SymbolTable,
+        }
         let raw = include_bytes!("../tests/fixtures/snapshots/legacy-raw.cbor");
         // Verify this is a meaningful old payload, not arbitrary garbage.
-        let legacy: EngineSnapshotOwned = decode(raw, SerializationFormat::Cbor).unwrap();
-        let legacy = legacy.into_engine();
-        assert_eq!(legacy.find_facts("durable").unwrap().len(), 1);
+        let legacy: LegacyData = decode(raw, SerializationFormat::Cbor).unwrap();
+        assert_eq!(
+            legacy
+                .fact_base
+                .iter()
+                .filter(|(_, entry)| matches!(&entry.fact, Fact::Ordered(fact)
+                if legacy.symbol_table.resolve_symbol_str(fact.relation) == Some("durable")))
+                .count(),
+            1
+        );
         assert!(matches!(
             Engine::deserialize(raw, SerializationFormat::Cbor),
             Err(SerializationError::LegacySnapshot)
@@ -875,7 +998,7 @@ mod tests {
         }
         // The aggregate budget also applies when no collection advertises a size.
         let mut cbor = vec![0x9f];
-        cbor.extend(std::iter::repeat_n(0xf6, limited::MAX_ITEMS + 1));
+        cbor.resize(limited::MAX_ITEMS + 2, 0xf6);
         cbor.push(0xff);
         assert!(decode::<Vec<()>>(&cbor, SerializationFormat::Cbor)
             .unwrap_err()
@@ -1369,10 +1492,12 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_one_snapshot_preserves_resume_and_reset_behavior() {
+    fn committed_schema_one_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-1.cbor");
-        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
-        verify_schema_one_resume(restored);
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(1))
+        ));
     }
 
     #[test]
@@ -1381,6 +1506,424 @@ mod tests {
         let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
         let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         verify_schema_one_resume(restored);
+    }
+
+    fn verify_cardinality_resume(mut engine: Engine) {
+        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        // Restored compiled paths must reject new facts of the wrong width.
+        engine.load_str("(assert (row) (row c d))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.load_str("(assert (row c))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        // Later compilation also preserves the guard while backfilling facts.
+        engine
+            .load_str("(defrule later (row ?x&~z) => (printout t later crlf))")
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+        engine.load_str("(assert (row d e f))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.reset().unwrap();
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 4);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        assert!(engine.action_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn ordered_cardinality_roundtrips_in_all_snapshot_formats() {
+        let mut engine = Engine::with_rules(
+            r#"(defglobal ?*seen* = 0)
+            (deffacts rows (row a) (row b) (row a b))
+            (defrule observe
+              (row ?)
+              =>
+              (bind ?*seen* (+ ?*seen* 1))
+              (printout t "one field" crlf))"#,
+        )
+        .unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            verify_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
+        }
+    }
+
+    /// Source of the committed schema-2 fixture: an ordered fact with three
+    /// splits and a template fact with six slot-segment splits, one fired.
+    fn split_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
+        engine
+    }
+
+    fn integer_rows(engine: &Engine, relation: &str) -> Vec<Vec<i64>> {
+        let mut rows: Vec<Vec<i64>> = engine
+            .find_facts(relation)
+            .unwrap()
+            .into_iter()
+            .map(|(_, fact)| match fact {
+                Fact::Ordered(fact) => fact
+                    .fields
+                    .iter()
+                    .map(|value| match value {
+                        Value::Integer(value) => *value,
+                        _ => panic!("{relation} fields must be integers"),
+                    })
+                    .collect(),
+                Fact::Template(_) => panic!("{relation} must be ordered"),
+            })
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    fn verify_split_resume(mut engine: Engine) {
+        // Each pending activation keeps its capture identity: together with
+        // the fired one they cover every split exactly once.
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 8);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(9))));
+        assert_eq!(
+            integer_rows(&engine, "row-widths"),
+            [[0, 2], [1, 1], [2, 0]]
+        );
+        assert_eq!(
+            integer_rows(&engine, "bag-widths"),
+            [
+                [0, 2, 0, 1],
+                [0, 2, 1, 0],
+                [1, 1, 0, 1],
+                [1, 1, 1, 0],
+                [2, 0, 0, 1],
+                [2, 0, 1, 0]
+            ]
+        );
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        let row = engine.find_facts("row").unwrap()[0].0;
+        engine.retract(row).unwrap();
+        let bag = engine
+            .facts()
+            .unwrap()
+            .find_map(|(id, fact)| matches!(fact, Fact::Template(_)).then_some(id))
+            .unwrap();
+        engine.retract(bag).unwrap();
+        // Replacements: 2 + 2 x 3 splits, plus one match of two empty slots.
+        engine
+            .load_str(
+                "(assert (row c) (bag (tag next) (left d) (right e f)) (bag (tag empty) (left) (right)))",
+            )
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 9);
+        assert!(matches!(
+            engine.get_global("seen"),
+            Some(Value::Integer(18))
+        ));
+        // Rules with other variable names share the restored sequence joins.
+        engine
+            .load_str(
+                "(defrule observe-row (row $?a $?b) =>)
+                 (defrule observe-bag (bag (tag ?t) (left $?a $?b) (right $?c $?d)) =>)",
+            )
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 9);
+        engine.reset().unwrap();
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 18);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(9))));
+        assert!(engine.action_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn committed_schema_two_snapshot_resumes_pending_splits() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-2.cbor");
+        verify_split_resume(Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap());
+    }
+
+    #[test]
+    fn sequence_splits_roundtrip_in_all_snapshot_formats() {
+        let engine = split_fixture_engine();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            verify_split_resume(Engine::deserialize(&bytes, format).unwrap());
+        }
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-2 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_two_fixture() {
+        let engine = split_fixture_engine();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-2.cbor");
+        std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn wide_sequence_joins_restore_within_the_validation_budget() {
+        // Split enumeration for every key x list pair would exceed the work
+        // budget; recorded splits are validated per token instead. Checking
+        // the existential support tries splits without copying captures.
+        let values: Vec<String> = (0..300).map(|value| value.to_string()).collect();
+        let keys: Vec<String> = values.iter().map(|key| format!("(key {key})")).collect();
+        let mut engine = Engine::with_rules(&format!(
+            "(deffacts seed {} (lst {}))
+             (defrule member (key ?k) (lst $? ?k $?) =>)
+             (defrule present (key ?k) (exists (lst $? ?k $?)) =>)",
+            keys.join(" "),
+            values.join(" ")
+        ))
+        .unwrap();
+        assert_eq!(engine.agenda_len(), 600);
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 600);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 600);
+    }
+
+    #[test]
+    fn malformed_sequence_match_metadata_is_rejected() {
+        let engine = split_fixture_engine();
+        for corruption in 0..3 {
+            let result = alter_state(&engine, |state| {
+                let slots = state["rete"]["token_store"]["sequence_matches"]
+                    .as_array_mut()
+                    .unwrap();
+                let occupied: Vec<_> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, slot)| slot["value"].is_array())
+                    .map(|(index, _)| index)
+                    .collect();
+                assert_eq!(occupied.len(), 9);
+                match corruption {
+                    0 => slots[occupied[0]]["value"] = serde_json::json!([usize::MAX, 0]),
+                    1 => slots[occupied[1]]["value"] = slots[occupied[0]]["value"].clone(),
+                    _ => {
+                        slots[occupied[0]]["value"] = serde_json::Value::Null;
+                        slots[occupied[0]]["version"] = serde_json::json!(0);
+                    }
+                }
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "capture metadata corruption {corruption} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_projection_bindings_are_validated_after_restore() {
+        let engine = split_fixture_engine();
+        let result = alter_state(&engine, |state| {
+            let slots = state["rete"]["token_store"]["tokens"]
+                .as_array_mut()
+                .unwrap();
+            let token = slots
+                .iter_mut()
+                .find(|slot| slot["value"]["fact"].is_object())
+                .unwrap();
+            token["value"]["bindings"]["bindings"][0] =
+                serde_json::json!({"Inline": {"Integer": 42}});
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
+    }
+
+    #[test]
+    fn sequence_metadata_cannot_be_attached_to_a_root_token() {
+        let engine = split_fixture_engine();
+        let result = alter_state(&engine, |state| {
+            let root_slot = state["rete"]["token_store"]["tokens"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .find(|(_, slot)| slot["value"].is_object() && slot["value"]["parent"].is_null())
+                .map(|(index, slot)| (index, slot["version"].clone()))
+                .unwrap();
+            state["rete"]["token_store"]["sequence_matches"][root_slot.0] =
+                serde_json::json!({"value": [], "version": root_slot.1});
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message))
+            if message.contains("sequence match metadata") || message.contains("nonsequence token"))
+        );
+    }
+
+    #[test]
+    fn sequence_conditionals_preserve_fact_support_through_restore() {
+        let mut engine = Engine::with_rules(r"
+            (deffacts rows (row a b) (enabled))
+            (defrule absent (not (row $?left mark $?right)) => (printout t absent crlf))
+            (defrule present (exists (row $?left mark $?right)) => (printout t present crlf))
+            (defrule clear (not (and (row $?left mark $?right) (enabled))) => (printout t clear crlf))
+        ").unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            restored
+                .load_str("(assert (row mark mark) (row mark x mark))")
+                .unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            let bytes = restored.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            let rows: Vec<_> = restored
+                .find_facts("row")
+                .unwrap()
+                .into_iter()
+                .filter_map(|(id, fact)| match fact {
+                    Fact::Ordered(fact)
+                        if matches!(fact.fields.first(), Some(Value::Symbol(symbol))
+                        if restored.symbol_table.resolve_symbol_str(*symbol) == Some("mark")) =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rows.len(), 2);
+            // The original row never supports the condition. Each marked row
+            // has two cuts, but is still one independently retractable support.
+            restored.retract(rows[0]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            restored.retract(rows[1]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            assert!(restored.action_diagnostics().is_empty());
+        }
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+    }
+
+    #[test]
+    fn sequence_plan_and_compilation_cache_are_validated_after_restore() {
+        let engine = Engine::with_rules(
+            "(defrule capture (row $?left pivot $?right) =>) (assert (row pivot))",
+        )
+        .unwrap();
+        let invalid_selector = alter_state(&engine, |state| {
+            let nodes = state["rete"]["beta"]["nodes"].as_array_mut().unwrap();
+            let join = nodes
+                .iter_mut()
+                .find_map(|entry| entry[1].get_mut("Join"))
+                .unwrap();
+            join["sequence"]["tests"][0]["slot"]["Ordered"] = serde_json::json!(999);
+        });
+        assert!(
+            matches!(invalid_selector, Err(SerializationError::InvalidState(message))
+            if message.contains("invalid logical field"))
+        );
+        let invalid_cache = alter_state(&engine, |state| {
+            state["compiler"]["join_node_cache"][0][0]["sequence"]["segments"][0]["fields"][0] =
+                serde_json::json!("Single");
+        });
+        assert!(
+            matches!(invalid_cache, Err(SerializationError::InvalidState(message))
+            if message.contains("cached join node mismatch"))
+        );
+    }
+
+    #[test]
+    fn template_multislot_conditional_support_survives_restore() {
+        let engine = Engine::with_rules(
+            r"
+            (deftemplate bag (multislot left) (multislot right))
+            (deffacts rows (bag (left skip) (right anchor)) (enabled))
+            (defrule absent
+              (not (bag (left $?a mark $?b) (right $?c anchor $?d)))
+              => (printout t absent crlf))
+            (defrule present
+              (exists (bag (left $?a mark $?b) (right $?c anchor $?d)))
+              => (printout t present crlf))
+            (defrule clear
+              (not (and (bag (left $?a mark $?b) (right $?c anchor $?d)) (enabled)))
+              => (printout t clear crlf))
+        ",
+        )
+        .unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            restored.load_str("(assert (bag (left mark mark) (right anchor anchor)) (bag (left mark x mark) (right anchor z anchor)))").unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            let bytes = restored.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            let support: Vec<_> = restored
+                .facts()
+                .unwrap()
+                .filter_map(|(id, fact)| {
+                    let Fact::Template(fact) = fact else {
+                        return None;
+                    };
+                    let Value::Multifield(left) = &fact.slots[0] else {
+                        return None;
+                    };
+                    matches!(left.first(), Some(Value::Symbol(symbol))
+                    if restored.symbol_table.resolve_symbol_str(*symbol) == Some("mark"))
+                    .then_some(id)
+                })
+                .collect();
+            assert_eq!(support.len(), 2);
+            // Each fact contributes four independent segment-cut combinations,
+            // but negative/exists support remains fact based after restoration.
+            restored.retract(support[0]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            restored.retract(support[1]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            assert!(restored.action_diagnostics().is_empty());
+        }
+    }
+
+    #[test]
+    fn template_sequence_sources_are_checked_against_slot_definitions() {
+        let engine = Engine::with_rules(
+            "(deftemplate bag (slot tag) (multislot items)) (defrule observe (bag (items $?left $?right)) =>)"
+        ).unwrap();
+        for (source, expected_error) in [
+            (999, "invalid physical template slot"),
+            (0, "does not match its slot kind"),
+        ] {
+            let result = alter_state(&engine, |state| {
+                let nodes = state["rete"]["beta"]["nodes"].as_array_mut().unwrap();
+                let join = nodes
+                    .iter_mut()
+                    .find_map(|entry| entry[1].get_mut("Join"))
+                    .unwrap();
+                join["sequence"]["segments"][0]["source"]["TemplateSlot"] =
+                    serde_json::json!(source);
+                state["compiler"]["join_node_cache"][0][0]["sequence"]["segments"][0]["source"]
+                    ["TemplateSlot"] = serde_json::json!(source);
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(message))
+                if message.contains(expected_error)),
+                "{expected_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_lengths_cannot_cross_template_slot_boundaries() {
+        let engine = split_fixture_engine();
+        let result = alter_state(&engine, |state| {
+            let slots = state["rete"]["token_store"]["sequence_matches"]
+                .as_array_mut()
+                .unwrap();
+            let slot = slots
+                .iter_mut()
+                .find(|slot| {
+                    slot["value"]
+                        .as_array()
+                        .is_some_and(|value| value.len() == 4)
+                })
+                .unwrap();
+            // Preserve the total captured width while moving one field from
+            // the two-field left slot into the one-field right slot.
+            slot["value"] = serde_json::json!([0, 1, 0, 2]);
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
     }
 
     #[test]
@@ -1462,9 +2005,11 @@ mod tests {
         let result = alter_state(&alpha, |state| {
             let nodes = state["rete"]["alpha"]["nodes"].as_array_mut().unwrap();
             let id = nodes.len();
-            let appended = nodes.last().unwrap().clone();
+            // The path ends with its field-count test; append a 65th value test.
+            let mut appended = nodes[id - 2].clone();
             let previous = nodes.last_mut().unwrap().get_mut("ConstantTest").unwrap();
-            previous["memory"] = serde_json::Value::Null;
+            appended["ConstantTest"]["memory"] = previous["memory"].take();
+            appended["ConstantTest"]["children"] = serde_json::json!([]);
             previous["children"] = serde_json::json!([id]);
             nodes.push(appended);
             state["rete"]["alpha"]["next_node_id"] = serde_json::json!(id + 1);

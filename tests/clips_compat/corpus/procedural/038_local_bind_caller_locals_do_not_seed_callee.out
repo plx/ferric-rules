@@ -1,0 +1,3 @@
+[PRCCODE5] Variable local unbound in deffunction isolated.
+[PRCCODE4] Execution halted during the actions of deffunction isolated.
+[PRCCODE4] Execution halted during the actions of defrule probe.

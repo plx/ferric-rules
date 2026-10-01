@@ -90,6 +90,12 @@ impl VarMap {
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
+
+    /// Remove every variable, keeping the allocated capacity for reuse.
+    pub fn clear(&mut self) {
+        self.by_name.clear();
+        self.by_id.clear();
+    }
 }
 
 impl Default for VarMap {
@@ -207,6 +213,11 @@ impl BindingSet {
     #[must_use]
     pub fn bound_count(&self) -> usize {
         self.bindings.iter().filter(|x| x.is_some()).count()
+    }
+
+    /// Remove every binding, keeping the allocated capacity for reuse.
+    pub fn clear(&mut self) {
+        self.bindings.clear();
     }
 }
 

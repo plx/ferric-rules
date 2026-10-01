@@ -56,7 +56,8 @@ with ferric.Engine.from_snapshot(snapshot) as restored:
 ## Values, options, and snapshots
 
 Plain Python `str` and `ferric.String` create CLIPS string literals. Use
-`ferric.Symbol("ready")` for an unquoted CLIPS symbol. `bool` maps to the symbols
+`ferric.Symbol("ready")` for an unquoted CLIPS symbol and
+`ferric.InstanceName("widget")` for the instance name `[widget]`. `bool` maps to the symbols
 `TRUE`/`FALSE`; `int` must fit a signed 64-bit integer, `float` maps to a native
 float, and lists/tuples to nested multifields. Fact inputs reject `None` (void),
 including nested values, because void represents an absent result and cannot be
@@ -65,7 +66,7 @@ application needs a stored sentinel. Conversion rejects unsupported objects and
 external identities explicitly. Host multifields are
 limited to 32 levels and 1,000,000 total values in an assertion.
 
-Returned symbol/string values use owned `Symbol`/`String` wrappers. Equality
+Returned symbol/string/instance-name values use owned `Symbol`/`String`/`InstanceName` wrappers. Equality
 and hashing compare only wrappers of the same type and payload; neither equals
 a plain Python string. Use `.value` or `str(value)` when comparing host text.
 These rules also apply inside nested multifields and template slots. Owned

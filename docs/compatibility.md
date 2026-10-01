@@ -8,7 +8,8 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide
 for the supported subset. "Supported" means that the language area is
 implemented, not that every rule set in that area has been proven equivalent.
 Exact CLIPS compatibility claims are limited to the reviewed differential
-policy cases and are qualified by the known gaps below.
+policy cases and the granular corpus programs, and are qualified by the known
+gaps below.
 
 ## Known Differential Gaps
 
@@ -29,6 +30,36 @@ until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
 evidence boundary.
 
+### Granular corpus
+
+The broadest evidence for the language behavior in this document is
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 596
+small programs, each with the exact output of CLIPS 6.30 as its golden.
+`cargo test --workspace` runs all of them. A conforming program must reproduce
+its golden byte for byte, and again after a CBOR snapshot round trip (and a
+JSON one, unless it holds a non-finite float). When its deffacts precede its
+rules, it must also print the same lines with the rules loaded after `reset`,
+in any order, since CLIPS orders those activations differently. A program that
+CLIPS rejects must fail in Ferric at the same stage (load or run).
+`just compat-corpus-reference` rechecks every golden against a CLIPS 6.30
+Docker image.
+
+A known difference is recorded on its case as a `gap` entry holding Ferric's
+exact current output, so the test fails if the behavior changes in either
+direction. Four cases carry one, all tracked in
+[#394](https://github.com/plx/ferric-rules/issues/394):
+
+| Area | Difference from CLIPS 6.30 | Cases |
+|------|----------------------------|-------|
+| Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
+| Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
+
+Some CLIPS-valid programs are rejected at load instead of running
+differently. The main case is a complex non-linear predicate or return-value
+constraint inside a negated ordered pattern, tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300) (see
+[Template Facts](#template-facts)).
+
 ---
 
 ## 16.1 Facts
@@ -44,7 +75,16 @@ the same value types and working-memory semantics as CLIPS.
 | `FLOAT` | 64-bit IEEE 754 double |
 | `SYMBOL` | Interned identifier (e.g., `red`, `TRUE`) |
 | `STRING` | Quoted string (e.g., `"hello"`) |
+| `INSTANCE-NAME` | Bracketed name (e.g., `[widget]`), distinct from SYMBOL |
 | `MULTIFIELD` | Ordered sequence of values |
+
+Instance names are values only: Ferric has no object system, so `[widget]`
+names no instance. They match, compare, print and round-trip through
+`explode$`/`implode$` as in CLIPS, and a template slot may declare
+`(type INSTANCE-NAME)` (derived default `[nil]`). Hosts create them with
+`Engine::instance_name_value`; the bindings expose an `InstanceName` type and
+the C ABI uses value type `7` with the spelling (without brackets) in
+`string_ptr`.
 
 ### Ordered Facts
 
@@ -55,6 +95,13 @@ Ordered facts are positional sequences of values:
 (assert (data 10 20 30))
 ```
 
+Ordered patterns consume every field: `?` and `?name` match one field, while
+`$?` and `$?name` match zero or more fields at any position. For example,
+`(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
+empty multifield from `(row head tail)`. Multiple multifield fields produce a
+separate match for each valid partition. Named captures are available to later
+patterns, test conditions, and rule actions.
+
 ### Template Facts
 
 Template facts use named slots defined by `deftemplate`:
@@ -63,6 +110,15 @@ Template facts use named slots defined by `deftemplate`:
 (deftemplate person (slot name) (slot age (default 0)))
 (assert (person (name Alice) (age 30)))
 ```
+
+Each constrained multislot matches its complete sequence using the same field
+and multifield rules as ordered patterns. `(tags ?value)` requires exactly one
+value and binds a scalar; `(tags $?values)` binds the entire multifield, and
+`(tags head $?values tail)` captures the values between the fixed fields.
+An explicit `(tags)` requires an empty multislot; omitting `tags` leaves it
+unconstrained. Ambiguous splits in multiple multislots produce every valid
+combination, in written slot-constraint order. Single-valued slots require one
+field constraint and cannot bind a named multifield capture.
 
 RHS assertions resolve declared templates in the rule's module, evaluate named
 slots, fill defaults, and propagate template matches. Multislots splice supplied
@@ -115,7 +171,10 @@ On `(reset)`, Ferric asserts the protected `(initial-fact)` first and then the
 registered `deffacts`, the same order as CLIPS. The fact supports explicit
 `(initial-fact)` patterns; rules with no patterns or a leading negation match
 without it. Host fact queries do not return it, and it cannot be retracted,
-modified, or duplicated.
+modified, or duplicated. Its fact index is 0 and, as for CLIPS's slotless
+`initial-fact` deftemplate, `fact-slot-names` of it is `()`. An `initial-fact`
+the host asserts through the engine API is an ordinary user fact with an
+ordinary index; CLIPS gives it index 0.
 
 ### Behavioral Notes
 
@@ -187,6 +246,8 @@ also retains two experimental Ferric orderings for existing consumers:
 | **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
 
 CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
+Their tie order can also differ between the partitions of one ordered fact
+that a multifield pattern matches in several ways.
 Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
 are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared
@@ -216,13 +277,26 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
-Use the host fact inspection API for queries. RHS `do-for-*` actions retain
-their existing fact iteration, but CLIPS query expressions (`any-factp`,
-`find-fact`, `find-all-facts`) in expressions or callable bodies are unsupported.
-They now report a load or execution error rather than inventing FALSE/empty
-results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
-rule LHS fact-address slot access remains available. This limitation does not
-restrict normal joins or host-side typed fact inspection.
+RHS `do-for-fact`, `do-for-all-facts` and `delayed-do-for-all-facts` visit
+live facts in assertion order, the last member varying fastest. An immediate
+query sees facts its bodies assert and skips facts they retract;
+`delayed-do-for-all-facts` selects every tuple before it runs a body, and its
+members keep their slot values after a body retracts them. Predicates and
+bodies can read `?f:slot`, and bodies can `retract`, `modify` or `duplicate`
+query members. `any-factp`, `find-fact` and `find-all-facts` work in RHS
+expressions, deffunctions and methods; the find forms return a multifield of
+[fact addresses](#fact-addresses).
+
+Each visited query member costs one iteration of the action-loop budget
+(`EngineConfig::max_action_loop_iterations`), as does each delayed body.
+`halt` in a query body lets the RHS finish, as in CLIPS; `reset` and `clear`
+end the query and the rest of the RHS (CLIPS continues, and can loop forever
+on `reset` in a `do-for-all-facts` body).
+
+Each query member names one visible, unqualified deftemplate. Multiple-template
+restrictions, queries in global initializers, and `do-for-*` forms inside
+expressions or callable bodies are unsupported, and binding a query member or a
+local in a query predicate is a load error.
 
 ### Activation Ordering Contract
 
@@ -243,7 +317,7 @@ restrict normal joins or host-side typed fact inspection.
 | `modify` | Modify template fact slots in place |
 | `duplicate` | Create a copy of a template fact with slot overrides |
 | `printout` | Write to a named channel (`t` for stdout) |
-| `halt` | Stop the run loop immediately |
+| `halt` | Stop the run once the current RHS finishes (loops and queries in it run to completion) |
 | `focus` | Push one or more modules onto the focus stack |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
@@ -510,7 +584,7 @@ and following top-level constructs retain their incremental load behavior.
 ### Mutation via bind
 
 - `(bind ?*name* <value>)` updates an existing global variable.
-- `bind` does **not** create new variables -- the global must already exist.
+- A global target must already exist; global `bind` does not create a new global.
 - Globals are accessible from rule RHS actions and function bodies.
 
 ### Reset Behavior
@@ -522,6 +596,11 @@ On `(reset)`, globals are restored to their declared initial values.
 ## 16.7 Deffunctions
 
 Ferric supports user-defined functions via `deffunction`.
+
+Within a deffunction or method, `(bind ?name <value>)` creates or updates a
+local that lasts for the rest of the call, and can rebind a parameter; each
+call has its own locals. `(bind ?name)` removes the local, so a parameter reads
+its argument again. Loop iterators cannot be rebound.
 
 ```clp
 (deffunction double (?x) (* ?x 2))
@@ -728,7 +807,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `max` | Maximum | `(max 3 7)` => `7` |
 | `**` | Power | `(** 2 10)` => `1024.0` |
 | `sqrt` | Square root | `(sqrt 16)` => `4.0` |
-| `round` | Round to nearest integer | `(round 3.7)` => `4` |
+| `round` | Round to nearest integer; half ties choose the lower integer, INTEGER inputs stay exact | `(round 2.5)` => `2`; `(round -2.5)` => `-3` |
 | `ceiling` | Round up to integer | `(ceiling 3.1)` => `4` |
 | `floor` | Round down to integer | `(floor 3.9)` => `3` |
 | `pi` | Pi constant | `(pi)` => `3.14159...` |
@@ -743,6 +822,10 @@ identically to their CLIPS counterparts for the supported argument types.
 | `deg-rad`, `rad-deg` | Angle conversion | `(deg-rad 180)` => `3.14159...` |
 | `deg-grad`, `grad-deg` | Degree/gradian conversion | `(deg-grad 90)` => `100.0` |
 
+`min` and `max` return the selected operand with its own type, the first on a
+tie: `(max 1 1.0)` is `1`. For a FLOAT, `round` computes `ceil(x - 0.5)` as
+CLIPS does, so `(round -0.49999999999999994)` is `-1`.
+
 ### Type Conversion
 
 | Function | Description |
@@ -754,11 +837,14 @@ identically to their CLIPS counterparts for the supported argument types.
 
 | Function | Description |
 |----------|-------------|
-| `=` | Numeric equality |
-| `!=` / `<>` | Numeric inequality |
-| `>`, `<`, `>=`, `<=` | Numeric ordering |
+| `=` | First numeric operand equals every subsequent operand |
+| `!=` / `<>` | First numeric operand differs from every subsequent operand |
+| `>`, `<`, `>=`, `<=` | Each adjacent numeric pair satisfies the ordering |
 | `eq` | Value equality (type-sensitive) |
 | `neq` | Value inequality |
+
+Numeric comparisons take two or more operands and stop at the first failed
+comparison: `(< 2 1 (later-call))` returns FALSE without calling `later-call`.
 
 ### Logical Functions
 
@@ -778,6 +864,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `symbolp` | Argument is a SYMBOL |
 | `stringp` | Argument is a STRING |
 | `lexemep` | Argument is a SYMBOL or STRING |
+| `instance-namep` | Argument is an INSTANCE-NAME |
 | `multifieldp` | Argument is a MULTIFIELD |
 | `evenp` | Argument is an even integer |
 | `oddp` | Argument is an odd integer |
@@ -788,41 +875,95 @@ identically to their CLIPS counterparts for the supported argument types.
 |----------|-------------|---------|
 | `str-cat` | Concatenate to string | `(str-cat "a" "b")` => `"ab"` |
 | `sym-cat` | Concatenate to symbol | `(sym-cat a b)` => `ab` |
-| `str-length` | String length in bytes | `(str-length "hello")` => `5` |
-| `sub-string` | Extract substring (1-indexed) | `(sub-string 1 3 "hello")` => `"hel"` |
-| `str-index` | Find substring position (1-indexed), FALSE if not found | `(str-index "lo" "hello")` => `4` |
-| `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
-| `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
+| `str-length` | Character length of a STRING, SYMBOL or INSTANCE-NAME | `(str-length "hello")` => `5`; `(str-length [abc])` => `3` |
+| `sub-string` | Extract a STRING from a STRING, SYMBOL or INSTANCE-NAME (1-indexed, inclusive, clipped bounds) | `(sub-string 0 2 abc)` => `"ab"` |
+| `str-index` | First substring position (1-indexed), FALSE if not found; empty needle returns length + 1 | `(str-index "" "abc")` => `4` |
+| `upcase` | Convert ASCII letters to uppercase (preserves type) | `(upcase [abc])` => `[ABC]`; `(upcase "é")` => `"é"` |
+| `lowcase` | Convert ASCII letters to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
-| `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
-| `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
+| `string-to-field` | First CLIPS field of a STRING, SYMBOL or INSTANCE-NAME | `(string-to-field "42 rest")` => `42` |
+| `explode$` | Every CLIPS field of a STRING, as a multifield | `(explode$ "a \"b c\" 3")` => `(a "b c" 3)` |
+| `symbol-to-instance-name` | SYMBOL to INSTANCE-NAME | `(symbol-to-instance-name x)` => `[x]` |
+| `instance-name-to-symbol` | INSTANCE-NAME (or SYMBOL) to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
+
+The string functions read an INSTANCE-NAME as its name without brackets, and
+count characters (Unicode scalar values).
+
+`string-to-field`, `explode$` and `read` use the CLIPS 6.30 field scanner:
+quoted strings (with `\` escapes) are one STRING field, numbers keep their
+INTEGER or FLOAT type, `[name]` is an INSTANCE-NAME, `;` starts a comment, and
+tokens that are not values, such as `(` or `?x`, become STRINGs of their
+spelling. `string-to-field` ignores the text after the first field and returns
+`EOF` for empty input. Integers outside the 64-bit range saturate, and an
+unterminated string keeps its text; for these CLIPS writes a `[SCANNER1]`
+notice to the `wwarning` or `werror` router, and so does Ferric (`ferric run`
+prints only `t`, so it does not show them). A string that ends in a backslash
+at the end of input gives CLIPS a byte that is not UTF-8, which Ferric holds as
+U+FFFD.
 
 ### Multifield Functions
 
 | Function | Description | Example |
 |----------|-------------|---------|
 | `create$` | Create a multifield | `(create$ a b c)` |
+| `implode$` | Convert multifield fields to a STRING | `(implode$ (create$ a 3))` => `"a 3"` |
 | `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
-| `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
-| `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
+| `nth$` | Get nth element (1-indexed), `nil` if absent | `(nth$ 2 (create$ a b c))` => `b` |
+| `member$` | Find element position or contiguous subsequence range | `(member$ b (create$ a b c))` => `2` |
 | `subsetp` | Subset test | `(subsetp (create$ a) (create$ a b))` => `TRUE` |
 | `insert$` | Insert values at position | `(insert$ (create$ a c) 2 b)` => `(a b c)` |
 | `delete$` | Remove range (1-indexed, inclusive) | `(delete$ (create$ a b c) 2 2)` => `(a c)` |
 | `replace$` | Replace range with values | `(replace$ (create$ a b c) 2 2 x)` => `(a x c)` |
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
-| `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+| `sort` | Stable predicate sort of scalar and multifield arguments | `(sort > (create$ 3 1 2))` => `(1 2 3)` |
+
+`nth$` returns `nil` for a position that is zero, negative or past the end.
+CLIPS rejects a literal FLOAT position at load; Ferric truncates it when it
+runs. `member$` returns an INTEGER for a single-field match and a `(start end)`
+pair for a longer contiguous one: `(member$ (create$ b c) (create$ a b c d))`
+is `(2 3)`.
+
+`implode$` quotes STRING fields and escapes their quotes and backslashes, so
+`explode$` of its result gives back the original fields:
+`(implode$ (create$ a "b c" 3))` is `"a \"b c\" 3"`.
+
+`(sort <predicate> <value>...)` sorts the fields of its values with a function
+named by a SYMBOL (a builtin, deffunction or defgeneric). As in CLIPS, the
+predicate answers "should these two be exchanged?", so `(sort > (create$ 3 1
+2))` returns `(1 2 3)`. It is a stable merge sort that calls the predicate in
+the same order as CLIPS 6.30. A predicate error or an unknown name is an action
+error; CLIPS instead reports an unknown name and continues with `FALSE`.
 
 ### Fact Introspection Functions
 
 | Function | Description | Example |
 |----------|-------------|---------|
-| `fact-existp` | Check if fact index is live | `(fact-existp 1)` => `TRUE` |
-| `fact-index` | Extract integer index from fact address | `(fact-index 1)` => `1` |
+| `fact-existp` | Whether a fact address or index is live | `(fact-existp 1)` => `TRUE` |
+| `fact-index` | Public assertion index (zero for the protected initial fact, -1 for a retracted address) | `(fact-index ?f)` => `1` for the first user fact |
 | `fact-relation` | Get relation name as symbol | `(fact-relation 1)` => `person` |
 | `fact-slot-value` | Get named slot value | `(fact-slot-value 1 name)` => `"Alice"` |
 | `fact-slot-names` | Get slot names as multifield | `(fact-slot-names 1)` => `(name age)` |
+
+#### Fact addresses
+
+A fact address (`?f <- (...)`, a query member, or a `find-fact` result) is an
+opaque INTEGER handle in Ferric, not a FACT-ADDRESS value. It works with
+`retract`, `modify`, `duplicate` and the fact functions, but printing it shows
+a large integer where CLIPS prints `<Fact-3>`, `integerp` returns TRUE, and
+arithmetic on it gives a meaningless number. `retract` and the fact functions
+above also take the CLIPS fact index that `fact-index` returns, so
+`(fact-relation (fact-index ?f))` names the relation of `?f`'s fact; an index is
+found by scanning working memory.
+
+An index that names no fact differs from CLIPS. CLIPS always continues:
+`retract` does nothing and the functions return `FALSE`, after printing
+`[PRNTUTIL1] Unable to find fact f-N.` for `retract`, `fact-slot-value` and
+`fact-slot-names`, or an `[ARGACCES5]` type notice for a negative index. In
+Ferric, `retract` and `fact-slot-value` make it an action error, which ends the
+run; `fact-existp`, `fact-relation` and `fact-slot-names` return `FALSE`
+without a notice.
 
 ### I/O Functions
 
@@ -830,14 +971,34 @@ identically to their CLIPS counterparts for the supported argument types.
 |----------|-------------|
 | `printout` | Write to a named channel |
 | `format` | Printf-style formatting (returns string; does not write to router) |
-| `read` | Read a single value from input |
+| `read` | Read the first CLIPS field of the next nonblank input line |
 | `readline` | Read a line from input |
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
 
+`printout` writes a top-level STRING without quotes, and a multifield in
+parentheses with its STRING fields quoted but not escaped:
+`(printout t (create$ "a" "two words") crlf)` writes `("a" "two words")`. Only
+top-level `crlf`, `tab`, `vtab` and `ff` expand; inside a multifield they stay
+symbols.
+
+FLOATs print with up to 15 significant digits (CLIPS's `%.15g`), with `.0` on
+integral values: `1.0`, `1e-05`, `1e+15`. Non-finite values print as `nan.0`,
+`inf.0` and `-inf.0`. `str-cat` and `sym-cat` spell FLOATs the same way.
+
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
 `(printout t (format nil "n=%d" 42) crlf)` to produce output.
+
+`format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
+`%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number
+is an error), `%c`, and `%n %r %t %v %%`, with `-` and `0` flags, width and
+precision. The argument count must match the directives. Width and precision
+count bytes, as in C, so `%.Ns` that cuts a multibyte character, and `%c` of a
+byte of 128 or more, produce U+FFFD where C emits bytes that are not UTF-8.
+CLIPS hands a malformed directive such as `%5-3d` to `printf`, which echoes it;
+Ferric reports a format error. Ferric also rejects a width or precision above
+4096 (CLIPS 6.30 crashes on `%5000d`).
 
 ### Agenda / Focus Functions
 
@@ -854,7 +1015,7 @@ The following features are explicitly out of scope.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| COOL object system | Not planned | Classes, instances, message-passing |
+| COOL object system | Not planned | Classes, instances, message-passing; INSTANCE-NAME values exist without objects |
 | Certainty factors | Not planned | Probabilistic/fuzzy reasoning |
 | Distributed evaluation | Not planned | Networked rule engines |
 | `Simplicity` strategy | Deferred | Until fully specified |
@@ -882,14 +1043,19 @@ are equal if and only if their byte sequences are identical.
 
 ### sub-string Indexing
 
-`sub-string` uses **byte indices** (1-indexed), not Unicode codepoint indices.
-For ASCII content, byte and codepoint indices are identical.
+`sub-string` counts characters (Unicode scalar values) from one, includes
+both ends, clips out-of-range bounds, and always returns a STRING:
+`(sub-string 0 2 abc)` is `"ab"` and `(sub-string 3 2 abc)` is `""`.
 
 ### Compatibility with CLIPS
 
-For ASCII content, Ferric's comparison and indexing behavior is identical to
-CLIPS. Differences arise only with non-ASCII content, where CLIPS behavior
-varies by platform and build configuration.
+Like CLIPS 6.30, `str-length`, `sub-string` and `str-index` count characters
+of UTF-8 text, and comparisons use the bytes. Ferric strings and symbols are
+always valid UTF-8, while CLIPS can build byte strings that are not. Where
+CLIPS would produce such bytes (`%c` of a byte of 128 or more, `%.Ns` that cuts
+a multibyte character, or a scanned string that ends in an escaped end of
+input), Ferric holds U+FFFD instead; the corpus records each of these as a gap
+case (see [Granular corpus](#granular-corpus)).
 
 ### Guidance for Unicode Users
 

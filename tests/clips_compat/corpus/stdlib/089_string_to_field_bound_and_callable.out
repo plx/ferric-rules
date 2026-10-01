@@ -1,0 +1,3 @@
+bound:TRUE:FALSE:FALSE:FALSE:[42]
+callable:FALSE:TRUE:FALSE:FALSE:[2.5]
+quoted:FALSE:FALSE:TRUE:FALSE:[two words]

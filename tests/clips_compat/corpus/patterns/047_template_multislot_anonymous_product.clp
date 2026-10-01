@@ -1,0 +1,5 @@
+(deftemplate item (multislot left) (slot key) (multislot right))
+(deffacts input (item (left a marker b marker c) (key retained) (right x y)))
+(defglobal ?*count* = 0)
+(defrule probe (item (left $? marker $?) (key retained) (right $? $?)) => (bind ?*count* (+ ?*count* 1)))
+(defrule summary (declare (salience -10)) => (printout t ?*count* crlf))

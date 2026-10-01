@@ -111,6 +111,7 @@ impl RegisteredTemplate {
             LiteralKind::String(_) => SlotValueType::String,
             LiteralKind::Integer(_) => SlotValueType::Integer,
             LiteralKind::Float(_) => SlotValueType::Float,
+            LiteralKind::InstanceName(_) => SlotValueType::InstanceName,
         };
         self.validate_kind(index, kind)
     }
@@ -157,6 +158,7 @@ impl RegisteredTemplate {
                 Value::String(_) => SlotValueType::String,
                 Value::Integer(_) => SlotValueType::Integer,
                 Value::Float(_) => SlotValueType::Float,
+                Value::InstanceName(_) => SlotValueType::InstanceName,
                 Value::ExternalAddress(_) => SlotValueType::ExternalAddress,
                 Value::Multifield(_) if self.allowed_types[index].is_none() => continue,
                 Value::Multifield(_) | Value::Void => {

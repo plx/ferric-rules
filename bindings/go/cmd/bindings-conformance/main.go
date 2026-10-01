@@ -66,6 +66,8 @@ func normalize(value any) any {
 		return map[string]any{"type": "float", "value": strconv.FormatFloat(float64(value), 'f', -1, 32)}
 	case ferric.Symbol:
 		return map[string]any{"type": "symbol", "value": string(value)}
+	case ferric.InstanceName:
+		return map[string]any{"type": "instance_name", "value": string(value)}
 	case string:
 		return map[string]any{"type": "string", "value": value}
 	case []any:
@@ -142,6 +144,8 @@ func valueCase(caseID string) (any, error) {
 		return assertedField(1.5)
 	case "value.symbol.explicit":
 		return assertedField(ferric.Symbol("red"))
+	case "value.instance-name.explicit":
+		return assertedField(ferric.InstanceName("widget"))
 	case "value.string.explicit", "value.string.plain-host":
 		return assertedField("red")
 	case "value.multifield.nested":

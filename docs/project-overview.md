@@ -60,7 +60,7 @@ bindings-conformance` runs through the Rust, C, Go, Node, and Python adapters.
   test suites.
 - `tests/clips_compat/corpus/` — the granular compatibility corpus: small
   CLIPS programs with exact CLIPS 6.30 output goldens, run by
-  `crates/ferric-rules/tests/compat_corpus.rs` (`just compat-corpus`).
+  `crates/ferric-rules/tests/compat_corpus/` (`just compat-corpus`).
   Known differences are active characterizations; `GAPS.md` links the issues.
   `just compat-corpus-reference` rechecks the goldens against the CLIPS
   Docker image.
@@ -71,7 +71,7 @@ bindings-conformance` runs through the Rust, C, Go, Node, and Python adapters.
   `just assess-compatibility`).
 - `tests/harnesses/`, `tests/generated/` — run harnesses and tool-generated
   segments/expectations for the `.bat`-derived examples.
-- `crates/ferric-rules/tests/scaling_tests.rs` — eight `#[ignore]`
+- `crates/ferric-rules/tests/scaling_tests.rs` — eleven `#[ignore]`
   complexity-class checks run by `just scaling-check`.
 
 ## 4. Benchmarks

@@ -1,0 +1,6 @@
+(deffunction descend (?n)
+  (bind ?saved ?n)
+  (if (> ?n 0) then (bind ?child (descend (- ?n 1))) else (bind ?child 0))
+  (bind ?n (+ ?n 10))
+  (+ ?saved ?child))
+(defrule probe => (printout t (descend 3) ":" (descend 2) crlf))

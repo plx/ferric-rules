@@ -1,0 +1,5 @@
+(deftemplate pair (multislot left) (multislot right))
+(deffacts input (pair (left a b) (right a b)) (pair (left a b) (right a)) (pair (left) (right)))
+(defglobal ?*count* = 0)
+(defrule probe (pair (left $?same) (right $?same)) => (bind ?*count* (+ ?*count* 1)))
+(defrule summary (declare (salience -10)) => (printout t ?*count* crlf))

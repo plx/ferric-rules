@@ -22,6 +22,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Value types (symbol vs string distinction)
     m.add_class::<value::Symbol>()?;
     m.add_class::<value::ClipsString>()?;
+    m.add_class::<value::InstanceName>()?;
 
     // Config enums
     m.add_class::<config::Strategy>()?;

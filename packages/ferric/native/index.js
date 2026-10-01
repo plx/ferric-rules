@@ -98,16 +98,20 @@ const nativeBinding = loadNativeBinding();
 const nativeContinueRun = nativeBinding.__continueRun;
 const continueRun = (engine, limit) => nativeContinueRun.call(engine, limit);
 
-// napi-rs class instances (FerricSymbol) lose their native pointer when passed
-// through Vec<JsUnknown> extraction. Convert them to tagged plain objects that
-// the Rust boundary recognizes. This shape is distinct from the worker wire
-// representation in packages/ferric/src/wire.ts.
+// napi-rs class instances (FerricSymbol, FerricInstanceName) lose their native
+// pointer when passed through Vec<JsUnknown> extraction. Convert them to tagged
+// plain objects that the Rust boundary recognizes. These shapes are distinct
+// from the worker wire representation in packages/ferric/src/wire.ts.
 const FerricSymbolClass = nativeBinding.FerricSymbol;
+const FerricInstanceNameClass = nativeBinding.FerricInstanceName;
 
 function marshalValue(value, depth = 0) {
   if (value === null || value === undefined) return value;
   if (value instanceof FerricSymbolClass) {
     return { __ferric_symbol: true, value: value.value };
+  }
+  if (FerricInstanceNameClass && value instanceof FerricInstanceNameClass) {
+    return { __ferric_instance_name: true, value: value.value };
   }
   if (Array.isArray(value)) {
     if (depth >= 128) throw new TypeError("multifield nesting exceeds 128 levels (cyclic values are unsupported)");
@@ -118,6 +122,9 @@ function marshalValue(value, depth = 0) {
     const payload = Object.getOwnPropertyDescriptor(value, "value");
     if (tag?.value === "FerricSymbol" && typeof payload?.value === "string") {
       return { __ferric_symbol: true, value: payload.value };
+    }
+    if (tag?.value === "FerricInstanceName" && typeof payload?.value === "string") {
+      return { __ferric_instance_name: true, value: payload.value };
     }
   }
   return value;

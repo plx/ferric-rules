@@ -57,6 +57,10 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
             "type": "symbol",
             "value": engine.resolve_core_symbol(*symbol).unwrap_or("<unknown>")
         }),
+        Value::InstanceName(name) => json!({
+            "type": "instance_name",
+            "value": engine.resolve_core_symbol(name.as_symbol()).unwrap_or("<unknown>")
+        }),
         Value::String(value) => json!({"type": "string", "value": value.as_str()}),
         Value::Multifield(values) => json!({
             "type": "multifield",
@@ -117,6 +121,12 @@ fn value_case(case_id: &str) -> Result<JsonValue, String> {
                 .intern_symbol("red")
                 .map_err(|error| error.to_string())?;
             asserted_field(&mut engine, HostValue::from(symbol))
+        }
+        "value.instance-name.explicit" => {
+            let name = engine
+                .instance_name_value("widget")
+                .map_err(|error| error.to_string())?;
+            asserted_field(&mut engine, name)
         }
         "value.string.explicit" | "value.string.plain-host" => {
             let value = engine

@@ -16,17 +16,18 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
     ConditionCompilationPlan, ConstantTest, ConstantTestType, Fact, FactId, FerricString,
-    JoinTestType, Salience, SlotIndex, TemplateFact, Value,
+    InstanceName, JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment,
+    SequenceSource, SlotIndex, TemplateFact, Value,
 };
 use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
     FactValue, FileId, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
     InterpretError, InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct,
     OrderedFactBody, OrderedPattern, ParseError, Pattern, RuleConstruct, SExpr, SlotConstraint,
-    Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
+    SlotType, Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
-use crate::actions::{CompiledRuleInfo, CompiledTestCondition, MultifieldTailBindingHint};
+use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
 use crate::engine::{Engine, EngineError};
 use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
@@ -44,6 +45,195 @@ pub(crate) enum TemplateLookupError {
     Ambiguous(smallvec::SmallVec<[crate::modules::ModuleId; 2]>),
 }
 
+/// Borrowed template lookup state shared by loading and expression queries.
+/// Visibility is evaluated against the live module registry on every lookup.
+#[derive(Clone, Copy)]
+pub(crate) struct TemplateResolver<'a> {
+    pub(crate) template_local_ids: &'a TemplateLocalIndex,
+    pub(crate) template_modules:
+        &'a slotmap::SecondaryMap<ferric_rules_core::TemplateId, crate::modules::ModuleId>,
+    pub(crate) module_registry: &'a crate::modules::ModuleRegistry,
+}
+
+impl TemplateResolver<'_> {
+    /// CLIPS query restrictions use visible unqualified deftemplate names.
+    pub(crate) fn resolve_query_reference(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, String> {
+        if raw_name.contains("::") {
+            return Err(format!(
+                "qualified template `{raw_name}` is unsupported in fact queries"
+            ));
+        }
+        self.resolve_reference(raw_name, current_module)
+    }
+
+    pub(crate) fn resolve_reference(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, String> {
+        self.resolve_id(raw_name, current_module).map_err(|error| {
+            let current_module_label = self.module_registry.module_name(current_module).unwrap_or("?");
+            match error {
+                TemplateLookupError::Unknown => format!("unknown template `{raw_name}`"),
+                TemplateLookupError::NotVisible => format!(
+                    "template `{raw_name}` is not visible from module `{current_module_label}`"
+                ),
+                TemplateLookupError::Ambiguous(modules) => {
+                    let modules: BTreeSet<_> = modules.iter().map(|module| {
+                        self.module_registry.module_name(*module).unwrap_or("?")
+                    }).collect();
+                    format!(
+                        "template `{raw_name}` is ambiguous from module `{current_module_label}` (matches modules: {})",
+                        modules.into_iter().collect::<Vec<_>>().join(", ")
+                    )
+                }
+            }
+        })
+    }
+
+    /// Resolve without allocating diagnostics that ordered-relation probes discard.
+    /// Only name candidates are indexed; visibility is always checked live.
+    pub(crate) fn resolve_id(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, TemplateLookupError> {
+        let (qualified_module_name, wanted_local_name) = Engine::template_ref_parts(raw_name);
+        let candidates = self
+            .template_local_ids
+            .get(wanted_local_name)
+            .ok_or(TemplateLookupError::Unknown)?;
+        let module_for = |id| {
+            self.template_modules
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| self.module_registry.main_module_id())
+        };
+        let choose = |ids: smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>| {
+            if ids.len() == 1 {
+                Ok(ids[0])
+            } else {
+                Err(TemplateLookupError::Ambiguous(
+                    ids.into_iter().map(module_for).collect(),
+                ))
+            }
+        };
+        if let Some(module_name) = qualified_module_name {
+            let target_module = self
+                .module_registry
+                .get_by_name(module_name)
+                .ok_or(TemplateLookupError::Unknown)?;
+            let matches: smallvec::SmallVec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|id| module_for(*id) == target_module)
+                .collect();
+            if matches.is_empty() {
+                return Err(TemplateLookupError::Unknown);
+            }
+            let id = choose(matches)?;
+            if !self.module_registry.is_construct_visible(
+                current_module,
+                target_module,
+                "deftemplate",
+                wanted_local_name,
+            ) {
+                return Err(TemplateLookupError::NotVisible);
+            }
+            return Ok(id);
+        }
+        let local: smallvec::SmallVec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| module_for(*id) == current_module)
+            .collect();
+        if !local.is_empty() {
+            return choose(local);
+        }
+        let visible: smallvec::SmallVec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.module_registry.is_construct_visible(
+                    current_module,
+                    module_for(*id),
+                    "deftemplate",
+                    wanted_local_name,
+                )
+            })
+            .collect();
+        if visible.is_empty() {
+            return Err(TemplateLookupError::NotVisible);
+        }
+        choose(visible)
+    }
+}
+
+/// Resolve predicate call names before candidate iteration, including empty
+/// queries. A callable being defined can refer to itself before registration.
+pub(crate) fn validate_query_callable(
+    raw_name: &str,
+    functions: &crate::functions::FunctionEnv,
+    generics: &crate::functions::GenericRegistry,
+    modules: &crate::modules::ModuleRegistry,
+    current_module: crate::modules::ModuleId,
+    self_name: Option<&str>,
+) -> Result<(), String> {
+    if self_name == Some(raw_name)
+        || raw_name == "call-next-method"
+        || crate::evaluator::is_builtin_callable(raw_name)
+    {
+        return Ok(());
+    }
+    let unknown =
+        || format!("[EXPRNPSR3] query predicate callable `{raw_name}` is not declared or visible");
+    let qualified = parse_qualified_name(raw_name).map_err(|_| unknown())?;
+    let visible =
+        |owner, name: &str, kind| modules.is_construct_visible(current_module, owner, kind, name);
+    let (name, requested_module) = match &qualified {
+        QualifiedName::Qualified { module, name } => (
+            name.as_str(),
+            Some(modules.get_by_name(module).ok_or_else(unknown)?),
+        ),
+        QualifiedName::Unqualified(name) => (name.as_str(), None),
+    };
+    if let Some(owner) = requested_module {
+        if (functions.contains(owner, name) && visible(owner, name, "deffunction"))
+            || (generics.contains(owner, name) && visible(owner, name, "defgeneric"))
+        {
+            return Ok(());
+        }
+        return Err(unknown());
+    }
+    if functions.contains(current_module, name) || generics.contains(current_module, name) {
+        return Ok(());
+    }
+    let mut owners: Vec<_> = functions
+        .modules_for_name(name)
+        .into_iter()
+        .filter(|owner| visible(*owner, name, "deffunction"))
+        .chain(
+            generics
+                .modules_for_name(name)
+                .into_iter()
+                .filter(|owner| visible(*owner, name, "defgeneric")),
+        )
+        .collect();
+    owners.sort_by_key(|owner| owner.0);
+    owners.dedup();
+    match owners.len() {
+        1 => Ok(()),
+        0 => Err(unknown()),
+        _ => Err(format!(
+            "[EXPRNPSR3] query predicate callable `{raw_name}` is ambiguous"
+        )),
+    }
+}
+
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
     salience: Salience,
@@ -51,8 +241,6 @@ struct TranslatedRule {
     fact_address_vars: HashMap<String, usize>,
     /// Test conditions referenced by match-time predicate nodes.
     test_conditions: Vec<CompiledTestCondition>,
-    /// Action-time hints for trailing ordered multifield captures.
-    multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
 }
 
 struct PreparedRuleInstallation {
@@ -466,6 +654,20 @@ impl Engine {
                         } else {
                             self.module_registry.current_module()
                         };
+                        // Query restrictions must exist where the rule is written;
+                        // later declarations must not make an invalid query loadable.
+                        if let Err(error) = rule.actions.iter().try_for_each(|action| {
+                            action.call.args.iter().try_for_each(|expr| {
+                                self.validate_expression_query_declarations(
+                                    expr,
+                                    owning_module,
+                                    None,
+                                )
+                            })
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
                         rules_with_module.push((rule, owning_module));
                     }
                     Construct::Template(template) => {
@@ -557,6 +759,37 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = func.body.iter().try_for_each(|expr| {
+                            self.validate_expression_query_declarations(
+                                expr,
+                                owning_module,
+                                Some(&func.name),
+                            )
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
+                        let ordinary = func
+                            .parameters
+                            .iter()
+                            .map(String::as_str)
+                            .chain(func.wildcard_parameter.as_deref())
+                            .map(|name| Self::existential_scope_variable_name(name).to_owned())
+                            .collect();
+                        if let Err((span, message)) = crate::query_validation::validate_query_scopes(
+                            &func.body,
+                            ordinary,
+                            &HashSet::new(),
+                        ) {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
+                        if let Err((span, message)) =
+                            crate::callable_validation::validate_iterator_binds(&func.body)
+                        {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
                         if self.generics.contains(owning_module, &func.name) {
@@ -650,6 +883,37 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = method.body.iter().try_for_each(|expr| {
+                            self.validate_expression_query_declarations(
+                                expr,
+                                owning_module,
+                                Some(&method.name),
+                            )
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
+                        let ordinary = method
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.name.as_str())
+                            .chain(method.wildcard_parameter.as_deref())
+                            .map(|name| Self::existential_scope_variable_name(name).to_owned())
+                            .collect();
+                        if let Err((span, message)) = crate::query_validation::validate_query_scopes(
+                            &method.body,
+                            ordinary,
+                            &HashSet::new(),
+                        ) {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
+                        if let Err((span, message)) =
+                            crate::callable_validation::validate_iterator_binds(&method.body)
+                        {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
                         // Conflict check: a defmethod that would auto-create a
                         // generic cannot share a name with an existing deffunction.
                         if !self.generics.contains(owning_module, &method.name)
@@ -726,7 +990,7 @@ impl Engine {
             // Explicit initial-fact patterns use a protected built-in fact.
             // Empty/negative prefixes use the independent RETE root token.
             if let Err(e) = self.ensure_initial_fact() {
-                errors.push(e);
+                errors.push(e.into());
             }
 
             // Register dormant definitions; reset will assert their facts.
@@ -768,34 +1032,6 @@ impl Engine {
             ferric_event!(warn, error_count = errors.len(), "engine_load_str_failed");
             Err(errors)
         }
-    }
-
-    /// Ensure `(initial-fact)` is present in working memory.
-    ///
-    /// Explicit `(initial-fact)` patterns match this protected built-in fact.
-    /// Empty/negative prefixes use the independent RETE root token. It is
-    /// asserted once; subsequent calls are no-ops.
-    ///
-    /// The `FactId` is stored in `self.initial_fact_id` so that `facts()` can
-    /// exclude it from user-visible results.
-    fn ensure_initial_fact(&mut self) -> Result<(), LoadError> {
-        // Already asserted in a previous load_str call.
-        if self.initial_fact_id.is_some() {
-            return Ok(());
-        }
-
-        let initial_sym = self
-            .symbol_table
-            .intern_symbol("initial-fact", self.config.string_encoding)
-            .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
-
-        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation: initial_sym,
-            fields: smallvec::SmallVec::new(),
-        }))?;
-        self.initial_fact_id = Some(result.fact_id());
-
-        Ok(())
     }
 
     /// Load CLIPS source code from a file.
@@ -920,29 +1156,21 @@ impl Engine {
         index
     }
 
+    fn template_resolver(&self) -> TemplateResolver<'_> {
+        TemplateResolver {
+            template_local_ids: &self.template_local_ids,
+            template_modules: &self.template_modules,
+            module_registry: &self.module_registry,
+        }
+    }
+
     pub(crate) fn resolve_template_reference(
         &self,
         raw_name: &str,
         current_module: crate::modules::ModuleId,
     ) -> Result<ferric_rules_core::TemplateId, String> {
-        self.resolve_template_id(raw_name, current_module).map_err(|error| {
-            let current_module_label = self.module_registry.module_name(current_module).unwrap_or("?");
-            match error {
-                TemplateLookupError::Unknown => format!("unknown template `{raw_name}`"),
-                TemplateLookupError::NotVisible => format!(
-                    "template `{raw_name}` is not visible from module `{current_module_label}`"
-                ),
-                TemplateLookupError::Ambiguous(modules) => {
-                    let modules: BTreeSet<_> = modules.iter().map(|module| {
-                        self.module_registry.module_name(*module).unwrap_or("?")
-                    }).collect();
-                    format!(
-                        "template `{raw_name}` is ambiguous from module `{current_module_label}` (matches modules: {})",
-                        modules.into_iter().collect::<Vec<_>>().join(", ")
-                    )
-                }
-            }
-        })
+        self.template_resolver()
+            .resolve_reference(raw_name, current_module)
     }
 
     /// Resolve without allocating diagnostics that ordered-relation probes discard.
@@ -952,74 +1180,8 @@ impl Engine {
         raw_name: &str,
         current_module: crate::modules::ModuleId,
     ) -> Result<ferric_rules_core::TemplateId, TemplateLookupError> {
-        let (qualified_module_name, wanted_local_name) = Self::template_ref_parts(raw_name);
-        let candidates = self
-            .template_local_ids
-            .get(wanted_local_name)
-            .ok_or(TemplateLookupError::Unknown)?;
-        let module_for = |id| {
-            self.template_modules
-                .get(id)
-                .copied()
-                .unwrap_or_else(|| self.module_registry.main_module_id())
-        };
-        let choose = |ids: smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>| {
-            if ids.len() == 1 {
-                Ok(ids[0])
-            } else {
-                Err(TemplateLookupError::Ambiguous(
-                    ids.into_iter().map(module_for).collect(),
-                ))
-            }
-        };
-        if let Some(module_name) = qualified_module_name {
-            let target_module = self
-                .module_registry
-                .get_by_name(module_name)
-                .ok_or(TemplateLookupError::Unknown)?;
-            let matches: smallvec::SmallVec<_> = candidates
-                .iter()
-                .copied()
-                .filter(|id| module_for(*id) == target_module)
-                .collect();
-            if matches.is_empty() {
-                return Err(TemplateLookupError::Unknown);
-            }
-            let id = choose(matches)?;
-            if !self.module_registry.is_construct_visible(
-                current_module,
-                target_module,
-                "deftemplate",
-                wanted_local_name,
-            ) {
-                return Err(TemplateLookupError::NotVisible);
-            }
-            return Ok(id);
-        }
-        let local: smallvec::SmallVec<_> = candidates
-            .iter()
-            .copied()
-            .filter(|id| module_for(*id) == current_module)
-            .collect();
-        if !local.is_empty() {
-            return choose(local);
-        }
-        let visible: smallvec::SmallVec<_> = candidates
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.module_registry.is_construct_visible(
-                    current_module,
-                    module_for(*id),
-                    "deftemplate",
-                    wanted_local_name,
-                )
-            })
-            .collect();
-        if visible.is_empty() {
-            return Err(TemplateLookupError::NotVisible);
-        }
-        choose(visible)
+        self.template_resolver()
+            .resolve_id(raw_name, current_module)
     }
 
     /// Process an ordered fact body.
@@ -1252,6 +1414,7 @@ impl Engine {
                     Some(SlotValueType::String) => Value::String(self.compile_string("")?),
                     Some(SlotValueType::Integer) => Value::Integer(0),
                     Some(SlotValueType::Float) => Value::Float(0.0),
+                    Some(SlotValueType::InstanceName) => Value::InstanceName(InstanceName::from_symbol(self.compile_symbol("nil")?)),
                     Some(SlotValueType::ExternalAddress) => return Err(Self::compile_error_at(&slot_def.span, "an external-address slot requires (default ?NONE); Ferric cannot derive a host-owned token")),
                 }
                 }
@@ -1363,6 +1526,8 @@ impl Engine {
                 ));
             }
 
+            self.validate_expression_query_declarations(&def.value, current_module, None)?;
+
             // Translate the init-value expression.  This must happen before we
             // construct the EvalContext because from_action_expr also needs
             // &mut symbol_table.
@@ -1390,6 +1555,7 @@ impl Engine {
                     generics: &self.generics,
                     call_depth: 0,
                     expression_depth: 0,
+                    callable_locals: None,
                     current_module: self.module_registry.current_module(),
                     module_registry: &self.module_registry,
                     function_modules: &self.function_modules,
@@ -1397,8 +1563,14 @@ impl Engine {
                     generic_modules: &self.generic_modules,
                     method_chain: None,
                     input_buffer: None,
-                    fact_base: None,
+                    fact_base: Some(&self.fact_base),
+                    initial_fact_id: self.initial_fact_id,
                     template_defs: None,
+                    compact_fact_bindings: None,
+                    // Globals currently persist initializer values for reset,
+                    // not executable initializers. Query results (especially
+                    // addresses) cannot safely be captured by that policy.
+                    template_resolver: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
@@ -1469,6 +1641,7 @@ impl Engine {
                         generics: &self.generics,
                         call_depth: 0,
                         expression_depth: 0,
+                        callable_locals: None,
                         current_module: self.module_registry.current_module(),
                         module_registry: &self.module_registry,
                         function_modules: &self.function_modules,
@@ -1477,7 +1650,10 @@ impl Engine {
                         method_chain: None,
                         input_buffer: None,
                         fact_base: None,
+                        initial_fact_id: None,
                         template_defs: None,
+                        compact_fact_bindings: None,
+                        template_resolver: None,
                     };
                     crate::evaluator::eval(&mut ctx, &runtime_expr)
                 };
@@ -1515,6 +1691,7 @@ impl Engine {
             LiteralKind::Float(f) => Some(Value::Float(*f)),
             LiteralKind::String(s) => self.warned_string_value(s, line, result),
             LiteralKind::Symbol(s) => self.warned_symbol_value(s, line, result),
+            LiteralKind::InstanceName(s) => self.warned_instance_name_value(s, line, result),
         }
     }
 
@@ -1589,7 +1766,7 @@ impl Engine {
 
     /// Process a template fact within an assert form.
     ///
-    /// Each remaining element should be a list of the form `(slot-name value)`.
+    /// Each remaining element supplies the complete value sequence of one slot.
     fn process_assert_template_fact(
         &mut self,
         template_id: ferric_rules_core::TemplateId,
@@ -1607,6 +1784,7 @@ impl Engine {
 
         // Start with defaults.
         let mut slots: Vec<Value> = registered.defaults.clone();
+        let mut seen = HashSet::new();
 
         for slot_expr in slot_exprs {
             let slot_list = slot_expr.as_list().ok_or_else(|| {
@@ -1615,7 +1793,9 @@ impl Engine {
                 ))
             })?;
             if slot_list.is_empty() {
-                continue;
+                return Err(LoadError::InvalidAssert(
+                    "empty template slot list".to_string(),
+                ));
             }
             let slot_name = slot_list[0].as_symbol().ok_or_else(|| {
                 LoadError::InvalidAssert(format!(
@@ -1627,14 +1807,36 @@ impl Engine {
                     "unknown slot `{slot_name}` in template `{template_name}`"
                 ))
             })?;
-
-            if slot_list.len() > 1 {
-                if let Some(value) = self.atom_to_value(&slot_list[1], result) {
-                    slots[slot_idx] = value;
-                }
+            if !seen.insert(slot_idx) {
+                return Err(LoadError::InvalidAssert(format!(
+                    "duplicate slot `{slot_name}` in template `{template_name}`"
+                )));
             }
-            // If slot_list.len() == 1, the slot keeps its default (empty multislot).
+
+            let mut fields = slot_list[1..]
+                .iter()
+                .map(|expression| {
+                    self.atom_to_value(expression, result).ok_or_else(|| {
+                        LoadError::InvalidAssert(format!(
+                            "expected literal value for slot `{slot_name}` in template `{template_name}`"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            slots[slot_idx] = match registered.slot_types[slot_idx] {
+                SlotType::Single if fields.len() == 1 => fields.pop().unwrap(),
+                SlotType::Single => {
+                    return Err(LoadError::InvalidAssert(format!(
+                        "single-field slot `{slot_name}` requires exactly one value"
+                    )));
+                }
+                SlotType::Multi => Value::Multifield(Box::new(fields.into_iter().collect())),
+            };
         }
+
+        registered
+            .validate_slots(&slots)
+            .map_err(LoadError::Compile)?;
 
         // Assert as a proper template fact.
         Ok(self
@@ -1657,6 +1859,7 @@ impl Engine {
             Atom::Float(f) => Some(Value::Float(*f)),
             Atom::String(s) => self.warned_string_value(s, line, result),
             Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
+            Atom::InstanceName(s) => self.warned_instance_name_value(s, line, result),
             // Variables and connectives are not valid fact values
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
@@ -1694,6 +1897,18 @@ impl Engine {
                 Self::warn_with_detail(result, line, "symbol encoding error", &error);
                 None
             }
+        }
+    }
+
+    fn warned_instance_name_value(
+        &mut self,
+        name: &str,
+        line: u32,
+        result: &mut LoadResult,
+    ) -> Option<Value> {
+        match self.warned_symbol_value(name, line, result)? {
+            Value::Symbol(symbol) => Some(Value::InstanceName(InstanceName::from_symbol(symbol))),
+            _ => None,
         }
     }
 
@@ -1824,17 +2039,25 @@ impl Engine {
         current_module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
         for action in &rule.actions {
-            self.validate_rule_action_call(&action.call, current_module, &rule.name)?;
+            self.validate_rule_action_call(
+                &action.call,
+                current_module,
+                &rule.name,
+                &HashSet::new(),
+            )?;
         }
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // Keeps action-specific argument roles in one dispatch.
     fn validate_rule_action_call(
         &self,
         call: &FunctionCall,
         current_module: crate::modules::ModuleId,
         rule_name: &str,
+        query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
+        Self::validate_query_member_rebinding(call, query_members)?;
         match call.name.as_str() {
             "refresh-agenda" => Err(Self::compile_error_at(
                 &call.span,
@@ -1872,6 +2095,7 @@ impl Engine {
                                         value_expr,
                                         current_module,
                                         rule_name,
+                                        query_members,
                                     )?;
                                 }
                             }
@@ -1881,11 +2105,17 @@ impl Engine {
                                     field_expr,
                                     current_module,
                                     rule_name,
+                                    query_members,
                                 )?;
                             }
                         }
                     } else {
-                        self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                        self.validate_action_expr_as_expression(
+                            arg,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 Ok(())
@@ -1894,7 +2124,12 @@ impl Engine {
             // slot names are data, but slot values are expressions.
             "modify" | "duplicate" => {
                 if let Some(target) = call.args.first() {
-                    self.validate_action_expr_as_expression(target, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        target,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 for slot_override in call.args.iter().skip(1) {
                     if let ActionExpr::FunctionCall(slot_pair) = slot_override {
@@ -1903,6 +2138,7 @@ impl Engine {
                                 value_expr,
                                 current_module,
                                 rule_name,
+                                query_members,
                             )?;
                         }
                     } else {
@@ -1910,6 +2146,7 @@ impl Engine {
                             slot_override,
                             current_module,
                             rule_name,
+                            query_members,
                         )?;
                     }
                 }
@@ -1917,13 +2154,23 @@ impl Engine {
             }
             name if Self::is_rule_action_wrapper(name) => {
                 for arg in &call.args {
-                    self.validate_action_expr_as_action(arg, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        arg,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             name if Self::is_rule_action_builtin(name) => {
                 for arg in &call.args {
-                    self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        arg,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
@@ -1935,24 +2182,32 @@ impl Engine {
                     rule_name,
                 )?;
                 for arg in &call.args {
-                    self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        arg,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Mirrors every structured expression and its query scope.
     fn validate_action_expr_as_expression(
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
         rule_name: &str,
+        query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
             ActionExpr::Literal(_)
             | ActionExpr::Variable(_, _)
             | ActionExpr::GlobalVariable(_, _) => Ok(()),
             ActionExpr::FunctionCall(call) => {
+                Self::validate_query_member_rebinding(call, query_members)?;
                 self.validate_expression_callable_name(
                     &call.name,
                     &call.span,
@@ -1960,7 +2215,12 @@ impl Engine {
                     rule_name,
                 )?;
                 for arg in &call.args {
-                    self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        arg,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
@@ -1970,63 +2230,153 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    condition,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in then_actions {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 for action in else_actions {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::While {
                 condition, body, ..
             } => {
-                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    condition,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::LoopForCount {
                 start, end, body, ..
             } => {
-                self.validate_action_expr_as_expression(start, current_module, rule_name)?;
-                self.validate_action_expr_as_expression(end, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    start,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
+                self.validate_action_expr_as_expression(
+                    end,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::Progn {
                 list_expr, body, ..
             } => {
-                self.validate_action_expr_as_expression(list_expr, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    list_expr,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
-            ActionExpr::QueryAction { name, span, .. } => Err(Self::compile_error_at(
+            ActionExpr::QueryAction {
+                name,
+                bindings,
+                query,
+                body,
                 span,
-                &format!("{name} in an expression is unsupported; use a rule RHS do-for-* action or the host fact API"),
-            )),
+            } => {
+                if !Self::is_result_query(name) {
+                    return Err(Self::compile_error_at(
+                        span,
+                        &format!("{name} in an expression is unsupported; use a rule RHS action"),
+                    ));
+                }
+                self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                Self::validate_query_predicate_bindings(query)?;
+                let mut nested_members = query_members.clone();
+                nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
+                self.validate_action_expr_as_expression(
+                    query,
+                    current_module,
+                    rule_name,
+                    &nested_members,
+                )
+            }
             ActionExpr::Switch {
                 expr,
                 cases,
                 default,
                 ..
             } => {
-                self.validate_action_expr_as_expression(expr, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    expr,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for (case_expr, actions) in cases {
-                    self.validate_action_expr_as_expression(case_expr, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        case_expr,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                     for action in actions {
-                        self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                        self.validate_action_expr_as_expression(
+                            action,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 if let Some(default_actions) = default {
                     for action in default_actions {
-                        self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                        self.validate_action_expr_as_expression(
+                            action,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 Ok(())
@@ -2034,18 +2384,20 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Mirrors every structured RHS scope in ActionExpr.
     fn validate_action_expr_as_action(
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
         rule_name: &str,
+        query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
             ActionExpr::Literal(_)
             | ActionExpr::Variable(_, _)
             | ActionExpr::GlobalVariable(_, _) => Ok(()),
             ActionExpr::FunctionCall(call) => {
-                self.validate_rule_action_call(call, current_module, rule_name)
+                self.validate_rule_action_call(call, current_module, rule_name, query_members)
             }
             ActionExpr::If {
                 condition,
@@ -2053,47 +2405,125 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    condition,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in then_actions {
-                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 for action in else_actions {
-                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::While {
                 condition, body, ..
             } => {
-                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    condition,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::LoopForCount {
                 start, end, body, ..
             } => {
-                self.validate_action_expr_as_expression(start, current_module, rule_name)?;
-                self.validate_action_expr_as_expression(end, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    start,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
+                self.validate_action_expr_as_expression(
+                    end,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::Progn {
                 list_expr, body, ..
             } => {
-                self.validate_action_expr_as_expression(list_expr, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    list_expr,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
-            ActionExpr::QueryAction { query, body, .. } => {
-                self.validate_action_expr_as_expression(query, current_module, rule_name)?;
+            ActionExpr::QueryAction {
+                name,
+                bindings,
+                query,
+                body,
+                span,
+            } => {
+                if Self::is_result_query(name) {
+                    return self.validate_action_expr_as_expression(
+                        expr,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    );
+                }
+                self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                Self::validate_query_predicate_bindings(query)?;
+                let mut nested_members = query_members.clone();
+                nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
+                self.validate_action_expr_as_expression(
+                    query,
+                    current_module,
+                    rule_name,
+                    &nested_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    self.validate_action_expr_as_action(
+                        action,
+                        current_module,
+                        rule_name,
+                        &nested_members,
+                    )?;
                 }
                 Ok(())
             }
@@ -2103,21 +2533,170 @@ impl Engine {
                 default,
                 ..
             } => {
-                self.validate_action_expr_as_expression(expr, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(
+                    expr,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for (case_expr, actions) in cases {
-                    self.validate_action_expr_as_expression(case_expr, current_module, rule_name)?;
+                    self.validate_action_expr_as_expression(
+                        case_expr,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                     for action in actions {
-                        self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                        self.validate_action_expr_as_action(
+                            action,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 if let Some(default_actions) = default {
                     for action in default_actions {
-                        self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                        self.validate_action_expr_as_action(
+                            action,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 Ok(())
             }
         }
+    }
+
+    fn is_result_query(name: &str) -> bool {
+        matches!(name, "any-factp" | "find-fact" | "find-all-facts")
+    }
+
+    fn validate_query_declaration(
+        &self,
+        name: &str,
+        bindings: &[(String, String)],
+        body: &[ActionExpr],
+        span: &Span,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
+        if bindings.is_empty() {
+            return Err(Self::compile_error_at(
+                span,
+                "fact queries require at least one member",
+            ));
+        }
+        if Self::is_result_query(name) && !body.is_empty() {
+            return Err(Self::compile_error_at(
+                span,
+                "result fact queries cannot have body actions",
+            ));
+        }
+        let mut names = HashSet::new();
+        for (member, template) in bindings {
+            if member.is_empty() || !names.insert(member) {
+                return Err(Self::compile_error_at(
+                    span,
+                    "fact queries require distinct named single-field members",
+                ));
+            }
+            self.template_resolver()
+                .resolve_query_reference(template, current_module)
+                .map_err(|message| Self::compile_error_at(span, &message))?;
+        }
+        Ok(())
+    }
+
+    /// Validate query declarations inside callable/global expressions without
+    /// changing the existing declaration policy for ordinary function calls.
+    fn validate_expression_query_declarations(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+        self_name: Option<&str>,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::QueryAction {
+                name,
+                bindings,
+                query,
+                body,
+                span,
+            } = expr
+            {
+                if Self::is_result_query(name) {
+                    self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                    Self::validate_query_predicate_bindings(query)?;
+                    self.validate_query_predicate_callables(query, current_module, self_name)?;
+                }
+            }
+            expr.push_children(&mut pending);
+        }
+        Ok(())
+    }
+
+    fn validate_query_predicate_callables(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+        self_name: Option<&str>,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::FunctionCall(call) = expr {
+                validate_query_callable(
+                    &call.name,
+                    &self.functions,
+                    &self.generics,
+                    &self.module_registry,
+                    current_module,
+                    self_name,
+                )
+                .map_err(|message| Self::compile_error_at(&call.span, &message))?;
+            }
+            expr.push_children(&mut pending);
+        }
+        Ok(())
+    }
+
+    /// CLIPS disallows local bind syntax anywhere in a query predicate; a
+    /// called function's body belongs to its own scope and is not inspected.
+    fn validate_query_predicate_bindings(expr: &ActionExpr) -> Result<(), LoadError> {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::FunctionCall(call) = expr {
+                if call.name == "bind"
+                    && matches!(call.args.first(), Some(ActionExpr::Variable(..)))
+                {
+                    return Err(Self::compile_error_at(
+                        &call.span,
+                        "[FACTQPSR2] local bind is not allowed in a fact-query predicate",
+                    ));
+                }
+            }
+            expr.push_children(&mut pending);
+        }
+        Ok(())
+    }
+
+    fn validate_query_member_rebinding(
+        call: &FunctionCall,
+        query_members: &HashSet<String>,
+    ) -> Result<(), LoadError> {
+        if call.name == "bind" {
+            if let Some(ActionExpr::Variable(name, span)) = call.args.first() {
+                if query_members.contains(Self::existential_scope_variable_name(name)) {
+                    return Err(Self::compile_error_at(
+                        span,
+                        &format!("[FACTQPSR3] cannot rebind query member ?{name}"),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_expression_callable_name(
@@ -2275,17 +2854,32 @@ impl Engine {
             .filter(|snippet| !snippet.is_empty())
             .map(ToOwned::to_owned);
 
+        // Pattern fact addresses get variable slots after the match variables,
+        // so each activation can bind them into its own token copy.
+        let mut var_map = plan.var_map().clone();
+        let mut address_names: Vec<&String> = translated.fact_address_vars.keys().collect();
+        address_names.sort_unstable();
+        for name in address_names {
+            let symbol = self
+                .symbol_table
+                .intern_symbol(name, self.config.string_encoding)
+                .map_err(|e| LoadError::Compile(format!("{e}")))?;
+            var_map
+                .get_or_create(symbol)
+                .map_err(|e| LoadError::Compile(format!("{e}")))?;
+        }
+
         // Store rule info for action execution
         let info = CompiledRuleInfo {
             name: rule.name.clone(),
             source_definition,
             actions: rule.actions.clone(),
-            var_map: plan.var_map().clone(),
+            var_map,
             fact_address_vars: translated.fact_address_vars,
             salience: Salience::new(rule.salience),
             test_conditions: translated.test_conditions,
             runtime_actions,
-            multifield_tail_bindings: translated.multifield_tail_bindings,
+            activation_layout: std::sync::OnceLock::new(),
         };
         Ok(PreparedRuleInstallation {
             plan,
@@ -2360,7 +2954,9 @@ impl Engine {
             }
             Pattern::Template(template) => {
                 for slot in &template.slot_constraints {
-                    Self::collect_constraint_binding_variables(&slot.constraint, variables);
+                    for constraint in &slot.constraints {
+                        Self::collect_constraint_binding_variables(constraint, variables);
+                    }
                 }
             }
             Pattern::Assigned {
@@ -2496,6 +3092,20 @@ impl Engine {
         scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
+        if call.name == "__fact_slot_ref" {
+            if let [ActionExpr::Variable(member, _), ActionExpr::Literal(slot)] =
+                call.args.as_slice()
+            {
+                if let LiteralKind::Symbol(slot) = &slot.value {
+                    let ordinary_name = format!("{member}:{slot}");
+                    if rhs_locals.contains(&ordinary_name)
+                        || scope.exported.contains(&ordinary_name)
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if call.name == "bind" {
             if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
                 for value in call.args.iter().skip(1) {
@@ -3010,6 +3620,12 @@ impl Engine {
     /// Also expands slot-level `Constraint::Or` disjunctions inside patterns.
     /// Returns a vec of rule variants (1 if no disjunctions, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
+        // Without any `or` CE or `|` constraint, every pattern has exactly one
+        // alternative; skip building (and cloning) the single-variant product.
+        if !rule.patterns.iter().any(Self::pattern_has_disjunction) {
+            return vec![rule.clone()];
+        }
+
         // First flatten top-level And to expose Or patterns
         let mut flat_patterns: Vec<Pattern> = Vec::new();
         for pattern in &rule.patterns {
@@ -3061,6 +3677,35 @@ impl Engine {
                 actions: rule.actions.clone(),
             })
             .collect()
+    }
+
+    /// Whether a pattern contains an `or` CE or a `|` constraint anywhere.
+    fn pattern_has_disjunction(pattern: &Pattern) -> bool {
+        fn constraint_has_disjunction(constraint: &Constraint) -> bool {
+            match constraint {
+                Constraint::Or(..) => true,
+                Constraint::And(parts, _) => parts.iter().any(constraint_has_disjunction),
+                Constraint::Not(inner, _) => constraint_has_disjunction(inner),
+                _ => false,
+            }
+        }
+        match pattern {
+            Pattern::Or(..) => true,
+            Pattern::Test(..) => false,
+            Pattern::Ordered(ordered) => ordered.constraints.iter().any(constraint_has_disjunction),
+            Pattern::Template(template) => template
+                .slot_constraints
+                .iter()
+                .flat_map(|slot| &slot.constraints)
+                .any(constraint_has_disjunction),
+            Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
+                Self::pattern_has_disjunction(inner)
+            }
+            Pattern::And(children, _)
+            | Pattern::Exists(children, _)
+            | Pattern::Forall(children, _)
+            | Pattern::Logical(children, _) => children.iter().any(Self::pattern_has_disjunction),
+        }
     }
 
     /// Expand a top-level pattern into disjunctive alternatives used for rule duplication.
@@ -3174,11 +3819,16 @@ impl Engine {
             .slot_constraints
             .iter()
             .map(|slot_constraint| {
-                Self::expand_constraint_disjunctions(&slot_constraint.constraint)
+                let per_field: Vec<_> = slot_constraint
+                    .constraints
+                    .iter()
+                    .map(Self::expand_constraint_disjunctions)
+                    .collect();
+                Self::cartesian_product(&per_field)
                     .into_iter()
-                    .map(|constraint| SlotConstraint {
+                    .map(|constraints| SlotConstraint {
                         slot_name: slot_constraint.slot_name.clone(),
-                        constraint,
+                        constraints,
                         span: slot_constraint.span,
                     })
                     .collect()
@@ -3255,7 +3905,6 @@ impl Engine {
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
         let mut test_conditions: Vec<CompiledTestCondition> = Vec::new();
-        let mut multifield_tail_bindings = Vec::new();
         let mut fact_index = 0usize;
         let mut internal_slot_var_seed = 0usize;
         let mut exported_variables = HashSet::new();
@@ -3367,11 +4016,6 @@ impl Engine {
             }
             if Self::condition_has_fact_address(&condition) {
                 Self::collect_pattern_binding_variables(pattern, &mut exported_variables);
-                Self::collect_multifield_tail_bindings(
-                    pattern,
-                    fact_index,
-                    &mut multifield_tail_bindings,
-                );
                 fact_index += 1;
             }
             conditions.push(condition);
@@ -3392,13 +4036,26 @@ impl Engine {
         // The visible initial-fact is separate state, not support for this match.
 
         Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
+        let mut query_ordinary = exported_variables.clone();
+        for action in &rule.actions {
+            if action.call.name == "bind" {
+                if let Some(ActionExpr::Variable(name, _)) = action.call.args.first() {
+                    query_ordinary.insert(Self::existential_scope_variable_name(name).to_owned());
+                }
+            }
+        }
+        crate::query_validation::validate_query_scopes(
+            rule.actions.iter().flat_map(|action| &action.call.args),
+            query_ordinary,
+            &fact_address_vars.keys().cloned().collect(),
+        )
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
 
         Ok(TranslatedRule {
             salience: Salience::new(rule.salience),
             conditions,
             fact_address_vars,
             test_conditions,
-            multifield_tail_bindings,
         })
     }
 
@@ -3406,32 +4063,6 @@ impl Engine {
         match condition {
             CompilableCondition::Pattern(pattern) => !pattern.negated && !pattern.exists,
             CompilableCondition::Predicate { .. } | CompilableCondition::Ncc(_) => false,
-        }
-    }
-
-    fn collect_multifield_tail_bindings(
-        pattern: &Pattern,
-        fact_index: usize,
-        out: &mut Vec<MultifieldTailBindingHint>,
-    ) {
-        match pattern {
-            Pattern::Assigned { pattern, .. } => {
-                Self::collect_multifield_tail_bindings(pattern, fact_index, out);
-            }
-            Pattern::Ordered(ordered) => {
-                let Some((tail_index, Constraint::MultiVariable(name, _))) =
-                    ordered.constraints.iter().enumerate().next_back()
-                else {
-                    return;
-                };
-
-                out.push(MultifieldTailBindingHint {
-                    name: name.clone(),
-                    fact_index,
-                    start_slot: tail_index,
-                });
-            }
-            _ => {}
         }
     }
 
@@ -3718,9 +4349,47 @@ impl Engine {
                     )?;
                 }
 
+                let sequence = ordered
+                    .constraints
+                    .iter()
+                    .any(Self::constraint_is_multifield)
+                    .then(|| {
+                        let tests = std::mem::take(&mut constant_tests);
+                        let segments = vec![SequenceSegment {
+                            source: SequenceSource::Ordered,
+                            fields: ordered
+                                .constraints
+                                .iter()
+                                .map(Self::sequence_field)
+                                .collect(),
+                        }];
+                        Self::sequence_pattern(segments, tests, &mut constant_tests)
+                    });
+                if matches!(entry_type, AlphaEntryType::OrderedRelation(_)) {
+                    // Single-field constraints consume exactly one field, even
+                    // when anonymous. Multifield constraints may consume none
+                    // or more, so only their fixed neighbors set a lower bound.
+                    let min = ordered
+                        .constraints
+                        .iter()
+                        .filter(|constraint| !Self::constraint_is_multifield(constraint))
+                        .count();
+                    let max = (min == ordered.constraints.len()).then_some(min);
+                    // The count goes last: alpha paths share no prefixes, so a
+                    // leading count test would run once per pattern of the
+                    // relation. Value tests already fail on a missing field.
+                    if min > 0 || max.is_some() {
+                        constant_tests.push(ConstantTest {
+                            slot: SlotIndex::Ordered(0),
+                            test_type: ConstantTestType::OrderedFieldCount { min, max },
+                        });
+                    }
+                }
+
                 Ok(CompilablePattern {
                     entry_type,
                     constant_tests,
+                    sequence,
                     variable_slots,
                     negated_variable_slots,
                     negated: false,
@@ -3791,13 +4460,8 @@ impl Engine {
                             )
                         })?;
 
-                let entry_type = AlphaEntryType::Template(template_id);
-                let mut constant_tests = Vec::new();
-                let mut variable_slots = Vec::new();
-                let mut negated_variable_slots = Vec::new();
-                let mut seen_variable_slots = HashMap::new();
-                let mut slot_runtime_vars = HashMap::new();
-
+                let mut slot_indices = Vec::with_capacity(template.slot_constraints.len());
+                let mut seen_slots = HashSet::new();
                 for slot_constraint in &template.slot_constraints {
                     let slot_idx = registered.slot_index(&slot_constraint.slot_name).ok_or_else(
                         || {
@@ -3810,31 +4474,104 @@ impl Engine {
                             )
                         },
                     )?;
-
-                    let slot = SlotIndex::Template(slot_idx);
-                    self.translate_constraint(
-                        &slot_constraint.constraint,
-                        slot,
-                        &mut constant_tests,
-                        &mut variable_slots,
-                        &mut negated_variable_slots,
-                        &mut seen_variable_slots,
-                        generated_tests,
-                        &mut slot_runtime_vars,
-                        internal_slot_var_seed,
-                        in_negated_pattern,
-                    )?;
+                    if !seen_slots.insert(slot_idx) {
+                        return Err(Self::compile_error_at(
+                            &slot_constraint.span,
+                            &format!("duplicate slot `{}` in template pattern", slot_constraint.slot_name),
+                        ));
+                    }
+                    if registered.slot_types[slot_idx] == SlotType::Single {
+                        if slot_constraint.constraints.len() != 1 {
+                            return Err(Self::compile_error_at(
+                                &slot_constraint.span,
+                                &format!("single-field slot `{}` requires exactly one field constraint", slot_constraint.slot_name),
+                            ));
+                        }
+                        let constraint = &slot_constraint.constraints[0];
+                        if Self::constraint_is_multifield(constraint)
+                            && !matches!(constraint, Constraint::MultiWildcard(_))
+                        {
+                            return Err(Self::compile_error_at(
+                                &slot_constraint.span,
+                                &format!("single-field slot `{}` cannot bind a multifield variable", slot_constraint.slot_name),
+                            ));
+                        }
+                    }
+                    slot_indices.push(slot_idx);
                 }
 
+                // A multislot constrained by one multifield term captures the
+                // whole stored multifield, so the physical slot already is the
+                // logical field. Keep such patterns physical (and indexable);
+                // only real positional constraints need a sequence projection.
+                let needs_sequence = template.slot_constraints.iter().zip(&slot_indices).any(
+                    |(slot_constraint, &index)| {
+                        registered.slot_types[index] == SlotType::Multi
+                            && !matches!(
+                                slot_constraint.constraints.as_slice(),
+                                [constraint] if Self::constraint_is_multifield(constraint)
+                            )
+                    },
+                );
+                let mut constant_tests = Vec::new();
+                let mut variable_slots = Vec::new();
+                let mut negated_variable_slots = Vec::new();
+                let mut seen_variable_slots = HashMap::new();
+                let mut slot_runtime_vars = HashMap::new();
+                let mut segments = Vec::new();
+                let mut logical_offset = 0;
+
+                // Preserve written slot order: independent multislot splits
+                // form a Cartesian product in that order in CLIPS.
+                for (slot_constraint, slot_idx) in template.slot_constraints.iter().zip(slot_indices) {
+                    let is_multi = registered.slot_types[slot_idx] == SlotType::Multi;
+                    if needs_sequence {
+                        segments.push(if is_multi {
+                            SequenceSegment {
+                                source: SequenceSource::TemplateSlot(slot_idx),
+                                fields: slot_constraint.constraints.iter().map(Self::sequence_field).collect(),
+                            }
+                        } else {
+                            SequenceSegment {
+                                source: SequenceSource::TemplateScalar(slot_idx),
+                                fields: vec![SequenceField::Single],
+                            }
+                        });
+                    }
+                    for constraint in &slot_constraint.constraints {
+                        let slot = SlotIndex::Template(if needs_sequence { logical_offset } else { slot_idx });
+                        self.translate_constraint(
+                            constraint,
+                            slot,
+                            &mut constant_tests,
+                            &mut variable_slots,
+                            &mut negated_variable_slots,
+                            &mut seen_variable_slots,
+                            generated_tests,
+                            &mut slot_runtime_vars,
+                            internal_slot_var_seed,
+                            in_negated_pattern,
+                        )?;
+                        logical_offset += 1;
+                    }
+                }
+
+                let sequence = needs_sequence.then(|| {
+                    let tests = std::mem::take(&mut constant_tests);
+                    Self::sequence_pattern(segments, tests, &mut constant_tests)
+                });
+
                 Ok(CompilablePattern {
-                    entry_type,
+                    entry_type: AlphaEntryType::Template(template_id),
                     constant_tests,
+                    sequence,
                     variable_slots,
                     negated_variable_slots,
                     negated: false,
                     exists: false,
                 })
             }
+
             Pattern::Forall(_, span) => Err(Self::unsupported_pattern(
                 "forall",
                 span,
@@ -3855,6 +4592,50 @@ impl Engine {
                 span,
                 "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
+        }
+    }
+
+    fn sequence_field(constraint: &Constraint) -> SequenceField {
+        if Self::constraint_is_multifield(constraint) {
+            SequenceField::Multi
+        } else {
+            SequenceField::Single
+        }
+    }
+
+    /// Build a sequence plan from logical constant tests. Tests that read only
+    /// split-independent fields (an ordered prefix or scalar template slots)
+    /// move to physical alpha selectors and filter facts before enumeration.
+    fn sequence_pattern(
+        segments: Vec<SequenceSegment>,
+        tests: Vec<ConstantTest>,
+        alpha_tests: &mut Vec<ConstantTest>,
+    ) -> SequencePattern {
+        let mut sequence = SequencePattern {
+            segments,
+            tests: Vec::new(),
+        };
+        for test in tests {
+            match sequence.physical_test(&test) {
+                Some(physical) => alpha_tests.push(physical),
+                None => sequence.tests.push(test),
+            }
+        }
+        sequence
+    }
+
+    fn constraint_is_multifield(constraint: &Constraint) -> bool {
+        match constraint {
+            Constraint::MultiVariable(_, _) | Constraint::MultiWildcard(_) => true,
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                parts.iter().any(Self::constraint_is_multifield)
+            }
+            Constraint::Not(inner, _) => Self::constraint_is_multifield(inner),
+            Constraint::Literal(_)
+            | Constraint::Variable(_, _)
+            | Constraint::Wildcard(_)
+            | Constraint::Predicate(_, _)
+            | Constraint::ReturnValue(_, _) => false,
         }
     }
 
@@ -3895,10 +4676,8 @@ impl Engine {
                 // No test needed — matches anything
             }
             Constraint::MultiVariable(name, _span) => {
-                // Treat $?var the same as ?var: bind to the value at this slot position.
-                // For template slots this is semantically correct (binds to full slot value).
-                // For ordered patterns this is an approximation — true CLIPS multi-field
-                // matching (spanning multiple positions) is not yet implemented.
+                // Ordered sequence plans project this logical field to a
+                // multifield value; template selectors already hold a full slot.
                 self.translate_variable_constraint(
                     name,
                     slot,
@@ -4529,6 +5308,9 @@ impl Engine {
                 Atom::Float(f) => Some(PredicateOperand::Literal(LiteralKind::Float(*f))),
                 Atom::String(s) => Some(PredicateOperand::Literal(LiteralKind::String(s.clone()))),
                 Atom::Symbol(s) => Some(PredicateOperand::Literal(LiteralKind::Symbol(s.clone()))),
+                Atom::InstanceName(s) => Some(PredicateOperand::Literal(
+                    LiteralKind::InstanceName(s.clone()),
+                )),
                 Atom::SingleVar(name) | Atom::MultiVar(name) => {
                     Some(PredicateOperand::Variable(name.clone()))
                 }
@@ -4668,6 +5450,10 @@ impl Engine {
             LiteralKind::Symbol(s) => {
                 let sym = self.compile_symbol(s)?;
                 Ok(Some(AtomKey::Symbol(sym)))
+            }
+            LiteralKind::InstanceName(s) => {
+                let sym = self.compile_symbol(s)?;
+                Ok(Some(AtomKey::InstanceName(InstanceName::from_symbol(sym))))
             }
             LiteralKind::String(s) => {
                 let fs = self.compile_string(s)?;
@@ -6212,6 +6998,94 @@ mod tests {
     }
 
     #[test]
+    fn expression_queries_in_global_initializers_fail_without_persisting_results() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (deftemplate item (slot value))
+            (deffacts seed (item (value 30)))
+            (deffunction query () (find-fact ((?f item)) TRUE))
+            (defglobal ?*kept* = 7)
+        ",
+        );
+        engine.reset().unwrap();
+        let main = engine.module_registry.main_module_id();
+        for initializer in [
+            "(any-factp ((?f item)) TRUE)",
+            "(find-fact ((?f item)) TRUE)",
+            "(find-all-facts ((?f item)) TRUE)",
+            "(query)",
+        ] {
+            let errors = engine
+                .load_str(&format!("(defglobal ?*invalid* = {initializer})"))
+                .unwrap_err();
+            assert!(errors.iter().any(|error| error
+                .to_string()
+                .contains("template context is unavailable")));
+            assert!(!engine.globals.contains(main, "invalid"));
+            assert!(!engine
+                .registered_globals
+                .iter()
+                .any(|(_, name, _)| name == "invalid"));
+        }
+        engine.reset().unwrap();
+        assert!(matches!(
+            engine.globals.get(main, "kept"),
+            Some(Value::Integer(7))
+        ));
+        assert!(!engine.globals.contains(main, "invalid"));
+    }
+
+    #[test]
+    fn invalid_expression_query_does_not_replace_callable_or_create_generic() {
+        let mut engine = new_utf8_engine();
+        load_ok(&mut engine, "(deffunction keep () 7)");
+        let main = engine.module_registry.main_module_id();
+        for source in [
+            "(deffunction keep () (any-factp ((?f missing)) TRUE))",
+            "(defmethod absent ((?x INTEGER)) (find-fact ((?f missing)) TRUE))",
+        ] {
+            let errors = engine.load_str(source).unwrap_err();
+            assert!(errors
+                .iter()
+                .any(|error| error.to_string().contains("unknown template")));
+        }
+        assert!(engine.functions.contains(main, "keep"));
+        assert!(!engine.generics.contains(main, "absent"));
+        assert!(!engine
+            .generic_modules
+            .get(&main)
+            .is_some_and(|names| names.contains_key("absent")));
+        load_ok(&mut engine, "(defrule invoke => (printout t (keep) crlf))");
+        engine.reset().unwrap();
+        engine.run(crate::RunLimit::Unlimited).unwrap();
+        assert!(engine.action_diagnostics().is_empty());
+        assert_eq!(engine.get_output("t"), Some("7\n"));
+    }
+
+    #[test]
+    fn expression_query_cannot_resolve_a_template_declared_later() {
+        let mut engine = new_utf8_engine();
+        load_ok(&mut engine, "(defrule keep => (assert (kept)))");
+        let errors = engine
+            .load_str(
+                r"
+            (defrule keep => (printout t (any-factp ((?f later)) TRUE) crlf))
+            (deftemplate later (slot value))
+        ",
+            )
+            .unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().contains("unknown template `later`")));
+        engine.reset().unwrap();
+        engine.run(crate::RunLimit::Unlimited).unwrap();
+        assert_eq!(engine.find_facts("kept").unwrap().len(), 1);
+        assert_eq!(engine.get_output("t").unwrap_or(""), "");
+    }
+
+    #[test]
     fn failed_global_initializers_cannot_leave_phantom_persisted_metadata() {
         let mut engine = Engine::new(EngineConfig::default());
         let errors = engine
@@ -6581,7 +7455,7 @@ mod tests {
     fn load_defmethod_with_index_succeeds() {
         let mut engine = new_utf8_engine();
         let result = engine
-            .load_str("(defmethod display 1 ((?x)) ?x)")
+            .load_str("(defmethod display 1 (?x) ?x)")
             .expect("load should succeed");
         assert_eq!(result.methods.len(), 1);
         assert_eq!(result.methods[0].index, Some(1));

@@ -1,0 +1,6 @@
+[PRCCODE7] Duplicate parameter names not allowed.
+
+ERROR:
+(defmethod MAIN::invalid
+   (?x
+    ?x

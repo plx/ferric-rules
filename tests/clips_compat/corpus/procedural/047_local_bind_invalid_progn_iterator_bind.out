@@ -1,0 +1,7 @@
+[MULTIFUN2] Cannot rebind field variable in function progn$.
+
+ERROR:
+(deffunction MAIN::f
+   ()
+   (progn$ (?x (create$ a b)) 
+      (bind ?x c))

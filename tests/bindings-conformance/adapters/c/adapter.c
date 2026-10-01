@@ -125,6 +125,11 @@ static bool print_normalized_value(const struct FerricValue *value) {
         print_json_string(value->string_ptr);
         putchar('}');
         return true;
+    case FERRIC_VALUE_TYPE_INSTANCE_NAME:
+        fputs("{\"type\":\"instance_name\",\"value\":", stdout);
+        print_json_string(value->string_ptr);
+        putchar('}');
+        return true;
     case FERRIC_VALUE_TYPE_STRING:
         fputs("{\"type\":\"string\",\"value\":", stdout);
         print_json_string(value->string_ptr);
@@ -221,6 +226,16 @@ static bool value_case(const char *case_id) {
     }
     if (strcmp(case_id, "value.symbol.explicit") == 0) {
         struct FerricValue value = ferric_value_symbol("red");
+        bool success = print_asserted_value(&value);
+        ferric_value_free(&value);
+        return success;
+    }
+    if (strcmp(case_id, "value.instance-name.explicit") == 0) {
+        static const uint8_t name[] = "widget";
+        struct FerricValue value;
+        if (ferric_value_instance_name_bytes(name, sizeof(name) - 1, &value) != FERRIC_ERROR_OK) {
+            return false;
+        }
         bool success = print_asserted_value(&value);
         ferric_value_free(&value);
         return success;

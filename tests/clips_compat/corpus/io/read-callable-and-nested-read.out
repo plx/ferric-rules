@@ -1,0 +1,3 @@
+function:FALSE:FALSE:TRUE:FALSE:[two words]
+method:FALSE:TRUE:FALSE:FALSE:[2.5]
+nested:FALSE:FALSE:TRUE:FALSE:[[red]]

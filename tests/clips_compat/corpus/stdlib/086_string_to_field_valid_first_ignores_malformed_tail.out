@@ -1,0 +1,4 @@
+integer:TRUE:FALSE:FALSE:FALSE:[42]
+float:FALSE:TRUE:FALSE:FALSE:[2.5]
+symbol:FALSE:FALSE:FALSE:TRUE:[red]
+string:FALSE:FALSE:TRUE:FALSE:[two words]

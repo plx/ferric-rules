@@ -176,7 +176,55 @@
       "contains": [
         "expected function call (list)"
       ]
+    },
+    "co-drtest05-10.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "single-field slot `one` requires exactly one field constraint"
+      ],
+      "note": "CLIPS 6.30 also rejects several field constraints on a single-field slot (PRNTUTIL2)."
+    },
+    "t64x-drtest05-10.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "single-field slot `one` requires exactly one field constraint"
+      ],
+      "note": "CLIPS 6.30 also rejects several field constraints on a single-field slot (PRNTUTIL2)."
+    },
+    "co-drtest07-24.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "single-field slot `one` requires exactly one field constraint"
+      ],
+      "note": "CLIPS 6.30 also rejects several field constraints on a single-field slot (PRNTUTIL2)."
+    },
+    "t64x-drtest07-24.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "single-field slot `one` requires exactly one field constraint"
+      ],
+      "note": "CLIPS 6.30 also rejects several field constraints on a single-field slot (PRNTUTIL2)."
+    },
+    "co-misclns4-04.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "duplicate slot `x` in template pattern"
+      ],
+      "note": "CLIPS 6.30 also rejects a slot that appears twice in one pattern (PRNTUTIL5)."
+    },
+    "t63x-misclns4-04.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "duplicate slot `x` in template pattern"
+      ],
+      "note": "CLIPS 6.30 also rejects a slot that appears twice in one pattern (PRNTUTIL5)."
+    },
+    "t64x-misclns4-04.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "duplicate slot `x` in template pattern"
+      ],
+      "note": "CLIPS 6.30 also rejects a slot that appears twice in one pattern (PRNTUTIL5)."
     }
   }
 }
-

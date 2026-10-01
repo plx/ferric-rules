@@ -236,3 +236,17 @@ export declare class FerricSymbol {
   /** Return the symbol name (for JS `valueOf` protocol). */
   valueOf(): string
 }
+/**
+ * A CLIPS instance name such as `[widget]`, holding the spelling without
+ * brackets. Distinct from `FerricSymbol`; Ferric has no object system.
+ */
+export declare class FerricInstanceName {
+  /** Create an instance name from its spelling without brackets. */
+  constructor(value: string)
+  /** The spelling without brackets. */
+  get value(): string
+  /** Return the CLIPS spelling, with brackets. */
+  toString(): string
+  /** Return the spelling without brackets (for JS `valueOf` protocol). */
+  valueOf(): string
+}

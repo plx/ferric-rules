@@ -175,6 +175,33 @@ fn host_template_values_obey_declared_scalar_and_multislot_types() {
 }
 
 #[test]
+fn instance_name_slots_accept_typed_defaults_and_values_but_reject_symbols() {
+    let mut engine =
+        Engine::with_rules("(deftemplate named (slot value (type INSTANCE-NAME)))").unwrap();
+    let default = engine.assert_template("named", &[], ()).unwrap();
+    let Value::InstanceName(name) = engine.get_fact_slot_by_name(default, "value").unwrap() else {
+        panic!("INSTANCE-NAME defaults must retain their value type")
+    };
+    assert_eq!(engine.resolve_core_symbol(name.as_symbol()), Some("nil"));
+
+    let name = engine.instance_name_value("widget").unwrap();
+    let explicit = engine
+        .assert_template("named", &["value"], vec![name])
+        .unwrap();
+    let Value::InstanceName(name) = engine.get_fact_slot_by_name(explicit, "value").unwrap() else {
+        panic!("a typed name must remain an INSTANCE-NAME")
+    };
+    assert_eq!(engine.resolve_core_symbol(name.as_symbol()), Some("widget"));
+
+    let symbol = engine.symbol_value("widget").unwrap();
+    assert!(matches!(
+        engine.assert_template("named", &["value"], vec![symbol]),
+        Err(EngineError::InvalidSlotValue { .. })
+    ));
+    assert_eq!(engine.facts().unwrap().count(), 2);
+}
+
+#[test]
 fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
     for attribute in [
         "(range 1 10)",
@@ -183,7 +210,6 @@ fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
         "(default-dynamic (+ 1 2))",
         "(default (+ 1 2))",
         "(type FACT-ADDRESS)",
-        "(type INSTANCE-NAME)",
         "(type)",
         "(type INTEGER) (type FLOAT)",
     ] {

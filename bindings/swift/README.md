@@ -77,7 +77,8 @@ interrupt an already queued native operation.
 
 Values, facts, output, snapshot bytes, and error messages are owned Swift data
 and remain usable after close. Integers retain all signed 64-bit precision;
-symbols and strings are distinct, and nested multifields are supported up to
+symbols, strings and instance names (`.instanceName("widget")` for `[widget]`)
+are distinct, and nested multifields are supported up to
 32 levels and one million aggregate values per assertion. Fact input rejects
 `.void`, including nested instances, before allocating C values; it represents
 an absent result rather than durable fact data. Use an application symbol such

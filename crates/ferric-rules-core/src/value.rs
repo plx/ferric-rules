@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
 
 use crate::string::FerricString;
-use crate::symbol::Symbol;
+use crate::symbol::{InstanceName, Symbol};
 
 /// Opaque type identifier for external addresses.
 ///
@@ -199,6 +199,9 @@ pub enum Value {
     ExternalAddress(ExternalAddress),
     /// The void/nil value.
     Void,
+    /// A CLIPS instance name such as `[widget]`, distinct from SYMBOL. Ferric
+    /// has no object system, so no instance needs to exist.
+    InstanceName(InstanceName),
 }
 
 impl Value {
@@ -213,6 +216,7 @@ impl Value {
     pub fn structural_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
+            (Self::InstanceName(a), Self::InstanceName(b)) => a == b,
             (Self::String(a), Self::String(b)) => a == b,
             (Self::Integer(a), Self::Integer(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
@@ -234,6 +238,7 @@ impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::Symbol(_) => "SYMBOL",
+            Self::InstanceName(_) => "INSTANCE-NAME",
             Self::String(_) => "STRING",
             Self::Integer(_) => "INTEGER",
             Self::Float(_) => "FLOAT",
@@ -269,6 +274,12 @@ impl From<f64> for Value {
 impl From<Symbol> for Value {
     fn from(s: Symbol) -> Self {
         Value::Symbol(s)
+    }
+}
+
+impl From<InstanceName> for Value {
+    fn from(name: InstanceName) -> Self {
+        Self::InstanceName(name)
     }
 }
 
@@ -342,6 +353,12 @@ impl IntoFieldValues for Symbol {
     }
 }
 
+impl IntoFieldValues for InstanceName {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![Value::InstanceName(self)]
+    }
+}
+
 impl IntoFieldValues for FerricString {
     fn into_field_values(self) -> SmallVec<[Value; 8]> {
         smallvec::smallvec![Value::String(self)]
@@ -359,6 +376,7 @@ impl IntoFieldValues for FerricString {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AtomKey {
     Symbol(Symbol),
+    InstanceName(InstanceName),
     String(FerricString),
     Integer(i64),
     /// Float stored as raw bits via `f64::to_bits()`.
@@ -390,6 +408,7 @@ impl TryFrom<&Value> for AtomKey {
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match value {
             Value::Symbol(s) => Ok(Self::Symbol(*s)),
+            Value::InstanceName(name) => Ok(Self::InstanceName(*name)),
             Value::String(s) => Ok(Self::String(s.clone())),
             Value::Integer(i) => Ok(Self::Integer(*i)),
             Value::Float(f) => Ok(Self::FloatBits(f.to_bits())),
@@ -406,6 +425,7 @@ impl From<AtomKey> for Value {
     fn from(value: AtomKey) -> Self {
         match value {
             AtomKey::Symbol(s) => Value::Symbol(s),
+            AtomKey::InstanceName(name) => Value::InstanceName(name),
             AtomKey::String(s) => Value::String(s),
             AtomKey::Integer(i) => Value::Integer(i),
             AtomKey::FloatBits(bits) => Value::Float(f64::from_bits(bits)),
@@ -426,7 +446,7 @@ impl From<AtomKey> for Value {
 
 #[cfg(feature = "serde")]
 mod serde_impl {
-    use super::{AtomKey, FerricString, Multifield, Symbol, Value};
+    use super::{AtomKey, FerricString, InstanceName, Multifield, Symbol, Value};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     // ---- Value ----
@@ -439,12 +459,16 @@ mod serde_impl {
         Float(f64),
         Multifield(Box<Multifield>),
         Void,
+        InstanceName(InstanceName),
     }
 
     impl Serialize for Value {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             match self {
                 Value::Symbol(s) => ValueSurrogate::Symbol(*s).serialize(serializer),
+                Value::InstanceName(name) => {
+                    ValueSurrogate::InstanceName(*name).serialize(serializer)
+                }
                 Value::String(s) => ValueSurrogate::String(s.clone()).serialize(serializer),
                 Value::Integer(i) => ValueSurrogate::Integer(*i).serialize(serializer),
                 Value::Float(f) => ValueSurrogate::Float(*f).serialize(serializer),
@@ -467,6 +491,7 @@ mod serde_impl {
                 ValueSurrogate::Float(f) => Value::Float(f),
                 ValueSurrogate::Multifield(m) => Value::Multifield(m),
                 ValueSurrogate::Void => Value::Void,
+                ValueSurrogate::InstanceName(name) => Value::InstanceName(name),
             })
         }
     }
@@ -479,12 +504,16 @@ mod serde_impl {
         String(FerricString),
         Integer(i64),
         FloatBits(u64),
+        InstanceName(InstanceName),
     }
 
     impl Serialize for AtomKey {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             match self {
                 AtomKey::Symbol(s) => AtomKeySurrogate::Symbol(*s).serialize(serializer),
+                AtomKey::InstanceName(name) => {
+                    AtomKeySurrogate::InstanceName(*name).serialize(serializer)
+                }
                 AtomKey::String(s) => AtomKeySurrogate::String(s.clone()).serialize(serializer),
                 AtomKey::Integer(i) => AtomKeySurrogate::Integer(*i).serialize(serializer),
                 AtomKey::FloatBits(b) => AtomKeySurrogate::FloatBits(*b).serialize(serializer),
@@ -503,6 +532,7 @@ mod serde_impl {
                 AtomKeySurrogate::String(s) => AtomKey::String(s),
                 AtomKeySurrogate::Integer(i) => AtomKey::Integer(i),
                 AtomKeySurrogate::FloatBits(b) => AtomKey::FloatBits(b),
+                AtomKeySurrogate::InstanceName(name) => AtomKey::InstanceName(name),
             })
         }
     }

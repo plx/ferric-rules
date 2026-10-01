@@ -1,14 +1,15 @@
 /**
  * Worker value/wire conversion tests (B-002, B-004).
  *
- * Verifies that FerricSymbol values survive worker boundaries
- * in both directions.
+ * Verifies that FerricSymbol and FerricInstanceName values survive worker
+ * boundaries in both directions.
  */
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 
 import {
   EngineHandle,
+  FerricInstanceName,
   FerricSymbol,
   HaltReason,
 } from "../../../helpers/ferric";
@@ -137,6 +138,30 @@ test("B-004 symbol outputs from EngineHandle.getGlobal are FerricSymbol instance
       `Expected FerricSymbol, got ${typeof val} (${(val as any)?.constructor?.name})`
     );
     assert.strictEqual((val as any).value, "running");
+  } finally {
+    await handle.close();
+  }
+});
+
+test("B-002/B-004 FerricInstanceName round-trips through EngineHandle", async () => {
+  const handle = await EngineHandle.create({
+    source: "(defrule typed (tag ?x&:(instance-namep ?x)) => (assert (seen ?x)))",
+  });
+  try {
+    await handle.reset();
+    await handle.assertFact("tag", new FerricInstanceName("widget"));
+    await handle.assertFact("tag", new FerricSymbol("widget"));
+    const result = await handle.run();
+    assert.strictEqual(result.rulesFired, 1);
+    const facts = await handle.facts();
+    const seen = facts.find((f: any) => f.relation === "seen") as any;
+    assert.ok(seen, "seen fact should exist");
+    const field = seen.fields[0];
+    assert.ok(
+      field instanceof FerricInstanceName,
+      `Expected FerricInstanceName instance, got ${field?.constructor?.name}`
+    );
+    assert.strictEqual(field.value, "widget");
   } finally {
     await handle.close();
   }

@@ -11,6 +11,7 @@
 //! | `bigint`           | Integer           |
 //! | `string`           | String (quoted)   |
 //! | `FerricSymbol`     | Symbol            |
+//! | `FerricInstanceName` | Instance name   |
 //! | `Array`            | Multifield        |
 
 use napi::{
@@ -61,6 +62,41 @@ impl FerricSymbol {
     }
 }
 
+/// A CLIPS instance name such as `[widget]`, holding the spelling without
+/// brackets. Distinct from `FerricSymbol`; Ferric has no object system.
+#[napi]
+pub struct FerricInstanceName {
+    pub(crate) name: String,
+}
+
+#[napi]
+impl FerricInstanceName {
+    /// Create an instance name from its spelling without brackets.
+    #[napi(constructor)]
+    pub fn new(value: String) -> Self {
+        Self { name: value }
+    }
+
+    /// The spelling without brackets.
+    #[napi(getter)]
+    pub fn value(&self) -> &str {
+        &self.name
+    }
+
+    /// Return the CLIPS spelling, with brackets.
+    #[napi]
+    #[allow(clippy::inherent_to_string)]
+    pub fn to_string(&self) -> String {
+        format!("[{}]", self.name)
+    }
+
+    /// Return the spelling without brackets (for JS `valueOf` protocol).
+    #[napi]
+    pub fn value_of(&self) -> String {
+        self.name.clone()
+    }
+}
+
 /// Owned input staging: all JavaScript access finishes before a runtime
 /// reference is borrowed. The caller retains the native object's reservation.
 pub enum OwnedValue {
@@ -68,6 +104,7 @@ pub enum OwnedValue {
     Integer(i64),
     Float(f64),
     Symbol(String),
+    InstanceName(String),
     String(String),
     Multifield(Vec<Self>),
 }
@@ -82,6 +119,9 @@ impl OwnedValue {
             Self::Integer(value) => Ok(value.into()),
             Self::Float(value) => Ok(value.into()),
             Self::Symbol(value) => engine.symbol_value(&value).map_err(engine_error_to_napi),
+            Self::InstanceName(value) => engine
+                .instance_name_value(&value)
+                .map_err(engine_error_to_napi),
             Self::String(value) => engine
                 .create_string(&value)
                 .map(HostValue::from)
@@ -172,21 +212,17 @@ pub fn js_to_owned(
                 }
                 return Ok(OwnedValue::Multifield(values));
             }
-            // The loader marshals FerricSymbol to this private native-call
-            // representation. Worker wire symbols are reconstructed first.
-            if obj.has_own_property("__ferric_symbol")? && obj.has_own_property("value")? {
-                let marker: JsUnknown = obj.get_named_property("__ferric_symbol")?;
-                if marker.get_type()? == ValueType::Boolean {
-                    let marker: JsBoolean = marker.try_into()?;
-                    if marker.get_value()? {
-                        let value: JsString = obj.get_named_property("value")?;
-                        return Ok(OwnedValue::Symbol(value.into_utf8()?.as_str()?.to_owned()));
-                    }
-                }
+            // The loader marshals FerricSymbol and FerricInstanceName to these
+            // private native-call forms. Worker wire values are reconstructed first.
+            if let Some(value) = marked_name(&obj, "__ferric_symbol")? {
+                return Ok(OwnedValue::Symbol(value));
+            }
+            if let Some(value) = marked_name(&obj, "__ferric_instance_name")? {
+                return Ok(OwnedValue::InstanceName(value));
             }
             Err(Error::new(
                 Status::InvalidArg,
-                "cannot convert object to CLIPS value; expected Array or a canonical FerricSymbol",
+                "cannot convert object to CLIPS value; expected Array, a canonical FerricSymbol, or a FerricInstanceName",
             ))
         }
         other => Err(Error::new(
@@ -196,11 +232,29 @@ pub fn js_to_owned(
     }
 }
 
+/// Read `{ <marker>: true, value: string }`, the loader's native-call form.
+fn marked_name(obj: &JsObject, marker: &str) -> Result<Option<String>> {
+    if !obj.has_own_property(marker)? || !obj.has_own_property("value")? {
+        return Ok(None);
+    }
+    let flag: JsUnknown = obj.get_named_property(marker)?;
+    if flag.get_type()? != ValueType::Boolean {
+        return Ok(None);
+    }
+    let flag: JsBoolean = flag.try_into()?;
+    if !flag.get_value()? {
+        return Ok(None);
+    }
+    let value: JsString = obj.get_named_property("value")?;
+    Ok(Some(value.into_utf8()?.as_str()?.to_owned()))
+}
+
 /// Convert a Rust [`Value`] to a JavaScript value.
 ///
 /// - `Value::Integer` (in safe range) → `number`; otherwise → `bigint`
 /// - `Value::Float` → `number`
 /// - `Value::Symbol` → `FerricSymbol` instance
+/// - `Value::InstanceName` → `FerricInstanceName` instance
 /// - `Value::String` → `string`
 /// - `Value::Multifield` → `Array`
 /// - `Value::Void` → `null`
@@ -231,6 +285,17 @@ pub fn value_to_js(env: &Env, val: &Value, engine: &Engine) -> Result<JsUnknown>
                 name: name.to_owned(),
             };
             let instance = symbol.into_instance(*env)?;
+            Ok(instance.as_object(*env).into_unknown())
+        }
+
+        Value::InstanceName(name) => {
+            let name = engine
+                .resolve_core_symbol(name.as_symbol())
+                .unwrap_or("<unknown>");
+            let instance = FerricInstanceName {
+                name: name.to_owned(),
+            }
+            .into_instance(*env)?;
             Ok(instance.as_object(*env).into_unknown())
         }
 

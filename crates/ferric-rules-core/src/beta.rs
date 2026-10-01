@@ -13,6 +13,7 @@ use crate::binding::{BindingSet, VarId};
 use crate::exists::{ExistsMemory, ExistsMemoryId};
 use crate::ncc::{NccMemory, NccMemoryId};
 use crate::negative::{NegativeMemory, NegativeMemoryId};
+use crate::sequence::SequencePattern;
 use crate::token::{NodeId, TokenId, TokenStore};
 use crate::value::AtomKey;
 
@@ -324,6 +325,7 @@ pub enum BetaNode {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
         tests: Arc<[JoinTest]>,
+        sequence: Option<Arc<SequencePattern>>,
         bindings: Arc<[(SlotIndex, VarId)]>,
         memory: BetaMemoryId,
         children: Arc<[NodeId]>,
@@ -351,6 +353,7 @@ pub enum BetaNode {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
         tests: Arc<[JoinTest]>,
+        sequence: Option<Arc<SequencePattern>>,
         memory: BetaMemoryId,
         neg_memory: NegativeMemoryId,
         children: Arc<[NodeId]>,
@@ -376,6 +379,7 @@ pub enum BetaNode {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
         tests: Arc<[JoinTest]>,
+        sequence: Option<Arc<SequencePattern>>,
         memory: BetaMemoryId,
         exists_memory: ExistsMemoryId,
         children: Arc<[NodeId]>,
@@ -656,6 +660,7 @@ impl BetaNetwork {
             parent,
             alpha_memory,
             tests: tests.into(),
+            sequence: None,
             bindings: bindings.into(),
             memory: memory_id,
             children: Arc::from([]),
@@ -674,6 +679,18 @@ impl BetaNetwork {
             .push(node_id);
 
         (node_id, memory_id)
+    }
+
+    /// Install a validated sequence plan before activating a new pattern node.
+    pub(crate) fn set_sequence(&mut self, node: NodeId, pattern: Option<SequencePattern>) {
+        match self.nodes.get_mut(&node) {
+            Some(
+                BetaNode::Join { sequence, .. }
+                | BetaNode::Negative { sequence, .. }
+                | BetaNode::Exists { sequence, .. },
+            ) => *sequence = pattern.map(Arc::new),
+            _ => panic!("sequence plans require a fact pattern node"),
+        }
     }
 
     /// Create a predicate node as a child of the given parent.
@@ -756,6 +773,7 @@ impl BetaNetwork {
             parent,
             alpha_memory,
             tests: tests.into(),
+            sequence: None,
             memory: memory_id,
             neg_memory: neg_memory_id,
             children: Arc::from([]),
@@ -889,6 +907,7 @@ impl BetaNetwork {
             parent,
             alpha_memory,
             tests: tests.into(),
+            sequence: None,
             memory: memory_id,
             exists_memory: exists_memory_id,
             children: Arc::from([]),
@@ -1475,6 +1494,7 @@ mod tests {
             bindings,
             memory,
             children,
+            ..
         } = join_node
         {
             assert_eq!(*parent, root);

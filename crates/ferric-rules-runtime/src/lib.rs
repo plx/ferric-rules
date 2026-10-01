@@ -39,15 +39,19 @@
 mod tracing_support;
 
 pub mod actions;
+mod callable_validation;
 pub mod config;
 pub mod engine;
 pub mod evaluator;
 pub mod execution;
+mod field_scanner;
+mod formatting;
 pub mod functions;
 pub mod host;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
+mod query_validation;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;
@@ -55,6 +59,7 @@ mod source_limits;
 mod template_identity;
 mod template_reload;
 pub(crate) mod templates;
+mod value_print;
 
 #[cfg(test)]
 mod integration_tests;
@@ -69,8 +74,8 @@ pub(crate) mod test_helpers;
 
 // Re-export types from ferric-rules-core for convenience.
 pub use ferric_rules_core::{
-    AtomKey, EncodingError, ExternalAddress, ExternalTypeId, FerricString, IntoFieldValues,
-    Multifield, StringEncoding, Symbol, Value,
+    AtomKey, EncodingError, ExternalAddress, ExternalTypeId, FerricString, InstanceName,
+    IntoFieldValues, Multifield, StringEncoding, Symbol, Value,
 };
 
 // Re-export primary types at crate root for convenience.

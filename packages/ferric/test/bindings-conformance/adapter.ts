@@ -13,6 +13,7 @@ import {
   EngineHandle,
   FerricCompileError,
   FerricFactNotFoundError,
+  FerricInstanceName,
   FerricParseError,
   FerricSymbol,
   Format,
@@ -49,6 +50,9 @@ function normalize(value: unknown): unknown {
   if (typeof value === "string") return { type: "string", value };
   if (value instanceof FerricSymbol) {
     return { type: "symbol", value: value.value };
+  }
+  if (value instanceof FerricInstanceName) {
+    return { type: "instance_name", value: value.value };
   }
   if (Array.isArray(value)) {
     return { type: "multifield", value: value.map(normalize) };
@@ -91,6 +95,8 @@ function valueCase(caseId: string): unknown {
       return assertedField(1.5);
     case "value.symbol.explicit":
       return assertedField(new FerricSymbol("red"));
+    case "value.instance-name.explicit":
+      return assertedField(new FerricInstanceName("widget"));
     case "value.string.explicit":
     case "value.string.plain-host":
       return assertedField("red");

@@ -1,0 +1,17 @@
+direct
+2 (a "b c")
+callable:1
+2 (a "b c")
+direct
+callable:2
+2 (a "b c")
+direct
+callable:3
+0 ()
+direct
+callable:4
+direct
+4 (before "b c" 7 after)
+callable:5
+direct
+2 ("" "")

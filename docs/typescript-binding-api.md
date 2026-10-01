@@ -935,6 +935,7 @@ bounded admission and metrics contract above.
 | JS type | CLIPS type | Notes |
 |---------|-----------|-------|
 | `FerricSymbol` | Symbol | Explicit marker type |
+| `FerricInstanceName` | Instance name | `new FerricInstanceName("widget")` is `[widget]` |
 | `string` | String | Quoted CLIPS string |
 | `number` (safe integer) | Integer | `Number.isSafeInteger(n)`; unsafe integers rejected |
 | `number` (float) | Float | |
@@ -948,6 +949,7 @@ bounded admission and metrics contract above.
 | CLIPS type | JS type | Notes |
 |-----------|---------|-------|
 | Symbol | `FerricSymbol` | Always wrapped |
+| Instance name | `FerricInstanceName` | Always wrapped; `value` omits the brackets |
 | String | `string` | Plain JS string |
 | Integer | `number` or `bigint` | `bigint` only if abs value > `2^53 - 1` |
 | Float | `number` | |
@@ -1308,6 +1310,8 @@ The worker thread script needs access to the native addon. napi-rs addons work i
 Values passed via `postMessage` must be structured-clonable. The binding provides transparent serialization for:
 
 - `FerricSymbol` → `{ __type: "FerricSymbol", value: string }` (tagged for reconstruction).
+- `FerricInstanceName` → `{ __type: "FerricInstanceName", value: string }`, the
+  name without brackets.
 - `Fact` → plain object whose `bigint` ID is preserved by structured clone.
 - `Buffer` (snapshots) → transferred as `ArrayBuffer` (zero-copy).
 

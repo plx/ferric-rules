@@ -1,0 +1,17 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (floatp ?value) ":"
+  (stringp ?value) ":" (symbolp ?value) ":[" ?value "]" crlf))
+(defrule probe =>
+ (show integer (string-to-field "42 trailing"))
+ (show negative (string-to-field "-17 tail"))
+ (show positive (string-to-field "+17 tail"))
+ (show zeros (string-to-field "00042 rest"))
+ (show float (string-to-field "2.5 tail"))
+ (show exponent (string-to-field "2e3 rest"))
+ (show leading-dot (string-to-field ".5 rest"))
+ (show negative-dot (string-to-field "-.5 rest"))
+ (show trailing-dot (string-to-field "1. rest"))
+ (show signed-zero (string-to-field "-0.0 tail"))
+ (show max (string-to-field "9223372036854775807 x"))
+ (show min (string-to-field "-9223372036854775808 x"))
+)

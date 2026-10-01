@@ -1,0 +1,15 @@
+before:10
+inside-after
+before:20
+inside-after
+w1
+w-after
+w2
+w-after
+w3
+w-after
+l1
+l-after
+l2
+l-after
+outside-after

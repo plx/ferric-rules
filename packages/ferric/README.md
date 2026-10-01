@@ -27,7 +27,7 @@ admitted work before terminating workers. Concurrent close calls share one
 completion barrier, including cleanup failures.
 
 Plain strings are CLIPS strings; `FerricSymbol` or canonical wire symbols are
-CLIPS symbols. Arrays are multifields; integers beyond the JavaScript safe
+CLIPS symbols, and `new FerricInstanceName("widget")` is the instance name `[widget]`. Arrays are multifields; integers beyond the JavaScript safe
 integer range must use signed 64-bit `bigint`. Unsafe integral numbers are
 rejected, including values formerly guessed as floats. Run limits and counts
 are safe-integer numbers. Raw fact IDs are opaque bigint handles belonging

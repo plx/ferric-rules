@@ -22,9 +22,10 @@ use crate::error::{
     ferric_clear_error_global, ferric_last_error_global, ferric_last_error_global_copy, FerricError,
 };
 use crate::types::{
-    ferric_string_free, ferric_value_array_free, ferric_value_free, ferric_value_multifield_copy,
-    ferric_value_string_bytes, ferric_value_symbol_bytes, FerricConfig, FerricConflictStrategy,
-    FerricHaltReason, FerricStringEncoding, FerricValue,
+    ferric_string_free, ferric_value_array_free, ferric_value_free,
+    ferric_value_instance_name_bytes, ferric_value_multifield_copy, ferric_value_string_bytes,
+    ferric_value_symbol_bytes, FerricConfig, FerricConflictStrategy, FerricHaltReason,
+    FerricStringEncoding, FerricValue,
 };
 use std::os::raw::c_char;
 
@@ -136,6 +137,8 @@ fn contract_lock_canonical_function_names_exist() {
         ferric_value_symbol_bytes;
     let _: unsafe extern "C" fn(*const u8, usize, *mut FerricValue) -> FerricError =
         ferric_value_string_bytes;
+    let _: unsafe extern "C" fn(*const u8, usize, *mut FerricValue) -> FerricError =
+        ferric_value_instance_name_bytes;
     let _: unsafe extern "C" fn(*mut FerricValue) -> FerricError = ferric_value_free;
     let _: unsafe extern "C" fn(*mut FerricValue, usize) -> FerricError = ferric_value_array_free;
 }

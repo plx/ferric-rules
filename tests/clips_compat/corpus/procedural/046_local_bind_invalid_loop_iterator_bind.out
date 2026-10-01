@@ -1,0 +1,9 @@
+
+[PRCDRPSR1] Cannot rebind loop variable in function loop-for-count.
+
+ERROR:
+(deffunction MAIN::bad
+   ()
+   (loop-for-count (?i 1 2) 
+      (bind ?i 10)
+      )

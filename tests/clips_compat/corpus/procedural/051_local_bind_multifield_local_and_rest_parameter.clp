@@ -1,0 +1,5 @@
+(deffunction gather ($?items)
+  (bind ?items (create$ start ?items end))
+  (bind ?copy ?items)
+  (create$ (length$ ?copy) ?copy))
+(defrule probe => (printout t (gather a b) ":" (gather) crlf))

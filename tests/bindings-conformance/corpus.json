@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite_version": "1.2.0",
+  "suite_version": "1.3.0",
   "bindings": ["rust", "c", "go", "node", "python"],
   "cases": [
     {
@@ -30,6 +30,11 @@
       "id": "value.symbol.explicit",
       "semantic": "value.symbol",
       "canonical": {"type": "symbol", "value": "red"}
+    },
+    {
+      "id": "value.instance-name.explicit",
+      "semantic": "value.instance_name",
+      "canonical": {"type": "instance_name", "value": "widget"}
     },
     {
       "id": "value.string.explicit",

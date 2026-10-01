@@ -510,3 +510,109 @@ fn test_scaling_dormant_focus_selection() {
         8.0,
     );
 }
+
+/// A join on a scalar template slot must stay indexed when the pattern also
+/// constrains a multislot: both a whole-slot capture and a positional split.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_template_multislot_join() {
+    fn measure(n: usize, tags: &str) -> Duration {
+        let mut source = format!(
+            "(deftemplate order (slot id))\n\
+             (deftemplate item (slot id) (multislot tags))\n\
+             (defrule match (order (id ?id)) (item (id ?id) (tags {tags})) =>)\n\
+             (deffacts seed\n"
+        );
+        for id in 0..n {
+            writeln!(source, "(order (id {id})) (item (id {id}) (tags a b))").unwrap();
+        }
+        source.push_str(")\n");
+        measure_op_median(
+            || Engine::with_rules(&source).unwrap(),
+            |mut engine| {
+                engine.reset().unwrap();
+                assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, n);
+                black_box(engine);
+            },
+        )
+    }
+    let (small, large) = (1000, 4000);
+    for tags in ["$?t", "$? b $?"] {
+        assert_scaling(
+            &format!("template_multislot_join ({tags})"),
+            small,
+            large,
+            measure(small, tags),
+            measure(large, tags),
+            8.0,
+        );
+    }
+}
+
+/// Split enumeration must reject a placed constant before trying the later
+/// captures: against a fact with no `x`, `$? x $? y $?` is linear in the
+/// fact's length, not quadratic.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_sequence_constant_pruning() {
+    fn measure(n: usize) -> Duration {
+        let mut source = String::from("(defrule m (data $? x $? y $?) =>)\n(deffacts seed (data");
+        for i in 0..n {
+            write!(source, " f{i}").unwrap();
+        }
+        source.push_str("))\n");
+        measure_op_median(
+            || Engine::with_rules(&source).unwrap(),
+            |mut engine| {
+                engine.reset().unwrap();
+                assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+                black_box(engine);
+            },
+        )
+    }
+    let (small, large) = (2000, 8000);
+    assert_scaling(
+        "sequence_constant_pruning",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
+
+/// A sequence pattern's constants filter facts once, in the alpha network:
+/// a negated `$? red $?` over N items without `red` costs each of N parent
+/// tokens nothing, instead of a split search per item.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_sequence_negative_admission() {
+    fn measure(n: usize) -> Duration {
+        let mut source = String::from(
+            "(deftemplate item (slot id) (multislot tags))\n\
+             (defrule none-red (go ?i) (not (item (tags $? red $?))) =>)\n\
+             (deffacts seed\n",
+        );
+        for i in 0..n {
+            writeln!(source, "(go {i}) (item (id {i}) (tags a b c d e f g h))").unwrap();
+        }
+        source.push_str(")\n");
+        measure_op_median(
+            || Engine::with_rules(&source).unwrap(),
+            |mut engine| {
+                engine.reset().unwrap();
+                assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, n);
+                black_box(engine);
+            },
+        )
+    }
+    let (small, large) = (500, 2000);
+    assert_scaling(
+        "sequence_negative_admission",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}

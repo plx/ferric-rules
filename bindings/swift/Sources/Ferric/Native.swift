@@ -116,13 +116,16 @@ private func encode(_ value: Value, depth: Int) throws -> FerricValue {
     )
   case .integer(let number): return ferric_value_integer(number)
   case .float(let number): return ferric_value_float(number)
-  case .symbol(let string), .string(let string):
+  case .symbol(let string), .string(let string), .instanceName(let string):
     var result = ferric_value_void()
     let bytes = Array(string.utf8)
     let code = bytes.withUnsafeBufferPointer { buffer in
-      if case .symbol = value {
+      switch value {
+      case .symbol:
         ferric_value_symbol_bytes(buffer.baseAddress, UInt(buffer.count), &result)
-      } else {
+      case .instanceName:
+        ferric_value_instance_name_bytes(buffer.baseAddress, UInt(buffer.count), &result)
+      default:
         ferric_value_string_bytes(buffer.baseAddress, UInt(buffer.count), &result)
       }
     }
@@ -145,12 +148,17 @@ func decode(_ value: FerricValue, depth: Int = 0) throws -> Value {
   case FERRIC_VALUE_TYPE_VOID.rawValue: return .void
   case FERRIC_VALUE_TYPE_INTEGER.rawValue: return .integer(value.integer)
   case FERRIC_VALUE_TYPE_FLOAT.rawValue: return .float(value.float_)
-  case FERRIC_VALUE_TYPE_SYMBOL.rawValue, FERRIC_VALUE_TYPE_STRING.rawValue:
+  case FERRIC_VALUE_TYPE_SYMBOL.rawValue, FERRIC_VALUE_TYPE_STRING.rawValue,
+    FERRIC_VALUE_TYPE_INSTANCE_NAME.rawValue:
     guard let pointer = value.string_ptr else {
       throw EngineError.unsupportedValue("native string has no data")
     }
     let string = String(cString: pointer)
-    return value.value_type == FERRIC_VALUE_TYPE_SYMBOL.rawValue ? .symbol(string) : .string(string)
+    switch value.value_type {
+    case FERRIC_VALUE_TYPE_SYMBOL.rawValue: return .symbol(string)
+    case FERRIC_VALUE_TYPE_INSTANCE_NAME.rawValue: return .instanceName(string)
+    default: return .string(string)
+    }
   case FERRIC_VALUE_TYPE_MULTIFIELD.rawValue:
     guard depth < 32 else {
       throw EngineError.unsupportedValue("native multifield nesting exceeds 32 levels")

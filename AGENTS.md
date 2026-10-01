@@ -23,7 +23,7 @@ When claiming performance improvements:
 
 ### Scaling regression checks
 
-`just scaling-check` runs the eight `#[ignore]` tests in `crates/ferric-rules/tests/scaling_tests.rs` (release mode), which assert asymptotic scaling behavior of core operations: join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout, exists support assertion, independent negative cleanup, and dormant focus selection. Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.
+`just scaling-check` runs the eleven `#[ignore]` tests in `crates/ferric-rules/tests/scaling_tests.rs` (release mode), which assert asymptotic scaling behavior of core operations: join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout, exists support assertion, independent negative cleanup, dormant focus selection, template multislot join, sequence constant pruning, and sequence negative admission. Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.
 
 ## Repository hygiene
 

@@ -1,0 +1,5 @@
+(deftemplate item (slot id) (multislot tags))
+(deffacts input (item (id empty) (tags)) (item (id omitted)) (item (id one) (tags a)) (item (id two) (tags a b)))
+(defglobal ?*count* = 0)
+(defrule probe (item (tags $?)) => (bind ?*count* (+ ?*count* 1)))
+(defrule summary (declare (salience -10)) => (printout t ?*count* crlf))

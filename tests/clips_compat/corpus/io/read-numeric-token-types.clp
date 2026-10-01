@@ -1,0 +1,15 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (floatp ?value) ":"
+ (stringp ?value) ":" (symbolp ?value) ":[" ?value "]" crlf))
+(defrule probe =>
+ (show int (read))
+ (show neg (read))
+ (show positive (read))
+ (show float (read))
+ (show exponent (read))
+ (show leading-dot (read))
+ (show trailing-dot (read))
+ (show signed-zero (read))
+ (show max (read))
+ (show min (read))
+)

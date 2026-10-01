@@ -1,0 +1,8 @@
+[FACTQPSR3] Cannot rebind fact-set member variable f in function do-for-all-facts.
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (do-for-all-facts ((?f item))
+      TRUE
+      (bind ?f 42))

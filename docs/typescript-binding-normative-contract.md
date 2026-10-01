@@ -50,6 +50,7 @@ and is removed from the `Engine` prototype before addon initialization completes
 1. Package entrypoint `@ferric-rules/node` `MUST` export concrete runtime values:
    - `Engine` (class)
    - `FerricSymbol` (class)
+   - `FerricInstanceName` (class)
    - `EngineHandle` (class)
    - `EnginePool` (class)
    - `EnginePoolQueueFullError` (class)
@@ -57,7 +58,8 @@ and is removed from the `Engine` prototype before addon initialization completes
 3. Enums in public package declarations `MUST` be regular TS enums, not `const enum`.
 
 ### 2.2 Public Types
-1. `ClipsValue` `MUST` include `FerricSymbol` in the public API type union.
+1. `ClipsValue` `MUST` include `FerricSymbol` and `FerricInstanceName` in the
+   public API type union.
 2. Wire-only transport types `MUST NOT` replace public API value types.
 3. Public API examples from this contract `MUST` compile under `tsc --strict`.
 4. The package `MUST` export `FactId = bigint` and
@@ -70,24 +72,26 @@ and is removed from the `Engine` prototype before addon initialization completes
 
 ### 3.1 JS -> CLIPS
 1. `FerricSymbol` -> CLIPS Symbol.
-2. `string` -> CLIPS String (quoted).
-3. Safe integral `number` -> CLIPS Integer; non-integral numbers -> Float. Unsafe integral numbers are rejected; use bigint or explicit CLIPS float syntax.
-4. `bigint` -> CLIPS Integer.
-5. `boolean` -> CLIPS Symbols `TRUE` / `FALSE`.
-6. `Array` -> CLIPS Multifield recursively.
-7. `null` and `undefined` are rejected as fact inputs, including inside nested
+2. `FerricInstanceName` -> CLIPS instance name.
+3. `string` -> CLIPS String (quoted).
+4. Safe integral `number` -> CLIPS Integer; non-integral numbers -> Float. Unsafe integral numbers are rejected; use bigint or explicit CLIPS float syntax.
+5. `bigint` -> CLIPS Integer.
+6. `boolean` -> CLIPS Symbols `TRUE` / `FALSE`.
+7. `Array` -> CLIPS Multifield recursively.
+8. `null` and `undefined` are rejected as fact inputs, including inside nested
    multifields. Use an explicit application sentinel when absence must be stored.
-8. Fact inputs allow at most 32 multifield levels and one million total values
+9. Fact inputs allow at most 32 multifield levels and one million total values
    per assertion.
 
 ### 3.2 CLIPS -> JS
 1. CLIPS Symbol -> `FerricSymbol`.
-2. CLIPS String -> `string`.
-3. CLIPS Integer in safe range `[-(2^53-1), 2^53-1]` -> `number`.
-4. CLIPS Integer outside safe range -> `bigint`.
-5. CLIPS Float -> `number`.
-6. CLIPS Multifield -> `ClipsValue[]` recursively.
-7. CLIPS Void -> `null`; ExternalAddress is explicitly rejected, including inside multifields.
+2. CLIPS instance name -> `FerricInstanceName`, whose `value` omits the brackets.
+3. CLIPS String -> `string`.
+4. CLIPS Integer in safe range `[-(2^53-1), 2^53-1]` -> `number`.
+5. CLIPS Integer outside safe range -> `bigint`.
+6. CLIPS Float -> `number`.
+7. CLIPS Multifield -> `ClipsValue[]` recursively.
+8. CLIPS Void -> `null`; ExternalAddress is explicitly rejected, including inside multifields.
 
 ### 3.3 Fact Identifiers
 1. Every fact ID returned by `assertString`, `assertFact`, or `assertTemplate`,
@@ -110,14 +114,16 @@ and is removed from the `Engine` prototype before addon initialization completes
 
 ### 3.4 Worker Boundary
 1. Worker transport `MUST` preserve the semantics in 3.1, 3.2, and 3.3.
-2. Canonical symbol wire representation `MUST` be:
+2. Canonical symbol and instance-name wire representations `MUST` be:
 
 ```ts
 { __type: "FerricSymbol", value: string }
+{ __type: "FerricInstanceName", value: string }
 ```
 
-3. Transport layers `MUST` convert to/from this wire representation transparently.
-4. Callers of `EngineHandle` and `EnginePool` `MUST NOT` need manual symbol marshalling.
+3. Transport layers `MUST` convert to/from these wire representations transparently.
+4. Callers of `EngineHandle` and `EnginePool` `MUST NOT` need manual symbol or
+   instance-name marshalling.
 5. `EngineHandle` and `EnginePool` `MUST` preserve `FactId` values as `bigint`
    through structured clone in both request and response directions.
 

@@ -27,7 +27,7 @@ import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
 import { normalizeRunLimit } from "./limit-validation";
-import { FerricSymbol } from "./native";
+import { FerricInstanceName, FerricSymbol } from "./native";
 import type {
   ClipsValue,
   RunResult,
@@ -140,7 +140,7 @@ export class EngineHandle {
     if ("error" in resp) {
       entry.reject(reconstructError(resp.error));
     } else {
-      entry.resolve(fromWire(resp.result, FerricSymbol));
+      entry.resolve(fromWire(resp.result, FerricSymbol, FerricInstanceName));
     }
   };
 

@@ -1,0 +1,10 @@
+(deffunction inner (?x) (bind ?local (+ ?x 100)) (bind ?x 99) ?local)
+(deffunction outer (?x)
+  (bind ?local (+ ?x 1))
+  (bind ?child (inner ?local))
+  (printout t ?x ":" ?local ":" ?child crlf)
+  (+ ?local ?child))
+(defrule probe =>
+  (bind ?x 7)
+  (printout t (outer ?x) ":" ?x crlf)
+  (printout t (outer 1) crlf))

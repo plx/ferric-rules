@@ -300,7 +300,9 @@ typedef enum FerricValueType {
     FERRIC_VALUE_TYPE_SYMBOL = 3,
     FERRIC_VALUE_TYPE_STRING = 4,
     FERRIC_VALUE_TYPE_MULTIFIELD = 5,
-    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6
+    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
+    // A CLIPS instance name; `string_ptr` holds the spelling without brackets.
+    FERRIC_VALUE_TYPE_INSTANCE_NAME = 7
 } FerricValueType;
 
 // Opaque engine handle exposed to C.
@@ -351,6 +353,7 @@ typedef struct FerricConfig {
 // | Float | `float` |
 // | Symbol | `string_ptr` |
 // | String | `string_ptr` |
+// | InstanceName | `string_ptr` (spelling without brackets) |
 // | Multifield | `multifield_ptr`, `multifield_len` |
 // | ExternalAddress | `external_type_id`, `external_pointer` |
 typedef struct FerricValue {
@@ -1388,6 +1391,22 @@ enum FerricError ferric_value_string_bytes(const uint8_t *data FERRIC_SIZED_BY(l
                                            uintptr_t len,
                                            struct FerricValue *out_value);
 
+// Create an instance name from a pointer-plus-length UTF-8 span holding its
+// spelling without brackets (`widget` for `[widget]`).
+//
+// Validation, ownership and failure behavior match
+// `ferric_value_symbol_bytes`.
+//
+// # Safety
+//
+// - `out_value` must point to writable storage for one `FerricValue`.
+// - `out_value` must not currently contain live Ferric-owned resources.
+// - If `len > 0`, `data` must point to `len` readable bytes.
+// - The `data` span must not overlap `out_value`.
+enum FerricError ferric_value_instance_name_bytes(const uint8_t *data FERRIC_SIZED_BY(len),
+                                                  uintptr_t len,
+                                                  struct FerricValue *out_value);
+
 // Create a void `FerricValue` with all fields zeroed/null.
 struct FerricValue ferric_value_void(void);
 
@@ -1532,6 +1551,8 @@ FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING == 4, "FERRIC_VALUE_TYPE_STRING mu
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_MULTIFIELD == 5, "FERRIC_VALUE_TYPE_MULTIFIELD must be 5");
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6,
                      "FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS must be 6");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_INSTANCE_NAME == 7,
+                     "FERRIC_VALUE_TYPE_INSTANCE_NAME must be 7");
 
 /* FerricStringEncoding: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0, "FERRIC_STRING_ENCODING_ASCII must be 0");

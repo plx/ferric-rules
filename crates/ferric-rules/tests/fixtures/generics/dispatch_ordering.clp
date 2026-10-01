@@ -1,7 +1,7 @@
 ; Generic dispatch ordering: most-specific method wins.
 ; INTEGER > NUMBER > no restriction (wildcard).
 (defgeneric classify)
-(defmethod classify ((?x)) "any")
+(defmethod classify (?x) "any")
 (defmethod classify ((?x NUMBER)) "number")
 (defmethod classify ((?x INTEGER)) "integer")
 (defmethod classify ((?x FLOAT)) "float")

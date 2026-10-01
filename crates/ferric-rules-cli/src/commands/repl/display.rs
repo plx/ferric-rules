@@ -10,6 +10,12 @@ pub(crate) fn format_value(value: &Value, engine: &Engine) -> String {
             .resolve_core_symbol(*sym)
             .unwrap_or("<unknown>")
             .to_string(),
+        Value::InstanceName(name) => format!(
+            "[{}]",
+            engine
+                .resolve_core_symbol(name.as_symbol())
+                .unwrap_or("<unknown>")
+        ),
         Value::String(s) => format!("\"{}\"", s.as_str()),
         Value::Integer(i) => i.to_string(),
         Value::Float(f) => {

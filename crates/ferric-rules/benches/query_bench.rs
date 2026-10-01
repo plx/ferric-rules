@@ -2,13 +2,12 @@ mod support;
 
 use std::fmt::Write as FmtWrite;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_rules::core::{Fact, Value};
 use ferric_rules::runtime::{Engine, EngineConfig};
 
 /// Host-side template queries over the public fact inspection API. Each category
 /// requires a full scan; the workload reports both a count and a value sum.
-/// This replaces the invalid historical do-for-all-facts action benchmark.
 fn generate_query_source(n_items: usize, n_categories: usize) -> String {
     let mut source =
         String::from("(deftemplate item (slot category) (slot value))\n(deffacts items\n");
@@ -94,5 +93,30 @@ fn bench_api_queries(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_api_queries);
+/// An RHS `do-for-all-facts` over the product of two templates whose
+/// predicate rejects every tuple: the per-candidate cost of action queries.
+fn bench_rhs_queries(c: &mut Criterion) {
+    for n in [50, 100] {
+        let mut source =
+            String::from("(deftemplate p (slot v))\n(deftemplate q (slot v))\n(deffacts seed\n");
+        for i in 0..n {
+            writeln!(source, "(p (v {i})) (q (v {i}))").unwrap();
+        }
+        source.push_str(
+            ")\n(defrule scan => (do-for-all-facts ((?x p) (?y q)) FALSE (printout t never crlf)))\n",
+        );
+        c.bench_function(&format!("rhs_query_product_{n}x{n}"), |b| {
+            b.iter_batched(
+                || prepare(&source),
+                |mut engine| {
+                    support::verify_run(&mut engine, 1);
+                    engine
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+}
+
+criterion_group!(benches, bench_api_queries, bench_rhs_queries);
 criterion_main!(benches);

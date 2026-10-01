@@ -25,12 +25,19 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 1 is the first versioned snapshot format. Builds supporting schema 1 must
-keep its meaning and pass the stored schema fixture and resume regressions.
-Changes to the serialized layout or runtime semantics that make an old state
-invalid require a schema-version change, a documented compatibility decision,
-and a fixture regression. Crate version and snapshot schema version are separate.
-Snapshots are not a promise to migrate arbitrary RETE internals forever.
+The current schema is 2. It replaced schema 1 when ordered and multislot
+patterns started matching whole field sequences (field-count guards, multifield
+match plans and per-token capture lengths), so schema 1 snapshots are rejected
+with `UnsupportedVersion(1)` before payload decoding. To upgrade application
+data, export it with the producing Ferric version and assert it into a newly
+compiled engine; there is no automatic RETE-state migration.
+
+Builds supporting a schema must keep its meaning and pass the stored fixture
+and resume regressions. Changes to the serialized layout or runtime semantics
+that make an old state invalid require a schema-version change, a documented
+compatibility decision, and a fixture regression. Crate version and snapshot
+schema version are separate. Snapshots are not a promise to migrate arbitrary
+RETE internals forever.
 
 This is an explicit pre-1.0 break from legacy raw snapshots. Unversioned bytes
 return `LegacySnapshot`; Ferric never guesses a codec, rebuilds an empty engine,
@@ -54,7 +61,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`1`) |
+| 8–9 | Little-endian schema version (`2`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -71,10 +78,23 @@ Supported persistence bounds are 16 MiB including the envelope, 128 Serde nestin
 levels, and 1,000,000 decoded items across the whole payload. Collection length
 hints are checked before allocation and do not control allocation capacity.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
-16 levels, alpha paths 64 tests, beta parent paths 66 nodes (including root
+16 levels, alpha paths 64 value tests plus one ordered field-count test,
+beta parent paths 66 nodes (including root
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
+A multifield join token is checked by rebuilding its recorded split; other splits
+are not re-enumerated. The facts recorded as supporting a negated or existential
+multifield pattern must be exactly those that match through some split. Each
+capture length the split search tries is charged, plus the size of the fact
+whenever a test or binding copies a capture. That search makes some engines too
+large to save: a negated member test such as `(key ?k) (not (lst $? ?k $?))`
+searches about N²/2 splits for a list of N keys, which exceeds the allowance
+at about 1,500 keys (the positive form stays within it). In general the
+validation of a negated or existential multifield pattern searches every fact
+in its alpha memory for every parent token, about tokens × facts × splits per
+fact: `(tag ?t) (exists (item (tags $? ?t $?)))` with four-value lists fails
+to save at about 530 tags and 530 items, matching or not.
 Graph validation has a 10,000,000-operation work allowance and a separate equal
 allowance for compiler-cache validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed

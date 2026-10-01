@@ -1,0 +1,15 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (floatp ?value) ":"
+  (stringp ?value) ":" (symbolp ?value) ":[" ?value "]" crlf))
+(defrule probe =>
+ (show suffix (string-to-field "42abc tail"))
+ (show dot-suffix (string-to-field "1.abc tail"))
+ (show bad-exp (string-to-field "1e tail"))
+ (show bad-exp-sign (string-to-field "1e+ tail"))
+ (show two-dots (string-to-field "1.2.3 tail"))
+ (show plus (string-to-field "+ tail"))
+ (show minus (string-to-field "- tail"))
+ (show nan (string-to-field "NaN tail"))
+ (show infinity (string-to-field "inf tail"))
+ (show hex (string-to-field "0x10 tail"))
+)

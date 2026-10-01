@@ -331,6 +331,28 @@ impl Engine {
         )
     }
 
+    /// Install the protected initial fact as a distinct system assertion.
+    /// A same-named host fact remains a user fact with its original identity.
+    pub(crate) fn ensure_initial_fact(&mut self) -> Result<(), EngineError> {
+        if self.initial_fact_id.is_some() {
+            return Ok(());
+        }
+        let relation = self
+            .symbol_table
+            .intern_symbol("initial-fact", self.config.string_encoding)?;
+        let fact = Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation,
+            fields: smallvec::SmallVec::new(),
+        });
+        let fact_id = self.fact_base.try_assert_distinct_fact(fact)?;
+        // Predicates may introspect indices during propagation. Publish the
+        // protected identity before any match-time expression can run.
+        self.initial_fact_id = Some(fact_id);
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+        self.drain_pending_predicate_matches();
+        Ok(())
+    }
+
     pub(crate) fn drain_pending_predicate_matches(&mut self) {
         if self.processing_predicates {
             return;
@@ -363,26 +385,12 @@ impl Engine {
                 )));
                 continue;
             };
-            let collected_facts = if info.multifield_tail_bindings.is_empty() {
-                smallvec::SmallVec::new()
-            } else {
-                self.rete
-                    .token_store
-                    .collect_all_facts(pending.parent_token)
-            };
-
             let evaluation = {
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
                 };
-                actions::evaluate_test_condition(
-                    &token,
-                    info.as_ref(),
-                    condition,
-                    &collected_facts,
-                    &mut context,
-                )
+                actions::evaluate_test_condition(&token, info.as_ref(), condition, &mut context)
             };
             let passed = match evaluation {
                 Ok(passed) => passed,
@@ -878,6 +886,23 @@ impl Engine {
         Ok(self.intern_symbol(s)?.into())
     }
 
+    /// Intern an instance name (spelled without brackets) as a host value
+    /// retaining this engine's ownership. Read one back with
+    /// [`Engine::resolve_core_symbol`] on [`InstanceName::as_symbol`].
+    ///
+    /// [`InstanceName::as_symbol`]: ferric_rules_core::InstanceName::as_symbol
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name violates encoding constraints.
+    pub fn instance_name_value(&mut self, name: &str) -> Result<HostValue, EngineError> {
+        let symbol = self.intern_symbol(name)?;
+        Ok(HostValue {
+            owner: Some(symbol.owner),
+            value: Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol.symbol)),
+        })
+    }
+
     /// Assert a single-field ordered fact whose value is a symbol.
     ///
     /// Combines symbol interning and fact assertion into one call. Equivalent to:
@@ -1032,7 +1057,7 @@ impl Engine {
         token_id: ferric_rules_core::token::TokenId,
     ) -> (bool, bool, bool, bool) {
         ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
-        let Some(token) = self.rete.token_store.get(token_id).cloned() else {
+        let Some(mut token) = self.rete.token_store.get(token_id).cloned() else {
             ferric_event!(debug, rule = rule_id.0, token = ?token_id, "activation_missing_token");
             self.action_diagnostics.push(ActionError::EvalError(format!(
                 "internal invariant violation: activation for rule {rule_id:?} references missing token {token_id:?}"
@@ -1058,6 +1083,13 @@ impl Engine {
         };
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
+        actions::bind_fact_addresses(
+            &mut token,
+            &info,
+            &collected_facts,
+            &self.symbol_table,
+            self.config.string_encoding,
+        );
 
         let (fired, reset_requested, clear_requested, errors) = {
             let mut action_context = actions::ActionExecutionContext {
@@ -1348,14 +1380,7 @@ impl Engine {
 
         // Establish the built-in initial fact before any application seed.
         // Unconditional/leading-negative matches already use the non-fact root.
-        let initial_sym = self
-            .symbol_table
-            .intern_symbol("initial-fact", self.config.string_encoding)?;
-        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation: initial_sym,
-            fields: smallvec::SmallVec::new(),
-        }))?;
-        self.initial_fact_id = Some(result.fact_id());
+        self.ensure_initial_fact()?;
 
         // CLIPS traverses modules in creation order, then each module's current
         // deffacts definitions in definition order. Stable sort preserves both.

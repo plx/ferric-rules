@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 
 import {
   Engine,
+  FerricInstanceName,
   FerricSymbol,
   HaltReason,
 } from "../../../helpers/ferric";
@@ -66,6 +67,23 @@ test("B-003 CLIPS symbols returned via sync Engine are FerricSymbol", () => {
     firstField && typeof firstField === "object" && firstField.constructor?.name === "FerricSymbol",
     `Expected FerricSymbol, got ${typeof firstField} (${firstField?.constructor?.name})`
   );
+  e.close();
+});
+
+test("instance names round-trip as FerricInstanceName, distinct from symbols", () => {
+  const e = new Engine();
+  e.load("(defrule typed (tag ?x&:(instance-namep ?x)) => (assert (seen ?x)))");
+  e.reset();
+  const name = new FerricInstanceName("widget");
+  assert.strictEqual(name.value, "widget");
+  assert.strictEqual(name.toString(), "[widget]");
+  e.assertFact("tag", name);
+  e.assertFact("tag", new FerricSymbol("widget"));
+  assert.strictEqual(e.run().rulesFired, 1);
+  const seen = (e.facts() as any[]).find((f: any) => f.relation === "seen");
+  const field = seen.fields[0];
+  assert.ok(field instanceof FerricInstanceName, `got ${field?.constructor?.name}`);
+  assert.strictEqual(field.value, "widget");
   e.close();
 });
 

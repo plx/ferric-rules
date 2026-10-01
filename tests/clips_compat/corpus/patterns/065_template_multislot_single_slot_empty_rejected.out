@@ -1,0 +1,6 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for defrule.
+
+ERROR:
+(defrule MAIN::probe
+   (item (value )

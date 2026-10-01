@@ -21,6 +21,7 @@ REQUIRED_SEMANTICS = (
     "value.integer",
     "value.float",
     "value.symbol",
+    "value.instance_name",
     "value.string",
     "value.multifield",
     "value.external_address",
