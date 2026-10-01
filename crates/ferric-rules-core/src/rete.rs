@@ -1946,30 +1946,39 @@ pub(crate) fn indexable_tests<'a>(
     })
 }
 
+/// Whether `fact` matches `token` through the join tests, or through some
+/// split when the pattern has a sequence plan. Inlined so that the scans of
+/// negative and exists nodes over scalar patterns stay a direct join test.
+#[inline]
 pub(crate) fn evaluate_pattern(
     fact: &Fact,
     token: &Token,
     tests: &[JoinTest],
     sequence: Option<&SequencePattern>,
 ) -> bool {
-    if let Some(sequence) = sequence {
-        sequence
-            .search(fact, &mut |event| match event {
-                SplitEvent::Match(split)
-                    if evaluate_join_fields(
-                        |slot| split.get(slot),
-                        Some(&token.bindings),
-                        tests,
-                    ) =>
-                {
-                    ControlFlow::Break(())
-                }
-                _ => ControlFlow::Continue(()),
-            })
-            .is_break()
-    } else {
-        evaluate_join(fact, Some(token), tests)
+    match sequence {
+        Some(sequence) => any_split_matches(fact, token, tests, sequence),
+        None => evaluate_join(fact, Some(token), tests),
     }
+}
+
+#[inline(never)]
+fn any_split_matches(
+    fact: &Fact,
+    token: &Token,
+    tests: &[JoinTest],
+    sequence: &SequencePattern,
+) -> bool {
+    sequence
+        .search(fact, &mut |event| match event {
+            SplitEvent::Match(split)
+                if evaluate_join_fields(|slot| split.get(slot), Some(&token.bindings), tests) =>
+            {
+                ControlFlow::Break(())
+            }
+            _ => ControlFlow::Continue(()),
+        })
+        .is_break()
 }
 
 /// Whether a candidate split passes the plan's constant tests and the join tests.
