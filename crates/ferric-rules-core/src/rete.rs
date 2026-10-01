@@ -163,39 +163,52 @@ impl ReteNetwork {
             );
         }
 
-        // 3. For each affected alpha memory, perform right activations on subscribed negative nodes
-        for &alpha_mem_id in &affected_memories {
-            let neg_nodes: SmallVec<[NodeId; 4]> =
-                SmallVec::from_slice(self.beta.negative_nodes_for_alpha(alpha_mem_id));
-
-            for neg_node_id in neg_nodes {
-                self.negative_right_activate(
-                    neg_node_id,
-                    fact_id,
-                    fact,
-                    fact_base,
-                    &mut new_activations,
-                );
-            }
+        // 3. Right-activate the negative nodes on every affected alpha memory,
+        // newest first like the joins, whichever memory each subscribes to.
+        let neg_nodes = self
+            .newest_subscribers_first(&affected_memories, BetaNetwork::negative_nodes_for_alpha);
+        for neg_node_id in neg_nodes {
+            self.negative_right_activate(
+                neg_node_id,
+                fact_id,
+                fact,
+                fact_base,
+                &mut new_activations,
+            );
         }
 
-        // 4. For each affected alpha memory, perform right activations on subscribed exists nodes
-        for &alpha_mem_id in &affected_memories {
-            let exists_nodes: SmallVec<[NodeId; 4]> =
-                SmallVec::from_slice(self.beta.exists_nodes_for_alpha(alpha_mem_id));
-
-            for exists_node_id in exists_nodes {
-                self.exists_right_activate(
-                    exists_node_id,
-                    fact_id,
-                    fact,
-                    fact_base,
-                    &mut new_activations,
-                );
-            }
+        // 4. The same for exists nodes, whose order fixes the activation order.
+        let exists_nodes =
+            self.newest_subscribers_first(&affected_memories, BetaNetwork::exists_nodes_for_alpha);
+        for exists_node_id in exists_nodes {
+            self.exists_right_activate(
+                exists_node_id,
+                fact_id,
+                fact,
+                fact_base,
+                &mut new_activations,
+            );
         }
 
         new_activations
+    }
+
+    /// The nodes subscribed to any of `memories`, newest first. An alpha
+    /// memory's position in `memories` depends on how the alpha network
+    /// shares tests, so it must not decide the order.
+    fn newest_subscribers_first(
+        &self,
+        memories: &[AlphaMemoryId],
+        subscribers: fn(&BetaNetwork, AlphaMemoryId) -> &[NodeId],
+    ) -> SmallVec<[NodeId; 4]> {
+        let mut nodes = SmallVec::new();
+        for &memory in memories {
+            nodes.extend_from_slice(subscribers(&self.beta, memory));
+        }
+        if nodes.len() > 1 {
+            nodes.sort_unstable_by_key(|node: &NodeId| std::cmp::Reverse(node.0));
+        }
+        nodes
     }
 
     /// Retract a fact from the Rete network.

@@ -1656,6 +1656,28 @@
       ]
     },
     {
+      "path": "patterns/078_exists_activation_order_shared_pattern.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "agenda",
+        "exists",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/079_exists_activation_order_sequence_pattern.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "agenda",
+        "deftemplate",
+        "exists",
+        "multislot",
+        "not"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
