@@ -5643,6 +5643,163 @@
         "format"
       ],
       "error": "run"
+    },
+    {
+      "path": "stdlib/214_create_omits_void_operands.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "length$",
+        "printout"
+      ]
+    },
+    {
+      "path": "stdlib/215_substring_start_checked_first.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/216_substring_end_checked_before_text.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/217_substring_reversed_range_checks_text.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/218_substring_text_error_propagates.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/219_str_index_needle_checked_first.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/220_str_index_empty_needle_checks_haystack.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/221_str_length_rejects_numbers.clp",
+      "level": "boundary",
+      "covers": [
+        "str-length"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/222_round_rejects_strings.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/223_nth_index_checked_first.clp",
+      "level": "boundary",
+      "covers": [
+        "nth$"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/224_nth_absent_position_checks_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "nth$"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/225_member_empty_needle_checks_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "member$"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/226_numeric_chain_checks_first_operand.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        "numeric-comparison"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/227_numeric_chain_checks_reached_operand.clp",
+      "level": "boundary",
+      "covers": [
+        "<",
+        "numeric-comparison"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/228_extrema_check_each_operand_in_turn.clp",
+      "level": "boundary",
+      "covers": [
+        "max",
+        "min"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/229_extrema_reject_multifield_operand.clp",
+      "level": "boundary",
+      "covers": [
+        "max"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/230_implode_rejects_scalar.clp",
+      "level": "boundary",
+      "covers": [
+        "implode$"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/231_implode_operand_error_propagates.clp",
+      "level": "boundary",
+      "covers": [
+        "implode$"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/232_string_builders_keep_raw_content.clp",
+      "level": "boundary",
+      "covers": [
+        "format",
+        "str-cat",
+        "sym-cat"
+      ]
     }
   ]
 }

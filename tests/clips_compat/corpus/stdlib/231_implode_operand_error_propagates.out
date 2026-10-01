@@ -1,0 +1,4 @@
+fail 1
+[PRNTUTIL7] Attempt to divide by zero in / function.
+[PRCCODE4] Execution halted during the actions of deffunction fail.
+[PRCCODE4] Execution halted during the actions of defrule probe.

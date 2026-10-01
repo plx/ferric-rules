@@ -1,0 +1,4 @@
+TRUE TRUE TRUE TRUE
+mark 1
+[ARGACCES5] Function min expected argument #1 to be of type integer or float
+[PRCCODE4] Execution halted during the actions of defrule probe.
