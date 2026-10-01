@@ -424,9 +424,14 @@ fn symbol_to_ferric(
     engine: &Engine,
 ) -> Result<FerricValue, String> {
     let name = engine.resolve_core_symbol(symbol).unwrap_or("<unknown>");
+    let kind = if value_type == FerricValueType::InstanceName {
+        "instance name"
+    } else {
+        "symbol"
+    };
     let cstring = CString::new(name).map_err(|error| {
         format!(
-            "symbol contains embedded NUL at byte {}; legacy FerricValue \
+            "{kind} contains embedded NUL at byte {}; legacy FerricValue \
              C-string egress cannot represent it",
             error.nul_position()
         )
@@ -470,12 +475,17 @@ pub(crate) unsafe fn ferric_to_value(
         FerricValueType::Integer => Ok(fv.integer.into()),
         FerricValueType::Float => Ok(fv.float.into()),
         kind @ (FerricValueType::Symbol | FerricValueType::InstanceName) => {
+            let label = if kind == FerricValueType::InstanceName {
+                "instance name"
+            } else {
+                "symbol"
+            };
             if fv.string_ptr.is_null() {
-                return Err("symbol string_ptr is null".into());
+                return Err(format!("{label} string_ptr is null"));
             }
             let name = CStr::from_ptr(fv.string_ptr)
                 .to_str()
-                .map_err(|error| format!("symbol is not valid UTF-8: {error}"))?;
+                .map_err(|error| format!("{label} is not valid UTF-8: {error}"))?;
             if kind == FerricValueType::InstanceName {
                 engine.instance_name_value(name)
             } else {
