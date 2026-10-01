@@ -90,7 +90,11 @@ capture length the split search tries is charged, plus the size of the fact
 whenever a test or binding copies a capture. That search makes some engines too
 large to save: a negated member test such as `(key ?k) (not (lst $? ?k $?))`
 searches about N²/2 splits for a list of N keys, which exceeds the allowance
-at about 1,500 keys (the positive form stays within it).
+at about 1,500 keys (the positive form stays within it). In general the
+validation of a negated or existential multifield pattern searches every fact
+in its alpha memory for every parent token, about tokens × facts × splits per
+fact: `(tag ?t) (exists (item (tags $? ?t $?)))` with four-value lists fails
+to save at about 530 tags and 530 items, matching or not.
 Graph validation has a 10,000,000-operation work allowance and a separate equal
 allowance for compiler-cache validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed

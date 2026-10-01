@@ -8,7 +8,9 @@ use smallvec::SmallVec;
 use crate::alpha::{
     evaluate_field_test, AlphaEntryType, ConstantTest, ConstantTestType, SlotIndex,
 };
-use crate::fact::{Fact, OrderedFact, TemplateFact};
+use crate::fact::Fact;
+#[cfg(test)]
+use crate::fact::{OrderedFact, TemplateFact};
 use crate::value::Value;
 
 /// Number of physical fields consumed by one logical pattern field.
@@ -49,8 +51,9 @@ pub struct SequencePattern {
 }
 
 /// One positional match. Lengths identify captures even when none are named.
+#[cfg(test)]
 #[derive(Clone, Debug)]
-pub struct SequenceMatch {
+pub(crate) struct SequenceMatch {
     pub fact: Fact,
     pub lengths: SmallVec<[usize; 2]>,
 }
@@ -235,7 +238,7 @@ impl SequencePattern {
     /// tries, which lets callers bound the work (a segment's last capture takes
     /// the remaining fields without a step), and [`SplitEvent::Match`] for each
     /// accepted split. Returning `Break` stops the search.
-    pub fn search<'a, B>(
+    pub(crate) fn search<'a, B>(
         &'a self,
         fact: &'a Fact,
         visit: &mut impl FnMut(SplitEvent<'_, 'a>) -> ControlFlow<B>,
@@ -270,7 +273,11 @@ impl SequencePattern {
     /// Rebuild the view of one recorded split in `O(width)`.
     /// Returns `None` when `lengths` is not a valid split of `fact`.
     #[must_use]
-    pub fn project<'a>(&'a self, fact: &'a Fact, lengths: &[usize]) -> Option<SplitView<'a>> {
+    pub(crate) fn project<'a>(
+        &'a self,
+        fact: &'a Fact,
+        lengths: &[usize],
+    ) -> Option<SplitView<'a>> {
         let mut split = SplitView {
             fact,
             fields: SmallVec::with_capacity(self.logical_width()),
@@ -315,14 +322,15 @@ impl SequencePattern {
 
     /// Evaluate constant constraints against a complete split.
     #[must_use]
-    pub fn accepts(&self, split: &SplitView<'_>) -> bool {
+    pub(crate) fn accepts(&self, split: &SplitView<'_>) -> bool {
         self.tests
             .iter()
             .all(|test| evaluate_field_test(test, |slot| split.get(slot)))
     }
 
     /// Every matching split, including empty and anonymous captures.
-    pub fn matches(&self, fact: &Fact) -> impl Iterator<Item = SequenceMatch> {
+    #[cfg(test)]
+    pub(crate) fn matches(&self, fact: &Fact) -> impl Iterator<Item = SequenceMatch> {
         let mut matches = Vec::new();
         let _ = self.search(fact, &mut |event| {
             if let SplitEvent::Match(split) = event {
@@ -335,7 +343,7 @@ impl SequencePattern {
 }
 
 /// What a split search reports to its visitor.
-pub enum SplitEvent<'s, 'a> {
+pub(crate) enum SplitEvent<'s, 'a> {
     /// A capture with a choice of lengths is about to try one.
     Step,
     /// A complete split that passes every test of the plan.
@@ -480,7 +488,7 @@ enum FieldRef<'a> {
 /// fields through [`SplitView::get`]; a capture is copied into a multifield
 /// value only when something reads it.
 #[derive(Debug)]
-pub struct SplitView<'a> {
+pub(crate) struct SplitView<'a> {
     fact: &'a Fact,
     fields: SmallVec<[(FieldRef<'a>, OnceCell<Value>); 8]>,
     /// Capture lengths, which identify this split among those of the fact.
@@ -510,8 +518,9 @@ impl SplitView<'_> {
     }
 
     /// Materialize the projected fact.
+    #[cfg(test)]
     #[must_use]
-    pub fn to_match(&self) -> SequenceMatch {
+    pub(crate) fn to_match(&self) -> SequenceMatch {
         let fields = self.fields.iter().map(|(field, copy)| match field {
             FieldRef::Single(value) => (*value).clone(),
             FieldRef::Multi(values) => copy.get().cloned().unwrap_or_else(|| capture(values)),

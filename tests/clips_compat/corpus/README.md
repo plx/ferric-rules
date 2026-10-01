@@ -41,7 +41,7 @@ FERRIC_CORPUS_REPORT=/tmp/ferric-corpus.json just compat-corpus -- --nocapture
 [`crates/ferric-rules/tests/compat_corpus/`](../../../crates/ferric-rules/tests/compat_corpus/main.rs).
 Its [`host.rs`](../../../crates/ferric-rules/tests/compat_corpus/host.rs) holds
 the few host-driven lifecycles this protocol cannot express: top-level
-assertions, host fact operations between runs, and Ferric's own run boundaries.
+assertions and host fact operations between runs.
 The existing [semantic differential lane](../../examples/ferric-semantic/README.md)
 and [Ferric regression suite](../../../crates/ferric-rules/tests/ferric_semantic_regressions.rs)
 provide complementary coverage and retain their own execution protocols.

@@ -215,8 +215,7 @@ impl ActionExpr {
     /// Push this expression's direct subexpressions onto `pending`, for an
     /// iterative walk of the tree.
     pub fn push_children<'a>(&'a self, pending: &mut Vec<&'a ActionExpr>) {
-        let expr = self;
-        match expr {
+        match self {
             ActionExpr::FunctionCall(call) => pending.extend(&call.args),
             ActionExpr::If {
                 condition,

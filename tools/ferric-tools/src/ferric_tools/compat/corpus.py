@@ -73,6 +73,8 @@ def extract_output(stdout: str, stderr: str, begin: str, end: str, error: str | 
         checked = checked.replace(notice, "")
     if error == "run" and not DIAGNOSTIC.search(checked):
         raise ReferenceFailure(f"expected a CLIPS runtime diagnostic:\n{output}")
+    # Unanchored, unlike DIAGNOSTIC: a diagnostic printed after other text on
+    # the same line still disqualifies a case without a declared error.
     if error != "run" and re.search(r"\[[A-Z]+\d+\][ \t]", checked):
         raise ReferenceFailure(f"CLIPS runtime diagnostic:\n{output}")
     return output
