@@ -1,29 +1,27 @@
 ---
-title: CLIPS Compatibility
+title: CLIPS compatibility
 description: Supported CLIPS language areas, known differences, and current exclusions.
 ---
 
-Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for the supported subset. “Supported” means implemented, not proven equivalent for every rule set in that area. Exact compatibility claims are limited to the reviewed differential policy cases and qualified by the known gaps below.
+Ferric implements much of the CLIPS rule language, but is not a complete
+replacement. An implemented feature may still differ from CLIPS for particular
+rule sets. Known differences are listed below.
 
-## Supported Core Areas
+## Implemented features
 
-| Area                                                        | Support                   |
-| ----------------------------------------------------------- | ------------------------- |
-| Ordered facts                                               | Supported                 |
-| Template facts                                              | Supported                 |
-| `initial-fact` on reset                                     | Supported                 |
-| `defrule`                                                   | Supported                 |
-| Salience                                                    | Supported                 |
-| `test`, `not`, `exists`, `forall`, NCC                      | Supported                 |
-| Constraint connectives `~`, `\|`, `&`                       | Supported                 |
-| Modules and focus stack                                     | Supported with known gaps |
-| `deffunction`, `defgeneric`, `defmethod`                    | Supported                 |
-| Globals                                                     | Supported                 |
-| Core math, string, multifield, predicate, and I/O functions | Supported subset          |
+| Area             | Implemented features                                                                                                    |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Facts            | Ordered and template facts, `deffacts`, and `initial-fact` on reset.                                                    |
+| Rules            | `defrule`, salience, `test`, `not`, `exists`, `forall`, negated conjunction, and constraint connectives `~`, `\|`, `&`. |
+| Functions        | `deffunction`, `defgeneric`, `defmethod`, and globals.                                                                  |
+| Modules          | Modules and focus stacks.                                                                                               |
+| Standard library | A subset of CLIPS math, string, multifield, predicate, and I/O functions.                                               |
 
-## Conflict Resolution
+## Conflict resolution
 
-Depth and breadth use activation creation order and match the pinned reference cases. The retained LEX and MEA host options are experimental Ferric strategies with the ordering gaps below.
+Depth (the default) and Breadth use activation creation order and match the
+pinned reference cases. LEX and MEA are experimental Ferric strategies with the
+ordering differences below. Use salience or focus to express required precedence.
 
 | Strategy | Description                               |
 | -------- | ----------------------------------------- |
@@ -32,25 +30,35 @@ Depth and breadth use activation creation order and match the pinned reference c
 | LEX      | Lexicographic recency comparison.         |
 | MEA      | First-pattern recency, then LEX tiebreak. |
 
-Not implemented: Simplicity, Complexity, Random.
-
 ## Known Differential Gaps
 
-The blocking pinned-CLIPS policy retains these differences as exact known deviations rather than reporting them as equivalent. Any unexplained or changed divergence fails the gate.
+The comparison tests currently record these differences from the pinned CLIPS
+reference. The linked issue describes both cases.
 
-| Area        | Known gap                                             | Policy cases                                                                             | Tracking                                               |
+| Area        | Known difference                                      | Policy cases                                                                             | Tracking                                               |
 | ----------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| LEX and MEA | Selected recency vectors and the MEA tiebreak differ. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
+| LEX and MEA | Some recency comparisons and the MEA tiebreak differ. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
 
-The reviewed gate covers 57 scenarios: 55 equivalences and the two known LEX/MEA differences. All 35 scenarios added beyond the 22-case baseline match pinned CLIPS 6.30. Other corpus fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
+## Known exclusions
 
-## Known Exclusions
+- The COOL object system and `logical` truth maintenance are out of scope.
+- Simplicity, Complexity, and Random conflict strategies are not implemented.
+- Triple-nested negation, `(exists (not ...))`, and nested `forall` are not supported.
+- Complex negated constraints that CLIPS accepts are rejected pending [#300](https://github.com/plx/ferric-rules/issues/300).
 
-- COOL object system is intentionally out of scope.
-- Truth maintenance through the `logical` conditional element is intentionally out of scope.
-- CLIPS-valid complex negated constraints are explicitly rejected pending [#300](https://github.com/plx/ferric-rules/issues/300).
-- Some I/O utilities are limited while rule execution remains the core focus.
+Other differences affect function bodies and I/O. For example, `format` returns
+a string without writing to a router, and `deffunction` bodies cannot mutate
+facts. See the [full compatibility reference](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md)
+for restrictions by language feature.
 
-## Validation Posture
+## Validation
 
-Compatibility coverage uses hand-written fixtures, real-world CLIPS corpus work, generated harnesses, authenticated engine observations, and an exact pinned-CLIPS policy. Pull requests and `main` require the blocking compatibility gate; retained artifacts bind the candidate and reference digests. The repository also includes scaling checks that exercise asymptotic behavior for core operations.
+The differential suite runs the same cases against Ferric and a pinned CLIPS
+build. It distinguishes matching results from known differences; a new or
+changed difference fails the check.
+
+The reviewed policy covers 57 scenarios: 55 match pinned CLIPS 6.30, and two
+retain the LEX/MEA differences above. This is evidence for those cases, not
+proof of compatibility for the whole language. The
+[assessment documentation](https://github.com/plx/ferric-rules/blob/main/docs/compatibility-assessment.md)
+describes the cases, expected results, and retained evidence.
