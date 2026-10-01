@@ -211,6 +211,67 @@ pub enum ActionExpr {
     },
 }
 
+impl ActionExpr {
+    /// Push this expression's direct subexpressions onto `pending`, for an
+    /// iterative walk of the tree.
+    pub fn push_children<'a>(&'a self, pending: &mut Vec<&'a ActionExpr>) {
+        let expr = self;
+        match expr {
+            ActionExpr::FunctionCall(call) => pending.extend(&call.args),
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                pending.push(condition);
+                pending.extend(then_actions);
+                pending.extend(else_actions);
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                pending.push(condition);
+                pending.extend(body);
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                pending.push(start);
+                pending.push(end);
+                pending.extend(body);
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                pending.push(list_expr);
+                pending.extend(body);
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                pending.push(query);
+                pending.extend(body);
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                pending.push(expr);
+                for (value, actions) in cases {
+                    pending.push(value);
+                    pending.extend(actions);
+                }
+                if let Some(actions) = default {
+                    pending.extend(actions);
+                }
+            }
+            ActionExpr::Literal(..) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {
+            }
+        }
+    }
+}
+
 // ============================================================================
 // Slot definition types for deftemplate
 // ============================================================================

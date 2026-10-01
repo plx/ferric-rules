@@ -24,7 +24,7 @@ pub(crate) fn validate_query_scopes<'a>(
                 }
             }
         }
-        push_children(expr, &mut pending);
+        expr.push_children(&mut pending);
     }
     for expr in expressions {
         validate_expr(expr, &ordinary, compact, false)?;
@@ -167,59 +167,4 @@ fn validate_expr(
         ActionExpr::Variable(..) | ActionExpr::Literal(..) | ActionExpr::GlobalVariable(..) => {}
     }
     Ok(())
-}
-
-fn push_children<'a>(expr: &'a ActionExpr, pending: &mut Vec<&'a ActionExpr>) {
-    match expr {
-        ActionExpr::FunctionCall(call) => pending.extend(&call.args),
-        ActionExpr::If {
-            condition,
-            then_actions,
-            else_actions,
-            ..
-        } => {
-            pending.push(condition);
-            pending.extend(then_actions);
-            pending.extend(else_actions);
-        }
-        ActionExpr::While {
-            condition, body, ..
-        } => {
-            pending.push(condition);
-            pending.extend(body);
-        }
-        ActionExpr::LoopForCount {
-            start, end, body, ..
-        } => {
-            pending.push(start);
-            pending.push(end);
-            pending.extend(body);
-        }
-        ActionExpr::Progn {
-            list_expr, body, ..
-        } => {
-            pending.push(list_expr);
-            pending.extend(body);
-        }
-        ActionExpr::QueryAction { query, body, .. } => {
-            pending.push(query);
-            pending.extend(body);
-        }
-        ActionExpr::Switch {
-            expr,
-            cases,
-            default,
-            ..
-        } => {
-            pending.push(expr);
-            for (value, actions) in cases {
-                pending.push(value);
-                pending.extend(actions);
-            }
-            if let Some(actions) = default {
-                pending.extend(actions);
-            }
-        }
-        ActionExpr::Literal(..) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {}
-    }
 }

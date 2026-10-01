@@ -304,41 +304,15 @@ fn call_uses_compact_slot_refs(call: &FunctionCall) -> bool {
 }
 
 fn expr_uses_compact_slot_refs(expr: &ActionExpr) -> bool {
-    let any = |exprs: &[ActionExpr]| exprs.iter().any(expr_uses_compact_slot_refs);
-    match expr {
-        ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => false,
-        ActionExpr::FunctionCall(call) => call_uses_compact_slot_refs(call),
-        ActionExpr::If {
-            condition,
-            then_actions,
-            else_actions,
-            ..
-        } => expr_uses_compact_slot_refs(condition) || any(then_actions) || any(else_actions),
-        ActionExpr::While {
-            condition, body, ..
-        } => expr_uses_compact_slot_refs(condition) || any(body),
-        ActionExpr::LoopForCount {
-            start, end, body, ..
-        } => expr_uses_compact_slot_refs(start) || expr_uses_compact_slot_refs(end) || any(body),
-        ActionExpr::Progn {
-            list_expr, body, ..
-        } => expr_uses_compact_slot_refs(list_expr) || any(body),
-        ActionExpr::QueryAction { query, body, .. } => {
-            expr_uses_compact_slot_refs(query) || any(body)
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        if matches!(expr, ActionExpr::FunctionCall(call) if call.name == crate::evaluator::COMPACT_FACT_SLOT_REF)
+        {
+            return true;
         }
-        ActionExpr::Switch {
-            expr,
-            cases,
-            default,
-            ..
-        } => {
-            expr_uses_compact_slot_refs(expr)
-                || cases
-                    .iter()
-                    .any(|(case, body)| expr_uses_compact_slot_refs(case) || any(body))
-                || default.as_deref().is_some_and(any)
-        }
+        expr.push_children(&mut pending);
     }
+    false
 }
 
 /// Errors that can occur during action execution.
