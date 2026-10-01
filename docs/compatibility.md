@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 595
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 596
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -877,8 +877,8 @@ comparison: `(< 2 1 (later-call))` returns FALSE without calling `later-call`.
 | `str-length` | Character length of a STRING, SYMBOL or INSTANCE-NAME | `(str-length "hello")` => `5`; `(str-length [abc])` => `3` |
 | `sub-string` | Extract a STRING from a STRING, SYMBOL or INSTANCE-NAME (1-indexed, inclusive, clipped bounds) | `(sub-string 0 2 abc)` => `"ab"` |
 | `str-index` | First substring position (1-indexed), FALSE if not found; empty needle returns length + 1 | `(str-index "" "abc")` => `4` |
-| `upcase` | Convert to uppercase (preserves type) | `(upcase [abc])` => `[ABC]` |
-| `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
+| `upcase` | Convert ASCII letters to uppercase (preserves type) | `(upcase [abc])` => `[ABC]`; `(upcase "é")` => `"é"` |
+| `lowcase` | Convert ASCII letters to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
 | `string-to-field` | First CLIPS field of a STRING, SYMBOL or INSTANCE-NAME | `(string-to-field "42 rest")` => `42` |
 | `explode$` | Every CLIPS field of a STRING, as a multifield | `(explode$ "a \"b c\" 3")` => `(a "b c" 3)` |

@@ -5867,6 +5867,15 @@
         "explode$",
         "string-to-field"
       ]
+    },
+    {
+      "path": "stdlib/235_case_conversion_ascii_only.clp",
+      "level": "boundary",
+      "covers": [
+        "instance-name",
+        "lowcase",
+        "upcase"
+      ]
     }
   ]
 }

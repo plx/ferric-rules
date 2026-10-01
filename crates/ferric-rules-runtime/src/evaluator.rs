@@ -4613,7 +4613,7 @@ fn builtin_str_index(
 }
 
 /// `upcase`/`lowcase` — convert the text of a STRING, SYMBOL or
-/// INSTANCE-NAME, preserving its type.
+/// INSTANCE-NAME, preserving its type. Like CLIPS, only ASCII letters change.
 fn convert_case(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -4652,7 +4652,7 @@ fn builtin_upcase(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    convert_case(ctx, args, span, "upcase", str::to_uppercase)
+    convert_case(ctx, args, span, "upcase", str::to_ascii_uppercase)
 }
 
 /// `lowcase` — lowercase a STRING, SYMBOL or INSTANCE-NAME.
@@ -4661,7 +4661,7 @@ fn builtin_lowcase(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    convert_case(ctx, args, span, "lowcase", str::to_lowercase)
+    convert_case(ctx, args, span, "lowcase", str::to_ascii_lowercase)
 }
 
 /// `str-compare` — lexicographic comparison, returns -1, 0, or 1.
