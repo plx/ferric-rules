@@ -92,12 +92,11 @@ impl ActionEvalEnv {
     ) -> Result<T, ActionError> {
         let mut saved = smallvec::SmallVec::<[(&str, Option<CompactFactBinding>); 4]>::new();
         for (name, binding) in bindings {
-            let previous = match self.compact_facts.get_mut(name.as_str()) {
-                Some(current) => Some(std::mem::replace(current, binding.clone())),
-                None => {
-                    self.compact_facts.insert(name.clone(), binding.clone());
-                    None
-                }
+            let previous = if let Some(current) = self.compact_facts.get_mut(name.as_str()) {
+                Some(std::mem::replace(current, binding.clone()))
+            } else {
+                self.compact_facts.insert(name.clone(), binding.clone());
+                None
             };
             if saved.iter().all(|(seen, _)| *seen != name) {
                 saved.push((name, previous));
