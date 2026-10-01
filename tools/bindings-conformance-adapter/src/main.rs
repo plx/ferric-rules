@@ -122,6 +122,12 @@ fn value_case(case_id: &str) -> Result<JsonValue, String> {
                 .map_err(|error| error.to_string())?;
             asserted_field(&mut engine, HostValue::from(symbol))
         }
+        "value.instance-name.explicit" => {
+            let name = engine
+                .instance_name_value("widget")
+                .map_err(|error| error.to_string())?;
+            asserted_field(&mut engine, name)
+        }
         "value.string.explicit" | "value.string.plain-host" => {
             let value = engine
                 .create_string("red")

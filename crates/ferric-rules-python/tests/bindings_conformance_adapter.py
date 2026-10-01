@@ -31,6 +31,8 @@ def normalize(value: Any) -> Any:
         return {"type": "void"}
     if isinstance(value, ferric.Symbol):
         return {"type": "symbol", "value": value.value}
+    if isinstance(value, ferric.InstanceName):
+        return {"type": "instance_name", "value": value.value}
     if isinstance(value, ferric.String):
         return {"type": "string", "value": value.value}
     if isinstance(value, bool):
@@ -74,6 +76,8 @@ def value_case(case_id: str) -> Any:
         return asserted_field(1.5)
     if case_id == "value.symbol.explicit":
         return asserted_field(ferric.Symbol("red"))
+    if case_id == "value.instance-name.explicit":
+        return asserted_field(ferric.InstanceName("widget"))
     if case_id == "value.string.explicit":
         return asserted_field(ferric.String("red"))
     if case_id == "value.string.plain-host":
