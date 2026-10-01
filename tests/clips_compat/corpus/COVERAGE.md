@@ -81,8 +81,9 @@ extension contract is needed to characterize them.
 Portable fixtures currently describe constructs with load/reset/run execution,
 optional deterministic input, selected repeated reset/run cycles, the breadth
 strategy, and programs CLIPS rejects at load or halts at run time. Ferric also
-replays each conforming program with rules loaded after reset and from restored
-snapshots, against the same CLIPS golden. The fixtures do not describe other
+replays each conforming program from restored snapshots and with rules loaded
+after reset, against the same CLIPS golden (the late-rule replay in any line
+order). The fixtures do not describe other
 host-driven sequences such as clear/reload, run limits followed by resume, or
 inspecting host API return values; a few such lifecycles are Rust tests in
 [`host.rs`](../../../crates/ferric-rules/tests/compat_corpus/host.rs). File paths

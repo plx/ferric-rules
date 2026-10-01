@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 562 small programs progress from individual features to
+CLIPS subset. Its 590 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 558 clean conformance cases, 37 of which
+CLIPS-verified output oracle. There are 586 clean conformance cases, 57 of which
 reproduce a CLIPS error, and 4 active characterizations of documented
 differences: CLIPS output that is not UTF-8, and malformed `format` directives.
 
@@ -90,14 +90,15 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
 A case without `gap` or `error` must load, reset, and run successfully, produce
 exactly its CLIPS `.out`, and emit no Ferric action diagnostics.
 
-Every conforming case that loads is then replayed in Ferric, and each replay
-must reproduce the same golden: with its rules loaded after the first reset
-(unless deffacts follow its first rule), and from a snapshot restored before
-the first firing, in JSON and CBOR, with and without that late rule load. CBOR
-replays also restore before each of the first 12 firings. These replays check
-Ferric's backfill and persistence against the CLIPS golden; CLIPS itself only
-runs the load, reset, run protocol, so programs use salience where the order of
-equally ranked activations would otherwise depend on load order.
+Every conforming case that loads is then replayed in Ferric, in two tests of
+their own. A replay from a snapshot restored before the first firing, in JSON
+(unless the state holds a non-finite float) and CBOR, must reproduce the golden
+exactly; CBOR replays also restore before each of the first 12 firings. A replay
+with the rules loaded after the first reset (unless deffacts follow its first
+rule), with and without a snapshot in between, must print the same lines in
+any order: CLIPS itself orders the activations of rules loaded after reset
+differently from a load, reset, run. These replays check Ferric's backfill and
+persistence against the CLIPS golden.
 
 A `gap` entry records the issue URL, a short summary, and the exact current Ferric
 `phase`, `output`, and `diagnostics`. These cases run normally; they are not

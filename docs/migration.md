@@ -57,11 +57,16 @@ matches on these enums need a new arm. The C ABI adds value type
 without brackets) and `ferric_value_instance_name_bytes`; C and Go hosts that
 switch on `value_type` should handle it. The bindings return instance names as
 `InstanceName` values (`FerricInstanceName` in TypeScript,
-`Value.instanceName` in Swift) where they previously could not appear.
+`Value.instanceName` in Swift). Earlier versions returned `[widget]` as a
+SYMBOL spelled with its brackets, so a host that compares with that symbol
+(`Symbol("[widget]")`, `FerricSymbol("[widget]")`, `.symbol("[widget]")`) no
+longer matches and should compare with the instance-name value instead.
 
-In the parser AST, `SlotConstraint::constraint` is now `constraints:
-Vec<Constraint>`, because a multislot pattern holds a sequence of field
-constraints.
+In the parser, the lexer has a new `Token::InstanceName`, and
+`SlotConstraint::constraint` is now `constraints: Vec<Constraint>`, because a
+multislot pattern holds a sequence of field constraints. In the core,
+`CompilablePattern` has a new `sequence` field, so struct literals need it
+(`sequence: None` for a pattern without multifield fields).
 
 ## Pre-1.0 snapshot schema 2
 
@@ -82,8 +87,9 @@ Programs that relied on the earlier behavior need changes:
   one value. Use `(tags $? ?t $?)` to match any member.
 - `sort` asks its predicate whether two fields should be exchanged, so
   `(sort > ...)` sorts ascending and `(sort < ...)` descending.
-- `string-to-field`, `explode$` and `read` use the CLIPS field scanner: quoted
-  strings stay one STRING field and `read` no longer stops at the first space.
+- `string-to-field`, `explode$` and `read` use the CLIPS field scanner: a
+  quoted string that contains spaces stays one STRING field. `read` still
+  returns only the first field of its line.
 - `format` rejects an argument count that does not match its directives, `%s`
   of a number, and a malformed directive such as `%5-3d`.
 - `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
@@ -93,7 +99,18 @@ Programs that relied on the earlier behavior need changes:
 - `str-length`, `sub-string` and `str-index` count characters and accept
   SYMBOLs, `sub-string` clips out-of-range positions, and `nth$` returns `nil`
   for a missing position.
-- `fact-index` returns the public assertion index.
+- `fact-index` returns the public assertion index, and `fact-existp`,
+  `fact-relation`, `fact-slot-value`, `fact-slot-names` and `retract` accept
+  that index as well as a fact address. An INTEGER was previously read as an
+  internal fact handle.
+- `halt` inside a loop or query body no longer skips the rest of the body or
+  later loops; the run stops when the RHS finishes.
+- Each fact visited by a query counts against
+  `EngineConfig::max_action_loop_iterations`, like a loop iteration.
+- These are now load errors, as in CLIPS: a parenthesized `defmethod`
+  parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
+  several field constraints such as `(color red green)`, and a slot that
+  appears twice in one template pattern.
 
 ## Step 1: Check Feature Coverage
 

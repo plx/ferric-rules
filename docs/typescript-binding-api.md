@@ -1310,6 +1310,8 @@ The worker thread script needs access to the native addon. napi-rs addons work i
 Values passed via `postMessage` must be structured-clonable. The binding provides transparent serialization for:
 
 - `FerricSymbol` → `{ __type: "FerricSymbol", value: string }` (tagged for reconstruction).
+- `FerricInstanceName` → `{ __type: "FerricInstanceName", value: string }`, the
+  name without brackets.
 - `Fact` → plain object whose `bigint` ID is preserved by structured clone.
 - `Buffer` (snapshots) → transferred as `ArrayBuffer` (zero-copy).
 

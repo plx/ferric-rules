@@ -16,8 +16,9 @@ let replacement = engine.assert(copy)?;
 ```
 
 Primitive integers, floats and strings remain ordinary inputs. A raw core
-`Value::Symbol` has no engine provenance and is rejected, including inside a
-multifield. `HostValue::multifield` retains its elements' ownership and rejects
+`Value::Symbol` or `Value::InstanceName` has no engine provenance and is
+rejected, including inside a multifield; create them with
+`Engine::symbol_value` and `Engine::instance_name_value`. `HostValue::multifield` retains its elements' ownership and rejects
 mixed origins. Nested void values and invalid string encodings are rejected
 before assertion. Host values allow 32 multifield levels and one million total
 values per assertion. Opaque external tokens remain valid in memory and are

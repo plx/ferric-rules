@@ -84,9 +84,13 @@ and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
 A multifield join token is checked by rebuilding its recorded split; other splits
-are not re-enumerated. A fact recorded as supporting a negated or existential
-multifield pattern must match through some split. Every candidate split tried is
-charged, plus the size of the fact whenever its tests copy a capture.
+are not re-enumerated. The facts recorded as supporting a negated or existential
+multifield pattern must be exactly those that match through some split. Each
+capture length the split search tries is charged, plus the size of the fact
+whenever a test or binding copies a capture. That search makes some engines too
+large to save: a negated member test such as `(key ?k) (not (lst $? ?k $?))`
+searches about N²/2 splits for a list of N keys, which exceeds the allowance
+at about 1,500 keys (the positive form stays within it).
 Graph validation has a 10,000,000-operation work allowance and a separate equal
 allowance for compiler-cache validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed
