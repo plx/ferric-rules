@@ -3459,11 +3459,13 @@ fn builtin_extremum(
     preferred: std::cmp::Ordering,
 ) -> Result<Value, EvalError> {
     check_arity_min(function, args, 1, span)?;
-    let values = eval_args(ctx, args)?;
-    let mut selected = &values[0];
-    let mut selected_numeric = as_numeric(selected, function, span)?;
-    for value in &values[1..] {
-        let candidate = as_numeric(value, function, span)?;
+    // As in CLIPS, each operand is checked as it is evaluated, so a
+    // non-numeric operand stops the later ones from being evaluated.
+    let mut selected = eval_inner(ctx, &args[0])?;
+    let mut selected_numeric = as_numeric(&selected, function, span)?;
+    for arg in &args[1..] {
+        let value = eval_inner(ctx, arg)?;
+        let candidate = as_numeric(&value, function, span)?;
         let ordering = match (&candidate, &selected_numeric) {
             (Numeric::Int(a), Numeric::Int(b)) => Some(a.cmp(b)),
             (Numeric::Int(a), Numeric::Flt(b)) => (*a as f64).partial_cmp(b),
@@ -3477,7 +3479,7 @@ fn builtin_extremum(
             selected_numeric = candidate;
         }
     }
-    Ok(selected.clone())
+    Ok(selected)
 }
 
 // ---------------------------------------------------------------------------
