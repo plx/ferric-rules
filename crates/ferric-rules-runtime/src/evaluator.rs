@@ -6393,6 +6393,15 @@ fn read_fact_slot_value(
             span: span.cloned(),
         });
     };
+    if ctx.initial_fact_id == Some(fact_id) {
+        // CLIPS's `initial-fact` is a deftemplate without slots.
+        return Err(EvalError::TypeError {
+            function: function.into(),
+            expected: "valid slot name in template `initial-fact`".into(),
+            actual: format!("unknown slot `{slot_name}`"),
+            span: span.cloned(),
+        });
+    }
     read_record_slot_value(ctx, &entry.fact, slot_name, function, span)
 }
 
@@ -6450,7 +6459,8 @@ fn read_record_slot_value(
 /// `(fact-slot-names <fact-address-or-index>)` — a fact's slot names as a multifield of SYMBOLs.
 ///
 /// For template facts, returns slot names in declaration order (requires `template_defs`).
-/// For ordered facts, returns a single-element multifield `(implied)`.
+/// For ordered facts, returns a single-element multifield `(implied)`, and for
+/// the protected `initial-fact` (a slotless deftemplate in CLIPS) `()`.
 /// Returns `FALSE` if the fact does not exist.
 fn builtin_fact_slot_names(
     ctx: &mut EvalContext<'_>,
@@ -6465,6 +6475,9 @@ fn builtin_fact_slot_names(
     let Some(entry) = fb.get(fact_id) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
+    if ctx.initial_fact_id == Some(fact_id) {
+        return Ok(Value::Multifield(Box::default()));
+    }
     match &entry.fact {
         ferric_rules_core::Fact::Template(tf) => {
             let mut result = ferric_rules_core::value::Multifield::new();

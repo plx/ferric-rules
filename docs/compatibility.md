@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 592
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 595
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -170,7 +170,10 @@ On `(reset)`, Ferric asserts the protected `(initial-fact)` first and then the
 registered `deffacts`, the same order as CLIPS. The fact supports explicit
 `(initial-fact)` patterns; rules with no patterns or a leading negation match
 without it. Host fact queries do not return it, and it cannot be retracted,
-modified, or duplicated.
+modified, or duplicated. Its fact index is 0 and, as for CLIPS's slotless
+`initial-fact` deftemplate, `fact-slot-names` of it is `()`. An `initial-fact`
+the host asserts through the engine API is an ordinary user fact with an
+ordinary index; CLIPS gives it index 0.
 
 ### Behavioral Notes
 
@@ -952,6 +955,14 @@ arithmetic on it gives a meaningless number. `retract` and the fact functions
 above also take the CLIPS fact index that `fact-index` returns, so
 `(fact-relation (fact-index ?f))` names the relation of `?f`'s fact; an index is
 found by scanning working memory.
+
+An index that names no fact differs from CLIPS. CLIPS always continues:
+`retract` does nothing and the functions return `FALSE`, after printing
+`[PRNTUTIL1] Unable to find fact f-N.` for `retract`, `fact-slot-value` and
+`fact-slot-names`, or an `[ARGACCES5]` type notice for a negative index. In
+Ferric, `retract` and `fact-slot-value` make it an action error, which ends the
+run; `fact-existp`, `fact-relation` and `fact-slot-names` return `FALSE`
+without a notice.
 
 ### I/O Functions
 

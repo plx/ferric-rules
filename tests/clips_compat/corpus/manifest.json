@@ -2659,6 +2659,36 @@
       ]
     },
     {
+      "path": "queries/fact-slot-names-initial-fact.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "fact-index",
+        "fact-relation",
+        "fact-slot-names",
+        "initial-fact"
+      ]
+    },
+    {
+      "path": "queries/fact-slot-value-initial-fact.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "fact-slot-value",
+        "initial-fact"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/fact-slot-value-computed-slot-name.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "fact-slot-value",
+        "instance-name"
+      ]
+    },
+    {
       "path": "queries/fact-relation-ordered.clp",
       "level": "basic",
       "covers": [
