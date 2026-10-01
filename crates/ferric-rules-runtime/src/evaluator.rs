@@ -714,7 +714,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             }
             match dispatch_builtin(ctx, name, args, span.clone()) {
                 Ok(v) => Ok(v),
-                Err(EvalError::UnknownFunction { .. }) => {
+                // Only this call's own name falls through to user callables;
+                // an unknown name inside a builtin's arguments (a `sort`
+                // predicate, a `funcall` target) keeps its own name.
+                Err(EvalError::UnknownFunction { name: unknown, .. })
+                    if unknown.as_str() == name.as_str() =>
+                {
                     let function_modules =
                         sorted_dedup_modules(ctx.functions.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
@@ -10024,6 +10029,12 @@ mod tests {
         let result = eval_expr(&expr);
         assert!(matches!(
             result,
+            Err(EvalError::UnknownFunction { ref name, .. }) if name == "nonexistent"
+        ));
+        // An unknown name inside a builtin's arguments keeps its own name.
+        let nested = call("abs", vec![expr]);
+        assert!(matches!(
+            eval_expr(&nested),
             Err(EvalError::UnknownFunction { ref name, .. }) if name == "nonexistent"
         ));
     }
