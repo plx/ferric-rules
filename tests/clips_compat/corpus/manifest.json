@@ -712,7 +712,7 @@
       ],
       "gap": {
         "issues": [
-          "https://github.com/plx/ferric-rules/issues/346"
+          "https://github.com/plx/ferric-rules/issues/394"
         ],
         "summary": "Documented divergence: CLIPS stores the byte of an escaped end of input, which is not UTF-8; Ferric strings are UTF-8 and hold U+FFFD",
         "observed": {
@@ -4698,7 +4698,7 @@
       ],
       "gap": {
         "issues": [
-          "https://github.com/plx/ferric-rules/issues/340"
+          "https://github.com/plx/ferric-rules/issues/394"
         ],
         "summary": "Documented divergence: %.1s cuts a UTF-8 character; CLIPS emits the partial byte, Ferric U+FFFD",
         "observed": {
@@ -4738,7 +4738,7 @@
       ],
       "gap": {
         "issues": [
-          "https://github.com/plx/ferric-rules/issues/340"
+          "https://github.com/plx/ferric-rules/issues/394"
         ],
         "summary": "Documented divergence: CLIPS hands malformed directives such as %5-3d to printf, which echoes them; Ferric reports a format error",
         "observed": {
@@ -4758,7 +4758,7 @@
       ],
       "gap": {
         "issues": [
-          "https://github.com/plx/ferric-rules/issues/340"
+          "https://github.com/plx/ferric-rules/issues/394"
         ],
         "summary": "Documented divergence: %c of a byte of 128 or more; CLIPS emits the raw byte, Ferric U+FFFD",
         "observed": {

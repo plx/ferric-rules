@@ -245,7 +245,10 @@ pub(crate) fn render_float(out: &mut String, value: f64, conversion: Conversion,
     } else {
         "inf".to_owned()
     };
-    let negative = value.is_sign_negative();
+    // The sign of a NaN depends on the CPU that produced it (x86 arithmetic
+    // yields negative NaNs), so print every NaN unsigned, as the pinned CLIPS
+    // reference does.
+    let negative = value.is_sign_negative() && !value.is_nan();
     let content = body.len() + usize::from(negative);
     let padding = spec.width.saturating_sub(content);
     // C zero-fills finite numbers only.
@@ -518,6 +521,7 @@ mod tests {
                 "    -inf",
             ),
             (f64::NAN, Fixed, spec(true, true, 8, None), "nan     "),
+            (-f64::NAN, General, spec(false, false, 6, None), "   nan"),
         ] {
             assert_eq!(float(value, conversion, spec), expected, "{value} {spec:?}");
         }
@@ -539,6 +543,7 @@ mod tests {
             (f64::INFINITY, "inf.0"),
             (f64::NEG_INFINITY, "-inf.0"),
             (f64::NAN, "nan.0"),
+            (-f64::NAN, "nan.0"),
         ] {
             assert_eq!(clips_float(value), expected, "{value}");
         }

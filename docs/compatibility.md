@@ -46,7 +46,8 @@ Docker image.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
-direction. Four cases carry one:
+direction. Four cases carry one, all tracked in
+[#394](https://github.com/plx/ferric-rules/issues/394):
 
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
