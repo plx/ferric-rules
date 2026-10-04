@@ -22,6 +22,7 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
 
 use crate::fact::FactId;
+use crate::ordered_set::OrderedSet;
 use crate::token::TokenId;
 
 /// Unique identifier for a negative memory.
@@ -40,11 +41,11 @@ pub struct NegativeMemoryId(pub u32);
 pub struct NegativeMemory {
     pub id: NegativeMemoryId,
     /// Blocked parent tokens → set of blocking facts.
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
-    )]
-    pub(crate) blocked: HashMap<TokenId, HashSet<FactId>>,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) blocked: HashMap<TokenId, OrderedSet<FactId>>,
+    /// Chronology of attachment to the oldest remaining blocker.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) block_order: HashMap<TokenId, u64>,
     /// Reverse index: blocking fact → set of parent tokens it blocks.
     #[cfg_attr(
         feature = "serde",
@@ -63,13 +64,21 @@ impl NegativeMemory {
         Self {
             id,
             blocked: HashMap::default(),
+            block_order: HashMap::default(),
             fact_to_blocked: HashMap::default(),
             unblocked: HashMap::default(),
         }
     }
 
     /// Add a fact as a blocker for a parent token.
-    pub fn add_blocker(&mut self, parent_token_id: TokenId, fact_id: FactId) {
+    ///
+    /// The first blocker uses `order` as its block-list position. Additional
+    /// blockers retain insertion order without moving that position; callers
+    /// insert facts in assertion order.
+    pub fn add_blocker(&mut self, parent_token_id: TokenId, fact_id: FactId, order: u64) {
+        if !self.blocked.contains_key(&parent_token_id) {
+            self.block_order.insert(parent_token_id, order);
+        }
         self.blocked
             .entry(parent_token_id)
             .or_default()
@@ -83,14 +92,25 @@ impl NegativeMemory {
     /// Remove a fact from a parent token's blocker set.
     ///
     /// Returns `true` if the token is now fully unblocked (blocker set empty).
-    pub fn remove_blocker(&mut self, parent_token_id: TokenId, fact_id: FactId) -> bool {
+    /// Removing the primary blocker migrates to the next surviving blocker at
+    /// `replacement_order`. Removing another blocker leaves the position intact.
+    pub fn remove_blocker(
+        &mut self,
+        parent_token_id: TokenId,
+        fact_id: FactId,
+        replacement_order: u64,
+    ) -> bool {
         let mut now_unblocked = false;
 
         if let Some(blockers) = self.blocked.get_mut(&parent_token_id) {
+            let was_primary = blockers.iter().next() == Some(&fact_id);
             blockers.remove(&fact_id);
             if blockers.is_empty() {
                 self.blocked.remove(&parent_token_id);
+                self.block_order.remove(&parent_token_id);
                 now_unblocked = true;
+            } else if was_primary {
+                self.block_order.insert(parent_token_id, replacement_order);
             }
         }
 
@@ -107,6 +127,7 @@ impl NegativeMemory {
     /// Clear all blocker and unblocked tracking.
     pub fn clear(&mut self) {
         self.blocked.clear();
+        self.block_order.clear();
         self.fact_to_blocked.clear();
         self.unblocked.clear();
     }
@@ -123,6 +144,24 @@ impl NegativeMemory {
             .get(&fact_id)
             .map(|tokens| tokens.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// The oldest surviving support is the only blocker whose removal can
+    /// move this token to another block list or let it propagate.
+    pub(crate) fn primary_blocker(&self, parent: TokenId) -> Option<FactId> {
+        self.blocked.get(&parent)?.iter().next().copied()
+    }
+
+    pub(crate) fn block_order(&self, parent: TokenId) -> Option<u64> {
+        self.block_order.get(&parent).copied()
+    }
+
+    pub(crate) fn block_orders(&self) -> impl Iterator<Item = &u64> {
+        self.block_order.values()
+    }
+
+    pub(crate) fn block_orders_mut(&mut self) -> impl Iterator<Item = &mut u64> {
+        self.block_order.values_mut()
     }
 
     /// Record a parent token as unblocked with its pass-through token.
@@ -157,12 +196,13 @@ impl NegativeMemory {
         self.unblocked.remove(&parent_token_id);
 
         // Remove from blocked (and clean up reverse index)
+        self.block_order.remove(&parent_token_id);
         if let Some(blockers) = self.blocked.remove(&parent_token_id) {
-            for fact_id in blockers {
-                if let Some(tokens) = self.fact_to_blocked.get_mut(&fact_id) {
+            for fact_id in &blockers {
+                if let Some(tokens) = self.fact_to_blocked.get_mut(fact_id) {
                     tokens.remove(&parent_token_id);
                     if tokens.is_empty() {
-                        self.fact_to_blocked.remove(&fact_id);
+                        self.fact_to_blocked.remove(fact_id);
                     }
                 }
             }
@@ -207,6 +247,21 @@ impl NegativeMemory {
     #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
     pub fn validate_consistency(&self) -> Result<(), String> {
+        crate::snapshot::require!(
+            self.block_order.len() == self.blocked.len()
+                && self
+                    .blocked
+                    .keys()
+                    .all(|parent| self.block_order.contains_key(parent)),
+            "NegativeMemory {:?}: blocker chronology disagrees with blocked parents",
+            self.id
+        );
+        let unique_orders: HashSet<_> = self.block_order.values().collect();
+        crate::snapshot::require!(
+            unique_orders.len() == self.block_order.len(),
+            "NegativeMemory {:?}: duplicate block order",
+            self.id
+        );
         // Check 1: forward and reverse blocker indices are consistent
         for (&token_id, blockers) in &self.blocked {
             crate::snapshot::require!(
@@ -257,6 +312,14 @@ mod tests {
     use super::*;
     use slotmap::SlotMap;
 
+    pub(super) fn next_order(memory: &NegativeMemory) -> u64 {
+        memory
+            .block_orders()
+            .copied()
+            .max()
+            .map_or(0, |order| order + 1)
+    }
+
     fn make_token_ids(n: usize) -> Vec<TokenId> {
         let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
         (0..n).map(|_| temp.insert(())).collect()
@@ -281,7 +344,7 @@ mod tests {
         let tokens = make_token_ids(1);
         let facts = make_fact_ids(1);
 
-        mem.add_blocker(tokens[0], facts[0]);
+        mem.add_blocker(tokens[0], facts[0], next_order(&mem));
 
         assert!(mem.is_blocked(tokens[0]));
         assert_eq!(mem.blocked_count(), 1);
@@ -299,9 +362,9 @@ mod tests {
         let tokens = make_token_ids(1);
         let facts = make_fact_ids(3);
 
-        mem.add_blocker(tokens[0], facts[0]);
-        mem.add_blocker(tokens[0], facts[1]);
-        mem.add_blocker(tokens[0], facts[2]);
+        mem.add_blocker(tokens[0], facts[0], next_order(&mem));
+        mem.add_blocker(tokens[0], facts[1], next_order(&mem));
+        mem.add_blocker(tokens[0], facts[2], next_order(&mem));
 
         assert!(mem.is_blocked(tokens[0]));
         assert_eq!(mem.blocked_count(), 1);
@@ -315,10 +378,10 @@ mod tests {
         let tokens = make_token_ids(1);
         let facts = make_fact_ids(2);
 
-        mem.add_blocker(tokens[0], facts[0]);
-        mem.add_blocker(tokens[0], facts[1]);
+        mem.add_blocker(tokens[0], facts[0], next_order(&mem));
+        mem.add_blocker(tokens[0], facts[1], next_order(&mem));
 
-        let unblocked = mem.remove_blocker(tokens[0], facts[0]);
+        let unblocked = mem.remove_blocker(tokens[0], facts[0], next_order(&mem));
         assert!(!unblocked);
         assert!(mem.is_blocked(tokens[0]));
 
@@ -331,13 +394,106 @@ mod tests {
         let tokens = make_token_ids(1);
         let facts = make_fact_ids(1);
 
-        mem.add_blocker(tokens[0], facts[0]);
+        mem.add_blocker(tokens[0], facts[0], next_order(&mem));
 
-        let unblocked = mem.remove_blocker(tokens[0], facts[0]);
+        let unblocked = mem.remove_blocker(tokens[0], facts[0], next_order(&mem));
         assert!(unblocked);
         assert!(!mem.is_blocked(tokens[0]));
         assert!(mem.is_empty());
 
+        mem.debug_assert_consistency();
+    }
+
+    #[test]
+    fn oldest_blocker_migration_uses_a_new_position_and_retains_support_order() {
+        let mut mem = NegativeMemory::new(NegativeMemoryId(0));
+        let parent = make_token_ids(1)[0];
+        let facts = make_fact_ids(3);
+        for (&fact, order) in facts.iter().zip([10, 20, 30]) {
+            mem.add_blocker(parent, fact, order);
+        }
+        assert_eq!(mem.primary_blocker(parent), Some(facts[0]));
+        assert_eq!(mem.block_order(parent), Some(10));
+
+        for (index, replacement_order) in [(0, 40), (1, 50)] {
+            assert!(!mem.remove_blocker(parent, facts[index], replacement_order));
+            assert_eq!(mem.primary_blocker(parent), Some(facts[index + 1]));
+            assert_eq!(mem.block_order(parent), Some(replacement_order));
+            assert!(mem.tokens_blocked_by(facts[index]).is_empty());
+            mem.debug_assert_consistency();
+        }
+        assert!(mem.remove_blocker(parent, facts[2], 60));
+        assert_eq!(mem.primary_blocker(parent), None);
+        assert_eq!(mem.block_order(parent), None);
+        assert!(mem.is_empty());
+        mem.debug_assert_consistency();
+    }
+
+    #[test]
+    fn nonprimary_deletion_and_duplicate_add_leave_the_block_position_unchanged() {
+        let mut mem = NegativeMemory::new(NegativeMemoryId(0));
+        let parent = make_token_ids(1)[0];
+        let facts = make_fact_ids(4);
+        for &fact in &facts[..3] {
+            mem.add_blocker(parent, fact, 10);
+        }
+        assert!(!mem.remove_blocker(parent, facts[1], 20));
+        assert!(!mem.remove_blocker(parent, facts[3], 30));
+        mem.add_blocker(parent, facts[0], 40);
+        mem.add_blocker(parent, facts[2], 50);
+        assert_eq!(mem.block_order(parent), Some(10));
+        assert_eq!(mem.primary_blocker(parent), Some(facts[0]));
+        assert_eq!(
+            mem.blocked[&parent].iter().copied().collect::<Vec<_>>(),
+            vec![facts[0], facts[2]]
+        );
+        assert!(mem.tokens_blocked_by(facts[1]).is_empty());
+        assert!(!mem.remove_blocker(parent, facts[0], 60));
+        assert_eq!(mem.primary_blocker(parent), Some(facts[2]));
+        assert_eq!(mem.block_order(parent), Some(60));
+        mem.debug_assert_consistency();
+    }
+
+    #[test]
+    fn blocker_chronology_must_cover_exactly_the_blocked_parents_and_be_unique() {
+        for corruption in 0..3 {
+            let mut mem = NegativeMemory::new(NegativeMemoryId(0));
+            let parents = make_token_ids(3);
+            let fact = make_fact_ids(1)[0];
+            mem.add_blocker(parents[0], fact, 10);
+            mem.add_blocker(parents[1], fact, 20);
+            let expected = match corruption {
+                0 => {
+                    mem.block_order.remove(&parents[0]);
+                    "chronology disagrees with blocked parents"
+                }
+                1 => {
+                    mem.block_order.insert(parents[2], 30);
+                    "chronology disagrees with blocked parents"
+                }
+                _ => {
+                    mem.block_order.insert(parents[1], 10);
+                    "duplicate block order"
+                }
+            };
+            assert!(mem.validate_consistency().unwrap_err().contains(expected));
+        }
+    }
+
+    #[test]
+    fn parent_removal_and_clear_discard_blocker_chronology() {
+        let mut mem = NegativeMemory::new(NegativeMemoryId(0));
+        let parents = make_token_ids(2);
+        let fact = make_fact_ids(1)[0];
+        mem.add_blocker(parents[0], fact, 10);
+        mem.add_blocker(parents[1], fact, 20);
+        mem.remove_parent_token(parents[0]);
+        assert_eq!(mem.block_order(parents[0]), None);
+        assert_eq!(mem.block_order(parents[1]), Some(20));
+        mem.debug_assert_consistency();
+        mem.clear();
+        assert!(mem.block_order.is_empty());
+        assert!(mem.is_empty());
         mem.debug_assert_consistency();
     }
 
@@ -374,8 +530,8 @@ mod tests {
         let tokens = make_token_ids(1);
         let facts = make_fact_ids(2);
 
-        mem.add_blocker(tokens[0], facts[0]);
-        mem.add_blocker(tokens[0], facts[1]);
+        mem.add_blocker(tokens[0], facts[0], next_order(&mem));
+        mem.add_blocker(tokens[0], facts[1], next_order(&mem));
 
         mem.remove_parent_token(tokens[0]);
 
@@ -406,9 +562,9 @@ mod tests {
         let tokens = make_token_ids(3);
         let facts = make_fact_ids(1);
 
-        mem.add_blocker(tokens[0], facts[0]);
-        mem.add_blocker(tokens[1], facts[0]);
-        mem.add_blocker(tokens[2], facts[0]);
+        mem.add_blocker(tokens[0], facts[0], next_order(&mem));
+        mem.add_blocker(tokens[1], facts[0], next_order(&mem));
+        mem.add_blocker(tokens[2], facts[0], next_order(&mem));
 
         let blocked_by = mem.tokens_blocked_by(facts[0]);
         assert_eq!(blocked_by.len(), 3);
@@ -433,6 +589,7 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
+    use super::tests::next_order;
     use super::*;
     use proptest::prelude::*;
     use slotmap::SlotMap;
@@ -578,14 +735,14 @@ mod proptests {
             } => {
                 // Guard: do not add a blocker to an already-unblocked token.
                 if !mem.is_unblocked(tokens[*token_idx]) {
-                    mem.add_blocker(tokens[*token_idx], facts[*fact_idx]);
+                    mem.add_blocker(tokens[*token_idx], facts[*fact_idx], next_order(mem));
                 }
                 None
             }
             Op::RemoveBlocker {
                 token_idx,
                 fact_idx,
-            } => Some(mem.remove_blocker(tokens[*token_idx], facts[*fact_idx])),
+            } => Some(mem.remove_blocker(tokens[*token_idx], facts[*fact_idx], next_order(mem))),
             Op::SetUnblocked {
                 token_idx,
                 passthrough_idx,
@@ -697,7 +854,7 @@ mod proptests {
                         .get(token_idx)
                         .is_some_and(|s| s.contains(fact_idx) && s.len() == 1);
 
-                    let actual = mem.remove_blocker(tokens[*token_idx], facts[*fact_idx]);
+                    let actual = mem.remove_blocker(tokens[*token_idx], facts[*fact_idx], next_order(&mem));
                     model.apply(op);
 
                     prop_assert_eq!(
@@ -729,7 +886,7 @@ mod proptests {
             unique_indices.dedup();
 
             for &fi in &unique_indices {
-                mem.add_blocker(tokens[0], facts[fi]);
+                mem.add_blocker(tokens[0], facts[fi], next_order(&mem));
             }
 
             prop_assert!(mem.is_blocked(tokens[0]));
@@ -737,7 +894,7 @@ mod proptests {
 
             for (i, &fi) in unique_indices.iter().enumerate() {
                 let last = i == unique_indices.len() - 1;
-                let unblocked = mem.remove_blocker(tokens[0], facts[fi]);
+                let unblocked = mem.remove_blocker(tokens[0], facts[fi], next_order(&mem));
                 prop_assert_eq!(
                     unblocked,
                     last,
@@ -763,13 +920,13 @@ mod proptests {
             let facts: Vec<FactId> = (0..POOL).map(|_| fact_map.insert(())).collect();
 
             for _ in 0..repeats {
-                mem.add_blocker(tokens[token_idx], facts[fact_idx]);
+                mem.add_blocker(tokens[token_idx], facts[fact_idx], next_order(&mem));
             }
 
             // Regardless of how many times we added, exactly one fact blocks this token
             prop_assert_eq!(mem.blocked_count(), 1);
             // Removing once should return true (last blocker)
-            let unblocked = mem.remove_blocker(tokens[token_idx], facts[fact_idx]);
+            let unblocked = mem.remove_blocker(tokens[token_idx], facts[fact_idx], next_order(&mem));
             prop_assert!(unblocked, "expected true after removing only blocker");
             prop_assert!(mem.is_empty());
             mem.debug_assert_consistency();
@@ -794,7 +951,7 @@ mod proptests {
                 mem.set_unblocked(tokens[target_idx], tokens[passthrough_idx]);
             } else {
                 for &fi in &blocker_fact_indices {
-                    mem.add_blocker(tokens[target_idx], facts[fi]);
+                    mem.add_blocker(tokens[target_idx], facts[fi], next_order(&mem));
                 }
             }
 
@@ -832,8 +989,8 @@ mod proptests {
             let facts: Vec<FactId> = (0..POOL).map(|_| fact_map.insert(())).collect();
 
             // Both tokens blocked by the same fact
-            mem.add_blocker(tokens[token_a_idx], facts[shared_fact_idx]);
-            mem.add_blocker(tokens[token_b_idx], facts[shared_fact_idx]);
+            mem.add_blocker(tokens[token_a_idx], facts[shared_fact_idx], next_order(&mem));
+            mem.add_blocker(tokens[token_b_idx], facts[shared_fact_idx], next_order(&mem));
 
             // Remove token A's parent tracking
             mem.remove_parent_token(tokens[token_a_idx]);

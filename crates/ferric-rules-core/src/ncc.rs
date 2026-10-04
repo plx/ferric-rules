@@ -21,6 +21,7 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
+use crate::ordered_set::OrderedSet;
 use crate::token::TokenId;
 
 /// Unique identifier for an NCC memory.
@@ -43,6 +44,15 @@ pub struct NccMemory {
     /// Subnetwork result token → NCC parent token it blocks.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     pub(crate) result_owner: HashMap<TokenId, TokenId>,
+    /// All results for each parent, oldest first, for constant-time migration.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) parent_results: HashMap<TokenId, OrderedSet<TokenId>>,
+    /// The one result currently responsible for blocking each parent.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) primary_result: HashMap<TokenId, TokenId>,
+    /// Chronology of primary-blocker assignment, shared across the network.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) block_order: HashMap<TokenId, u64>,
     /// Parent token → pass-through token (when unblocked, count == 0)
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     pub(crate) unblocked: HashMap<TokenId, TokenId>,
@@ -56,6 +66,9 @@ impl NccMemory {
             id,
             result_count: HashMap::default(),
             result_owner: HashMap::default(),
+            parent_results: HashMap::default(),
+            primary_result: HashMap::default(),
+            block_order: HashMap::default(),
             unblocked: HashMap::default(),
         }
     }
@@ -71,11 +84,15 @@ impl NccMemory {
 
     /// Add a concrete subnetwork result token for a parent token.
     ///
+    /// `order` is the network-wide attachment sequence, used only when this
+    /// result becomes the parent's first support. Later supports retain it.
+    ///
     /// Returns `(old_count, new_count)` for the parent token.
     pub fn add_result(
         &mut self,
         parent_token_id: TokenId,
         result_token_id: TokenId,
+        order: u64,
     ) -> (usize, usize) {
         if let Some(existing_parent) = self.result_owner.get(&result_token_id) {
             let current = self.result_count(*existing_parent);
@@ -85,6 +102,14 @@ impl NccMemory {
         let old_count = self.result_count(parent_token_id);
         let new_count = self.increment_results(parent_token_id);
         self.result_owner.insert(result_token_id, parent_token_id);
+        self.parent_results
+            .entry(parent_token_id)
+            .or_default()
+            .insert(result_token_id);
+        if old_count == 0 {
+            self.primary_result.insert(parent_token_id, result_token_id);
+            self.block_order.insert(parent_token_id, order);
+        }
         (old_count, new_count)
     }
 
@@ -108,11 +133,62 @@ impl NccMemory {
 
     /// Remove a concrete subnetwork result token.
     ///
+    /// `replacement_order` records a fresh attachment when the removed result
+    /// was primary and another support survives; other removals ignore it.
+    ///
     /// Returns `(parent_token_id, new_count)` if the token was tracked.
-    pub fn remove_result(&mut self, result_token_id: TokenId) -> Option<(TokenId, usize)> {
+    pub fn remove_result(
+        &mut self,
+        result_token_id: TokenId,
+        replacement_order: u64,
+    ) -> Option<(TokenId, usize)> {
+        let removed = self.remove_result_support(result_token_id)?;
+        if self.primary_result.get(&removed.0) == Some(&result_token_id) {
+            self.reassign_primary(removed.0, replacement_order);
+        }
+        Some(removed)
+    }
+
+    /// Remove support before settling primary transitions for a whole cascade.
+    pub(crate) fn remove_result_support(
+        &mut self,
+        result_token_id: TokenId,
+    ) -> Option<(TokenId, usize)> {
         let parent_token_id = self.result_owner.remove(&result_token_id)?;
+        if let Some(results) = self.parent_results.get_mut(&parent_token_id) {
+            results.remove(&result_token_id);
+            if results.is_empty() {
+                self.parent_results.remove(&parent_token_id);
+            }
+        }
         let new_count = self.decrement_results(parent_token_id);
         Some((parent_token_id, new_count))
+    }
+
+    /// Choose the oldest surviving result; return false when the parent unblocks.
+    pub(crate) fn reassign_primary(&mut self, parent: TokenId, order: u64) -> bool {
+        if let Some(result) = self
+            .parent_results
+            .get(&parent)
+            .and_then(|results| results.iter().next())
+            .copied()
+        {
+            self.primary_result.insert(parent, result);
+            self.block_order.insert(parent, order);
+            true
+        } else {
+            self.primary_result.remove(&parent);
+            self.block_order.remove(&parent);
+            false
+        }
+    }
+
+    pub(crate) fn block_orders(&self) -> impl Iterator<Item = &u64> {
+        self.block_order.values()
+    }
+
+    pub(crate) fn block_orders_mut(&mut self) -> impl Iterator<Item = &mut u64> {
+        self.block_order.values_mut()
     }
 
     /// Get the current result count for a parent token.
@@ -155,8 +231,13 @@ impl NccMemory {
     /// Remove all tracking for a parent token (cleanup on parent retraction).
     pub fn remove_parent_token(&mut self, parent_token_id: TokenId) {
         self.result_count.remove(&parent_token_id);
-        self.result_owner
-            .retain(|_, owner_parent| *owner_parent != parent_token_id);
+        if let Some(results) = self.parent_results.remove(&parent_token_id) {
+            for result in &results {
+                self.result_owner.remove(result);
+            }
+        }
+        self.primary_result.remove(&parent_token_id);
+        self.block_order.remove(&parent_token_id);
         self.unblocked.remove(&parent_token_id);
     }
 
@@ -164,13 +245,21 @@ impl NccMemory {
     pub fn clear(&mut self) {
         self.result_count.clear();
         self.result_owner.clear();
+        self.parent_results.clear();
+        self.primary_result.clear();
+        self.block_order.clear();
         self.unblocked.clear();
     }
 
     /// Check if the NCC memory has no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.result_count.is_empty() && self.result_owner.is_empty() && self.unblocked.is_empty()
+        self.result_count.is_empty()
+            && self.result_owner.is_empty()
+            && self.unblocked.is_empty()
+            && self.parent_results.is_empty()
+            && self.primary_result.is_empty()
+            && self.block_order.is_empty()
     }
 
     /// Verify internal consistency of the NCC memory.
@@ -183,6 +272,47 @@ impl NccMemory {
     #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
     pub fn validate_consistency(&self) -> Result<(), String> {
+        crate::snapshot::require_eq!(
+            self.result_count.len(),
+            self.parent_results.len(),
+            "NCC result parent index length mismatch"
+        );
+        crate::snapshot::require_eq!(
+            self.result_count.len(),
+            self.primary_result.len(),
+            "NCC primary result index length mismatch"
+        );
+        crate::snapshot::require_eq!(
+            self.result_count.len(),
+            self.block_order.len(),
+            "NCC block chronology length mismatch"
+        );
+        for (&parent, &count) in &self.result_count {
+            let results = self
+                .parent_results
+                .get(&parent)
+                .ok_or("missing NCC parent results")?;
+            crate::snapshot::require_eq!(results.len(), count, "NCC parent results count mismatch");
+            let primary = self
+                .primary_result
+                .get(&parent)
+                .ok_or("missing NCC primary result")?;
+            crate::snapshot::require!(results.contains(primary), "dangling NCC primary result");
+            crate::snapshot::require!(
+                results.iter().next() == Some(primary),
+                "NCC primary result is not the oldest support"
+            );
+            crate::snapshot::require!(
+                self.block_order.contains_key(&parent),
+                "missing NCC block chronology"
+            );
+            for result in results {
+                crate::snapshot::require!(
+                    self.result_owner.get(result) == Some(&parent),
+                    "inconsistent NCC parent results"
+                );
+            }
+        }
         // Check 1: no token is both in result_count (blocked) and unblocked
         for parent_token_id in self.unblocked.keys() {
             crate::snapshot::require!(
@@ -231,6 +361,25 @@ mod tests {
     use super::*;
     use slotmap::SlotMap;
 
+    impl NccMemory {
+        pub(super) fn next_test_order(&self) -> u64 {
+            self.block_orders()
+                .copied()
+                .max()
+                .map_or(0, |order| order + 1)
+        }
+        pub(super) fn add_test_result(
+            &mut self,
+            parent: TokenId,
+            result: TokenId,
+        ) -> (usize, usize) {
+            self.add_result(parent, result, self.next_test_order())
+        }
+        pub(super) fn remove_test_result(&mut self, result: TokenId) -> Option<(TokenId, usize)> {
+            self.remove_result(result, self.next_test_order())
+        }
+    }
+
     fn make_token_ids(n: usize) -> Vec<TokenId> {
         let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
         (0..n).map(|_| temp.insert(())).collect()
@@ -248,7 +397,7 @@ mod tests {
         let mut mem = NccMemory::new(NccMemoryId(0));
         let tokens = make_token_ids(2);
 
-        let (old_count, new_count) = mem.add_result(tokens[0], tokens[1]);
+        let (old_count, new_count) = mem.add_test_result(tokens[0], tokens[1]);
         assert_eq!(old_count, 0);
         assert_eq!(new_count, 1);
         assert_eq!(mem.result_count(tokens[0]), 1);
@@ -262,8 +411,8 @@ mod tests {
         let mut mem = NccMemory::new(NccMemoryId(0));
         let tokens = make_token_ids(3);
 
-        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
-        let (old_count, new_count) = mem.add_result(tokens[0], tokens[2]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[1]);
+        let (old_count, new_count) = mem.add_test_result(tokens[0], tokens[2]);
         assert_eq!(old_count, 1);
         assert_eq!(new_count, 2);
         assert_eq!(mem.result_count(tokens[0]), 2);
@@ -276,10 +425,10 @@ mod tests {
         let mut mem = NccMemory::new(NccMemoryId(0));
         let tokens = make_token_ids(3);
 
-        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
-        let (_old, _new) = mem.add_result(tokens[0], tokens[2]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[2]);
 
-        let removed = mem.remove_result(tokens[2]);
+        let removed = mem.remove_test_result(tokens[2]);
         assert_eq!(removed, Some((tokens[0], 1)));
         assert!(mem.is_blocked(tokens[0]));
 
@@ -291,9 +440,9 @@ mod tests {
         let mut mem = NccMemory::new(NccMemoryId(0));
         let tokens = make_token_ids(2);
 
-        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[1]);
 
-        let removed = mem.remove_result(tokens[1]);
+        let removed = mem.remove_test_result(tokens[1]);
         assert_eq!(removed, Some((tokens[0], 0)));
         assert!(!mem.is_blocked(tokens[0]));
 
@@ -331,8 +480,8 @@ mod tests {
         let mut mem = NccMemory::new(NccMemoryId(0));
         let tokens = make_token_ids(3);
 
-        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
-        let (_old, _new) = mem.add_result(tokens[0], tokens[2]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[2]);
 
         mem.remove_parent_token(tokens[0]);
 
@@ -362,8 +511,8 @@ mod tests {
         let tokens = make_token_ids(4);
 
         // Token 0: blocked with count 2
-        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
-        let (_old, _new) = mem.add_result(tokens[0], tokens[2]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_test_result(tokens[0], tokens[2]);
 
         // Token 1: unblocked with passthrough
         mem.set_unblocked(tokens[3], tokens[1]);
@@ -504,7 +653,7 @@ mod proptests {
                 // A result token cannot be its own parent in a well-formed Rete network,
                 // but the memory doesn't enforce this; apply unconditionally.
                 let (old_count, _new_count) =
-                    mem.add_result(tokens[parent_idx], tokens[result_idx]);
+                    mem.add_test_result(tokens[parent_idx], tokens[result_idx]);
                 model.add_result(parent_idx, result_idx);
                 // When the parent transitions from 0→N results it becomes blocked.
                 // A blocked parent cannot simultaneously be unblocked; the Rete engine
@@ -516,7 +665,7 @@ mod proptests {
                 }
             }
             Op::RemoveResult { result_idx } => {
-                mem.remove_result(tokens[result_idx]);
+                mem.remove_test_result(tokens[result_idx]);
                 model.remove_result(result_idx);
             }
             Op::SetUnblocked {
@@ -637,13 +786,13 @@ mod proptests {
 
             // Add prior results (all share the same parent for simplicity)
             for &(_, r_idx) in &prior_results {
-                mem.add_result(tokens[parent_idx], tokens[r_idx]);
+                mem.add_test_result(tokens[parent_idx], tokens[r_idx]);
                 model.add_result(parent_idx, r_idx);
             }
 
             let old_count_expected = model.result_count(parent_idx);
             let (old_count_actual, new_count_actual) =
-                mem.add_result(tokens[parent_idx], tokens[new_result_idx]);
+                mem.add_test_result(tokens[parent_idx], tokens[new_result_idx]);
 
             prop_assert_eq!(
                 old_count_actual, old_count_expected,
@@ -711,7 +860,7 @@ mod proptests {
 
             // Add `result_count` distinct result tokens for the parent.
             for i in 1..=result_count {
-                mem.add_result(tokens[0], tokens[i]);
+                mem.add_test_result(tokens[0], tokens[i]);
             }
 
             // Optionally mark it unblocked (only valid when result_count == 0).
@@ -766,11 +915,11 @@ mod proptests {
             let mut model = Model::default();
 
             for &r_idx in &result_idxs {
-                mem.add_result(tokens[0], tokens[r_idx]);
+                mem.add_test_result(tokens[0], tokens[r_idx]);
                 model.add_result(0, r_idx);
             }
 
-            let actual = mem.remove_result(tokens[remove_idx]);
+            let actual = mem.remove_test_result(tokens[remove_idx]);
             let expected = model.remove_result(remove_idx);
 
             match (actual, expected) {

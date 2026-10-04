@@ -803,8 +803,12 @@ fn bench_beta_negative_memory_store_cycle(c: &mut Criterion) {
 
                     for &neg_memory_id in &neg_memory_ids {
                         if let Some(memory) = beta.get_neg_memory_mut(neg_memory_id) {
-                            memory.add_blocker(token_id, fact_id);
-                            black_box(memory.remove_blocker(token_id, fact_id));
+                            memory.add_blocker(token_id, fact_id, 2 * round as u64);
+                            black_box(memory.remove_blocker(
+                                token_id,
+                                fact_id,
+                                2 * round as u64 + 1,
+                            ));
                         }
 
                         touched += beta
@@ -845,8 +849,15 @@ fn bench_beta_ncc_memory_store_cycle(c: &mut Criterion) {
 
                     for &ncc_memory_id in &ncc_memory_ids {
                         if let Some(memory) = beta.get_ncc_memory_mut(ncc_memory_id) {
-                            black_box(memory.add_result(parent_token_id, result_token_id));
-                            black_box(memory.remove_result(result_token_id));
+                            black_box(memory.add_result(
+                                parent_token_id,
+                                result_token_id,
+                                u64::try_from(round).unwrap(),
+                            ));
+                            black_box(
+                                memory
+                                    .remove_result(result_token_id, u64::try_from(round).unwrap()),
+                            );
                             memory.set_unblocked(parent_token_id, passthrough_token_id);
                             black_box(memory.remove_unblocked(parent_token_id));
                         }
@@ -927,6 +938,7 @@ fn bench_negative_memory_outer_index_cycle(c: &mut Criterion) {
                     memory.add_blocker(
                         token_pool[idx % token_pool.len()],
                         fact_pool[idx % fact_pool.len()],
+                        idx as u64,
                     );
                 }
 
@@ -947,6 +959,7 @@ fn bench_negative_memory_outer_index_cycle(c: &mut Criterion) {
                     black_box(memory.remove_blocker(
                         token_pool[idx % token_pool.len()],
                         fact_pool[idx % fact_pool.len()],
+                        1024 + idx as u64,
                     ));
                 }
 
@@ -1015,7 +1028,11 @@ fn bench_ncc_memory_outer_index_cycle(c: &mut Criterion) {
             || NccMemory::new(NccMemoryId(0)),
             |mut memory| {
                 for idx in 0..256 {
-                    black_box(memory.add_result(token_pool[idx], token_pool[idx + 256]));
+                    black_box(memory.add_result(
+                        token_pool[idx],
+                        token_pool[idx + 256],
+                        u64::try_from(idx).unwrap(),
+                    ));
                 }
 
                 for idx in 0..64 {
@@ -1030,7 +1047,7 @@ fn bench_ncc_memory_outer_index_cycle(c: &mut Criterion) {
                 black_box(total);
 
                 for &result_token_id in token_pool.iter().skip(256).take(256) {
-                    black_box(memory.remove_result(result_token_id));
+                    black_box(memory.remove_result(result_token_id, 256));
                 }
 
                 for &token_id in token_pool.iter().take(64) {

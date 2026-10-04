@@ -1,0 +1,5 @@
+(deffacts seed (item 1))
+(defrule r1 (item ?x) => (printout t r1 crlf))
+(defrule r2 (item 1) => (printout t r2 crlf))
+(defrule r3 (item ?x) => (printout t r3 crlf))
+(defrule r4 (item 1) => (printout t r4 crlf))

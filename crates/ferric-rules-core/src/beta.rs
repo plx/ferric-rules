@@ -111,6 +111,15 @@ pub enum JoinTestType {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaMemoryId(pub u32);
 
+/// Allocated only for memories whose children need NCC parent chronology.
+#[derive(Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct NccParentRanks {
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    ranks: HashMap<TokenId, u64>,
+    next: u64,
+}
+
 /// Beta memory: stores tokens (partial matches).
 ///
 /// Each beta memory is associated with a join node or other beta node
@@ -132,6 +141,7 @@ pub struct BetaMemory {
     /// Which variables are currently indexed. Survives `clear()` (like alpha memory's
     /// `indexed_slots`), since the index configuration is a compile-time decision.
     pub(crate) indexed_vars: SmallVec<[VarId; 4]>,
+    ncc_parent_ranks: Option<Box<NccParentRanks>>,
 }
 
 impl BetaMemory {
@@ -143,7 +153,71 @@ impl BetaMemory {
             tokens: OrderedSet::default(),
             var_indices: HashMap::default(),
             indexed_vars: SmallVec::new(),
+            ncc_parent_ranks: None,
         }
+    }
+
+    /// Enable constant-time NCC parent chronology lookup, including online
+    /// compilation onto an already populated memory.
+    fn enable_ncc_parent_ranks(&mut self) {
+        if self.ncc_parent_ranks.is_none() {
+            let mut ranks = Box::<NccParentRanks>::default();
+            for (index, &token) in self.tokens.iter().enumerate() {
+                ranks
+                    .ranks
+                    .insert(token, u64::try_from(index).expect("tokens fit rank space"));
+            }
+            ranks.next = u64::try_from(self.tokens.len()).expect("tokens fit rank space");
+            self.ncc_parent_ranks = Some(ranks);
+        }
+    }
+
+    /// Higher ranks identify newer tokens. Callers obtain ranks at batch flush
+    /// time, because an exhausted counter may rebase them during insertion.
+    pub(crate) fn ncc_parent_rank(&self, token: TokenId) -> Option<u64> {
+        self.ncc_parent_ranks.as_ref()?.ranks.get(&token).copied()
+    }
+
+    fn record_ncc_parent_rank(&mut self, token: TokenId) {
+        let Some(ranks) = &mut self.ncc_parent_ranks else {
+            return;
+        };
+        if ranks.next == u64::MAX {
+            // The newly inserted token is already the last ordered member.
+            // Rebase once at exhaustion without relying on recyclable TokenIds.
+            ranks.ranks.clear();
+            for (index, &member) in self.tokens.iter().enumerate() {
+                ranks
+                    .ranks
+                    .insert(member, u64::try_from(index).expect("tokens fit rank space"));
+            }
+            ranks.next = u64::try_from(self.tokens.len()).expect("tokens fit rank space");
+        } else {
+            ranks.ranks.insert(token, ranks.next);
+            ranks.next += 1;
+        }
+    }
+
+    fn validate_ncc_parent_ranks(&self) -> Result<(), String> {
+        let Some(ranks) = &self.ncc_parent_ranks else {
+            return Ok(());
+        };
+        crate::snapshot::require_eq!(
+            ranks.ranks.len(),
+            self.tokens.len(),
+            "NCC parent rank membership mismatch"
+        );
+        let mut previous = None;
+        for token in &self.tokens {
+            let rank = *ranks.ranks.get(token).ok_or("missing NCC parent rank")?;
+            crate::snapshot::require!(rank < ranks.next, "NCC parent rank exceeds counter");
+            crate::snapshot::require!(
+                previous.map_or(true, |earlier| earlier < rank),
+                "NCC parent ranks are not in insertion order"
+            );
+            previous = Some(rank);
+        }
+        Ok(())
     }
 
     /// Request indexing on a particular variable binding and backfill existing tokens.
@@ -207,7 +281,9 @@ impl BetaMemory {
     ///
     /// If the token is already present, this is a no-op.
     pub fn insert(&mut self, token_id: TokenId) {
-        self.tokens.insert(token_id);
+        if self.tokens.insert(token_id) {
+            self.record_ncc_parent_rank(token_id);
+        }
     }
 
     /// Insert a token with its bindings, updating variable indices.
@@ -218,6 +294,7 @@ impl BetaMemory {
         if !self.tokens.insert(token_id) {
             return;
         }
+        self.record_ncc_parent_rank(token_id);
         for &var_id in &self.indexed_vars {
             if let Some(value) = bindings.get(var_id) {
                 if let Some(key) = AtomKey::from_value(value) {
@@ -237,6 +314,9 @@ impl BetaMemory {
     /// If the token is not present, this is a no-op.
     pub fn remove(&mut self, token_id: TokenId) {
         self.tokens.remove(&token_id);
+        if let Some(ranks) = &mut self.ncc_parent_ranks {
+            ranks.ranks.remove(&token_id);
+        }
     }
 
     /// Remove a token with its bindings, updating variable indices.
@@ -244,7 +324,7 @@ impl BetaMemory {
     /// Mirrors `insert_indexed`: removes the token from all variable index entries
     /// that correspond to its binding values.
     pub fn remove_indexed(&mut self, token_id: TokenId, bindings: &BindingSet) {
-        self.tokens.remove(&token_id);
+        self.remove(token_id);
         for &var_id in &self.indexed_vars {
             if let Some(value) = bindings.get(var_id) {
                 if let Some(key) = AtomKey::from_value(value) {
@@ -298,6 +378,10 @@ impl BetaMemory {
     pub fn clear(&mut self) {
         self.tokens.clear();
         self.var_indices.clear();
+        if let Some(ranks) = &mut self.ncc_parent_ranks {
+            ranks.ranks.clear();
+            ranks.next = 0;
+        }
     }
 }
 
@@ -822,6 +906,12 @@ impl BetaNetwork {
         partner: NodeId,
         ncc_memory_id: NccMemoryId,
     ) -> (NodeId, BetaMemoryId) {
+        let parent_memory = self
+            .memory_id_for_node(parent)
+            .expect("NCC parent owns memory");
+        self.get_memory_mut(parent_memory)
+            .expect("NCC parent memory exists")
+            .enable_ncc_parent_ranks();
         let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
@@ -1175,6 +1265,21 @@ impl BetaNetwork {
     #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
     pub fn validate_consistency(&self) -> Result<(), String> {
+        for memory in &self.memories {
+            memory.validate_ncc_parent_ranks()?;
+        }
+        for node in self.nodes.values() {
+            if let BetaNode::Ncc { parent, .. } = node {
+                let memory = self
+                    .memory_id_for_node(*parent)
+                    .and_then(|id| self.get_memory(id))
+                    .ok_or("missing NCC parent memory")?;
+                crate::snapshot::require!(
+                    memory.ncc_parent_ranks.is_some(),
+                    "missing NCC parent rank index"
+                );
+            }
+        }
         // Check 1: All node IDs in children fields exist in nodes map
         for (node_id, node) in &self.nodes {
             let children = match node {
@@ -1415,6 +1520,120 @@ impl BetaNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ncc_parent_ranks_backfill_late_attachment_and_track_reused_token_slots() {
+        let mut tokens = slotmap::SlotMap::<TokenId, ()>::with_key();
+        let old = tokens.insert(());
+        let surviving = tokens.insert(());
+        let mut beta = BetaNetwork::new(NodeId(100));
+        let root_memory = beta.memory_id_for_node(beta.root_id()).unwrap();
+        let memory = beta.get_memory_mut(root_memory).unwrap();
+        memory.insert(old);
+        memory.insert(surviving);
+        assert_eq!(memory.ncc_parent_rank(old), None);
+        memory.remove(old);
+        tokens.remove(old);
+        let replacement = tokens.insert(());
+        memory.insert(replacement);
+
+        let ncc_memory = beta.allocate_ncc_memory();
+        // The compiler patches the partner after constructing its subnetwork.
+        beta.create_ncc_node(beta.root_id(), NodeId(0), ncc_memory);
+        let memory = beta.get_memory_mut(root_memory).unwrap();
+        assert_eq!(memory.ncc_parent_rank(old), None);
+        assert_eq!(memory.ncc_parent_rank(surviving), Some(0));
+        assert_eq!(memory.ncc_parent_rank(replacement), Some(1));
+        memory.insert(replacement);
+        memory.enable_ncc_parent_ranks();
+        assert_eq!(memory.ncc_parent_rank(replacement), Some(1));
+
+        let newest = tokens.insert(());
+        memory.insert_indexed(newest, &BindingSet::new());
+        assert_eq!(memory.ncc_parent_rank(newest), Some(2));
+        memory.remove_indexed(surviving, &BindingSet::new());
+        assert_eq!(memory.ncc_parent_rank(surviving), None);
+        memory.validate_ncc_parent_ranks().unwrap();
+        memory.clear();
+        assert!(memory.ncc_parent_ranks.is_some());
+        assert_eq!(memory.ncc_parent_rank(newest), None);
+        memory.insert(newest);
+        assert_eq!(memory.ncc_parent_rank(newest), Some(0));
+        memory.validate_ncc_parent_ranks().unwrap();
+    }
+
+    #[test]
+    fn exhausted_ncc_parent_rank_counter_rebases_in_memory_order() {
+        let mut tokens = slotmap::SlotMap::<TokenId, ()>::with_key();
+        let oldest = tokens.insert(());
+        let newer = tokens.insert(());
+        let newest = tokens.insert(());
+        let mut memory = BetaMemory::new(BetaMemoryId(0));
+        memory.enable_ncc_parent_ranks();
+        memory.insert(oldest);
+        memory.insert(newer);
+        let ranks = memory.ncc_parent_ranks.as_mut().unwrap();
+        ranks.ranks.insert(oldest, u64::MAX - 2);
+        ranks.ranks.insert(newer, u64::MAX - 1);
+        ranks.next = u64::MAX;
+        memory.validate_ncc_parent_ranks().unwrap();
+        memory.insert_indexed(newest, &BindingSet::new());
+        assert_eq!(memory.ncc_parent_rank(oldest), Some(0));
+        assert_eq!(memory.ncc_parent_rank(newer), Some(1));
+        assert_eq!(memory.ncc_parent_rank(newest), Some(2));
+        memory.validate_ncc_parent_ranks().unwrap();
+    }
+
+    #[test]
+    fn ncc_parent_rank_metadata_rejects_missing_stale_reordered_and_future_entries() {
+        for corruption in 0..5 {
+            let mut tokens = slotmap::SlotMap::<TokenId, ()>::with_key();
+            let first = tokens.insert(());
+            let second = tokens.insert(());
+            let absent = tokens.insert(());
+            let mut memory = BetaMemory::new(BetaMemoryId(0));
+            memory.insert(first);
+            memory.insert(second);
+            memory.enable_ncc_parent_ranks();
+            let ranks = memory.ncc_parent_ranks.as_mut().unwrap();
+            match corruption {
+                0 => {
+                    ranks.ranks.remove(&first);
+                }
+                1 => {
+                    ranks.ranks.remove(&first);
+                    ranks.ranks.insert(absent, 0);
+                }
+                2 => {
+                    ranks.ranks.insert(first, 1);
+                    ranks.ranks.insert(second, 0);
+                }
+                3 => {
+                    ranks.ranks.insert(second, 0);
+                }
+                _ => {
+                    ranks.next = 1;
+                }
+            }
+            assert!(
+                memory.validate_ncc_parent_ranks().is_err(),
+                "corruption {corruption}"
+            );
+        }
+    }
+
+    #[test]
+    fn ncc_node_requires_its_parent_rank_index() {
+        let mut beta = BetaNetwork::new(NodeId(100));
+        let ncc_memory = beta.allocate_ncc_memory();
+        beta.create_ncc_node(beta.root_id(), NodeId(0), ncc_memory);
+        let parent_memory = beta.memory_id_for_node(beta.root_id()).unwrap();
+        beta.get_memory_mut(parent_memory).unwrap().ncc_parent_ranks = None;
+        assert!(beta
+            .validate_consistency()
+            .unwrap_err()
+            .contains("missing NCC parent rank index"));
+    }
 
     #[test]
     fn beta_memory_new_is_empty() {

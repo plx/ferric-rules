@@ -406,6 +406,66 @@ fn test_scaling_exists_support_assertion() {
     );
 }
 
+/// Completing an indexed NCC result must order just its matching parents.
+/// Each key has two parents: sorting a batch must not scan all 2N parents.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_indexed_ncc_completion() {
+    fn measure(n: usize) -> Duration {
+        measure_op_median(
+            || {
+                let mut engine = Engine::with_rules(
+                    "(defrule absent (item ?key ?copy)
+                       (not (and (blocker ?key) (other ?key))) =>)",
+                )
+                .unwrap();
+                for key in 0..n {
+                    let key = i64::try_from(key).unwrap();
+                    for copy in 0..2_i64 {
+                        engine
+                            .assert_ordered(
+                                "item",
+                                vec![
+                                    ferric_rules::core::Value::Integer(key),
+                                    ferric_rules::core::Value::Integer(copy),
+                                ],
+                            )
+                            .unwrap();
+                    }
+                    engine.assert_ordered("blocker", key).unwrap();
+                }
+                engine
+            },
+            |mut engine| {
+                for key in 0..n {
+                    engine
+                        .assert_ordered("other", i64::try_from(key).unwrap())
+                        .unwrap();
+                }
+                let result = engine.run(RunLimit::Unlimited).unwrap();
+                assert_eq!(result.rules_fired, 0);
+                assert_eq!(
+                    result.halt_reason,
+                    ferric_rules::runtime::HaltReason::AgendaEmpty
+                );
+                assert!(engine.action_diagnostics().is_empty());
+                assert_eq!(engine.fact_count(), n * 4);
+                black_box(engine);
+            },
+        )
+    }
+
+    let (small, large) = (512, 2048);
+    assert_scaling(
+        "indexed_ncc_completion",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
+
 /// Retracting N independent parents must not scan N unrelated negative memories.
 #[test]
 #[ignore = "requires release mode; run via just scaling-check"]

@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 9")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 10")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 9;
+const SCHEMA_VERSION: u16 = 10;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -1891,11 +1891,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-9 fixture: ordered and template splits,
+    /// Source of the committed schema-10 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-9.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-10.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -2062,9 +2062,17 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_nine_snapshot_resumes_matches_initializers_methods_addresses_and_defaults()
-    {
+    fn committed_schema_nine_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-9.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(9))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_ten_snapshot_resumes_matches_initializers_methods_addresses_and_defaults() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-10.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         assert_eq!(integer_rows(&engine, "random-first"), [[71_876_166]]);
@@ -2231,11 +2239,39 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-9 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_nine_fixture() {
+    fn committed_snapshot_preserves_blocker_migration_order() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-10.cbor");
+        for format in SerializationFormat::ALL {
+            for (relation, prefix) in [
+                ("fixture-blocker", "negative"),
+                ("fixture-ncc-blocker", "ncc"),
+            ] {
+                let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+                // Drain the unrelated split activations retained by the fixture.
+                engine.run(RunLimit::Unlimited).unwrap();
+                let blockers = engine.find_facts(relation).unwrap();
+                let first = blockers[0].0;
+                assert_eq!(blockers.len(), 2);
+                engine.retract(first).unwrap();
+                let migrated = engine.serialize(*format).unwrap();
+                let mut restored = Engine::deserialize(&migrated, *format).unwrap();
+                let last = restored.find_facts(relation).unwrap()[0].0;
+                restored.retract(last).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+                assert_eq!(
+                    restored.get_output("t"),
+                    Some(format!("{prefix} 3\n{prefix} 2\n{prefix} 1\n").as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-10 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_ten_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-9.cbor");
+            .join("tests/fixtures/snapshots/schema-10.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

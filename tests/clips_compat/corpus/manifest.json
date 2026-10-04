@@ -8875,6 +8875,421 @@
         "evaluation-order"
       ],
       "recoverable_random_notices": true
+    },
+    {
+      "path": "patterns/400o_shared_terminals_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "deffacts",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_shared_terminals_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "deffacts",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_shared_parent_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "join",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_shared_parent_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "join",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_shared_literal_variable_groups_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "literal-constraint",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_shared_literal_variable_groups_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "literal-constraint",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_or_variants_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "or",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_or_variants_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "or",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_exists_positive_exists_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_exists_positive_exists_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_positive_exists_positive_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_positive_exists_positive_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_unblock_tokens_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_unblock_tokens_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_unblock_nodes_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_unblock_nodes_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_unblock_tokens_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_unblock_tokens_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_empty_lhs_roots_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "empty-lhs",
+        "reset",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_empty_lhs_roots_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "empty-lhs",
+        "reset",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_unshared_literal_variable_predicate_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "predicate-constraint",
+        "literal-constraint",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_unshared_literal_variable_predicate_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "predicate-constraint",
+        "literal-constraint",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_multiple_blockers_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "support-count",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_multiple_blockers_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "support-count",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_simple_ncc_simple_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_simple_ncc_simple_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_ncc_simple_ncc_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_ncc_simple_ncc_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_negative_cancels_ncc_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_negative_cancels_ncc_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_gap_shared_negative_assert_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "shared-beta"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented scope boundary: identical negative joins are not shared, so equal-salience activation order differs from CLIPS 6.30.",
+        "observed": {
+          "phase": "complete",
+          "output": "r1\nr2\nr3\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_identical_ncc_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "shared-beta",
+        "and",
+        "ncc"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented scope boundary: identical NCC joins are not shared, so equal-salience activation order differs from CLIPS 6.30.",
+        "observed": {
+          "phase": "complete",
+          "output": "r2\nr1\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_shared_negative_retract_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "shared-beta"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented scope boundary: identical negative joins are not shared, so equal-salience activation order differs from CLIPS 6.30.",
+        "observed": {
+          "phase": "complete",
+          "output": "r3\nr1\nr2\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_independent_multi_exists_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "exists",
+        "ncc"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Pre-existing scope boundary: independent multi-pattern exists is lowered through a separate double-NCC topology, producing a different equal-salience activation order from CLIPS 6.30. This is distinct from identical negative-join sharing.",
+        "observed": {
+          "phase": "complete",
+          "output": "3\n2\n1\n",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }

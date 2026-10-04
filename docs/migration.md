@@ -137,9 +137,14 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 8
+## Pre-1.0 snapshot schema 10
 
-Snapshots are written with schema 8. Schema 7 snapshots are rejected with
+Snapshots are written with schema 10. Schema 9 snapshots are rejected with
+`UnsupportedVersion(9)` because negative and NCC blocker attachment histories
+now persist to preserve activation order after retraction. Schema 8 snapshots
+are rejected with `UnsupportedVersion(8)` because random-generator state,
+construct declaration order, and allowed-value source order now persist.
+Schema 7 snapshots are rejected with
 `UnsupportedVersion(7)` because template constraints and dynamic default
 expressions now persist in registered template metadata. Schema 6 snapshots are rejected with
 `UnsupportedVersion(6)` because executable effects and immediate lifecycle
@@ -486,7 +491,7 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 8); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 10); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see
