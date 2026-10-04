@@ -33,7 +33,7 @@ public enum Fact: Sendable, Equatable, Identifiable {
   }
 }
 
-/// The native reason that a rule run stopped.
+/// Why a logical run stopped, including cooperative host cancellation.
 public enum HaltReason: Sendable, Equatable {
   case agendaEmpty, limitReached, haltRequested, actionError
 }

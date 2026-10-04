@@ -7,8 +7,10 @@ and Apple Silicon iOS simulators. Intel slices are not currently provided.
 
 ## Build and use a local package
 
-Install Xcode with its macOS and iOS SDKs, select it with `xcode-select`, and
-install the Rust toolchain declared in the repository. From the repository root:
+Install Xcode with its macOS and iOS SDKs and the Rust toolchain declared in the
+repository. Select Xcode with `xcode-select`, or set `DEVELOPER_DIR` in the shell
+running these commands (for example, `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`).
+From the repository root:
 
 ```sh
 scripts/build-swift.sh
@@ -58,6 +60,29 @@ incremental according to the engine's supported CLIPS contract. A run that
 stops with `.actionError` includes owned messages in `RunResult.diagnostics`;
 inspect them when handling a failed rule action.
 
+Create a configured engine with
+`Engine.create(config: EngineConfig(stringEncoding: .utf8, strategy: .breadth))`.
+The default configuration uses UTF-8, depth ordering, and a requested callable
+depth of 64; native evaluation caps callable depth at 32. A depth of zero
+disables user-defined calls. Encoding options are `.ascii`, `.utf8`, and
+`.asciiSymbolsUTF8Strings`; strategies are `.depth`, `.breadth`, `.lex`, and `.mea`.
+
+The wrapper also exposes these native operations:
+
+| API | Result or behavior |
+| --- | --- |
+| `step()` | `.fired(diagnostics:)`, `.agendaEmpty`, or `.halted`; action errors accompany a fired step |
+| `clear()` | Remove constructs and facts, invalidating old fact IDs |
+| `isHalted`, `agendaCount` | Async throwing properties for the native halt flag and pending activation count |
+| `global(_:)` | An owned `Value`, or `nil` for the ABI's missing/ambiguous lookup result |
+| `pushInput(_:)` | Queue a complete line for `read` or `readline` |
+| `clearOutput(channel:)` | Clear one output channel, defaulting to `t` |
+| `findFacts(relation:)` | Owned ordered facts for a relation; use `facts()` to include templates |
+| `slotValue(_:of:)` | An owned template slot value; foreign, stale, or invalid IDs/slots throw |
+| `currentModule`, `focus` | Async throwing properties; focus is `nil` when its stack is empty |
+| `focusStack()` | Module names from bottom to top |
+| `rules()`, `templates()`, `modules()` | Owned native metadata; rule listings include compiled disjunction branches |
+
 ## Ownership and concurrency
 
 `Engine` is `Sendable`. Independent tasks can share it. Every native call,
@@ -66,14 +91,40 @@ serial dispatch queue. Native work does not block the main actor or a Swift
 cooperative executor. This uses Ferric's serialized thread-transfer contract;
 the queue is not assumed to remain on one OS thread.
 
-`close()` waits behind previously queued work and releases the native engine
-exactly once. Concurrent operations either finish with owned results or throw
-`EngineError.closed`, depending on queue order. Repeated close succeeds.
-Dropping the final Swift reference schedules the same cleanup without blocking
-the dropping thread. Prefer explicit close when cleanup completion matters.
-An unlimited rule run can delay close indefinitely: use finite `run(limit:)`
-batches for potentially unbounded rules. Swift task cancellation does not
-interrupt an already queued native operation.
+`run()` cooperatively checks Swift task cancellation and `engine.halt()` between
+bounded native chunks. Both stop the active logical run and return its completed
+rule count with `.haltRequested`. `halt()` is synchronous and does not wait for
+the engine queue; with no active run it does nothing. A cancellation belongs to
+one run, so canceling an older or queued task cannot stop a different run.
+
+```swift
+let running = Task { try await engine.run() }
+// Later, from the task that owns this handle:
+running.cancel()
+let stopped = try await running.value
+try await engine.close()
+```
+
+The wrapper keeps the entire logical run on one queue operation. Other engine
+calls cannot interleave between chunks. A source `(halt)` at an internal chunk
+boundary is preserved; there is no need to implement a manual batching loop.
+Each public `run` is still a fresh run. An explicit caller limit takes precedence
+on its exact final firing, while native terminal results such as `.actionError`
+or `.agendaEmpty` take precedence over late cancellation. `run(limit: 0)` retains
+the native zero-limit behavior, including clearing earlier halt/diagnostics.
+A canceled positive/unlimited run starts fresh and can return zero progress.
+Cancellation is cooperative: it cannot interrupt a rule activation while its
+actions are executing. The wrapper's `.haltRequested` cancellation result does not
+set the native halt flag; `isHalted` reports the native flag.
+
+`close()` marks the engine as closing, requests cancellation of its active run,
+then waits for queued cleanup and releases the native engine exactly once.
+Runs that have not gained admission throw `EngineError.closed` once closing
+begins, including runs already waiting in the queue. Other previously queued
+operations finish according to queue order. Repeated close succeeds, and
+canceling the task awaiting close does not cancel cleanup. Dropping the final
+Swift reference schedules cleanup without blocking the dropping thread. Prefer
+explicit close when cleanup completion matters.
 
 Values, facts, output, snapshot bytes, and error messages are owned Swift data
 and remain usable after close. Integers retain all signed 64-bit precision;
@@ -97,8 +148,9 @@ or attempt its own migration. Corrupt or incompatible input produces an owned
 
 ## Validation and shared example
 
-The tests cover independent tasks, overlapping close/use, draining admitted
-work, final-reference cleanup, exact typed values, template defaults,
+The tests cover independent tasks, task cancellation and host halt, source halt
+at chunk boundaries, queued-run isolation, overlapping close/use, draining
+admitted work, final-reference cleanup, exact typed values, template defaults,
 retraction, limited execution, meaningful snapshot continuation, and errors.
 Both the tests and external consumer use the canonical
 [`examples/embedding/launch-selection.clp`](../../examples/embedding/launch-selection.clp):

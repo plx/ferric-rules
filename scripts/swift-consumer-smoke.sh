@@ -31,7 +31,66 @@ import Ferric
 import Foundation
 
 @main struct Consumer {
+    static func configuredControl() async throws {
+        let engine = try await Engine.create(config: EngineConfig(
+            stringEncoding: .asciiSymbolsUTF8Strings, strategy: .lex, maxCallDepth: 32
+        ))
+        try await engine.load("""
+            (defglobal ?*answer* = 0 ?*payload* = (create$ "owned" [unit] 9))
+            (deftemplate detail (slot value))
+            (deffacts startup (ready))
+            (defrule consume ?f <- (ready) =>
+              (retract ?f)
+              (bind ?*answer* (read))
+              (assert (read-result ?*answer*) (detail (value ?*answer*)))
+              (printout t "read:" ?*answer* crlf)
+              (printout audit "kept"))
+            """)
+        try await engine.pushInput("42")
+        try await engine.reset()
+        let pending = try await engine.agendaCount
+        precondition(pending == 1)
+        let first = try await engine.step()
+        precondition(first == .fired(diagnostics: []))
+        let exhausted = try await engine.step()
+        precondition(exhausted == .agendaEmpty)
+        let halted = try await engine.isHalted
+        precondition(!halted)
+        let answer = try await engine.global("answer")
+        let payload = try await engine.global("payload")
+        let absent = try await engine.global("absent")
+        precondition(answer == .integer(42) && absent == nil)
+        let results = try await engine.findFacts(relation: "read-result")
+        guard results.count == 1,
+              case .ordered(_, "read-result", let fields) = results[0]
+        else { fatalError("missing input result") }
+        precondition(fields == [.integer(42)])
+        let details = try await engine.facts().filter {
+            if case .template(_, "detail", _) = $0 { true } else { false }
+        }
+        precondition(details.count == 1)
+        let slot = try await engine.slotValue("value", of: details[0].id)
+        precondition(slot == .integer(42))
+        let output = try await engine.output()
+        precondition(output == "read:42\n")
+        try await engine.clearOutput()
+        let cleared = try await engine.output()
+        let audit = try await engine.output(channel: "audit")
+        precondition(cleared == nil && audit == "kept")
+        _ = try await engine.assertFact("utf8", fields: [.string("caf\u{00e9}")])
+        do {
+            _ = try await engine.assertFact("invalid-symbol", fields: [.symbol("caf\u{00e9}")])
+            fatalError("ASCII symbol policy ignored")
+        } catch EngineError.native(_, let message) {
+            precondition(!message.isEmpty)
+        }
+        try await engine.close()
+        precondition(payload == .multifield([.string("owned"), .instanceName("unit"), .integer(9)]))
+        precondition(fields == [.integer(42)] && output == "read:42\n")
+    }
+
     static func main() async throws {
+        try await configuredControl()
         let source = try String(contentsOf: Bundle.module.url(forResource: "launch", withExtension: "clp", subdirectory: "Resources")!, encoding: .utf8)
         let engine = try await Engine.create()
         try await engine.load(source)
@@ -78,7 +137,7 @@ import Foundation
         let invalidFacts = try await invalid.facts()
         precondition(invalidFacts.isEmpty)
         try await invalid.close()
-        print("Swift external consumer: sign-in selected once; pending/completed snapshot resume, high IDs and invalid-input diagnostics passed")
+        print("Swift external consumer: configured input/step, owned globals/facts, isolated output clearing, snapshot resume, high IDs and invalid-input diagnostics passed")
     }
 }
 SWIFT

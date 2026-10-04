@@ -542,7 +542,12 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
 - Go source imports use `github.com/plx/ferric-rules/bindings/go`. Engine
   operations serialize across goroutines; the worker/pool APIs were removed.
   Swift's local package uses Swift 6, macOS 15 or iOS 18, with asynchronous native
-  work and owned results; see [its build instructions](../bindings/swift/README.md).
+  work and owned results. Swift `run()` now checks task cancellation and host
+  `halt()` between native chunks, returning partial progress as `.haltRequested`.
+  Close stops the active run and rejects queued runs before cleanup. These
+  wrapper outcomes do not set the native halt flag; see the
+  [Swift lifecycle contract](../bindings/swift/README.md#ownership-and-concurrency)
+  for precedence and cooperative limits.
 - The `ferric-rules-pinned` crate and the `ferric_pinned_*` C API are removed.
   They only worked around the old thread-affine engine; `Engine` is now
   `Send + Sync`, so move it to the thread that should run it or wrap it in your

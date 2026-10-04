@@ -25,10 +25,18 @@ struct NativeState {
 final class Storage: Sendable {
   let identity = UUID()
   private let state = Mutex(NativeState())
+  private let runAdmission = Mutex(RunAdmissionState())
   private let queue = DispatchQueue(label: "org.ferric-rules.engine", qos: .userInitiated)
 
   func perform<Result: Sendable>(
     _ operation: @escaping @Sendable (inout NativeState) throws -> Result
+  ) async throws -> Result {
+    try await enqueue(operation)
+  }
+
+  private func enqueue<Result: Sendable>(
+    _ operation: @escaping @Sendable (inout NativeState) throws -> Result,
+    didEnqueue: (@Sendable () -> Void)? = nil
   ) async throws -> Result {
     try await withCheckedThrowingContinuation { continuation in
       queue.async { [self] in
@@ -39,10 +47,56 @@ final class Storage: Sendable {
           continuation.resume(throwing: error)
         }
       }
+      didEnqueue?()
     }
   }
 
+  func run(limit: Int?, control: RunControl) async throws -> RunResult {
+    let observer = runAdmission.withLock { $0.observer }
+    return try await enqueue(
+      { [self] state in
+        let handle = try state.requireHandle()
+        try runAdmission.withLock { admission in
+          guard !admission.closing else { throw EngineError.closed }
+          admission.active = control
+        }
+        defer {
+          runAdmission.withLock { admission in
+            if admission.active === control { admission.active = nil }
+          }
+          observer?(.finished(control))
+        }
+        observer?(.admitted(control))
+        return try executeNativeRun(handle: handle, limit: limit, control: control) { count, reason in
+          observer?(.chunk(control, rulesFired: count, reason: reason))
+        }
+      },
+      didEnqueue: { observer?(.queued(control)) }
+    )
+  }
+
+  func haltActiveRun() {
+    let active = runAdmission.withLock { $0.active }
+    active?.requestStop()
+  }
+
+  func requestClose() {
+    let (active, observer) = runAdmission.withLock { admission in
+      admission.closing = true
+      return (admission.active, admission.observer)
+    }
+    active?.requestStop()
+    observer?(.closing)
+  }
+
+  // Set before scheduling test operations. Capturing one observer per run keeps
+  // hooks local to an engine and avoids races between parallel test cases.
+  func observeRuns(_ observer: RunObserver?) {
+    runAdmission.withLock { $0.observer = observer }
+  }
+
   func scheduleCleanup() {
+    requestClose()
     // The queued block retains storage until all earlier work and cleanup
     // finish. Deinitializing an Engine never blocks a UI/cooperative executor.
     queue.async { [self] in
@@ -63,9 +117,15 @@ public final class Engine: Sendable {
 
   /// Create an empty engine with the default native configuration.
   public static func create() async throws -> Engine {
+    try await create(config: EngineConfig())
+  }
+
+  /// Create an empty engine with a typed native configuration.
+  public static func create(config: EngineConfig) async throws -> Engine {
     let storage = Storage()
     try await storage.perform { state in
-      guard let handle = ferric_engine_new() else {
+      var nativeConfig = try config.nativeConfiguration()
+      guard let handle = ferric_engine_new_with_config(&nativeConfig) else {
         try check(FERRIC_ERROR_INTERNAL_ERROR)
         return
       }
@@ -96,8 +156,11 @@ public final class Engine: Sendable {
     return Engine(storage: storage)
   }
 
-  /// Wait for earlier work and destroy the native engine. Repeated calls succeed.
+  /// Stop an active run between chunks, drain earlier ordinary operations, and
+  /// destroy the native engine. Queued runs fail with `EngineError.closed` once
+  /// closing begins. Repeated calls succeed, even if the awaiting task is cancelled.
   public func close() async throws {
+    storage.requestClose()
     try await storage.perform { try $0.close() }
   }
 
@@ -197,33 +260,23 @@ public final class Engine: Sendable {
     }
   }
 
-  /// A nil limit runs to completion. Use finite limits for potentially unbounded
-  /// rules; canceling a Swift Task does not interrupt already-admitted native work.
+  /// Run cooperatively in bounded native chunks. Task cancellation returns
+  /// partial progress with `haltRequested`; it cannot interrupt one activation.
+  /// Native terminal results and a completed explicit limit take precedence.
   public func run(limit: Int? = nil) async throws -> RunResult {
     if let limit, limit < 0 { throw EngineError.invalidArgument("run limit must be nonnegative") }
-    return try await storage.perform { state in
-      let handle = try state.requireHandle()
-      var fired: UInt64 = 0
-      var reason = FERRIC_HALT_REASON_AGENDA_EMPTY
-      try check(ferric_engine_run_ex(handle, Int64(limit ?? -1), &fired, &reason), handle: handle)
-      let result: HaltReason
-      switch reason {
-      case FERRIC_HALT_REASON_AGENDA_EMPTY: result = .agendaEmpty
-      case FERRIC_HALT_REASON_LIMIT_REACHED: result = .limitReached
-      case FERRIC_HALT_REASON_HALT_REQUESTED: result = .haltRequested
-      case FERRIC_HALT_REASON_ACTION_ERROR: result = .actionError
-      default: throw EngineError.unsupportedValue("unknown native halt reason")
-      }
-      var diagnosticCount: UInt = 0
-      try check(ferric_engine_action_diagnostic_count(handle, &diagnosticCount), handle: handle)
-      let diagnostics = try (0..<checkedCount(diagnosticCount)).map { index in
-        try requiredString(handle: handle) {
-          ferric_engine_action_diagnostic_copy(handle, UInt(index), $0, $1, $2)
-        }
-      }
-      return RunResult(rulesFired: fired, haltReason: result, diagnostics: diagnostics)
+    let control = RunControl()
+    if Task.isCancelled { control.requestStop() }
+    return try await withTaskCancellationHandler {
+      try await storage.run(limit: limit, control: control)
+    } onCancel: {
+      control.requestStop()
     }
   }
+
+  /// Request that the active run stop between chunks without entering its queue.
+  /// Idle/closed engines are unchanged; this does not latch a native halt flag.
+  public func halt() { storage.haltActiveRun() }
 
   /// Return owned copies of all current facts and their typed values.
   public func facts() async throws -> [Fact] {
