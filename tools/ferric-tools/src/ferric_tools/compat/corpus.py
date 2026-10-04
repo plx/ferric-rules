@@ -64,6 +64,10 @@ def extract_output(stdout: str, stderr: str, begin: str, end: str, error: str | 
     # A fresh CLIPS environment already contains MAIN; declaring its imports
     # legitimately emits this one specific warning even when load succeeds.
     preamble = prefix.replace("[CSTRCPSR1] WARNING: Redefining defmodule: MAIN\n", "")
+    # Source integers outside the signed 64-bit range are clamped by CLIPS.
+    # Ferric's source lexer clamps silently; only allow this exact load notice.
+    # Notices within the execution frame remain part of the returned oracle.
+    preamble = preamble.replace(SCANNER_NOTICES[0], "")
     if re.search(r"\[[A-Z]+\d+\]", preamble + suffix):
         raise ReferenceFailure(f"CLIPS load/protocol diagnostic:\n{prefix}{suffix}")
     # The Debian CLIPS executable also writes runtime errors to stdout. Reserve

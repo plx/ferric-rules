@@ -7,6 +7,7 @@
 //! valid UTF-8 input every token except an escaped end of input is valid
 //! UTF-8, and callers decode the rest lossily.
 
+use ferric_rules_parser::numeric_scanner::{scan_number, NumberKind};
 use std::borrow::Cow;
 
 /// One scanned CLIPS token.
@@ -237,78 +238,17 @@ impl<'a> FieldScanner<'a> {
     }
 
     fn scan_number(&mut self, start: usize, notice: &mut Option<ScanNotice>) -> FieldToken<'a> {
-        let mut phase = NumberPhase::Sign;
-        let mut mantissa_digit = false;
-        let mut floating = false;
-        loop {
-            let byte = self.peek();
-            match (phase, byte) {
-                (NumberPhase::Sign, Some(b'+' | b'-')) => phase = NumberPhase::Integral,
-                (NumberPhase::Sign | NumberPhase::Integral, Some(b'0'..=b'9')) => {
-                    phase = NumberPhase::Integral;
-                    mantissa_digit = true;
-                }
-                (NumberPhase::Sign | NumberPhase::Integral, Some(b'.')) => {
-                    phase = NumberPhase::Decimal;
-                    floating = true;
-                }
-                (NumberPhase::Decimal, Some(b'0'..=b'9')) => mantissa_digit = true,
-                (
-                    NumberPhase::Sign | NumberPhase::Integral | NumberPhase::Decimal,
-                    Some(b'e' | b'E'),
-                ) => {
-                    phase = NumberPhase::ExponentStart;
-                    floating = true;
-                }
-                (NumberPhase::ExponentStart, Some(b'0'..=b'9' | b'+' | b'-')) => {
-                    phase = NumberPhase::ExponentValue;
-                }
-                (NumberPhase::ExponentValue, Some(b'0'..=b'9')) => {}
-                _ if number_delimiter(byte, phase) => {
-                    // An exponent without digits leaves a symbol.
-                    if phase == NumberPhase::ExponentStart
-                        || (phase == NumberPhase::ExponentValue
-                            && matches!(self.input[self.cursor - 1], b'+' | b'-'))
-                    {
-                        mantissa_digit = false;
-                    }
-                    break;
-                }
-                _ => {
-                    // Any other byte turns the whole token into a symbol.
-                    self.cursor += 1;
-                    self.consume_symbol_suffix();
-                    return self.symbol_or_instance_name(start);
-                }
-            }
-            self.cursor += 1;
+        let scanned = scan_number(&self.input[start..]);
+        self.cursor = start + scanned.consumed;
+        if scanned.integer_overflow {
+            *notice = Some(ScanNotice::IntegerRange);
         }
-        let bytes = &self.input[start..self.cursor];
-        if !mantissa_digit {
-            return FieldToken::Symbol(Cow::Borrowed(bytes));
-        }
-        if floating {
-            // The grammar above admits only ASCII decimal floats, which Rust
-            // parses exactly, including signed zero, underflow and infinity.
-            let text = std::str::from_utf8(bytes).expect("numeric grammar is ASCII");
-            FieldToken::Float(text.parse().expect("scanned decimal float parses"))
-        } else {
-            let (value, overflow) = scan_integer(bytes);
-            if overflow {
-                *notice = Some(ScanNotice::IntegerRange);
-            }
-            FieldToken::Integer(value)
+        match scanned.kind {
+            NumberKind::Integer(value) => FieldToken::Integer(value),
+            NumberKind::Float(value) => FieldToken::Float(value),
+            NumberKind::Symbol => FieldToken::Symbol(self.slice(start)),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NumberPhase {
-    Sign,
-    Integral,
-    Decimal,
-    ExponentStart,
-    ExponentValue,
 }
 
 fn is_utf8_start(byte: u8) -> bool {
@@ -326,15 +266,6 @@ fn is_symbol_continuation(byte: u8) -> bool {
     ) && (byte.is_ascii_graphic() || is_utf8_start(byte) || is_utf8_continuation(byte))
 }
 
-fn number_delimiter(byte: Option<u8>, phase: NumberPhase) -> bool {
-    match byte {
-        None | Some(b'<' | b'"' | b'(' | b')' | b'&' | b'|' | b'~' | b' ' | b';') => true,
-        Some(byte) => {
-            !byte.is_ascii_graphic() && (phase == NumberPhase::Sign || !is_utf8_start(byte))
-        }
-    }
-}
-
 /// `ExpandStringWithChar`: a backspace erases the previous character.
 fn append_string_byte(output: &mut Vec<u8>, byte: u8) {
     if byte == b'\x08' {
@@ -345,35 +276,6 @@ fn append_string_byte(output: &mut Vec<u8>, byte: u8) {
     } else {
         output.push(byte);
     }
-}
-
-/// Parse decimal digits, saturating at the `i64` range as CLIPS does.
-fn scan_integer(bytes: &[u8]) -> (i64, bool) {
-    let negative = bytes.first() == Some(&b'-');
-    let digits = bytes
-        .strip_prefix(b"+")
-        .or_else(|| bytes.strip_prefix(b"-"));
-    let limit = if negative {
-        1_u64 << 63
-    } else {
-        i64::MAX as u64
-    };
-    let mut magnitude = 0_u64;
-    for &digit in digits.unwrap_or(bytes) {
-        match magnitude
-            .checked_mul(10)
-            .and_then(|value| value.checked_add(u64::from(digit - b'0')))
-        {
-            Some(value) if value <= limit => magnitude = value,
-            _ => return (if negative { i64::MIN } else { i64::MAX }, true),
-        }
-    }
-    let value = if negative {
-        0_i64.wrapping_sub_unsigned(magnitude)
-    } else {
-        i64::try_from(magnitude).expect("magnitude was checked against i64::MAX")
-    };
-    (value, false)
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Lexical analyzer for CLIPS-compatible syntax.
 
 use crate::error::{LexError, ParseErrorKind};
+use crate::numeric_scanner::{scan_number, NumberKind};
 use crate::span::{FileId, Position, Span};
 
 /// A token in the CLIPS lexical grammar.
@@ -73,8 +74,10 @@ pub fn lex(source: &str, file_id: FileId) -> Result<Vec<SpannedToken>, Vec<LexEr
 }
 
 struct Lexer<'a> {
+    source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     position: Position,
+    previous_was_cr: bool,
     file_id: FileId,
     tokens: Vec<SpannedToken>,
     errors: Vec<LexError>,
@@ -83,8 +86,10 @@ struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     fn new(source: &'a str, file_id: FileId) -> Self {
         Self {
+            source,
             chars: source.char_indices().peekable(),
             position: Position::new(),
+            previous_was_cr: false,
             file_id,
             tokens: Vec::new(),
             errors: Vec::new(),
@@ -179,15 +184,8 @@ impl<'a> Lexer<'a> {
                         self.lex_symbol();
                     }
                 }
-                // Numbers (sign or digit)
-                '+' | '-' => {
-                    if self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit()) {
-                        self.lex_number();
-                    } else {
-                        self.lex_symbol();
-                    }
-                }
-                '0'..='9' => {
+                // Numbers and number-like symbols use the same CLIPS scanner.
+                '0'..='9' | '.' | '+' | '-' => {
                     self.lex_number();
                 }
                 // Symbols
@@ -216,7 +214,13 @@ impl<'a> Lexer<'a> {
 
     fn advance(&mut self) -> Option<char> {
         if let Some((_, ch)) = self.chars.next() {
-            self.position.advance(ch);
+            if ch == '\n' && self.previous_was_cr {
+                // CRLF is one line ending, but both bytes belong to the span.
+                self.position.offset += 1;
+            } else {
+                self.position.advance(if ch == '\r' { '\n' } else { ch });
+            }
+            self.previous_was_cr = ch == '\r';
             Some(ch)
         } else {
             None
@@ -234,7 +238,7 @@ impl<'a> Lexer<'a> {
 
     fn skip_comment(&mut self) {
         while let Some(&(_, ch)) = self.chars.peek() {
-            if ch == '\n' {
+            if matches!(ch, '\n' | '\r') {
                 break;
             }
             self.advance();
@@ -372,81 +376,19 @@ impl<'a> Lexer<'a> {
 
     fn lex_number(&mut self) {
         let start = self.position;
-        let mut num_str = String::new();
-
-        // Optional sign
-        if let Some(&(_, ch @ ('+' | '-'))) = self.chars.peek() {
-            num_str.push(ch);
+        let scanned = scan_number(&self.source.as_bytes()[start.offset..]);
+        let end = start.offset + scanned.consumed;
+        while self.position.offset < end {
             self.advance();
         }
-
-        // Integer part
-        while let Some(&(_, ch @ '0'..='9')) = self.chars.peek() {
-            num_str.push(ch);
-            self.advance();
-        }
-
-        // Check for float (decimal point or exponent)
-        let mut is_float = false;
-
-        if self.chars.peek().map(|&(_, ch)| ch) == Some('.') {
-            // Look ahead to ensure it's not a symbol like `1.abc`
-            if self.peek_ahead(1).is_some_and(|c| c.is_ascii_digit()) {
-                is_float = true;
-                num_str.push('.');
-                self.advance();
-
-                while let Some(&(_, ch @ '0'..='9')) = self.chars.peek() {
-                    num_str.push(ch);
-                    self.advance();
-                }
-            }
-        }
-
-        // Exponent
-        if let Some(&(_, ch @ ('e' | 'E'))) = self.chars.peek() {
-            is_float = true;
-            num_str.push(ch);
-            self.advance();
-
-            if let Some(&(_, sign @ ('+' | '-'))) = self.chars.peek() {
-                num_str.push(sign);
-                self.advance();
-            }
-
-            while let Some(&(_, ch @ '0'..='9')) = self.chars.peek() {
-                num_str.push(ch);
-                self.advance();
-            }
-        }
-
+        let token = match scanned.kind {
+            NumberKind::Integer(value) => Token::Integer(value),
+            NumberKind::Float(value) => Token::Float(value),
+            NumberKind::Symbol => Token::Symbol(self.source[start.offset..end].to_owned()),
+        };
+        // Source lexing has no warning channel; integer overflow saturates.
         let span = Span::new(start, self.position, self.file_id);
-
-        if is_float {
-            match num_str.parse::<f64>() {
-                Ok(val) => self.tokens.push(SpannedToken::new(Token::Float(val), span)),
-                Err(_) => {
-                    self.errors.push(LexError::new(
-                        format!("invalid floating-point number: {num_str}"),
-                        span,
-                        ParseErrorKind::InvalidNumber,
-                    ));
-                }
-            }
-        } else {
-            match num_str.parse::<i64>() {
-                Ok(val) => self
-                    .tokens
-                    .push(SpannedToken::new(Token::Integer(val), span)),
-                Err(_) => {
-                    self.errors.push(LexError::new(
-                        format!("invalid integer: {num_str}"),
-                        span,
-                        ParseErrorKind::InvalidNumber,
-                    ));
-                }
-            }
-        }
+        self.tokens.push(SpannedToken::new(token, span));
     }
 
     fn lex_symbol(&mut self) {
@@ -629,6 +571,122 @@ mod tests {
         } else {
             panic!("expected float token");
         }
+    }
+
+    #[test]
+    fn lex_clips_decimal_forms() {
+        for (source, expected) in [
+            ("1.", 1.0_f64),
+            ("1.e3", 1000.0),
+            (".5", 0.5),
+            ("+.5", 0.5),
+            ("-.5", -0.5),
+            ("-.5e1", -5.0),
+            ("-0.0", -0.0),
+        ] {
+            let tokens = lex(source, file()).unwrap();
+            assert_eq!(tokens.len(), 1, "{source}");
+            let Token::Float(actual) = tokens[0].token else {
+                panic!("expected one float for {source}");
+            };
+            assert_eq!(actual.to_bits(), expected.to_bits(), "{source}");
+            assert_eq!(tokens[0].span.end.offset, source.len());
+        }
+    }
+
+    #[test]
+    fn lex_number_like_symbols_are_single_fields() {
+        for source in [
+            "1st", "0x10", "12abc", "1.abc", "3.14.15", "1-2", "1e5x", "1e5.5", "5f", "5e", "1.5e",
+            "1e+", "1e-", "+", "-", ".", "1,2", "1:2",
+        ] {
+            let tokens = lex(source, file()).unwrap();
+            assert_eq!(tokens.len(), 1, "{source}");
+            assert_eq!(tokens[0].token, Token::Symbol(source.to_owned()));
+            assert_eq!(tokens[0].span.end.offset, source.len());
+        }
+        let tokens = lex("1st|2nd&~3rd; comment\n4th", file()).unwrap();
+        assert_eq!(
+            tokens
+                .into_iter()
+                .map(|token| token.token)
+                .collect::<Vec<_>>(),
+            [
+                Token::Symbol("1st".into()),
+                Token::Pipe,
+                Token::Symbol("2nd".into()),
+                Token::Ampersand,
+                Token::Tilde,
+                Token::Symbol("3rd".into()),
+                Token::Symbol("4th".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_integer_overflow_saturates_without_rejecting_source() {
+        let tokens = lex(
+            "99999999999999999999 -99999999999999999999 9223372036854775807 -9223372036854775808",
+            file(),
+        )
+        .unwrap();
+        assert_eq!(
+            tokens
+                .into_iter()
+                .map(|token| token.token)
+                .collect::<Vec<_>>(),
+            [
+                Token::Integer(i64::MAX),
+                Token::Integer(i64::MIN),
+                Token::Integer(i64::MAX),
+                Token::Integer(i64::MIN),
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_number_like_utf8_symbols_keep_byte_and_character_spans() {
+        let source = "(1é中 .5)";
+        let tokens = lex(source, file()).unwrap();
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[1].token, Token::Symbol("1é中".into()));
+        assert_eq!(tokens[1].span.start.offset, 1);
+        assert_eq!(tokens[1].span.start.column, 2);
+        assert_eq!(tokens[1].span.end.offset, 7);
+        assert_eq!(tokens[1].span.end.column, 5);
+        assert_eq!(tokens[2].token, Token::Float(0.5));
+        assert_eq!(tokens[2].span.start.offset, 8);
+        assert_eq!(tokens[2].span.start.column, 6);
+        assert_eq!(tokens[3].span.end.offset, source.len());
+    }
+
+    #[test]
+    fn lex_comments_and_spans_handle_cr_lf_and_crlf() {
+        for ending in ["\r", "\n", "\r\n"] {
+            let source = format!("; comment{ending}(1st){ending}; next{ending}.5");
+            let tokens = lex(&source, file()).unwrap();
+            assert_eq!(tokens.len(), 4, "{ending:?}");
+            assert_eq!(tokens[0].token, Token::LeftParen);
+            assert_eq!(tokens[0].span.start.line, 2);
+            assert_eq!(tokens[0].span.start.column, 1);
+            assert_eq!(
+                tokens[0].span.start.offset,
+                "; comment".len() + ending.len()
+            );
+            assert_eq!(tokens[1].token, Token::Symbol("1st".into()));
+            assert_eq!(tokens[3].token, Token::Float(0.5));
+            assert_eq!(tokens[3].span.start.line, 4);
+            assert_eq!(tokens[3].span.start.column, 1);
+            assert_eq!(tokens[3].span.end.offset, source.len());
+        }
+        let tokens = lex("a\r\r\nb\nc\rd", file()).unwrap();
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|token| token.span.start.line)
+                .collect::<Vec<_>>(),
+            [1, 3, 4, 5]
+        );
     }
 
     #[test]

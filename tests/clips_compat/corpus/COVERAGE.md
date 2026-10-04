@@ -58,6 +58,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 
 | Feature | Corpus status |
 |---|---|
+| Source numeric scanner | Delimiter-bounded numeric candidates cover trailing/leading decimal points, signed zero, exponents, numeric-looking symbols, incomplete exponents, source integer clamping, compact constraint connectives, and CR-only comments. Nonoverflow cases compare source values with `explode$`; general symbol tokenization remains outside this coverage. |
 | Brackets in symbols | No dedicated granular program yet; existing lexer tests cover this separately. |
 | Connective constraints | Literal, variable, predicate, and return-value disjunctions cover overlapping alternatives, leading bindings, joins, negation, exists, forall, and ordered/template sequence fields. More complex nested expressions remain incomplete. |
 | Implicit initial-fact for empty rules | Empty-LHS startup and repeated-reset refraction cases exist; direct initial-fact identity/order still needs coverage. |

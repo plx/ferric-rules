@@ -1,0 +1,1 @@
+;; CR-only line endings terminate source comments and preserve the following rule.;; Level: boundary;; Covers: source-scanner, comments, line-endings; comment(defrule r => (printout t "fired" crlf))

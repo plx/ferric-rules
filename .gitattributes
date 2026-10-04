@@ -29,6 +29,7 @@ tests/clips_compat/corpus/** text eol=lf
 # These oracles contain literal CR bytes (CLIPS stdin framing, scanner input
 # and %r output); keep them byte-exact rather than line-ending normalized.
 tests/clips_compat/corpus/io/read-crlf-readline-state.in -text
+tests/clips_compat/corpus/patterns/116_source_scanner_cr_comments.clp -text
 tests/clips_compat/corpus/stdlib/084_string_to_field_whitespace_comments_and_empty.clp -text
 tests/clips_compat/corpus/stdlib/091_string_to_field_ascii_whitespace_controls.clp -text
 tests/clips_compat/corpus/stdlib/092_string_to_field_control_whitespace_edges.clp -text

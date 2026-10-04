@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 627
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 635
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -905,6 +905,13 @@ notice to the `wwarning` or `werror` router, and so does Ferric (`ferric run`
 prints only `t`, so it does not show them). A string that ends in a backslash
 at the end of input gives CLIPS a byte that is not UTF-8, which Ferric holds as
 U+FFFD.
+
+Source text and `load-facts` share the field scanner's numeric grammar. Forms
+such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
+exponents such as `5e` are single symbols. Source integers outside the signed
+64-bit range saturate too, but the source lexer has no warning channel and
+does not emit the `[SCANNER1]` notice. Comments end at CR or LF, including
+files that use CR-only line endings.
 
 ### Multifield Functions
 

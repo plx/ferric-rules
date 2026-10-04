@@ -2004,6 +2004,87 @@
       ]
     },
     {
+      "path": "patterns/111_source_scanner_numeric_table.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "integerp",
+        "floatp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "patterns/112_source_scanner_signed_zero_exponents.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "create$",
+        "integerp",
+        "floatp"
+      ]
+    },
+    {
+      "path": "patterns/113_source_scanner_ordered_numeric_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "ordered-facts",
+        "explode$",
+        "multifield"
+      ]
+    },
+    {
+      "path": "patterns/114_source_scanner_incomplete_exponent_patterns.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "ordered-facts",
+        "explode$"
+      ]
+    },
+    {
+      "path": "patterns/115_source_scanner_integer_overflow.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "integerp",
+        "create$"
+      ]
+    },
+    {
+      "path": "patterns/116_source_scanner_cr_comments.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "comments",
+        "line-endings"
+      ]
+    },
+    {
+      "path": "patterns/117_source_scanner_connective_delimiters.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "field-disjunction",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/118_source_scanner_signed_numeric_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "symbolp"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
