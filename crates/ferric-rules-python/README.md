@@ -7,30 +7,21 @@ capture, and snapshot serialization.
 
 ## Release status
 
-The repository builds locally installable wheels and source distributions and
-verifies their contents with clean consumer tests. Public registry publication
-is not currently planned; no tagged or stable PyPI release is implied by those
-artifacts.
+The repository supports local source builds and host wheels. CI builds a host
+wheel and exercises it from a fresh virtual environment outside the checkout.
+Public registry publication is not currently planned; these checks do not imply
+a tagged or stable PyPI release.
 
 ## Supported Python and platforms
 
-The release contract supports GIL-enabled CPython 3.9 through 3.13. Wheels use
+The binding supports GIL-enabled CPython 3.9 through 3.13. Wheels use
 PyO3's stable ABI with a Python/ABI tag of `cp39-abi3`, so one wheel per native
 target covers every supported minor.
 
-Verified wheel targets are:
-
-- glibc 2.17+ Linux on x86-64 and AArch64 (`manylinux2014`);
-- musl 1.2+ Linux on x86-64 and AArch64 (`musllinux_1_2`);
-- macOS 10.12+ on x86-64;
-- macOS 11.0+ on Apple silicon; and
-- 64-bit Windows on x86-64.
-
 Python 3.14, PyPy, GraalPy, free-threaded CPython, CPython subinterpreters,
-macOS universal2, Windows on Arm, and every unlisted platform or architecture
-are outside this contract.
-The machine-readable source of truth is
-[`wheel-targets.json`](https://github.com/plx/ferric-rules/blob/main/crates/ferric-rules-python/wheel-targets.json).
+and cross-platform wheel distribution are outside the current support contract.
+Local builds use the host's native compiler and linker; CI checks source tests
+and the isolated host-wheel consumer on its configured runners.
 
 ## Example
 
@@ -203,15 +194,19 @@ uv run --locked maturin develop --release
 uv run --locked pytest tests/ -v
 ```
 
-Release source distributions carry the required Rust workspace subset and a
-lockfile normalized for that relocated workspace. The exact final archive is
-built into a wheel and smoke-tested before it may join the verified dry-run
-bundle; publishing Maturin's raw intermediate or any untested sdist is not
-allowed.
+To check installation independently of the development environment, run from
+the repository root:
 
-See the repository's
-[Python package release contract](https://github.com/plx/ferric-rules/blob/main/docs/python-package-release.md)
-for the complete ABI, target, verification, and publication policy.
+```sh
+scripts/python-consumer-smoke.sh
+```
+
+The script uses the locked Maturin dependency to build one release wheel for
+the host, installs it into a fresh virtual environment outside the checkout,
+and runs Python in isolated mode. The consumer verifies its import location,
+rule execution, facts, output, and snapshot restoration. An optional interpreter
+path selects the Python used for both the build and consumer:
+`scripts/python-consumer-smoke.sh /path/to/python3.13`.
 
 ## License
 

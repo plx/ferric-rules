@@ -16,9 +16,11 @@ If this contract conflicts with legacy design docs, this contract wins.
 
 ## 2. Public Package Contract
 
-The supported runtime is Node 22 or newer. All seven declared native targets
-remain supported. Node 18/20 are end-of-life; unconditional disposal symbols also
-made the former `>=18` claim inaccurate before Node 18.18. This is a deliberate
+The supported runtime is Node 22 or newer. The runtime loader retains the
+native targets declared in `native/targets.json`; host consumer checks do not
+claim release verification for every declared target. Node 18/20 are end-of-life;
+unconditional disposal symbols also made the former `>=18` claim inaccurate before
+Node 18.18. This is a deliberate
 pre-1.0 minimum-version correction ([Node release status](https://nodejs.org/en/about/previous-releases),
 [18.18 disposal introduction](https://nodejs.org/en/blog/release/v18.18.0)).
 Package root exports support CommonJS require, ESM named/dynamic import and
@@ -751,16 +753,19 @@ interface WorkerResponse {
    detected OS and architecture, the detected libc on Linux, and the supported
    target alternatives. A missing optional package `MUST` name the full
    detected target and exact expected package.
-7. CI `MUST` pack, install, and execute the exact main and native tarballs from
-   a clean consumer directory without a source checkout or native build.
+7. CI `MUST` build and pack the main package and the native addon for its
+   current host. It `MUST` install those exact tarballs offline into a clean
+   consumer outside the checkout and exercise them without source access or
+   rebuilding native code in that consumer.
 8. The declared target set is the versioned `native/targets.json` file.
-   Extending the platform, architecture, or libc matrix requires the
-   validation in this contract.
+   Target declarations govern runtime package selection, not release coverage.
+   Changes `MUST` preserve the loader's target, version, and failure behavior
+   defined in this contract.
 9. Every declared Linux target `MUST` name exactly one npm libc selector. The
-   loader and release-artifact smoke `MUST` distinguish glibc from musl and
+   loader and host consumer smoke `MUST` distinguish glibc from musl and
    fail before loading a native package when libc detection is inconclusive.
-10. CI `MUST` build, pack, install, load, and run the exact artifact for every
-    declared OS, architecture, and libc combination on a matching runtime.
+10. Full release verification across all declared OS, architecture, and libc
+    combinations is deferred; CI requires the host consumer check above.
 
 ## 10. Required Test Gating
 

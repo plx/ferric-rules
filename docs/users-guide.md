@@ -996,7 +996,7 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   close and final-reference cleanup destroy the native engine exactly once.
   See the package
   [threading, GIL, and lifecycle contract](../crates/ferric-rules-python/README.md#threading-gil-and-lifecycle-contract)
-  and [Python package release contract](python-package-release.md).
+  and [source build and host-wheel consumer instructions](../crates/ferric-rules-python/README.md#building-from-source).
 - **CLI**: the `ferric` binary (`crates/ferric-rules-cli`) runs `.clp` files
   batch-style or drops you into a REPL. `ferric check [--json] file.clp`
   validates without running; `ferric run` executes. Construct-only files get an

@@ -111,6 +111,8 @@ jobs:
           uv sync --locked --python "$python_path"
           uv run --locked --python "$python_path" maturin develop --quiet
           uv run --locked --python "$python_path" pytest tests/ -v
+      - name: Smoke a host wheel in a clean consumer
+        run: scripts/python-consumer-smoke.sh "$(command -v python)"
       - name: Exercise deterministic GIL and shutdown observations
         if: matrix.python-version == '3.13'
         working-directory: crates/ferric-rules-python
