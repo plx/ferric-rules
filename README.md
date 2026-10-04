@@ -38,12 +38,22 @@ four primary languages, including snapshot/resume.
 
 ## Using ferric-rules from Rust
 
-Add the public facade package:
+The crates are not published to crates.io yet. Add the public facade from
+GitHub:
+
+```sh
+cargo add --git https://github.com/plx/ferric-rules ferric-rules
+```
+
+Or declare the same source in `Cargo.toml`:
 
 ```toml
 [dependencies]
-ferric-rules = "0.1.0"
+ferric-rules = { git = "https://github.com/plx/ferric-rules" }
 ```
+
+Commit your application's `Cargo.lock` to retain the resolved revision. You can
+also add a `rev` to the dependency when you need an explicit source pin.
 
 Cargo package names use hyphens, while Rust imports use underscores:
 

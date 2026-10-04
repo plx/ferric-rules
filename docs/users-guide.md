@@ -36,22 +36,28 @@ operations when sharing an engine. Create one per decision context (per session,
 per request, per worker) or reset and reuse. See the [host contract](host-api.md)
 for the ownership of values and fact handles.
 
-The facade crate re-exports everything you need:
+The facade crate re-exports the runtime, parser, and core APIs. The crates are
+not published to crates.io yet; use the GitHub source dependency:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ferric-rules = "0.1"
+ferric-rules = { git = "https://github.com/plx/ferric-rules" }
 ```
 
 ```rust
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 ```
 
+The equivalent Cargo command is
+`cargo add --git https://github.com/plx/ferric-rules ferric-rules`. Commit your
+application's `Cargo.lock` to retain the resolved revision, or add a `rev` to
+the dependency to pin a specific commit.
+
 If you need engine serialization (see §13), turn on the `serde` feature:
 
 ```toml
-ferric-rules = { version = "0.1", features = ["serde"] }
+ferric-rules = { git = "https://github.com/plx/ferric-rules", features = ["serde"] }
 ```
 
 ---

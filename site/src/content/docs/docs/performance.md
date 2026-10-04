@@ -1,15 +1,15 @@
 ---
 title: Performance
-description: Benchmark and scaling policy for ferric-rules.
+description: Run the benchmarks and scaling checks.
 ---
 
-Ferric performance claims should come from release-mode Criterion benchmarks, not debug-mode test runs.
+The repository uses Criterion benchmarks to measure execution time and separate
+scaling checks to catch changes in asymptotic behavior. This page describes how
+to run them; it does not provide a performance comparison with CLIPS.
 
-## Benchmarking Policy
+## Benchmarking policy
 
-Performance numbers in commit messages, documentation, and PR descriptions should come from `cargo bench` output. Debug-mode timings from `cargo test`, `cargo test --bench`, or ad hoc local runs are not representative.
-
-Recommended commands:
+From the repository root:
 
 ```sh
 just bench-join
@@ -17,31 +17,30 @@ just bench-waltz
 cargo bench -p ferric-rules
 ```
 
-When claiming an improvement:
+These commands use the release profile with LTO. For a before-and-after
+comparison, use the same machine and profile, record the actual Criterion
+median values, and include the environment with the results. Performance claims
+must come from `cargo bench` output. Ordinary debug-mode `cargo test` timings
+are not comparable; release scaling tests below serve a different purpose.
 
-- run benchmarks before and after the change,
-- use the same machine and profile,
-- quote Criterion median values,
-- note the machine or environment when relevant.
+See the [benchmark guide](https://github.com/plx/ferric-rules/blob/main/benches/README.md)
+for the workloads and
+[benchmark policy](https://github.com/plx/ferric-rules/blob/main/docs/benchmark-policy.md)
+for the project's regression thresholds.
 
-## Scaling Checks
-
-The repository includes ignored integration tests that assert asymptotic behavior for core operations:
-
-- join propagation,
-- engine run,
-- retraction cascade,
-- churn lifecycle,
-- alpha fanout.
-
-Run them with:
+## Scaling checks
 
 ```sh
 just scaling-check
 ```
 
-These checks catch complexity-class regressions without depending on fragile absolute timing thresholds.
+Thirteen [release-mode scaling tests](https://github.com/plx/ferric-rules/blob/main/crates/ferric-rules/tests/scaling_tests.rs)
+exercise join propagation, engine execution, retraction, churn, alpha fanout,
+exists and NCC support, negative cleanup, focus selection, and sequence matching.
+Each measures two input sizes, four times apart, and checks the ratio against
+bounds for the expected complexity. The bound-sequence join case holds the
+number of join keys fixed while increasing sequence length.
 
-## Design Implication
-
-The documentation site should avoid publishing benchmark numbers until they are sourced from the release-profile benchmark suite.
+These checks can catch regressions such as linear work becoming quadratic.
+They do not establish absolute execution times or predict performance for a
+particular rule set.

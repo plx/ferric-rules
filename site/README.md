@@ -19,7 +19,7 @@ Use `just install-browsers` once locally before `just test`.
 
 ## Toolchain notes
 
-- **Astro 7 / Starlight 0.41 / TypeScript 7.** The site targets Node 24 (Active
+- **Astro 7 / Starlight 0.42 / TypeScript 7.** The site targets Node 24 (Active
   LTS). `just build` uses Astro 7 (Vite 8 + the Rust compiler).
 - **Two type-checkers, on purpose.** `npm run check` runs `astro check`, which is
   Volar-based and still requires the TypeScript 6 programmatic API (Volar tools
@@ -33,4 +33,5 @@ Use `just install-browsers` once locally before `just test`.
   environments and starts the dev server in the background, returning
   immediately. Manage it with `astro dev status`, `astro dev logs`, and
   `astro dev stop`. Because of this, the Playwright suite serves the built site
-  with `astro preview` (always foreground) rather than `astro dev`.
+  with `vite preview --strictPort --base /ferric-rules` in the foreground
+  rather than `astro dev`.

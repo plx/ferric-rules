@@ -1,34 +1,43 @@
 ---
-title: Documentation Overview
-description: Orientation for ferric-rules, a mostly CLIPS-compatible rules engine in Rust.
+title: Overview
+description: How the engine works and where to start.
 ---
 
-`ferric-rules` is a mostly CLIPS-compatible forward-chaining rules engine written in Rust.
+`ferric-rules` is a mostly CLIPS-compatible forward-chaining rules engine written
+in Rust. The host application loads rules, asserts facts, runs the engine, and
+reads the results. Rules can assert or change facts that trigger other rules.
+Each `Engine` instance owns its state.
 
-It keeps the practical parts of CLIPS that make rule systems useful: `deffacts`, `defrule`, salience, the Rete algorithm, ordered facts, template facts, modules, focus stacks, user functions, generics, globals, and core standard-library behavior.
+## Project status
 
-It drops the parts that make CLIPS hard to embed in modern applications: global runtime state, thread-unsafe singleton assumptions, and C build friction. Each `Engine` instance is independent.
+This is a working prototype. Core functionality is implemented; validation,
+polish, and performance work continue. Depth, breadth, LEX, and MEA conflict
+resolution are supported. Compatibility remains a defined subset, with exact
+characterizations for remaining differences. The COOL object system and
+`logical` truth maintenance are out of scope.
 
-## Project Status
+Check [CLIPS compatibility](./compatibility/) before using an existing rule set.
+Rust, TypeScript, Python, and Swift are the primary embedding interfaces;
+Go and the C ABI retain maintenance support. The crates and binding packages
+are built from source; follow the linked instructions for each language.
 
-Ferric is early but functional. Core functionality is implemented and apparently working; current work is focused on validation, polish, and performance.
+## Guides and reference
 
-Known scope decisions:
+- [Getting started](./getting-started/): a complete Rust program with one rule
+  and one fact.
+- [Embedding API](./embedding/): engine lifecycle, thread ownership, results,
+  and bindings.
+- [CLIPS compatibility](./compatibility/): implemented features and explicit
+  differences.
+- [Performance](./performance/): benchmark commands and scaling checks.
+- [Internals](./internals/): the main crates and execution pipeline.
 
-- The COOL object system is intentionally out of scope.
-- Some more exotic pattern connectives and non-core I/O utilities are limited.
-- Bindings are in progress; Rust, C FFI, Go, Python, and TypeScript-related work exist in the repository.
+The repository's [user guide](https://github.com/plx/ferric-rules/blob/main/docs/users-guide.md)
+and [runnable examples](https://github.com/plx/ferric-rules/tree/main/examples/users-guide)
+cover templates, salience, modules, functions, configuration, and snapshots.
 
-## Where To Start
+## Source and license
 
-- [Getting started](./getting-started/) shows the basic engine lifecycle.
-- [CLIPS compatibility](./compatibility/) summarizes the supported language subset.
-- [Embedding API](./embedding/) explains how the Rust runtime is organized for host applications.
-- [Performance](./performance/) documents benchmark and scaling policy.
-- [Internals](./internals/) maps the major crates and engine architecture.
-
-## Repository
-
-Source code lives at [github.com/plx/ferric-rules](https://github.com/plx/ferric-rules).
-
-The crate version in this workspace is `0.1.0`, and the project is dual licensed under `MIT OR Apache-2.0`.
+[Source code and issue tracker](https://github.com/plx/ferric-rules).
+Licensed under [MIT](https://github.com/plx/ferric-rules/blob/main/LICENSE-MIT) or
+[Apache-2.0](https://github.com/plx/ferric-rules/blob/main/LICENSE-APACHE).
