@@ -2021,12 +2021,14 @@ mod tests {
     }
 
     #[test]
-    fn focus_unknown_module_produces_action_diagnostic() {
+    fn focus_unknown_module_returns_false_and_continues_actions() {
         let mut engine = new_utf8_engine();
         load_ok(
             &mut engine,
             r"
-            (defrule kickoff (start) => (focus MISSING))
+            (defrule kickoff (start) =>
+              (printout t (focus MISSING) crlf)
+              (assert (continued)))
             (deffacts startup (start))
         ",
         );
@@ -2034,9 +2036,9 @@ mod tests {
 
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
-        assert!(engine.action_diagnostics().iter().any(|e| {
-            matches!(e, crate::actions::ActionError::EvalError(msg) if msg.contains("focus: unknown module `MISSING`"))
-        }));
+        assert_eq!(engine.get_output("t"), Some("FALSE\n"));
+        assert_has_fact_with_relation(&engine, "continued");
+        assert!(engine.action_diagnostics().is_empty());
     }
 
     #[test]

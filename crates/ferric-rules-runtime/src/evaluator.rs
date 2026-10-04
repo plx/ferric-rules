@@ -10,19 +10,19 @@
 #[cfg(feature = "tracing")]
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::fact_address::{live_fact_id, make_fact_address, public_fact_index};
+use crate::fact_address::{live_fact_id, public_fact_index};
 use crate::field_scanner::{FieldScanner, FieldToken};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
 use ferric_rules_core::symbol::{InstanceName, Symbol, SymbolTable};
 use ferric_rules_core::value::Value;
-use ferric_rules_core::{Fact, FactAddress, FactBase, FactId, StringEncoding, TemplateId};
+use ferric_rules_core::{Fact, FactAddress, FactBase, FactId, StringEncoding};
 
 use crate::config::EngineConfig;
-use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStore, UserFunction};
+use crate::functions::{GenericFunction, UserFunction};
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::tracing_support::ferric_event;
 #[cfg(feature = "tracing")]
@@ -273,6 +273,10 @@ pub enum RuntimeExpr {
         default: Option<Vec<(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)>>,
         span: Option<SourceSpan>,
     },
+    /// Fact mutation syntax preserves relation and slot wrappers as data.
+    EffectCall {
+        call: Box<ferric_rules_parser::FunctionCall>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -340,11 +344,9 @@ impl CompactFactBinding {
         &self.address
     }
 
-    fn record<'a>(&'a self, facts: Option<&'a FactBase>, epoch: u64) -> Option<&'a Fact> {
-        facts
-            .and_then(|facts| {
-                live_fact_id(facts, epoch, &self.address).and_then(|id| facts.get(id))
-            })
+    fn record<'a>(&'a self, facts: &'a FactBase, epoch: u64) -> Option<&'a Fact> {
+        live_fact_id(facts, epoch, &self.address)
+            .and_then(|id| facts.get(id))
             .map(|entry| &entry.fact)
             .or(self.retained.as_deref())
     }
@@ -362,60 +364,39 @@ pub(crate) struct CallableLocals {
     protected_names: HashSet<String>,
 }
 
+impl CallableLocals {
+    pub(crate) fn from_values(values: HashMap<String, Value>) -> Self {
+        Self {
+            values,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn into_values(self) -> HashMap<String, Value> {
+        self.values
+    }
+}
+
 /// Context needed for expression evaluation.
 ///
-/// Construction is crate-private (through the private template registry field).
+/// Construction is crate-private through exclusive engine access.
 /// Engine entry points evaluate under exclusive engine access. The configuration
 /// includes an action budget shared with nested calls: future constructors must
 /// preserve exclusive evaluation or give independent roots separate configs.
 pub struct EvalContext<'a> {
+    pub(crate) engine: &'a mut crate::Engine,
     pub bindings: &'a BindingSet,
     pub var_map: &'a VarMap,
     /// Invocation-local overrides over the immutable original parameter frame.
-    /// Removing an override restores the original parameter, if one exists.
     pub(crate) callable_locals: Option<&'a mut CallableLocals>,
-    pub symbol_table: &'a mut SymbolTable,
-    pub config: &'a EngineConfig,
-    pub functions: &'a FunctionEnv,
-    pub globals: &'a mut GlobalStore,
-    /// Registry of generic functions for dispatch.
-    pub generics: &'a GenericRegistry,
-    /// Current call depth, for recursion limit enforcement.
     pub call_depth: usize,
-    /// Active evaluator frames, inherited by callable and loop contexts.
     pub(crate) expression_depth: usize,
-    /// The module that the current evaluation is executing in.
+    /// Lexical module, preserved when reset changes the engine's focus.
     pub current_module: crate::modules::ModuleId,
-    /// Module registry for visibility checks.
-    pub module_registry: &'a crate::modules::ModuleRegistry,
-    /// Function-to-module map for visibility checking.
-    pub function_modules: &'a crate::functions::ModuleNameMap<crate::modules::ModuleId>,
-    /// Global-to-module map for visibility checking.
-    pub global_modules: &'a crate::functions::ModuleNameMap<crate::modules::ModuleId>,
-    /// Generic-to-module map for visibility checking.
-    pub generic_modules: &'a crate::functions::ModuleNameMap<crate::modules::ModuleId>,
-    /// Active method dispatch chain for `call-next-method` (None when not inside a generic method).
     pub method_chain: Option<MethodChain>,
-    /// Input buffer for `read`/`readline`. `None` when no input source is connected.
-    pub input_buffer: Option<&'a mut VecDeque<String>>,
-    /// Optional read-only access to the fact base for introspection builtins.
-    pub fact_base: Option<&'a ferric_rules_core::FactBase>,
-    /// Lifecycle identity, advanced whenever reset or clear replaces the fact base.
-    pub(crate) fact_epoch: u64,
-    /// Lexical fact scope for the parser's compact `?fact:slot` form.
     pub(crate) compact_fact_bindings: Option<&'a CompactFactBindings>,
-    /// Live template visibility for expression-query restrictions.
-    pub(crate) template_resolver: Option<crate::loader::TemplateResolver<'a>>,
-    /// Protected initial fact, whose public index is always zero. This identity
-    /// distinguishes it from user facts, including those asserted before loading.
-    pub(crate) initial_fact_id: Option<ferric_rules_core::FactId>,
-    /// Optional read-only access to template definitions for introspection builtins.
-    pub(crate) template_defs: Option<
-        &'a slotmap::SlotMap<
-            ferric_rules_core::TemplateId,
-            Arc<crate::templates::RegisteredTemplate>,
-        >,
-    >,
+    /// Engine mutation is forbidden during matching, including nested callables.
+    pub(crate) allow_engine_effects: bool,
 }
 
 fn ordinary_binding(ctx: &mut EvalContext<'_>, name: &str) -> Option<Value> {
@@ -429,8 +410,9 @@ fn ordinary_binding(ctx: &mut EvalContext<'_>, name: &str) -> Option<Value> {
         }
     }
     let symbol = ctx
+        .engine
         .symbol_table
-        .intern_symbol(name, ctx.config.string_encoding)
+        .intern_symbol(name, ctx.engine.config.string_encoding)
         .ok()?;
     let variable = ctx.var_map.lookup(symbol)?;
     ctx.bindings.get(variable).map(|value| (**value).clone())
@@ -472,7 +454,8 @@ fn with_callable_local_scope<'a, T>(
 }
 
 fn module_label(ctx: &EvalContext<'_>, module_id: crate::modules::ModuleId) -> String {
-    ctx.module_registry
+    ctx.engine
+        .module_registry
         .module_name(module_id)
         .unwrap_or("?")
         .to_string()
@@ -497,7 +480,7 @@ fn visible_modules_for_construct(
             .iter()
             .copied()
             .filter(|module_id| {
-                ctx.module_registry.is_construct_visible(
+                ctx.engine.module_registry.is_construct_visible(
                     ctx.current_module,
                     *module_id,
                     construct_type,
@@ -629,7 +612,7 @@ pub(crate) fn eval_action_expression(
 }
 
 fn eval_with_budget(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
-    let owns_action_loop_budget = ctx.config.begin_action_loop_budget_if_inactive();
+    let owns_action_loop_budget = ctx.engine.config.begin_action_loop_budget_if_inactive();
 
     #[cfg(feature = "tracing")]
     let result = {
@@ -646,7 +629,7 @@ fn eval_with_budget(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Val
     let result = { eval_inner(ctx, expr) };
 
     if owns_action_loop_budget {
-        ctx.config.end_action_loop_budget();
+        ctx.engine.config.end_action_loop_budget();
     }
     result
 }
@@ -674,7 +657,10 @@ fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, Eva
 /// it introduces no shared mutable state or atomics on the expression path.
 const MAX_EXPRESSION_DEPTH: usize = 64;
 
-fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
+pub(crate) fn eval_inner(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+) -> Result<Value, EvalError> {
     if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
         return Err(EvalError::ExpressionNestingLimit {
             limit: MAX_EXPRESSION_DEPTH,
@@ -689,6 +675,7 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
 #[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
 fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
     match expr {
+        RuntimeExpr::EffectCall { call } => crate::effects::eval_syntax(ctx, call),
         RuntimeExpr::Literal(v) => Ok(v.clone()),
         RuntimeExpr::BoundVar { name, span } => {
             ordinary_binding(ctx, name).ok_or_else(|| EvalError::UnboundVariable {
@@ -701,11 +688,11 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             if is_module_qualified(name) {
                 return resolve_qualified_global(ctx, name, span.clone());
             }
-            if let Some(value) = ctx.globals.get(ctx.current_module, name).cloned() {
+            if let Some(value) = ctx.engine.globals.get(ctx.current_module, name).cloned() {
                 return Ok(value);
             }
 
-            let all_modules = sorted_dedup_modules(ctx.globals.modules_for_name(name));
+            let all_modules = sorted_dedup_modules(ctx.engine.globals.modules_for_name(name));
             if all_modules.is_empty() {
                 return Err(EvalError::UnboundGlobal {
                     name: name.clone(),
@@ -725,7 +712,8 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 },
                 span.clone(),
             )?;
-            ctx.globals
+            ctx.engine
+                .globals
                 .get(owner, name)
                 .cloned()
                 .ok_or_else(|| EvalError::UnboundGlobal {
@@ -758,20 +746,20 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     if unknown.as_str() == name.as_str() =>
                 {
                     let function_modules =
-                        sorted_dedup_modules(ctx.functions.modules_for_name(name));
+                        sorted_dedup_modules(ctx.engine.functions.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
                         ctx,
                         name,
                         "deffunction",
                         &function_modules,
-                        ctx.functions.contains(ctx.current_module, name),
+                        ctx.engine.functions.contains(ctx.current_module, name),
                         AmbiguityMessages {
                             expected: "unambiguous deffunction resolution",
                             actual: "multiple visible deffunctions; use MODULE::name",
                         },
                         span.clone(),
                     )? {
-                        if let Some(func) = ctx.functions.get(target_module, name).cloned() {
+                        if let Some(func) = ctx.engine.functions.get(target_module, name).cloned() {
                             return dispatch_user_function(
                                 ctx,
                                 &func,
@@ -782,20 +770,22 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         }
                     }
 
-                    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(name));
+                    let generic_modules =
+                        sorted_dedup_modules(ctx.engine.generics.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
                         ctx,
                         name,
                         "defgeneric",
                         &generic_modules,
-                        ctx.generics.contains(ctx.current_module, name),
+                        ctx.engine.generics.contains(ctx.current_module, name),
                         AmbiguityMessages {
                             expected: "unambiguous defgeneric resolution",
                             actual: "multiple visible defgenerics; use MODULE::name",
                         },
                         span.clone(),
                     )? {
-                        if let Some(generic) = ctx.generics.get(target_module, name).cloned() {
+                        if let Some(generic) = ctx.engine.generics.get(target_module, name).cloned()
+                        {
                             return dispatch_generic(
                                 ctx,
                                 &generic,
@@ -821,7 +811,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             ..
         } => {
             let cond_value = eval_inner(ctx, condition)?;
-            let branch = if is_truthy(&cond_value, ctx.symbol_table) {
+            let branch = if is_truthy(&cond_value, &ctx.engine.symbol_table) {
                 then_branch
             } else {
                 else_branch
@@ -835,17 +825,20 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
         } => {
             loop {
                 let cond_value = eval_inner(ctx, condition)?;
-                if !is_truthy(&cond_value, ctx.symbol_table) {
+                if !is_truthy(&cond_value, &ctx.engine.symbol_table) {
                     break;
                 }
-                consume_action_loop_iteration(ctx.config, "while", span.clone())?;
+                consume_action_loop_iteration(&ctx.engine.config, "while", span.clone())?;
                 match eval_sequence(ctx, body) {
                     Ok(_) => {}
                     Err(EvalError::BreakControl { .. }) => break,
                     Err(error) => return Err(error),
                 }
             }
-            Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+            Ok(clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            ))
         }
         RuntimeExpr::LoopForCount {
             var_name,
@@ -883,7 +876,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 }
             };
 
-            let false_val = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            let false_val = clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            );
 
             if start_int > end_int {
                 return Ok(false_val);
@@ -896,8 +892,9 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             let counter_var = match var_name {
                 Some(var) => {
                     let sym = ctx
+                        .engine
                         .symbol_table
-                        .intern_symbol(var, ctx.config.string_encoding)
+                        .intern_symbol(var, ctx.engine.config.string_encoding)
                         .map_err(|_| EvalError::TypeError {
                             function: "loop-for-count".to_string(),
                             expected: "valid loop variable name".to_string(),
@@ -920,7 +917,11 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
 
             with_callable_local_scope(ctx, var_name.as_deref(), var_name.as_deref(), |ctx| {
                 for counter in start_int..=end_int {
-                    consume_action_loop_iteration(ctx.config, "loop-for-count", span.clone())?;
+                    consume_action_loop_iteration(
+                        &ctx.engine.config,
+                        "loop-for-count",
+                        span.clone(),
+                    )?;
                     if let Some(var_id) = counter_var {
                         iter_bindings.set(var_id, ValueRef::new(Value::Integer(counter)));
                     }
@@ -928,26 +929,13 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         bindings: &iter_bindings,
                         var_map: &iter_var_map,
                         callable_locals: ctx.callable_locals.as_deref_mut(),
-                        symbol_table: ctx.symbol_table,
-                        config: ctx.config,
-                        functions: ctx.functions,
-                        globals: ctx.globals,
-                        generics: ctx.generics,
                         call_depth: ctx.call_depth,
                         expression_depth: ctx.expression_depth,
                         current_module: ctx.current_module,
-                        module_registry: ctx.module_registry,
-                        function_modules: ctx.function_modules,
-                        global_modules: ctx.global_modules,
-                        generic_modules: ctx.generic_modules,
                         method_chain: ctx.method_chain.clone(),
-                        input_buffer: ctx.input_buffer.as_deref_mut(),
-                        fact_base: ctx.fact_base,
-                        fact_epoch: ctx.fact_epoch,
                         compact_fact_bindings: ctx.compact_fact_bindings,
-                        template_resolver: ctx.template_resolver,
-                        initial_fact_id: ctx.initial_fact_id,
-                        template_defs: ctx.template_defs,
+                        engine: ctx.engine,
+                        allow_engine_effects: ctx.allow_engine_effects,
                     };
 
                     match eval_sequence(&mut iter_ctx, body) {
@@ -973,7 +961,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 other => vec![other],
             };
 
-            let false_val = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            let false_val = clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            );
             if elements.is_empty() {
                 return Ok(false_val);
             }
@@ -984,8 +975,9 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             let mut iter_var_map = ctx.var_map.clone();
             let mut iter_bindings = ctx.bindings.clone();
             let elem_sym = ctx
+                .engine
                 .symbol_table
-                .intern_symbol(var_name, ctx.config.string_encoding)
+                .intern_symbol(var_name, ctx.engine.config.string_encoding)
                 .map_err(|_| EvalError::TypeError {
                     function: "progn$".to_string(),
                     expected: "valid loop variable name".to_string(),
@@ -1002,8 +994,9 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         span: span.clone(),
                     })?;
             let idx_sym = ctx
+                .engine
                 .symbol_table
-                .intern_symbol(&index_var_name, ctx.config.string_encoding)
+                .intern_symbol(&index_var_name, ctx.engine.config.string_encoding)
                 .map_err(|_| EvalError::TypeError {
                     function: "progn$".to_string(),
                     expected: "valid index variable name".to_string(),
@@ -1020,7 +1013,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         span: span.clone(),
                     })?;
 
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            let mut result = clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            );
             with_callable_local_scope(
                 ctx,
                 [var_name.as_str(), index_var_name.as_str()],
@@ -1037,26 +1033,13 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             bindings: &iter_bindings,
                             var_map: &iter_var_map,
                             callable_locals: ctx.callable_locals.as_deref_mut(),
-                            symbol_table: ctx.symbol_table,
-                            config: ctx.config,
-                            functions: ctx.functions,
-                            globals: ctx.globals,
-                            generics: ctx.generics,
                             call_depth: ctx.call_depth,
                             expression_depth: ctx.expression_depth,
                             current_module: ctx.current_module,
-                            module_registry: ctx.module_registry,
-                            function_modules: ctx.function_modules,
-                            global_modules: ctx.global_modules,
-                            generic_modules: ctx.generic_modules,
                             method_chain: ctx.method_chain.clone(),
-                            input_buffer: ctx.input_buffer.as_deref_mut(),
-                            fact_base: ctx.fact_base,
-                            fact_epoch: ctx.fact_epoch,
                             compact_fact_bindings: ctx.compact_fact_bindings,
-                            template_resolver: ctx.template_resolver,
-                            initial_fact_id: ctx.initial_fact_id,
-                            template_defs: ctx.template_defs,
+                            engine: ctx.engine,
+                            allow_engine_effects: ctx.allow_engine_effects,
                         };
 
                         match eval_sequence(&mut iter_ctx, body) {
@@ -1091,7 +1074,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             if let Some(default_body) = default {
                 eval_sequence(ctx, default_body)
             } else {
-                Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+                Ok(clips_false(
+                    &mut ctx.engine.symbol_table,
+                    ctx.engine.config.string_encoding,
+                ))
             }
         }
         RuntimeExpr::QueryAction {
@@ -1100,7 +1086,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             query,
             body,
             span,
-        } => eval_fact_query(ctx, name, bindings, query, body.is_empty(), span.as_ref()),
+        } => eval_fact_query(ctx, name, bindings, query, body, span.as_ref()),
     }
 }
 
@@ -1109,29 +1095,20 @@ fn eval_sequence(
     ctx: &mut EvalContext<'_>,
     body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
 ) -> Result<Value, EvalError> {
-    let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+    let mut result = clips_false(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    );
     for (source, compiled) in body {
         result = if let Some(expression) = compiled {
             eval_inner(ctx, expression)?
         } else {
-            let expression = from_action_expr(source, ctx.symbol_table, ctx.config)?;
+            let expression =
+                from_action_expr(source, &mut ctx.engine.symbol_table, &ctx.engine.config)?;
             eval_inner(ctx, &expression)?
         };
     }
     Ok(result)
-}
-
-/// Assertion chronology is independent of slot-map position after retraction.
-/// Shared with action queries so first-match and complete traversal agree.
-pub(crate) fn ordered_query_fact_ids(fact_base: &FactBase, template_id: TemplateId) -> Vec<FactId> {
-    let mut facts: Vec<_> = fact_base.facts_by_template(template_id).collect();
-    facts.sort_unstable_by_key(|id| {
-        fact_base
-            .get(*id)
-            .expect("template index only contains active facts")
-            .timestamp
-    });
-    facts
 }
 
 fn query_error(name: &str, actual: impl Into<String>, span: Option<&SourceSpan>) -> EvalError {
@@ -1150,18 +1127,6 @@ pub(crate) fn valid_query_member(name: &str) -> bool {
     })
 }
 
-/// The cursor is a mixed-radix number: the last declared member advances first.
-fn advance_query_cursor(cursor: &mut [usize], candidates: &[Vec<FactId>]) -> bool {
-    for (index, choices) in cursor.iter_mut().zip(candidates).rev() {
-        *index += 1;
-        if *index < choices.len() {
-            return true;
-        }
-        *index = 0;
-    }
-    false
-}
-
 fn validate_query_predicate_body(
     ctx: &mut EvalContext<'_>,
     body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
@@ -1173,7 +1138,7 @@ fn validate_query_predicate_body(
         if let Some(expr) = compiled {
             validate_query_predicate(ctx, expr, name, span, depth)?;
         } else {
-            let expr = from_action_expr(action, ctx.symbol_table, ctx.config)?;
+            let expr = from_action_expr(action, &mut ctx.engine.symbol_table, &ctx.engine.config)?;
             validate_query_predicate(ctx, &expr, name, span, depth)?;
         }
     }
@@ -1197,6 +1162,15 @@ pub(crate) fn validate_query_predicate(
     }
     let next = depth + 1;
     match expr {
+        RuntimeExpr::EffectCall { call } => {
+            for argument in
+                crate::effects::evaluated_arguments(ctx.engine, ctx.current_module, call)
+            {
+                let argument =
+                    from_action_expr(argument, &mut ctx.engine.symbol_table, &ctx.engine.config)?;
+                validate_query_predicate(ctx, &argument, name, span, next)?;
+            }
+        }
         RuntimeExpr::Literal(_) | RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {}
         RuntimeExpr::Call {
             name: function,
@@ -1212,9 +1186,9 @@ pub(crate) fn validate_query_predicate(
             }
             crate::loader::validate_query_callable(
                 function,
-                ctx.functions,
-                ctx.generics,
-                ctx.module_registry,
+                &ctx.engine.functions,
+                &ctx.engine.generics,
+                &ctx.engine.module_registry,
                 ctx.current_module,
                 None,
             )
@@ -1275,139 +1249,134 @@ pub(crate) fn validate_query_predicate(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)] // Query validation, scope construction, and lazy traversal form one evaluation.
+fn with_expression_query_candidate<T>(
+    ctx: &mut EvalContext<'_>,
+    candidate: &crate::query_cursor::QueryCandidate,
+    execute: impl FnOnce(&mut EvalContext<'_>) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    let mut var_map = ctx.var_map.clone();
+    let mut bindings = ctx.bindings.clone();
+    let mut compact_facts = ctx.compact_fact_bindings.cloned().unwrap_or_default();
+    for (name, member) in candidate {
+        let symbol = ctx
+            .engine
+            .symbol_table
+            .intern_symbol(name, ctx.engine.config.string_encoding)
+            .map_err(|error| query_error("query", error.to_string(), None))?;
+        let variable = var_map
+            .get_or_create(symbol)
+            .map_err(|error| query_error("query", error.to_string(), None))?;
+        bindings.set(
+            variable,
+            ValueRef::new(Value::FactAddress(member.address().clone())),
+        );
+        compact_facts.insert(name.clone(), member.clone());
+    }
+    with_callable_local_scope(
+        ctx,
+        candidate.iter().map(|(name, _)| name.as_str()),
+        None,
+        |ctx| {
+            let mut child = EvalContext {
+                engine: ctx.engine,
+                bindings: &bindings,
+                var_map: &var_map,
+                callable_locals: ctx.callable_locals.as_deref_mut(),
+                call_depth: ctx.call_depth,
+                expression_depth: ctx.expression_depth,
+                current_module: ctx.current_module,
+                method_chain: ctx.method_chain.clone(),
+                compact_fact_bindings: Some(&compact_facts),
+                allow_engine_effects: ctx.allow_engine_effects,
+            };
+            execute(&mut child)
+        },
+    )
+}
+
 fn eval_fact_query(
     ctx: &mut EvalContext<'_>,
     name: &str,
     members: &[(String, String)],
     predicate: &RuntimeExpr,
-    body_is_empty: bool,
+    body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    if !matches!(name, "any-factp" | "find-fact" | "find-all-facts") {
+    let action = matches!(
+        name,
+        "do-for-fact" | "do-for-all-facts" | "delayed-do-for-all-facts"
+    );
+    if !action && !matches!(name, "any-factp" | "find-fact" | "find-all-facts") {
         return Err(EvalError::UnsupportedOperation {
             operation: name.into(),
-            reason: "only any-factp, find-fact, and find-all-facts are supported in expression/callable contexts".into(),
+            reason: "unknown fact query".into(),
             span: span.cloned(),
         });
     }
-    if members.is_empty() || !body_is_empty {
+    if members.is_empty() || (!action && !body.is_empty()) {
         return Err(query_error(
             name,
-            "a nonempty binding list and no trailing body are required",
+            "a nonempty binding list and no trailing body on result queries are required",
             span,
         ));
     }
-    let fact_base = ctx
-        .fact_base
-        .ok_or_else(|| query_error(name, "fact context is unavailable", span))?;
-    let resolver = ctx
-        .template_resolver
-        .ok_or_else(|| query_error(name, "template context is unavailable", span))?;
     validate_query_predicate(ctx, predicate, name, span, 0)?;
-
-    let mut member_names = std::collections::HashSet::with_capacity(members.len());
-    let mut candidates = Vec::with_capacity(members.len());
-    let mut var_map = ctx.var_map.clone();
-    let mut bindings = ctx.bindings.clone();
-    let mut member_vars = Vec::with_capacity(members.len());
-    for (member, template) in members {
-        if !valid_query_member(member) || !member_names.insert(member.as_str()) {
-            return Err(query_error(
-                name,
-                format!("invalid or duplicate query member ?{member}"),
-                span,
+    let mut cursor =
+        crate::query_cursor::ActionQueryCursor::new(members, ctx.engine, ctx.current_module)?;
+    let delayed = name == "delayed-do-for-all-facts";
+    let mut selected = Vec::new();
+    let mut found = ferric_rules_core::Multifield::new();
+    let mut result = clips_false(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    );
+    while let Some(candidate) = cursor.next(ctx.engine, name)? {
+        let matches = with_expression_query_candidate(ctx, &candidate, |ctx| {
+            let value = eval_inner(ctx, predicate)?;
+            Ok(is_truthy(&value, &ctx.engine.symbol_table))
+        })?;
+        if !matches {
+            continue;
+        }
+        if name == "any-factp" {
+            return Ok(clips_true(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
             ));
         }
-        let template_id = resolver
-            .resolve_query_reference(template, ctx.current_module)
-            .map_err(|error| query_error(name, error, span))?;
-        candidates.push(ordered_query_fact_ids(fact_base, template_id));
-        let symbol = ctx
-            .symbol_table
-            .intern_symbol(member, ctx.config.string_encoding)
-            .map_err(|error| query_error(name, error.to_string(), span))?;
-        member_vars.push(
-            var_map
-                .get_or_create(symbol)
-                .map_err(|error| query_error(name, error.to_string(), span))?,
-        );
-    }
-
-    let mut result = ferric_rules_core::Multifield::new();
-    if candidates.iter().any(Vec::is_empty) {
-        return Ok(if name == "any-factp" {
-            clips_false(ctx.symbol_table, ctx.config.string_encoding)
-        } else {
-            Value::Multifield(Box::new(result))
-        });
-    }
-    let mut compact_facts = ctx.compact_fact_bindings.cloned().unwrap_or_default();
-    let mut cursor = vec![0; members.len()];
-    loop {
-        consume_action_loop_iteration(ctx.config, name, span.cloned())?;
-        for (index, ((member, _), variable)) in members.iter().zip(&member_vars).enumerate() {
-            let fact = candidates[index][cursor[index]];
-            let address = make_fact_address(fact_base, ctx.initial_fact_id, ctx.fact_epoch, fact)
-                .ok_or_else(|| query_error(name, "query fact has no address", span))?;
-            bindings.set(
-                *variable,
-                ValueRef::new(Value::FactAddress(address.clone())),
+        if !action {
+            found.extend(
+                candidate
+                    .iter()
+                    .map(|(_, member)| Value::FactAddress(member.address().clone())),
             );
-            compact_facts.insert(member.clone(), CompactFactBinding::live(address));
-        }
-        let value = with_callable_local_scope(
-            ctx,
-            members.iter().map(|(name, _)| name.as_str()),
-            None,
-            |ctx| {
-                let mut query_ctx = EvalContext {
-                    bindings: &bindings,
-                    var_map: &var_map,
-                    callable_locals: ctx.callable_locals.as_deref_mut(),
-                    symbol_table: ctx.symbol_table,
-                    config: ctx.config,
-                    functions: ctx.functions,
-                    globals: ctx.globals,
-                    generics: ctx.generics,
-                    call_depth: ctx.call_depth,
-                    expression_depth: ctx.expression_depth,
-                    current_module: ctx.current_module,
-                    module_registry: ctx.module_registry,
-                    function_modules: ctx.function_modules,
-                    global_modules: ctx.global_modules,
-                    generic_modules: ctx.generic_modules,
-                    method_chain: ctx.method_chain.clone(),
-                    input_buffer: ctx.input_buffer.as_deref_mut(),
-                    fact_base: ctx.fact_base,
-                    fact_epoch: ctx.fact_epoch,
-                    compact_fact_bindings: Some(&compact_facts),
-                    template_resolver: ctx.template_resolver,
-                    initial_fact_id: ctx.initial_fact_id,
-                    template_defs: ctx.template_defs,
-                };
-                eval_inner(&mut query_ctx, predicate)
-            },
-        )?;
-        if is_truthy(&value, ctx.symbol_table) {
-            if name == "any-factp" {
-                return Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding));
-            }
-            for variable in &member_vars {
-                result.push((**bindings.get(*variable).expect("query member is bound")).clone());
-            }
             if name == "find-fact" {
                 break;
             }
-        }
-        if !advance_query_cursor(&mut cursor, &candidates) {
-            break;
+        } else if delayed {
+            selected.push(candidate);
+        } else {
+            match with_expression_query_candidate(ctx, &candidate, |ctx| eval_sequence(ctx, body)) {
+                Ok(value) => result = value,
+                Err(EvalError::BreakControl { .. }) => return Ok(Value::Void),
+                Err(error) => return Err(error),
+            }
+            if name == "do-for-fact" {
+                break;
+            }
         }
     }
-    Ok(if name == "any-factp" {
-        clips_false(ctx.symbol_table, ctx.config.string_encoding)
+    for candidate in selected {
+        match with_expression_query_candidate(ctx, &candidate, |ctx| eval_sequence(ctx, body)) {
+            Ok(value) => result = value,
+            Err(EvalError::BreakControl { .. }) => return Ok(Value::Void),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(if action || name == "any-factp" {
+        result
     } else {
-        Value::Multifield(Box::new(result))
+        Value::Multifield(Box::new(found))
     })
 }
 
@@ -1462,6 +1431,7 @@ fn dispatch_qualified_call(
 
     // Verify the target module exists.
     let target_module_id = ctx
+        .engine
         .module_registry
         .get_by_name(module_name)
         .ok_or_else(|| EvalError::TypeError {
@@ -1472,8 +1442,13 @@ fn dispatch_qualified_call(
         })?;
 
     // Try user-defined function first.
-    if let Some(func) = ctx.functions.get(target_module_id, local_name).cloned() {
-        if !ctx.module_registry.is_construct_visible(
+    if let Some(func) = ctx
+        .engine
+        .functions
+        .get(target_module_id, local_name)
+        .cloned()
+    {
+        if !ctx.engine.module_registry.is_construct_visible(
             ctx.current_module,
             target_module_id,
             "deffunction",
@@ -1491,8 +1466,13 @@ fn dispatch_qualified_call(
     }
 
     // Try generic function.
-    if let Some(generic) = ctx.generics.get(target_module_id, local_name).cloned() {
-        if !ctx.module_registry.is_construct_visible(
+    if let Some(generic) = ctx
+        .engine
+        .generics
+        .get(target_module_id, local_name)
+        .cloned()
+    {
+        if !ctx.engine.module_registry.is_construct_visible(
             ctx.current_module,
             target_module_id,
             "defgeneric",
@@ -1540,6 +1520,7 @@ fn resolve_qualified_global(
 
     // Verify the target module exists.
     let target_module_id = ctx
+        .engine
         .module_registry
         .get_by_name(module_name)
         .ok_or_else(|| EvalError::TypeError {
@@ -1549,14 +1530,14 @@ fn resolve_qualified_global(
             span: span.clone(),
         })?;
 
-    if !ctx.globals.contains(target_module_id, local_name) {
+    if !ctx.engine.globals.contains(target_module_id, local_name) {
         return Err(EvalError::UnboundGlobal {
             name: raw_name.to_string(),
             span,
         });
     }
 
-    if !ctx.module_registry.is_construct_visible(
+    if !ctx.engine.module_registry.is_construct_visible(
         ctx.current_module,
         target_module_id,
         "defglobal",
@@ -1571,7 +1552,8 @@ fn resolve_qualified_global(
         });
     }
 
-    ctx.globals
+    ctx.engine
+        .globals
         .get(target_module_id, local_name)
         .cloned()
         .ok_or_else(|| EvalError::UnboundGlobal {
@@ -1596,7 +1578,11 @@ fn execute_callable_body(
     // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
     let mut body_exprs = Vec::with_capacity(body.len());
     for body_expr in body {
-        body_exprs.push(from_action_expr(body_expr, ctx.symbol_table, ctx.config)?);
+        body_exprs.push(from_action_expr(
+            body_expr,
+            &mut ctx.engine.symbol_table,
+            &ctx.engine.config,
+        )?);
     }
 
     // Each invocation has its own overrides, leaving original parameters intact
@@ -1607,29 +1593,19 @@ fn execute_callable_body(
         bindings,
         var_map,
         callable_locals: Some(&mut callable_locals),
-        symbol_table: ctx.symbol_table,
-        config: ctx.config,
-        functions: ctx.functions,
-        globals: ctx.globals,
-        generics: ctx.generics,
         call_depth: ctx.call_depth + 1,
         expression_depth: ctx.expression_depth,
         current_module,
-        module_registry: ctx.module_registry,
-        function_modules: ctx.function_modules,
-        global_modules: ctx.global_modules,
-        generic_modules: ctx.generic_modules,
         method_chain,
-        input_buffer: ctx.input_buffer.as_deref_mut(),
-        fact_base: ctx.fact_base,
-        fact_epoch: ctx.fact_epoch,
         compact_fact_bindings: None,
-        template_resolver: ctx.template_resolver,
-        initial_fact_id: ctx.initial_fact_id,
-        template_defs: ctx.template_defs,
+        engine: ctx.engine,
+        allow_engine_effects: ctx.allow_engine_effects,
     };
 
-    let mut result = clips_false(inner_ctx.symbol_table, inner_ctx.config.string_encoding);
+    let mut result = clips_false(
+        &mut inner_ctx.engine.symbol_table,
+        inner_ctx.engine.config.string_encoding,
+    );
     for body_expr in &body_exprs {
         match eval_inner(&mut inner_ctx, body_expr) {
             Ok(value) => result = value,
@@ -1653,7 +1629,7 @@ fn dispatch_user_function(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     let span_ref = span.as_ref();
-    let max_call_depth = ctx.config.effective_max_call_depth();
+    let max_call_depth = ctx.engine.config.effective_max_call_depth();
 
     // Check recursion limit before doing anything else.
     if ctx.call_depth >= max_call_depth {
@@ -1951,26 +1927,13 @@ fn method_queries_match(
         bindings,
         var_map,
         callable_locals: Some(&mut locals),
-        symbol_table: ctx.symbol_table,
-        config: ctx.config,
-        functions: ctx.functions,
-        globals: ctx.globals,
-        generics: ctx.generics,
         call_depth: ctx.call_depth + 1,
         expression_depth: ctx.expression_depth,
         current_module: module,
-        module_registry: ctx.module_registry,
-        function_modules: ctx.function_modules,
-        global_modules: ctx.global_modules,
-        generic_modules: ctx.generic_modules,
         method_chain: None,
-        input_buffer: ctx.input_buffer.as_deref_mut(),
-        fact_base: ctx.fact_base,
-        fact_epoch: ctx.fact_epoch,
         compact_fact_bindings: None,
-        template_resolver: ctx.template_resolver,
-        initial_fact_id: ctx.initial_fact_id,
-        template_defs: ctx.template_defs,
+        engine: ctx.engine,
+        allow_engine_effects: ctx.allow_engine_effects,
     };
     for query in method
         .parameter_queries
@@ -1978,9 +1941,13 @@ fn method_queries_match(
         .flatten()
         .chain(method.wildcard_query.iter())
     {
-        let expression = from_action_expr(query, query_ctx.symbol_table, query_ctx.config)?;
+        let expression = from_action_expr(
+            query,
+            &mut query_ctx.engine.symbol_table,
+            &query_ctx.engine.config,
+        )?;
         let value = finish_root_evaluation(eval_inner(&mut query_ctx, &expression))?;
-        if !is_truthy(&value, query_ctx.symbol_table) {
+        if !is_truthy(&value, &query_ctx.engine.symbol_table) {
             return Ok(false);
         }
     }
@@ -2051,7 +2018,7 @@ fn dispatch_generic(
     if candidates.is_empty() {
         return Err(no_applicable_method(&generic.name, &arg_values, span));
     }
-    let max_call_depth = ctx.config.effective_max_call_depth();
+    let max_call_depth = ctx.engine.config.effective_max_call_depth();
     if ctx.call_depth >= max_call_depth {
         ferric_event!(warn, callable = %generic.name, call_depth = ctx.call_depth, max_call_depth, "eval_recursion_limit_reached");
         return Err(EvalError::RecursionLimit {
@@ -2104,7 +2071,7 @@ fn dispatch_call_next_method(
             span,
         });
     };
-    let max_call_depth = ctx.config.effective_max_call_depth();
+    let max_call_depth = ctx.engine.config.effective_max_call_depth();
     if ctx.call_depth >= max_call_depth {
         ferric_event!(warn, callable = %chain.generic_name, call_depth = ctx.call_depth, max_call_depth, "eval_recursion_limit_reached");
         return Err(EvalError::RecursionLimit {
@@ -2192,8 +2159,9 @@ fn bind_parameter(
     span: Option<&SourceSpan>,
 ) -> Result<(), EvalError> {
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol(parameter_name, ctx.config.string_encoding)
+        .intern_symbol(parameter_name, ctx.engine.config.string_encoding)
         .map_err(|_| EvalError::TypeError {
             function: callable_name.to_string(),
             expected: "valid parameter name".to_string(),
@@ -2318,6 +2286,11 @@ fn from_action_expr_inner(
             }),
         }),
         ferric_rules_parser::ActionExpr::FunctionCall(call) => {
+            if matches!(call.name.as_str(), "assert" | "modify" | "duplicate") {
+                return Ok(RuntimeExpr::EffectCall {
+                    call: Box::new(call.clone()),
+                });
+            }
             let mut args = Vec::with_capacity(call.args.len());
             for arg in &call.args {
                 args.push(from_action_expr_inner(arg, symbol_table, config)?);
@@ -2561,6 +2534,19 @@ fn from_sexpr_inner(
                 }
             };
             let mut args = Vec::with_capacity(items.len() - 1);
+            if matches!(func_name.as_str(), "assert" | "modify" | "duplicate") {
+                let action = ferric_rules_parser::interpret_action_expr(expr).map_err(|error| {
+                    EvalError::UnsupportedOperation {
+                        operation: func_name,
+                        reason: error.to_string(),
+                        span: Some(SourceSpan {
+                            line: span.start.line,
+                            column: span.start.column,
+                        }),
+                    }
+                })?;
+                return from_action_expr_inner(&action, symbol_table, config);
+            }
             for item in &items[1..] {
                 args.push(from_sexpr_inner(item, symbol_table, config)?);
             }
@@ -2920,6 +2906,14 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "rest$"
             | "sort"
             | "funcall"
+            | "assert"
+            | "retract"
+            | "modify"
+            | "duplicate"
+            | "halt"
+            | "focus"
+            | "reset"
+            | "clear"
             | "fact-existp"
             | "fact-index"
             | "fact-relation"
@@ -2941,6 +2935,9 @@ fn dispatch_builtin(
 ) -> Result<Value, EvalError> {
     let span_ref = span.as_ref();
     match name {
+        "retract" | "halt" | "focus" | "reset" | "clear" => {
+            crate::effects::eval_call(ctx, name, args, span_ref)
+        }
         // Arithmetic
         "+" => builtin_add(ctx, args, span_ref),
         "-" => builtin_sub(ctx, args, span_ref),
@@ -3136,6 +3133,7 @@ fn dispatch_bind(
                     }
                 };
                 let module_id = ctx
+                    .engine
                     .module_registry
                     .get_by_name(module_name)
                     .ok_or_else(|| EvalError::TypeError {
@@ -3144,13 +3142,13 @@ fn dispatch_bind(
                         actual: "unknown module".to_string(),
                         span: span.cloned(),
                     })?;
-                if !ctx.globals.contains(module_id, local_name) {
+                if !ctx.engine.globals.contains(module_id, local_name) {
                     return Err(EvalError::UnboundGlobal {
                         name,
                         span: span.cloned(),
                     });
                 }
-                if !ctx.module_registry.is_construct_visible(
+                if !ctx.engine.module_registry.is_construct_visible(
                     ctx.current_module,
                     module_id,
                     "defglobal",
@@ -3165,10 +3163,10 @@ fn dispatch_bind(
                     });
                 }
                 module_id
-            } else if ctx.globals.contains(ctx.current_module, &name) {
+            } else if ctx.engine.globals.contains(ctx.current_module, &name) {
                 ctx.current_module
             } else {
-                let all_modules = sorted_dedup_modules(ctx.globals.modules_for_name(&name));
+                let all_modules = sorted_dedup_modules(ctx.engine.globals.modules_for_name(&name));
                 if all_modules.is_empty() {
                     return Err(EvalError::UnboundGlobal {
                         name,
@@ -3203,7 +3201,9 @@ fn dispatch_bind(
             } else {
                 name.as_str()
             };
-            ctx.globals.set(target_module, local_name, value.clone());
+            ctx.engine
+                .globals
+                .set(target_module, local_name, value.clone());
             Ok(value)
         }
         _ => Err(EvalError::TypeError {
@@ -3269,7 +3269,10 @@ fn dispatch_local_bind(
         Ok(value)
     } else {
         locals.values.remove(name);
-        Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+        Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ))
     }
 }
 
@@ -3933,8 +3936,8 @@ fn eval_cmp_chain(
         if !comparison.matches(&previous, &next) {
             return Ok(clips_bool(
                 false,
-                ctx.symbol_table,
-                ctx.config.string_encoding,
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
             ));
         }
         if !matches!(
@@ -3946,8 +3949,8 @@ fn eval_cmp_chain(
     }
     Ok(clips_bool(
         true,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4010,8 +4013,8 @@ fn builtin_eq(
     let result = values[0].structural_eq(&values[1]);
     Ok(clips_bool(
         result,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4026,8 +4029,8 @@ fn builtin_neq(
     let result = !values[0].structural_eq(&values[1]);
     Ok(clips_bool(
         result,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4043,11 +4046,17 @@ fn builtin_and(
 ) -> Result<Value, EvalError> {
     for arg in args {
         let v = eval_inner(ctx, arg)?;
-        if !is_truthy(&v, ctx.symbol_table) {
-            return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+        if !is_truthy(&v, &ctx.engine.symbol_table) {
+            return Ok(clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            ));
         }
     }
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 /// `or` (variadic)
@@ -4058,11 +4067,17 @@ fn builtin_or(
 ) -> Result<Value, EvalError> {
     for arg in args {
         let v = eval_inner(ctx, arg)?;
-        if is_truthy(&v, ctx.symbol_table) {
-            return Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding));
+        if is_truthy(&v, &ctx.engine.symbol_table) {
+            return Ok(clips_true(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            ));
         }
     }
-    Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_false(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 /// `not` (1 arg)
@@ -4074,9 +4089,9 @@ fn builtin_not(
     check_arity_exact("not", args, 1, span)?;
     let v = eval_inner(ctx, &args[0])?;
     Ok(clips_bool(
-        !is_truthy(&v, ctx.symbol_table),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        !is_truthy(&v, &ctx.engine.symbol_table),
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4093,8 +4108,8 @@ fn builtin_integerp(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::Integer(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4107,8 +4122,8 @@ fn builtin_floatp(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::Float(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4121,8 +4136,8 @@ fn builtin_numberp(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::Integer(_) | Value::Float(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4135,8 +4150,8 @@ fn builtin_symbolp(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::Symbol(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4156,8 +4171,8 @@ fn builtin_instance_name(
         ("instance-namep", _) => {
             return Ok(clips_bool(
                 matches!(value, Value::InstanceName(_)),
-                ctx.symbol_table,
-                ctx.config.string_encoding,
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
             ))
         }
         ("symbol-to-instance-name", Value::Symbol(symbol)) => {
@@ -4187,8 +4202,8 @@ fn builtin_stringp(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::String(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4201,8 +4216,8 @@ fn builtin_lexemep(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::Symbol(_) | Value::String(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4215,8 +4230,8 @@ fn builtin_multifieldp(
     let values = eval_args(ctx, args)?;
     Ok(clips_bool(
         matches!(values[0], Value::Multifield(_)),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4230,8 +4245,8 @@ fn builtin_evenp(
     match val {
         Value::Integer(n) => Ok(clips_bool(
             n % 2 == 0,
-            ctx.symbol_table,
-            ctx.config.string_encoding,
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
         )),
         _ => Err(EvalError::TypeError {
             function: "evenp".to_string(),
@@ -4252,8 +4267,8 @@ fn builtin_oddp(
     match val {
         Value::Integer(n) => Ok(clips_bool(
             n % 2 != 0,
-            ctx.symbol_table,
-            ctx.config.string_encoding,
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
         )),
         _ => Err(EvalError::TypeError {
             function: "oddp".to_string(),
@@ -4329,13 +4344,13 @@ fn concat_values_to_string(
             }
             Value::Float(f) => crate::formatting::append_clips_float(*f, buf),
             Value::Symbol(sym) => {
-                if let Some(name) = ctx.symbol_table.resolve_symbol_str(*sym) {
+                if let Some(name) = ctx.engine.symbol_table.resolve_symbol_str(*sym) {
                     buf.push_str(name);
                 }
             }
             // CLIPS concatenates an instance name's spelling without brackets.
             Value::InstanceName(name) => {
-                if let Some(name) = ctx.symbol_table.resolve_symbol_str(name.as_symbol()) {
+                if let Some(name) = ctx.engine.symbol_table.resolve_symbol_str(name.as_symbol()) {
                     buf.push_str(name);
                 }
             }
@@ -4377,7 +4392,7 @@ fn builtin_str_cat(
     let values = eval_args(ctx, args)?;
     let mut result = String::new();
     concat_values_to_string(ctx, &values, &mut result, "str-cat", span)?;
-    let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
+    let fs = FerricString::new(&result, ctx.engine.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
             function: "str-cat".to_string(),
             expected: "encodable string".to_string(),
@@ -4400,8 +4415,9 @@ fn builtin_sym_cat(
     let mut result = String::new();
     concat_values_to_string(ctx, &values, &mut result, "sym-cat", span)?;
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol(&result, ctx.config.string_encoding)
+        .intern_symbol(&result, ctx.engine.config.string_encoding)
         .map_err(|e| EvalError::TypeError {
             function: "sym-cat".to_string(),
             expected: "encodable symbol name".to_string(),
@@ -4418,11 +4434,12 @@ fn builtin_gensym(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("gensym", args, 0, span)?;
-    let suffix = ctx.globals.next_gensym_counter();
+    let suffix = ctx.engine.globals.next_gensym_counter();
     let symbol_name = format!("gen{suffix}");
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol(&symbol_name, ctx.config.string_encoding)
+        .intern_symbol(&symbol_name, ctx.engine.config.string_encoding)
         .map_err(|e| EvalError::TypeError {
             function: "gensym".to_string(),
             expected: "encodable symbol name".to_string(),
@@ -4439,11 +4456,12 @@ fn builtin_gensym_star(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("gensym*", args, 0, span)?;
-    let suffix = ctx.globals.next_gensym_counter();
+    let suffix = ctx.engine.globals.next_gensym_counter();
     let symbol_name = format!("gen{suffix}");
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol(&symbol_name, ctx.config.string_encoding)
+        .intern_symbol(&symbol_name, ctx.engine.config.string_encoding)
         .map_err(|e| EvalError::TypeError {
             function: "gensym*".to_string(),
             expected: "encodable symbol name".to_string(),
@@ -4463,7 +4481,7 @@ fn builtin_setgen(
     let value = eval_inner(ctx, &args[0])?;
     match value {
         Value::Integer(n) if n >= 1 => {
-            ctx.globals.set_gensym_counter(n);
+            ctx.engine.globals.set_gensym_counter(n);
             Ok(Value::Integer(n))
         }
         Value::Integer(_) => Err(EvalError::TypeError {
@@ -4490,12 +4508,13 @@ fn builtin_set_fact_duplication(
     check_arity_exact("set-fact-duplication", args, 1, span)?;
     let value = eval_inner(ctx, &args[0])?;
     let previous = ctx
+        .engine
         .config
-        .set_fact_duplication(is_truthy(&value, ctx.symbol_table));
+        .set_fact_duplication(is_truthy(&value, &ctx.engine.symbol_table));
     Ok(clips_bool(
         previous,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4507,9 +4526,9 @@ fn builtin_get_fact_duplication(
 ) -> Result<Value, EvalError> {
     check_arity_exact("get-fact-duplication", args, 0, span)?;
     Ok(clips_bool(
-        ctx.config.fact_duplication(),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        ctx.engine.config.fact_duplication(),
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -4535,7 +4554,10 @@ fn builtin_watch(
 ) -> Result<Value, EvalError> {
     check_arity_min("watch", args, 1, span)?;
     let _ = eval_args(ctx, args)?;
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 /// `unwatch` — debugging command accepted for compatibility.
@@ -4546,7 +4568,10 @@ fn builtin_unwatch(
 ) -> Result<Value, EvalError> {
     check_arity_min("unwatch", args, 1, span)?;
     let _ = eval_args(ctx, args)?;
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 /// `str-length` — the character length of a STRING, SYMBOL or INSTANCE-NAME.
@@ -4557,7 +4582,7 @@ fn builtin_str_length(
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-length", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
-    let lexeme = lexeme_text(&val, ctx.symbol_table, "str-length", span)?;
+    let lexeme = lexeme_text(&val, &ctx.engine.symbol_table, "str-length", span)?;
     let char_len = i64::try_from(lexeme.chars().count()).unwrap_or(i64::MAX);
     Ok(Value::Integer(char_len))
 }
@@ -4600,7 +4625,7 @@ fn builtin_sub_string(
     };
 
     let make_empty_string = |ctx: &mut EvalContext<'_>| {
-        FerricString::new("", ctx.config.string_encoding).map_err(|e| EvalError::TypeError {
+        FerricString::new("", ctx.engine.config.string_encoding).map_err(|e| EvalError::TypeError {
             function: "sub-string".to_string(),
             expected: "encodable string".to_string(),
             actual: format!("{e}"),
@@ -4612,7 +4637,7 @@ fn builtin_sub_string(
     }
 
     let text = eval_inner(ctx, &args[2])?;
-    let s = lexeme_text(&text, ctx.symbol_table, "sub-string", span)?;
+    let s = lexeme_text(&text, &ctx.engine.symbol_table, "sub-string", span)?;
 
     // CLIPS uses 1-indexed inclusive bounds. Convert to Rust 0-indexed.
     let char_len = s.chars().count();
@@ -4642,7 +4667,7 @@ fn builtin_sub_string(
     let end_byte_idx = end_byte_idx.unwrap_or(s.len());
     let substr = &s[start_byte_idx..end_byte_idx];
 
-    let fs = FerricString::new(substr, ctx.config.string_encoding).map_err(|e| {
+    let fs = FerricString::new(substr, ctx.engine.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
             function: "sub-string".to_string(),
             expected: "encodable string".to_string(),
@@ -4700,9 +4725,9 @@ fn builtin_str_index(
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-index", args, 2, span)?;
     let needle_value = eval_inner(ctx, &args[0])?;
-    let needle = as_lexeme_str(&needle_value, ctx.symbol_table, "str-index", span)?;
+    let needle = as_lexeme_str(&needle_value, &ctx.engine.symbol_table, "str-index", span)?;
     let haystack_value = eval_inner(ctx, &args[1])?;
-    let haystack = as_lexeme_str(&haystack_value, ctx.symbol_table, "str-index", span)?;
+    let haystack = as_lexeme_str(&haystack_value, &ctx.engine.symbol_table, "str-index", span)?;
     let position = if needle.is_empty() {
         Some(haystack.len())
     } else {
@@ -4716,8 +4741,8 @@ fn builtin_str_index(
         }
         None => Ok(clips_bool(
             false,
-            ctx.symbol_table,
-            ctx.config.string_encoding,
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
         )),
     }
 }
@@ -4733,7 +4758,7 @@ fn convert_case(
 ) -> Result<Value, EvalError> {
     check_arity_exact(function, args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
-    let converted = convert(lexeme_text(&val, ctx.symbol_table, function, span)?);
+    let converted = convert(lexeme_text(&val, &ctx.engine.symbol_table, function, span)?);
     let encoding_error = |expected: &str, error: String| EvalError::TypeError {
         function: function.to_string(),
         expected: expected.to_string(),
@@ -4741,13 +4766,14 @@ fn convert_case(
         span: span.cloned(),
     };
     if matches!(val, Value::String(_)) {
-        return FerricString::new(&converted, ctx.config.string_encoding)
+        return FerricString::new(&converted, ctx.engine.config.string_encoding)
             .map(Value::String)
             .map_err(|e| encoding_error("encodable string", e.to_string()));
     }
     let symbol = ctx
+        .engine
         .symbol_table
-        .intern_symbol(&converted, ctx.config.string_encoding)
+        .intern_symbol(&converted, ctx.engine.config.string_encoding)
         .map_err(|e| encoding_error("encodable symbol", e.to_string()))?;
     Ok(if matches!(val, Value::InstanceName(_)) {
         Value::InstanceName(InstanceName::from_symbol(symbol))
@@ -4782,8 +4808,8 @@ fn builtin_str_compare(
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-compare", args, 2, span)?;
     let values = eval_args(ctx, args)?;
-    let a = as_lexeme_str(&values[0], ctx.symbol_table, "str-compare", span)?;
-    let b = as_lexeme_str(&values[1], ctx.symbol_table, "str-compare", span)?;
+    let a = as_lexeme_str(&values[0], &ctx.engine.symbol_table, "str-compare", span)?;
+    let b = as_lexeme_str(&values[1], &ctx.engine.symbol_table, "str-compare", span)?;
     let result = match a.cmp(&b) {
         std::cmp::Ordering::Less => -1i64,
         std::cmp::Ordering::Equal => 0,
@@ -4804,13 +4830,15 @@ fn builtin_string_to_field(
     let text = match &value {
         Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
         Value::Symbol(symbol) => std::borrow::Cow::Owned(
-            ctx.symbol_table
+            ctx.engine
+                .symbol_table
                 .resolve_symbol_str(*symbol)
                 .unwrap_or_default()
                 .to_owned(),
         ),
         Value::InstanceName(name) => std::borrow::Cow::Owned(
-            ctx.symbol_table
+            ctx.engine
+                .symbol_table
                 .resolve_symbol_str(name.as_symbol())
                 .unwrap_or_default()
                 .to_owned(),
@@ -4865,7 +4893,8 @@ fn builtin_explode_mf(
 fn scan_field<'a>(ctx: &mut EvalContext<'_>, scanner: &mut FieldScanner<'a>) -> FieldToken<'a> {
     let field = scanner.next_token();
     if let Some(notice) = field.notice {
-        ctx.globals
+        ctx.engine
+            .globals
             .push_printout_event(notice.router().to_string(), notice.text().to_string());
     }
     field.token
@@ -4910,8 +4939,9 @@ fn intern_scanned_symbol(
     function: &str,
     span: Option<&SourceSpan>,
 ) -> Result<Symbol, EvalError> {
-    ctx.symbol_table
-        .intern_symbol(text, ctx.config.string_encoding)
+    ctx.engine
+        .symbol_table
+        .intern_symbol(text, ctx.engine.config.string_encoding)
         .map_err(|error| scanned_encoding_error(&error, function, span))
 }
 
@@ -4921,7 +4951,7 @@ fn scanned_string(
     function: &str,
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    FerricString::new(text, ctx.config.string_encoding)
+    FerricString::new(text, ctx.engine.config.string_encoding)
         .map(Value::String)
         .map_err(|error| scanned_encoding_error(&error, function, span))
 }
@@ -5103,16 +5133,21 @@ fn builtin_implode_mf(
                 if idx > 0 {
                     result.push(' ');
                 }
-                crate::value_print::append_implode_field(element, ctx.symbol_table, &mut result);
+                crate::value_print::append_implode_field(
+                    element,
+                    &ctx.engine.symbol_table,
+                    &mut result,
+                );
             }
-            let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
-                EvalError::TypeError {
-                    function: "implode$".to_string(),
-                    expected: "encodable string".to_string(),
-                    actual: format!("{e}"),
-                    span: span.cloned(),
-                }
-            })?;
+            let fs =
+                FerricString::new(&result, ctx.engine.config.string_encoding).map_err(|e| {
+                    EvalError::TypeError {
+                        function: "implode$".to_string(),
+                        expected: "encodable string".to_string(),
+                        actual: format!("{e}"),
+                        span: span.cloned(),
+                    }
+                })?;
             Ok(Value::String(fs))
         }
         _ => Err(EvalError::TypeError {
@@ -5185,8 +5220,9 @@ fn eval_nth(
         return Ok(value.clone());
     }
     let nil = ctx
+        .engine
         .symbol_table
-        .intern_symbol("nil", ctx.config.string_encoding)
+        .intern_symbol("nil", ctx.engine.config.string_encoding)
         .expect("nil is valid ASCII");
     Ok(Value::Symbol(nil))
 }
@@ -5261,8 +5297,8 @@ fn eval_member(
     }
     Ok(clips_bool(
         false,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -5300,8 +5336,8 @@ fn builtin_subsetp(
         .all(|needle| mf2.iter().any(|elem| needle.structural_eq(elem)));
     Ok(clips_bool(
         is_subset,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -5556,6 +5592,7 @@ fn builtin_sort(
         });
     };
     let name = ctx
+        .engine
         .symbol_table
         .resolve_symbol_str(symbol)
         .unwrap_or("")
@@ -5607,7 +5644,7 @@ fn merge_sort_fields(
             ];
             let result = predicate.call(ctx, name, &pair, span.cloned())?;
             !matches!(result, Value::Symbol(sym)
-                if ctx.symbol_table.resolve_symbol_str(sym) == Some("FALSE"))
+                if ctx.engine.symbol_table.resolve_symbol_str(sym) == Some("FALSE"))
         };
         let taken = if take_right { &mut right } else { &mut left };
         // A consumed field is never compared again, so move it out.
@@ -5635,6 +5672,7 @@ fn builtin_funcall(
     let name_val = eval_inner(ctx, &args[0])?;
     let fn_name = match &name_val {
         Value::Symbol(sym) => ctx
+            .engine
             .symbol_table
             .resolve_symbol_str(*sym)
             .unwrap_or("")
@@ -5686,38 +5724,38 @@ fn resolve_named_callable(
         return Ok(NamedCallable::Builtin);
     }
 
-    let function_modules = sorted_dedup_modules(ctx.functions.modules_for_name(name));
+    let function_modules = sorted_dedup_modules(ctx.engine.functions.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
         name,
         "deffunction",
         &function_modules,
-        ctx.functions.contains(ctx.current_module, name),
+        ctx.engine.functions.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous deffunction resolution",
             actual: "multiple visible deffunctions; use MODULE::name",
         },
         span.cloned(),
     )? {
-        if let Some(func) = ctx.functions.get(target_module, name) {
+        if let Some(func) = ctx.engine.functions.get(target_module, name) {
             return Ok(NamedCallable::Function(func.clone(), target_module));
         }
     }
 
-    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(name));
+    let generic_modules = sorted_dedup_modules(ctx.engine.generics.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
         name,
         "defgeneric",
         &generic_modules,
-        ctx.generics.contains(ctx.current_module, name),
+        ctx.engine.generics.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous defgeneric resolution",
             actual: "multiple visible defgenerics; use MODULE::name",
         },
         span.cloned(),
     )? {
-        if let Some(generic) = ctx.generics.get(target_module, name) {
+        if let Some(generic) = ctx.engine.generics.get(target_module, name) {
             return Ok(NamedCallable::Generic(generic.clone(), target_module));
         }
     }
@@ -5740,7 +5778,10 @@ fn builtin_close(
 ) -> Result<Value, EvalError> {
     check_arity_exact("close", args, 1, span)?;
     let _ = eval_inner(ctx, &args[0])?;
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 fn builtin_break(args: &[RuntimeExpr], span: Option<&SourceSpan>) -> Result<Value, EvalError> {
@@ -5783,9 +5824,10 @@ fn builtin_load(
     check_arity_exact("load", args, 1, span)?;
     let path_value = eval_inner(ctx, &args[0])?;
     match path_value {
-        Value::String(_) | Value::Symbol(_) => {
-            Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
-        }
+        Value::String(_) | Value::Symbol(_) => Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        )),
         _ => Err(EvalError::TypeError {
             function: "load".to_string(),
             expected: "STRING or SYMBOL".to_string(),
@@ -5803,7 +5845,10 @@ fn builtin_undefrule(
 ) -> Result<Value, EvalError> {
     check_arity_min("undefrule", args, 1, span)?;
     let _ = eval_args(ctx, args)?;
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 /// `ppdefrule` — pretty-print command placeholder accepted for compatibility.
@@ -5814,7 +5859,10 @@ fn builtin_ppdefrule(
 ) -> Result<Value, EvalError> {
     check_arity_exact("ppdefrule", args, 1, span)?;
     let _ = eval_inner(ctx, &args[0])?;
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 /// `rules` — command accepted in expression contexts; action path owns output.
@@ -5834,7 +5882,10 @@ fn builtin_rules(
     if let Some(arg) = args.first() {
         let _ = eval_inner(ctx, arg)?;
     }
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Ok(clips_true(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 fn output_channel_name(
@@ -5875,7 +5926,7 @@ fn builtin_printout(
 ) -> Result<Value, EvalError> {
     check_arity_min("printout", args, 1, span)?;
     let channel_value = eval_inner(ctx, &args[0])?;
-    let channel = output_channel_name(&channel_value, ctx.symbol_table, "printout", span)?;
+    let channel = output_channel_name(&channel_value, &ctx.engine.symbol_table, "printout", span)?;
     if channel == "nil" {
         return Ok(Value::Void);
     }
@@ -5883,10 +5934,12 @@ fn builtin_printout(
     for expr in &args[1..] {
         let value = eval_inner(ctx, expr)?;
         let mut output = String::new();
-        crate::value_print::append_printout_value(&value, ctx.symbol_table, &mut output);
+        crate::value_print::append_printout_value(&value, &ctx.engine.symbol_table, &mut output);
         // Queue each completed argument before evaluating the next one, so
         // nested output and errors preserve the already-written prefix.
-        ctx.globals.push_printout_event(channel.clone(), output);
+        ctx.engine
+            .globals
+            .push_printout_event(channel.clone(), output);
     }
 
     Ok(Value::Void)
@@ -5910,7 +5963,7 @@ fn builtin_format(
 
     check_arity_min("format", args, 2, span)?;
     let channel_value = eval_inner(ctx, &args[0])?;
-    let channel = output_channel_name(&channel_value, ctx.symbol_table, "format", span)?;
+    let channel = output_channel_name(&channel_value, &ctx.engine.symbol_table, "format", span)?;
     let control = match eval_inner(ctx, &args[1])? {
         Value::String(s) => s,
         other => {
@@ -5950,17 +6003,23 @@ fn builtin_format(
             Piece::Directive(conversion, spec) => {
                 let operand = operands.next().expect("operand count was checked");
                 let value = eval_inner(ctx, operand)?;
-                render_format_value(&mut output, conversion, spec, &value, ctx.symbol_table)
-                    .map_err(|expected| EvalError::TypeError {
-                        function: "format".to_string(),
-                        expected: expected.to_string(),
-                        actual: generic_value_type_name(&value).to_string(),
-                        span: span.cloned(),
-                    })?;
+                render_format_value(
+                    &mut output,
+                    conversion,
+                    spec,
+                    &value,
+                    &ctx.engine.symbol_table,
+                )
+                .map_err(|expected| EvalError::TypeError {
+                    function: "format".to_string(),
+                    expected: expected.to_string(),
+                    actual: generic_value_type_name(&value).to_string(),
+                    span: span.cloned(),
+                })?;
             }
         }
     }
-    let fs = FerricString::new(&output, ctx.config.string_encoding).map_err(|_| {
+    let fs = FerricString::new(&output, ctx.engine.config.string_encoding).map_err(|_| {
         EvalError::TypeError {
             function: "format".to_string(),
             expected: "valid string encoding".to_string(),
@@ -5969,7 +6028,7 @@ fn builtin_format(
         }
     })?;
     if channel != "nil" {
-        ctx.globals.push_printout_event(channel, output);
+        ctx.engine.globals.push_printout_event(channel, output);
     }
     Ok(Value::String(fs))
 }
@@ -6037,8 +6096,9 @@ fn intern_eof_symbol(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol("EOF", ctx.config.string_encoding)
+        .intern_symbol("EOF", ctx.engine.config.string_encoding)
         .map_err(|_| EvalError::TypeError {
             function: "read".to_string(),
             expected: "valid string encoding".to_string(),
@@ -6074,11 +6134,7 @@ fn builtin_read(
     }
 
     loop {
-        let Some(line) = ctx
-            .input_buffer
-            .as_deref_mut()
-            .and_then(std::collections::VecDeque::pop_front)
-        else {
+        let Some(line) = ctx.engine.input_buffer.pop_front() else {
             return intern_eof_symbol(ctx, span);
         };
         match scan_field(ctx, &mut FieldScanner::new(line.as_bytes())) {
@@ -6114,13 +6170,9 @@ fn builtin_readline(
         let _ = eval_inner(ctx, &args[0])?;
     }
 
-    let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
-        return intern_eof_symbol(ctx, span);
-    };
-
-    match buffer.pop_front() {
+    match ctx.engine.input_buffer.pop_front() {
         Some(line) => {
-            let fs = FerricString::new(&line, ctx.config.string_encoding).map_err(|_| {
+            let fs = FerricString::new(&line, ctx.engine.config.string_encoding).map_err(|_| {
                 EvalError::TypeError {
                     function: "readline".to_string(),
                     expected: "valid string encoding".to_string(),
@@ -6148,14 +6200,15 @@ fn builtin_get_focus(
 ) -> Result<Value, EvalError> {
     check_arity_exact("get-focus", args, 0, span)?;
 
-    let focus_id = ctx.module_registry.current_focus();
+    let focus_id = ctx.engine.module_registry.current_focus();
     let module_name = focus_id
-        .and_then(|id| ctx.module_registry.module_name(id))
+        .and_then(|id| ctx.engine.module_registry.module_name(id))
         .unwrap_or("MAIN");
 
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol(module_name, ctx.config.string_encoding)
+        .intern_symbol(module_name, ctx.engine.config.string_encoding)
         .map_err(|_| EvalError::TypeError {
             function: "get-focus".to_string(),
             expected: "valid module name".to_string(),
@@ -6176,15 +6229,20 @@ fn builtin_get_focus_stack(
 ) -> Result<Value, EvalError> {
     check_arity_exact("get-focus-stack", args, 0, span)?;
 
-    let stack = ctx.module_registry.focus_stack();
+    let stack = ctx.engine.module_registry.focus_stack();
     let mut result = ferric_rules_core::value::Multifield::new();
 
     // Return in top-first order (reverse of internal stack order)
     for &module_id in stack.iter().rev() {
-        let name = ctx.module_registry.module_name(module_id).unwrap_or("???");
+        let name = ctx
+            .engine
+            .module_registry
+            .module_name(module_id)
+            .unwrap_or("???");
         let sym = ctx
+            .engine
             .symbol_table
-            .intern_symbol(name, ctx.config.string_encoding)
+            .intern_symbol(name, ctx.engine.config.string_encoding)
             .map_err(|_| EvalError::TypeError {
                 function: "get-focus-stack".to_string(),
                 expected: "valid module name".to_string(),
@@ -6207,6 +6265,7 @@ fn builtin_get_focus_stack(
 pub(crate) fn designated_fact(
     fact_base: &FactBase,
     initial_fact_id: Option<FactId>,
+    zero_based: bool,
     epoch: u64,
     value: &Value,
 ) -> Option<FactId> {
@@ -6220,11 +6279,11 @@ pub(crate) fn designated_fact(
     fact_base
         .iter()
         .map(|(id, _)| id)
-        .find(|&id| public_fact_index(fact_base, initial_fact_id, id) == Some(index))
+        .find(|&id| public_fact_index(fact_base, initial_fact_id, zero_based, id) == Some(index))
 }
 
 /// Evaluate a fact-function argument that must be an address or an index.
-/// `None` means no fact base is available, or no live fact has the index.
+/// `None` means no live fact has the address or index.
 fn eval_fact_designator(
     ctx: &mut EvalContext<'_>,
     function: &str,
@@ -6240,9 +6299,13 @@ fn eval_fact_designator(
             span: span.cloned(),
         });
     }
-    Ok(ctx.fact_base.and_then(|fact_base| {
-        designated_fact(fact_base, ctx.initial_fact_id, ctx.fact_epoch, &value)
-    }))
+    Ok(designated_fact(
+        &ctx.engine.fact_base,
+        ctx.engine.initial_fact_id,
+        ctx.engine.fact_index_starts_at_zero,
+        ctx.engine.fact_epoch,
+        &value,
+    ))
 }
 
 /// `(fact-existp <fact-address-or-index>)` — whether the fact is in working memory.
@@ -6253,13 +6316,11 @@ fn builtin_fact_existp(
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-existp", args, 1, span)?;
     let fact = eval_fact_designator(ctx, "fact-existp", &args[0], span)?;
-    let exists = fact
-        .zip(ctx.fact_base)
-        .is_some_and(|(fact_id, fact_base)| fact_base.get(fact_id).is_some());
+    let exists = fact.is_some();
     Ok(clips_bool(
         exists,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     ))
 }
 
@@ -6281,10 +6342,7 @@ fn builtin_fact_index(
     let Value::FactAddress(address) = &val else {
         return Err(invalid_address());
     };
-    let Some(fact_base) = ctx.fact_base else {
-        return Ok(Value::Integer(-1));
-    };
-    if live_fact_id(fact_base, ctx.fact_epoch, address).is_none() {
+    if live_fact_id(&ctx.engine.fact_base, ctx.engine.fact_epoch, address).is_none() {
         return Ok(Value::Integer(-1));
     }
     let index = address
@@ -6301,8 +6359,7 @@ fn builtin_fact_index(
 /// `(fact-relation <fact-address-or-index>)` — the relation name of a fact as a SYMBOL.
 ///
 /// For ordered facts this is the relation symbol; for template facts it is the
-/// template name. Returns `FALSE` if the fact does not exist or no fact base is
-/// available.
+/// template name. Returns `FALSE` if the fact does not exist.
 fn builtin_fact_relation(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6310,31 +6367,37 @@ fn builtin_fact_relation(
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-relation", args, 1, span)?;
     let fact = eval_fact_designator(ctx, "fact-relation", &args[0], span)?;
-    let Some((fact_id, fb)) = fact.zip(ctx.fact_base) else {
-        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    let Some(fact_id) = fact else {
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
     };
-    let Some(entry) = fb.get(fact_id) else {
-        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    let Some(entry) = ctx.engine.fact_base.get(fact_id) else {
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
     };
     let relation_name: String = match &entry.fact {
         ferric_rules_core::Fact::Ordered(of) => ctx
+            .engine
             .symbol_table
             .resolve_symbol_str(of.relation)
             .unwrap_or("???")
             .to_string(),
         ferric_rules_core::Fact::Template(tf) => {
             // Look up the template name from template_defs.
-            ctx.template_defs
-                .and_then(|td| td.get(tf.template_id))
-                .map_or_else(
-                    || format!("<template:{:?}>", tf.template_id),
-                    |reg| reg.name.clone(),
-                )
+            ctx.engine.template_defs.get(tf.template_id).map_or_else(
+                || format!("<template:{:?}>", tf.template_id),
+                |reg| reg.name.clone(),
+            )
         }
     };
     let sym = ctx
+        .engine
         .symbol_table
-        .intern_symbol(&relation_name, ctx.config.string_encoding)
+        .intern_symbol(&relation_name, ctx.engine.config.string_encoding)
         .map_err(|_| EvalError::TypeError {
             function: "fact-relation".into(),
             expected: "valid symbol".into(),
@@ -6376,15 +6439,16 @@ fn builtin_compact_fact_slot_ref(
             span: span.cloned(),
         });
     };
-    let slot_name =
-        ctx.symbol_table
-            .resolve_symbol_str(*slot)
-            .ok_or_else(|| EvalError::TypeError {
-                function: COMPACT_FACT_SLOT_REF.into(),
-                expected: "registered slot symbol".into(),
-                actual: "unknown symbol".into(),
-                span: span.cloned(),
-            })?;
+    let slot_name = ctx
+        .engine
+        .symbol_table
+        .resolve_symbol_str(*slot)
+        .ok_or_else(|| EvalError::TypeError {
+            function: COMPACT_FACT_SLOT_REF.into(),
+            expected: "registered slot symbol".into(),
+            actual: "unknown symbol".into(),
+            span: span.cloned(),
+        })?;
     let member = ctx
         .compact_fact_bindings
         .and_then(|bindings| bindings.get(name));
@@ -6401,15 +6465,11 @@ fn builtin_compact_fact_slot_ref(
         });
     };
     let fact = member
-        .record(ctx.fact_base, ctx.fact_epoch)
+        .record(&ctx.engine.fact_base, ctx.engine.fact_epoch)
         .ok_or_else(|| EvalError::TypeError {
             function: COMPACT_FACT_SLOT_REF.into(),
             expected: "live or retained query fact".into(),
-            actual: if ctx.fact_base.is_some() {
-                format!("fact bound to ?{name} no longer exists")
-            } else {
-                "fact context is unavailable".into()
-            },
+            actual: format!("fact bound to ?{name} no longer exists"),
             span: span.cloned(),
         })?;
     if matches!(fact, Fact::Ordered(_)) {
@@ -6451,21 +6511,36 @@ fn builtin_fact_slot_value(
             span: span.cloned(),
         });
     }
-    let slot_name = as_lexeme_str(&values[1], ctx.symbol_table, "fact-slot-value", span)?;
-    let Some(fact_id) = ctx.fact_base.and_then(|fact_base| {
-        designated_fact(fact_base, ctx.initial_fact_id, ctx.fact_epoch, &values[0])
-    }) else {
-        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    let slot_name = as_lexeme_str(
+        &values[1],
+        &ctx.engine.symbol_table,
+        "fact-slot-value",
+        span,
+    )?;
+    let Some(fact_id) = designated_fact(
+        &ctx.engine.fact_base,
+        ctx.engine.initial_fact_id,
+        ctx.engine.fact_index_starts_at_zero,
+        ctx.engine.fact_epoch,
+        &values[0],
+    ) else {
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
     };
     let value = read_fact_slot_value(ctx, fact_id, &slot_name, "fact-slot-value", span, || {
         "fact does not exist".into()
     })?;
-    Ok(value.unwrap_or_else(|| clips_false(ctx.symbol_table, ctx.config.string_encoding)))
+    Ok(value.unwrap_or_else(|| {
+        clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        )
+    }))
 }
 
-/// Read a live fact's slot. An absent fact base or template registry is distinct
-/// from a stale fact or malformed slot so callers can keep their own context
-/// policy without duplicating fact access.
+/// Read a live fact's slot using the current template registry.
 fn read_fact_slot_value(
     ctx: &EvalContext<'_>,
     fact_id: FactId,
@@ -6474,10 +6549,7 @@ fn read_fact_slot_value(
     span: Option<&SourceSpan>,
     missing_fact: impl FnOnce() -> String,
 ) -> Result<Option<Value>, EvalError> {
-    let Some(fb) = ctx.fact_base else {
-        return Ok(None);
-    };
-    let Some(entry) = fb.get(fact_id) else {
+    let Some(entry) = ctx.engine.fact_base.get(fact_id) else {
         return Err(EvalError::TypeError {
             function: function.into(),
             expected: "valid fact index".into(),
@@ -6485,7 +6557,7 @@ fn read_fact_slot_value(
             span: span.cloned(),
         });
     };
-    if ctx.initial_fact_id == Some(fact_id) {
+    if ctx.engine.initial_fact_id == Some(fact_id) {
         // CLIPS's `initial-fact` is a deftemplate without slots.
         return Err(EvalError::TypeError {
             function: function.into(),
@@ -6508,10 +6580,7 @@ fn read_record_slot_value(
 ) -> Result<Option<Value>, EvalError> {
     let value = match fact {
         ferric_rules_core::Fact::Template(tf) => {
-            let Some(td) = ctx.template_defs else {
-                return Ok(None);
-            };
-            let Some(reg) = td.get(tf.template_id) else {
+            let Some(reg) = ctx.engine.template_defs.get(tf.template_id) else {
                 return Ok(None);
             };
             let Some(&pos) = reg.slot_index.get(slot_name) else {
@@ -6561,63 +6630,47 @@ fn builtin_fact_slot_names(
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-slot-names", args, 1, span)?;
     let fact = eval_fact_designator(ctx, "fact-slot-names", &args[0], span)?;
-    let Some((fact_id, fb)) = fact.zip(ctx.fact_base) else {
-        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    let Some(fact_id) = fact else {
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
     };
-    let Some(entry) = fb.get(fact_id) else {
-        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    let Some(entry) = ctx.engine.fact_base.get(fact_id) else {
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
     };
-    if ctx.initial_fact_id == Some(fact_id) {
+    if ctx.engine.initial_fact_id == Some(fact_id) {
         return Ok(Value::Multifield(Box::default()));
     }
     match &entry.fact {
         ferric_rules_core::Fact::Template(tf) => {
             let mut result = ferric_rules_core::value::Multifield::new();
-            // Use template_defs for ordered slot names when available.
-            if let Some(td) = ctx.template_defs {
-                if let Some(reg) = td.get(tf.template_id) {
-                    for slot_name in &reg.slot_names {
-                        let sym = ctx
-                            .symbol_table
-                            .intern_symbol(slot_name, ctx.config.string_encoding)
-                            .map_err(|_| EvalError::TypeError {
-                                function: "fact-slot-names".into(),
-                                expected: "valid slot name".into(),
-                                actual: format!("encoding error for {slot_name:?}"),
-                                span: span.cloned(),
-                            })?;
-                        result.push(Value::Symbol(sym));
-                    }
-                    return Ok(Value::Multifield(Box::new(result)));
+            if let Some(reg) = ctx.engine.template_defs.get(tf.template_id) {
+                for slot_name in &reg.slot_names {
+                    let sym = ctx
+                        .engine
+                        .symbol_table
+                        .intern_symbol(slot_name, ctx.engine.config.string_encoding)
+                        .map_err(|_| EvalError::TypeError {
+                            function: "fact-slot-names".into(),
+                            expected: "valid slot name".into(),
+                            actual: format!("encoding error for {slot_name:?}"),
+                            span: span.cloned(),
+                        })?;
+                    result.push(Value::Symbol(sym));
                 }
-            }
-            // Fallback when template_defs is unavailable: use slot_index keys
-            // (order is unspecified but at least complete).
-            for (slot_name, _) in ctx
-                .template_defs
-                .and_then(|td| td.get(tf.template_id))
-                .map(|reg| reg.slot_index.iter())
-                .into_iter()
-                .flatten()
-            {
-                let sym = ctx
-                    .symbol_table
-                    .intern_symbol(slot_name, ctx.config.string_encoding)
-                    .map_err(|_| EvalError::TypeError {
-                        function: "fact-slot-names".into(),
-                        expected: "valid slot name".into(),
-                        actual: format!("encoding error for {slot_name:?}"),
-                        span: span.cloned(),
-                    })?;
-                result.push(Value::Symbol(sym));
             }
             Ok(Value::Multifield(Box::new(result)))
         }
         ferric_rules_core::Fact::Ordered(_) => {
             // Ordered facts have a single implicit slot named "implied".
             let sym = ctx
+                .engine
                 .symbol_table
-                .intern_symbol("implied", ctx.config.string_encoding)
+                .intern_symbol("implied", ctx.engine.config.string_encoding)
                 .map_err(|_| EvalError::TypeError {
                     function: "fact-slot-names".into(),
                     expected: "valid symbol".into(),
@@ -6635,8 +6688,7 @@ fn builtin_fact_slot_names(
 // Fact I/O stubs (load-facts / save-facts)
 // ---------------------------------------------------------------------------
 
-/// Stub for `load-facts` and `save-facts` when called from a pure expression
-/// context (no engine access).
+/// Existing expression fallback for `load-facts` and `save-facts`.
 ///
 /// The real implementations live in `actions.rs` and are dispatched before
 /// the evaluator is reached.  When these functions appear in an expression
@@ -6651,11 +6703,12 @@ fn builtin_load_save_facts_stub(
     check_arity_exact(name, args, 1, span)?;
     // Evaluate the filename arg to surface any errors (e.g., wrong type).
     let _ = eval_inner(ctx, &args[0])?;
-    // Return FALSE — full I/O requires engine access available only in the
-    // action dispatcher (actions.rs).  When called from a deffunction body or
-    // test CE the operation is a no-op; this matches CLIPS behaviour where
-    // these functions are only meaningful as top-level RHS actions.
-    Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+    // These I/O operations still use their existing top-level action handlers.
+    // Preserve the expression fallback until those handlers share dispatch.
+    Ok(clips_false(
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
+    ))
 }
 
 // ===========================================================================
@@ -6665,42 +6718,14 @@ fn builtin_load_save_facts_stub(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fact_address::make_fact_address;
     use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 
-    type ModuleOwnershipMap = crate::functions::ModuleNameMap<crate::modules::ModuleId>;
-    type TestCtx = (
-        SymbolTable,
-        VarMap,
-        BindingSet,
-        EngineConfig,
-        FunctionEnv,
-        GlobalStore,
-        GenericRegistry,
-        crate::modules::ModuleRegistry,
-        ModuleOwnershipMap,
-    );
-
-    /// Create a default test context tuple.
-    fn test_ctx() -> TestCtx {
-        let symbol_table = SymbolTable::new();
-        let var_map = VarMap::new();
-        let bindings = BindingSet::new();
-        let config = EngineConfig::utf8();
-        let functions = FunctionEnv::new();
-        let globals = GlobalStore::new();
-        let generics = GenericRegistry::new();
-        let module_registry = crate::modules::ModuleRegistry::new();
-        let empty_modules: ModuleOwnershipMap = rustc_hash::FxHashMap::default();
+    fn test_ctx() -> (crate::Engine, VarMap, BindingSet) {
         (
-            symbol_table,
-            var_map,
-            bindings,
-            config,
-            functions,
-            globals,
-            generics,
-            module_registry,
-            empty_modules,
+            crate::Engine::new(EngineConfig::utf8()),
+            VarMap::new(),
+            BindingSet::new(),
         )
     }
 
@@ -6712,35 +6737,22 @@ mod tests {
     fn eval_expr_with_output(
         expr: &RuntimeExpr,
     ) -> (Result<Value, EvalError>, Vec<(String, String)>) {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let main_id = mr.main_module_id();
+        let (mut engine, vm, bs) = test_ctx();
+        let main_id = engine.module_registry.main_module_id();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
             current_module: main_id,
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, expr);
-        (result, gs.take_printout_events())
+        (result, engine.globals.take_printout_events())
     }
 
     fn test_fact_address(engine: &crate::Engine, id: FactId) -> FactAddress {
@@ -6748,6 +6760,7 @@ mod tests {
             &engine.fact_base,
             engine.initial_fact_id,
             engine.fact_epoch,
+            engine.fact_index_starts_at_zero,
             id,
         )
         .expect("test fact is live")
@@ -6757,51 +6770,20 @@ mod tests {
         Value::FactAddress(test_fact_address(engine, id))
     }
 
-    fn eval_index(
-        facts: Option<&ferric_rules_core::FactBase>,
-        initial_fact_id: Option<ferric_rules_core::FactId>,
-        address: Value,
-    ) -> Result<i64, EvalError> {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut ctx = EvalContext {
-            bindings: &bs,
-            var_map: &vm,
-            callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
-            call_depth: 0,
-            expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
-            method_chain: None,
-            input_buffer: None,
-            fact_base: facts,
-            fact_epoch: match &address {
-                Value::FactAddress(address) => address.epoch().unwrap_or(0),
-                _ => 0,
-            },
-            compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id,
-            template_defs: None,
-        };
-        eval(
-            &mut ctx,
-            &RuntimeExpr::Call {
-                name: "fact-index".into(),
-                args: vec![RuntimeExpr::Literal(address)],
-                span: Some(SourceSpan { line: 4, column: 7 }),
-            },
-        )
-        .map(|value| match value {
-            Value::Integer(index) => index,
-            value => panic!("fact-index returned {value:?}"),
+    fn eval_index(address: Value, engine: &mut crate::Engine) -> Result<i64, EvalError> {
+        with_compact_context(engine, None, |ctx| {
+            eval(
+                ctx,
+                &RuntimeExpr::Call {
+                    name: "fact-index".into(),
+                    args: vec![RuntimeExpr::Literal(address)],
+                    span: Some(SourceSpan { line: 4, column: 7 }),
+                },
+            )
+            .map(|value| match value {
+                Value::Integer(index) => index,
+                value => panic!("fact-index returned {value:?}"),
+            })
         })
     }
 
@@ -6866,30 +6848,13 @@ mod tests {
             bindings: &bindings,
             var_map: &var_map,
             callable_locals,
-            symbol_table: &mut engine.symbol_table,
-            config: &engine.config,
-            functions: &engine.functions,
-            globals: &mut engine.globals,
-            generics: &engine.generics,
             call_depth: 0,
             expression_depth: 0,
             current_module,
-            module_registry: &engine.module_registry,
-            function_modules: &engine.function_modules,
-            global_modules: &engine.global_modules,
-            generic_modules: &engine.generic_modules,
             method_chain: None,
-            input_buffer: None,
-            fact_base: Some(&engine.fact_base),
-            fact_epoch: engine.fact_epoch,
             compact_fact_bindings: scope,
-            template_resolver: Some(crate::loader::TemplateResolver {
-                template_local_ids: &engine.template_local_ids,
-                template_modules: &engine.template_modules,
-                module_registry: &engine.module_registry,
-            }),
-            initial_fact_id: engine.initial_fact_id,
-            template_defs: Some(&engine.template_defs),
+            engine,
+            allow_engine_effects: true,
         };
         run(&mut ctx)
     }
@@ -6908,8 +6873,105 @@ mod tests {
     }
 
     fn eval_source(ctx: &mut EvalContext<'_>, source: &str) -> Result<Value, EvalError> {
-        let expression = from_action_expr(&source_action(source), ctx.symbol_table, ctx.config)?;
+        let expression = from_action_expr(
+            &source_action(source),
+            &mut ctx.engine.symbol_table,
+            &ctx.engine.config,
+        )?;
         eval(ctx, &expression)
+    }
+
+    #[test]
+    fn expression_effects_preserve_slot_syntax_and_return_addresses() {
+        let mut engine = crate::Engine::new(EngineConfig::utf8());
+        engine.load_str("(deftemplate item (slot bind))").unwrap();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            let first = eval_source(ctx, "(bind ?saved (assert (item (bind (+ 1 2)))))").unwrap();
+            assert!(matches!(first, Value::FactAddress(_)));
+            assert!(matches!(
+                eval_source(ctx, "(fact-slot-value ?saved bind)").unwrap(),
+                Value::Integer(3)
+            ));
+            let changed = eval_source(ctx, "(bind ?saved (modify ?saved (bind 4)))").unwrap();
+            assert!(!first.structural_eq(&changed));
+            let copied = eval_source(ctx, "(duplicate ?saved (bind 5))").unwrap();
+            assert!(matches!(copied, Value::FactAddress(_)));
+            assert!(matches!(
+                eval_source(ctx, "(retract ?saved)").unwrap(),
+                Value::Void
+            ));
+            assert!(!is_truthy(
+                &eval_source(ctx, "(fact-existp ?saved)").unwrap(),
+                &ctx.engine.symbol_table
+            ));
+        });
+    }
+
+    #[test]
+    fn engine_effect_permission_is_inherited_and_checked_before_operands() {
+        let mut engine = crate::Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                "(defglobal ?*touched* = 0)
+            (deffunction effect () (assert (value (bind ?*touched* 1))))",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            ctx.allow_engine_effects = false;
+            assert!(matches!(
+                eval_source(ctx, "(effect)"),
+                Err(EvalError::UnsupportedOperation { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "?*touched*").unwrap(),
+                Value::Integer(0)
+            ));
+            assert_eq!(ctx.engine.fact_count(), 0);
+        });
+    }
+
+    #[test]
+    fn expression_queries_return_body_values_and_retain_retracted_members() {
+        let (mut engine, _) = compact_test_engine();
+        add_query_item(&mut engine, 20);
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(matches!(
+                eval_source(
+                    ctx,
+                    "(do-for-all-facts ((?x item)) TRUE (retract ?x) ?x:value)"
+                )
+                .unwrap(),
+                Value::Integer(20)
+            ));
+            let empty = eval_source(ctx, "(do-for-fact ((?x item)) TRUE 99)").unwrap();
+            assert!(!is_truthy(&empty, &ctx.engine.symbol_table));
+            eval_source(ctx, "(assert (item (value 30)))").unwrap();
+            assert!(matches!(
+                eval_source(ctx, "(do-for-all-facts ((?x item)) TRUE (break) 99)").unwrap(),
+                Value::Void
+            ));
+        });
+    }
+
+    #[test]
+    fn delayed_expression_queries_retain_old_records_across_reset() {
+        let (mut engine, _) = compact_test_engine();
+        add_query_item(&mut engine, 20);
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(matches!(
+                eval_source(
+                    ctx,
+                    "(delayed-do-for-all-facts ((?x item)) TRUE (reset) ?x:value)"
+                )
+                .unwrap(),
+                Value::Integer(20)
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(do-for-all-facts ((?x item)) TRUE (reset) ?x:value)").unwrap(),
+                Value::Integer(10)
+            ));
+        });
     }
 
     #[test]
@@ -6935,7 +6997,7 @@ mod tests {
             ] {
                 let value = eval_source(ctx, source).unwrap();
                 assert!(
-                    matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("FALSE")),
+                    matches!(value, Value::Symbol(symbol) if ctx.engine.symbol_table.resolve_symbol_str(symbol) == Some("FALSE")),
                     "{source}: {value:?}"
                 );
             }
@@ -6969,7 +7031,7 @@ mod tests {
             eval(ctx, &local_bind("x", vec![int(99)])).unwrap();
             for source in ["(while TRUE do (break))", "(loop-for-count 5 do (break))"] {
                 let value = eval_source(ctx, source).unwrap();
-                assert!(!is_truthy(&value, ctx.symbol_table), "{source}");
+                assert!(!is_truthy(&value, &ctx.engine.symbol_table), "{source}");
             }
             for source in [
                 "(progn$ (?x (create$ a b c)) (if (eq ?x b) then (break)) ?x)",
@@ -6986,7 +7048,7 @@ mod tests {
             }
             let value = eval_source(ctx, "(foreach ?x (create$ a b c) ?x)").unwrap();
             assert!(
-                matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("c"))
+                matches!(value, Value::Symbol(symbol) if ctx.engine.symbol_table.resolve_symbol_str(symbol) == Some("c"))
             );
         });
     }
@@ -7078,22 +7140,23 @@ mod tests {
         with_compact_context(&mut engine, None, |ctx| {
             let value = eval_source(ctx, "(choose 1)").unwrap();
             assert!(
-                matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("first"))
+                matches!(value, Value::Symbol(symbol) if ctx.engine.symbol_table.resolve_symbol_str(symbol) == Some("first"))
             );
             assert!(matches!(
-                ctx.globals.get(ctx.current_module, "queries"),
+                ctx.engine.globals.get(ctx.current_module, "queries"),
                 Some(Value::Integer(1))
             ));
-            ctx.globals
+            ctx.engine
+                .globals
                 .set(ctx.current_module, "queries", Value::Integer(0));
             let value = eval_source(ctx, "(chain 1)").unwrap();
             let Value::Multifield(fields) = value else {
                 panic!("expected two next-method results")
             };
             assert_eq!(fields.len(), 2);
-            assert!(fields.iter().all(|value| matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(*symbol) == Some("third"))));
+            assert!(fields.iter().all(|value| matches!(value, Value::Symbol(symbol) if ctx.engine.symbol_table.resolve_symbol_str(*symbol) == Some("third"))));
             assert!(matches!(
-                ctx.globals.get(ctx.current_module, "queries"),
+                ctx.engine.globals.get(ctx.current_module, "queries"),
                 Some(Value::Integer(5))
             ));
         });
@@ -7126,7 +7189,7 @@ mod tests {
             for (source, expected) in [("(priority 1)", "typed"), ("(shape 1)", "fixed")] {
                 let value = eval_source(ctx, source).unwrap();
                 assert!(
-                    matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some(expected)),
+                    matches!(value, Value::Symbol(symbol) if ctx.engine.symbol_table.resolve_symbol_str(symbol) == Some(expected)),
                     "{source}"
                 );
             }
@@ -7155,7 +7218,7 @@ mod tests {
                 .unwrap()
                 .structural_eq(&Value::Integer(99)));
             let unbound = eval(ctx, &local_bind("f", vec![])).unwrap();
-            assert!(!is_truthy(&unbound, ctx.symbol_table));
+            assert!(!is_truthy(&unbound, &ctx.engine.symbol_table));
             assert!(eval(ctx, &local_read("$?f"))
                 .unwrap()
                 .structural_eq(&Value::Integer(42)));
@@ -7329,7 +7392,7 @@ mod tests {
             );
             let query = expression_query("any-factp", &[("f", "item")], predicate);
             let found = eval(ctx, &query).unwrap();
-            assert!(is_truthy(&found, ctx.symbol_table));
+            assert!(is_truthy(&found, &ctx.engine.symbol_table));
             for predicate in [
                 call("/", vec![int(1), int(0)]),
                 call("return", vec![int(8)]),
@@ -7413,10 +7476,6 @@ mod tests {
         let first = add_query_item(&mut engine, 20);
         engine.fact_base.retract(old).unwrap();
         let second = add_query_item(&mut engine, 30);
-        assert_eq!(
-            ordered_query_fact_ids(&engine.fact_base, engine.template_ids["item"]),
-            vec![first, second]
-        );
         let expr = expression_query("find-all-facts", &[("a", "item"), ("b", "item")], int(1));
         with_compact_context(&mut engine, None, |ctx| {
             let result = eval(ctx, &expr).unwrap();
@@ -7426,9 +7485,10 @@ mod tests {
                     .map(|fact| {
                         Value::FactAddress(
                             make_fact_address(
-                                ctx.fact_base.unwrap(),
-                                ctx.initial_fact_id,
-                                ctx.fact_epoch,
+                                &ctx.engine.fact_base,
+                                ctx.engine.initial_fact_id,
+                                ctx.engine.fact_epoch,
+                                ctx.engine.fact_index_starts_at_zero,
                                 fact,
                             )
                             .unwrap(),
@@ -7445,7 +7505,7 @@ mod tests {
         for value in 11..50 {
             add_query_item(&mut engine, value);
         }
-        engine.config.max_action_loop_iterations = 1;
+        engine.config.max_action_loop_iterations = 5;
         let members = [
             ("a", "item"),
             ("b", "item"),
@@ -7458,7 +7518,7 @@ mod tests {
             with_compact_context(&mut engine, None, |ctx| {
                 let result = eval(ctx, &expr).unwrap();
                 if name == "any-factp" {
-                    assert!(is_truthy(&result, ctx.symbol_table));
+                    assert!(is_truthy(&result, &ctx.engine.symbol_table));
                 } else {
                     assert!(matches!(result, Value::Multifield(fields) if fields.len() == 5));
                 }
@@ -7470,7 +7530,7 @@ mod tests {
             with_compact_context(&mut engine, None, |ctx| {
                 assert!(matches!(
                     eval(ctx, &expr),
-                    Err(EvalError::ActionIterationLimit { limit: 1, .. })
+                    Err(EvalError::ActionIterationLimit { limit: 5, .. })
                 ));
             });
         }
@@ -7510,7 +7570,7 @@ mod tests {
             with_compact_context(&mut engine, None, |ctx| {
                 let result = eval(ctx, &expr).unwrap();
                 if name == "any-factp" {
-                    assert!(!is_truthy(&result, ctx.symbol_table));
+                    assert!(!is_truthy(&result, &ctx.engine.symbol_table));
                 } else {
                     assert!(matches!(result, Value::Multifield(fields) if fields.is_empty()));
                 }
@@ -7582,7 +7642,7 @@ mod tests {
     }
 
     #[test]
-    fn expression_query_rejects_restored_malformed_headers_and_missing_context() {
+    fn expression_query_rejects_restored_malformed_headers() {
         let (mut engine, _) = compact_test_engine();
         let mut malformed = vec![
             expression_query("any-factp", &[], int(1)),
@@ -7609,32 +7669,12 @@ mod tests {
                 );
             });
         }
-        for name in [
-            "do-for-fact",
-            "do-for-all-facts",
-            "delayed-do-for-all-facts",
-            "forged-query",
-        ] {
-            let expr = expression_query(name, &[("f", "item")], int(1));
-            with_compact_context(&mut engine, None, |ctx| {
-                assert!(matches!(
-                    eval(ctx, &expr),
-                    Err(EvalError::UnsupportedOperation { .. })
-                ));
-            });
-        }
-        let expr = expression_query("any-factp", &[("f", "item")], int(1));
+        let expr = expression_query("forged-query", &[("f", "item")], int(1));
         with_compact_context(&mut engine, None, |ctx| {
-            ctx.fact_base = None;
-            assert!(
-                matches!(eval(ctx, &expr), Err(EvalError::TypeError { actual, .. }) if actual.contains("fact context"))
-            );
-        });
-        with_compact_context(&mut engine, None, |ctx| {
-            ctx.template_resolver = None;
-            assert!(
-                matches!(eval(ctx, &expr), Err(EvalError::TypeError { actual, .. }) if actual.contains("template context"))
-            );
+            assert!(matches!(
+                eval(ctx, &expr),
+                Err(EvalError::UnsupportedOperation { .. })
+            ));
         });
     }
 
@@ -7861,7 +7901,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            assert!(!is_truthy(&exists, ctx.symbol_table));
+            assert!(!is_truthy(&exists, &ctx.engine.symbol_table));
             assert!(eval(
                 ctx,
                 &call(
@@ -7872,7 +7912,10 @@ mod tests {
             .unwrap()
             .structural_eq(&Value::Integer(-1)));
             // A retained compact record does not revive its ordinary address.
-            assert!(!is_truthy(&eval(ctx, &explicit).unwrap(), ctx.symbol_table));
+            assert!(!is_truthy(
+                &eval(ctx, &explicit).unwrap(),
+                &ctx.engine.symbol_table
+            ));
             assert!(eval(ctx, &replacement_slot)
                 .unwrap()
                 .structural_eq(&Value::Integer(20)));
@@ -7911,7 +7954,7 @@ mod tests {
         with_compact_context(&mut engine, Some(&scope), |ctx| {
             for expr in [inherited, shadowed] {
                 let result = eval(ctx, &expr).unwrap();
-                assert!(is_truthy(&result, ctx.symbol_table));
+                assert!(is_truthy(&result, &ctx.engine.symbol_table));
             }
             assert!(matches!(
                 eval(ctx, &error),
@@ -7947,11 +7990,11 @@ mod tests {
         with_compact_context(&mut engine, Some(&scope), |ctx| {
             // The retained record itself supplies fields; the template registry
             // still supplies and checks the slot layout.
-            ctx.fact_base = None;
+            ctx.engine.fact_base = FactBase::new();
             assert!(eval(ctx, &compact)
                 .unwrap()
                 .structural_eq(&Value::Integer(10)));
-            ctx.template_defs = None;
+            ctx.engine.template_defs.clear();
             assert!(matches!(
                 eval(ctx, &compact),
                 Err(EvalError::TypeError { .. })
@@ -7987,6 +8030,7 @@ mod tests {
             designated_fact(
                 &engine.fact_base,
                 engine.initial_fact_id,
+                engine.fact_index_starts_at_zero,
                 engine.fact_epoch,
                 &Value::Integer(raw)
             ),
@@ -7996,6 +8040,7 @@ mod tests {
             designated_fact(
                 &engine.fact_base,
                 engine.initial_fact_id,
+                engine.fact_index_starts_at_zero,
                 engine.fact_epoch,
                 &address_value(&engine, fact)
             ),
@@ -8023,16 +8068,16 @@ mod tests {
         for missing_fact_base in [true, false] {
             with_compact_context(&mut engine, Some(&scope), |ctx| {
                 if missing_fact_base {
-                    ctx.fact_base = None;
+                    ctx.engine.fact_base = FactBase::new();
                 } else {
-                    ctx.template_defs = None;
+                    ctx.engine.template_defs.clear();
                 }
                 assert!(matches!(
                     eval(ctx, &compact),
                     Err(EvalError::TypeError { .. })
                 ));
                 let fallback = eval(ctx, &explicit).unwrap();
-                assert!(!is_truthy(&fallback, ctx.symbol_table));
+                assert!(!is_truthy(&fallback, &ctx.engine.symbol_table));
             });
         }
     }
@@ -8045,15 +8090,19 @@ mod tests {
             CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let missing = compact_ref(&mut engine, "f", "missing");
         with_compact_context(&mut engine, Some(&scope), |ctx| {
-            let truth =
-                RuntimeExpr::Literal(clips_true(ctx.symbol_table, ctx.config.string_encoding));
-            let falsehood =
-                RuntimeExpr::Literal(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            let truth = RuntimeExpr::Literal(clips_true(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            ));
+            let falsehood = RuntimeExpr::Literal(clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            ));
             let skipped = call(">", vec![missing.clone(), int(0)]);
             let result = eval(ctx, &call("or", vec![truth, skipped.clone()])).unwrap();
-            assert!(is_truthy(&result, ctx.symbol_table));
+            assert!(is_truthy(&result, &ctx.engine.symbol_table));
             let result = eval(ctx, &call("and", vec![falsehood, skipped])).unwrap();
-            assert!(!is_truthy(&result, ctx.symbol_table));
+            assert!(!is_truthy(&result, &ctx.engine.symbol_table));
             assert!(eval(ctx, &missing).is_err());
         });
     }
@@ -8153,7 +8202,7 @@ mod tests {
                     &call(predicate, vec![RuntimeExpr::Literal(address.clone())]),
                 )
                 .unwrap();
-                assert!(is_false_symbol(&value, ctx.symbol_table));
+                assert!(is_false_symbol(&value, &ctx.engine.symbol_table));
             }
             for (name, args) in [
                 ("+", vec![RuntimeExpr::Literal(address.clone()), int(0)]),
@@ -8172,7 +8221,10 @@ mod tests {
             let Value::Symbol(kind) = kind else {
                 panic!("expected kind symbol")
             };
-            assert_eq!(ctx.symbol_table.resolve_symbol_str(kind), Some("address"));
+            assert_eq!(
+                ctx.engine.symbol_table.resolve_symbol_str(kind),
+                Some("address")
+            );
             let same = eval(
                 ctx,
                 &call(
@@ -8184,13 +8236,13 @@ mod tests {
                 ),
             )
             .unwrap();
-            assert!(is_true_symbol(&same, ctx.symbol_table));
+            assert!(is_true_symbol(&same, &ctx.engine.symbol_table));
             let different = eval(
                 ctx,
                 &call("eq", vec![RuntimeExpr::Literal(address.clone()), int(1)]),
             )
             .unwrap();
-            assert!(is_false_symbol(&different, ctx.symbol_table));
+            assert!(is_false_symbol(&different, &ctx.engine.symbol_table));
             // Host-created nested multifields must not hide a forbidden address.
             let nested = Value::Multifield(Box::new([address.clone()].into_iter().collect()));
             assert!(
@@ -8257,7 +8309,7 @@ mod tests {
                 .structural_eq(&Value::Integer(10)));
             assert!(is_false_symbol(
                 &eval(ctx, &explicit).unwrap(),
-                ctx.symbol_table
+                &ctx.engine.symbol_table
             ));
             assert!(eval(
                 ctx,
@@ -8300,7 +8352,7 @@ mod tests {
                     ),
                 )
                 .unwrap();
-                assert!(is_false_symbol(&result, ctx.symbol_table));
+                assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
             }
             assert!(
                 matches!(eval(ctx, &call("fact-slot-value", vec![RuntimeExpr::Literal(address), missing_args[1].clone()])),
@@ -8320,7 +8372,7 @@ mod tests {
         users.sort_by_key(|id| engine.fact_base.get(*id).unwrap().timestamp);
         for (id, expected) in users.iter().zip([1, 2]) {
             assert_eq!(
-                eval_index(Some(&engine.fact_base), None, address_value(&engine, *id)).unwrap(),
+                eval_index(address_value(&engine, *id), &mut engine).unwrap(),
                 expected
             );
         }
@@ -8332,22 +8384,12 @@ mod tests {
         assert_eq!(engine.fact_count(), 2);
         for (id, expected) in users.iter().zip([1, 2]) {
             assert_eq!(
-                eval_index(
-                    Some(&engine.fact_base),
-                    Some(protected),
-                    address_value(&engine, *id)
-                )
-                .unwrap(),
+                eval_index(address_value(&engine, *id), &mut engine).unwrap(),
                 expected
             );
         }
         assert_eq!(
-            eval_index(
-                Some(&engine.fact_base),
-                Some(protected),
-                address_value(&engine, protected)
-            )
-            .unwrap(),
+            eval_index(address_value(&engine, protected), &mut engine).unwrap(),
             0
         );
         engine.ensure_initial_fact().unwrap();
@@ -8356,22 +8398,14 @@ mod tests {
         let removed_address = address_value(&engine, users[0]);
         engine.retract(host_initial).unwrap();
         engine.assert_ordered("new-item", 8_i64).unwrap();
-        assert_eq!(
-            eval_index(Some(&engine.fact_base), Some(protected), removed_address).unwrap(),
-            -1
-        );
+        assert_eq!(eval_index(removed_address, &mut engine).unwrap(), -1);
         let (new_id, _) = engine
             .fact_base
             .iter()
             .max_by_key(|(_, fact)| fact.timestamp)
             .unwrap();
         assert_eq!(
-            eval_index(
-                Some(&engine.fact_base),
-                Some(protected),
-                address_value(&engine, new_id)
-            )
-            .unwrap(),
+            eval_index(address_value(&engine, new_id), &mut engine).unwrap(),
             3
         );
         engine.debug_assert_consistency();
@@ -8392,12 +8426,7 @@ mod tests {
             Value::Float(1.0),
             Value::String(FerricString::new("1", StringEncoding::Utf8).unwrap()),
         ] {
-            let error = eval_index(
-                Some(&engine.fact_base),
-                engine.initial_fact_id,
-                value.clone(),
-            )
-            .unwrap_err();
+            let error = eval_index(value.clone(), &mut engine).unwrap_err();
             assert!(
                 matches!(error, EvalError::TypeError {
                 ref function, ref expected, span: Some(SourceSpan { line: 4, column: 7 }), ..
@@ -8409,16 +8438,14 @@ mod tests {
 
     #[test]
     fn fact_index_reports_dummy_and_absent_addresses() {
-        let engine = crate::Engine::with_rules("").unwrap();
+        let mut engine = crate::Engine::with_rules("").unwrap();
         let initial = address_value(&engine, engine.initial_fact_id.unwrap());
-        assert_eq!(eval_index(None, None, initial).unwrap(), -1);
         assert_eq!(
-            eval_index(
-                Some(&engine.fact_base),
-                engine.initial_fact_id,
-                Value::FactAddress(FactAddress::dummy())
-            )
-            .unwrap(),
+            eval_index(initial, &mut crate::Engine::new(EngineConfig::utf8())).unwrap(),
+            -1
+        );
+        assert_eq!(
+            eval_index(Value::FactAddress(FactAddress::dummy()), &mut engine).unwrap(),
             -1
         );
     }
@@ -8443,7 +8470,7 @@ mod tests {
                 .iter()
                 .max_by_key(|(_, entry)| entry.timestamp)
                 .unwrap();
-            let result = eval_index(Some(&engine.fact_base), None, address_value(&engine, id));
+            let result = eval_index(address_value(&engine, id), &mut engine);
             if timestamp == maximum - 1 {
                 assert_eq!(result.unwrap(), i64::MAX);
             } else {
@@ -8518,8 +8545,11 @@ mod tests {
 
     #[test]
     fn eval_bound_variable() {
-        let (mut st, mut vm, mut bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let sym = st.intern_symbol("x", StringEncoding::Utf8).unwrap();
+        let (mut engine, mut vm, mut bs) = test_ctx();
+        let sym = engine
+            .symbol_table
+            .intern_symbol("x", StringEncoding::Utf8)
+            .unwrap();
         let var_id = vm.get_or_create(sym).unwrap();
         bs.set(var_id, ValueRef::new(Value::Integer(99)));
 
@@ -8527,26 +8557,13 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(
             &mut ctx,
@@ -8570,34 +8587,21 @@ mod tests {
 
     #[test]
     fn eval_unbound_variable_preserves_source_span() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let action = ferric_rules_parser::ActionExpr::Variable("missing".to_string(), dummy_span());
-        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+        let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
 
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
 
         match eval(&mut ctx, &runtime).unwrap_err() {
@@ -8626,35 +8630,22 @@ mod tests {
 
     #[test]
     fn eval_unbound_global_preserves_source_span() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let action =
             ferric_rules_parser::ActionExpr::GlobalVariable("count".to_string(), dummy_span());
-        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+        let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
 
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
 
         match eval(&mut ctx, &runtime).unwrap_err() {
@@ -8670,32 +8661,23 @@ mod tests {
 
     #[test]
     fn eval_global_variable_returns_value_when_set() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        gs.set(mr.main_module_id(), "count", Value::Integer(42));
+        let (mut engine, vm, bs) = test_ctx();
+        engine.globals.set(
+            engine.module_registry.main_module_id(),
+            "count",
+            Value::Integer(42),
+        );
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(
             &mut ctx,
@@ -8714,32 +8696,23 @@ mod tests {
 
     #[test]
     fn bind_sets_existing_global_variable() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        gs.set(mr.main_module_id(), "x", Value::Integer(0));
+        let (mut engine, vm, bs) = test_ctx();
+        engine.globals.set(
+            engine.module_registry.main_module_id(),
+            "x",
+            Value::Integer(0),
+        );
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(
             "bind",
@@ -8754,39 +8727,27 @@ mod tests {
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(result.structural_eq(&Value::Integer(99)));
         assert!(ctx
+            .engine
             .globals
-            .get(mr.main_module_id(), "x")
+            .get(ctx.engine.module_registry.main_module_id(), "x")
             .unwrap()
             .structural_eq(&Value::Integer(99)));
     }
 
     #[test]
     fn bind_with_literal_target_returns_type_error() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("bind", vec![int(5), int(10)]);
         let result = eval(&mut ctx, &expr);
@@ -8835,32 +8796,21 @@ mod tests {
 
     #[test]
     fn user_function_simple_call() {
-        let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(mr.main_module_id(), make_double_func());
+        let (mut engine, vm, bs) = test_ctx();
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), make_double_func());
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("double", vec![int(5)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -8885,32 +8835,21 @@ mod tests {
                 },
             )],
         };
-        let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(mr.main_module_id(), func);
+        let (mut engine, vm, bs) = test_ctx();
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("add", vec![int(3), int(7)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -8919,32 +8858,21 @@ mod tests {
 
     #[test]
     fn user_function_wrong_arity_returns_error() {
-        let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(mr.main_module_id(), make_double_func());
+        let (mut engine, vm, bs) = test_ctx();
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), make_double_func());
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         // double expects 1 arg, passing 2
         let expr = call("double", vec![int(1), int(2)]);
@@ -8964,32 +8892,21 @@ mod tests {
                 dummy_span(),
             )],
         };
-        let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(mr.main_module_id(), func);
+        let (mut engine, vm, bs) = test_ctx();
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("first", vec![int(10), int(20), int(30)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9014,33 +8931,22 @@ mod tests {
                 },
             )],
         };
-        let (mut st, vm, bs, mut cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        cfg.max_call_depth = 10; // Low limit for the test
-        fenv.register(mr.main_module_id(), func);
+        let (mut engine, vm, bs) = test_ctx();
+        engine.config.max_call_depth = 10; // Low limit for the test
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("inf", vec![int(1)]);
         let result = eval(&mut ctx, &expr);
@@ -9076,33 +8982,22 @@ mod tests {
                 },
             )],
         };
-        let (mut st, vm, bs, mut cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        cfg.max_call_depth = 3;
-        fenv.register(mr.main_module_id(), func);
+        let (mut engine, vm, bs) = test_ctx();
+        engine.config.max_call_depth = 3;
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let recursive_expr = call("inf", vec![int(1)]);
         let first_result = eval(&mut ctx, &recursive_expr);
@@ -9141,32 +9036,21 @@ mod tests {
                 },
             )],
         };
-        let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(mr.main_module_id(), func);
+        let (mut engine, vm, bs) = test_ctx();
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &call("inc", vec![int(5)])).unwrap();
         assert!(result.structural_eq(&Value::Integer(6)));
@@ -9198,33 +9082,24 @@ mod tests {
                 },
             )],
         };
-        let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(mr.main_module_id(), double);
-        fenv.register(mr.main_module_id(), quadruple);
+        let (mut engine, vm, bs) = test_ctx();
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), double);
+        engine
+            .functions
+            .register(engine.module_registry.main_module_id(), quadruple);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &call("quadruple", vec![int(3)])).unwrap();
         assert!(result.structural_eq(&Value::Integer(12)));
@@ -9384,200 +9259,122 @@ mod tests {
 
     #[test]
     fn eval_gt_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(">", vec![int(5), int(3)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_lt_false() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("<", vec![int(5), int(3)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_eq_numeric_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("=", vec![int(3), int(3)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_neq_numeric() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("!=", vec![int(3), int(4)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_gte_equal() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(">=", vec![int(5), int(5)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_lte_less() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("<=", vec![int(3), int(5)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     // -------------------------------------------------------------------
@@ -9586,69 +9383,43 @@ mod tests {
 
     #[test]
     fn eval_eq_same_integers() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("eq", vec![int(42), int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_neq_different_types() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("neq", vec![int(1), float(1.0)]);
         let result = eval(&mut ctx, &expr).unwrap();
         // Integer(1) and Float(1.0) are different types under structural_eq
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     // -------------------------------------------------------------------
@@ -9657,32 +9428,19 @@ mod tests {
 
     #[test]
     fn eval_and_both_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let true_sym = clips_true(&mut st, StringEncoding::Utf8);
+        let (mut engine, vm, bs) = test_ctx();
+        let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(
             "and",
@@ -9692,38 +9450,25 @@ mod tests {
             ],
         );
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_and_one_false() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let true_sym = clips_true(&mut st, StringEncoding::Utf8);
-        let false_sym = clips_false(&mut st, StringEncoding::Utf8);
+        let (mut engine, vm, bs) = test_ctx();
+        let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
+        let false_sym = clips_false(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(
             "and",
@@ -9733,38 +9478,25 @@ mod tests {
             ],
         );
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_or_one_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let false_sym = clips_false(&mut st, StringEncoding::Utf8);
-        let true_sym = clips_true(&mut st, StringEncoding::Utf8);
+        let (mut engine, vm, bs) = test_ctx();
+        let false_sym = clips_false(&mut engine.symbol_table, StringEncoding::Utf8);
+        let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(
             "or",
@@ -9774,75 +9506,49 @@ mod tests {
             ],
         );
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_not_false_returns_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let false_sym = clips_false(&mut st, StringEncoding::Utf8);
+        let (mut engine, vm, bs) = test_ctx();
+        let false_sym = clips_false(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("not", vec![RuntimeExpr::Literal(false_sym)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_not_true_returns_false() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let true_sym = clips_true(&mut st, StringEncoding::Utf8);
+        let (mut engine, vm, bs) = test_ctx();
+        let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("not", vec![RuntimeExpr::Literal(true_sym)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     // -------------------------------------------------------------------
@@ -9877,235 +9583,147 @@ mod tests {
 
     #[test]
     fn eval_integerp_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("integerp", vec![int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_integerp_false_on_float() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("integerp", vec![float(3.125)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_floatp_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("floatp", vec![float(3.125)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_numberp_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("numberp", vec![int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_numberp_float() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("numberp", vec![float(1.0)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_symbolp_true() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let sym = st.intern_symbol("foo", StringEncoding::Utf8).unwrap();
+        let (mut engine, vm, bs) = test_ctx();
+        let sym = engine
+            .symbol_table
+            .intern_symbol("foo", StringEncoding::Utf8)
+            .unwrap();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("symbolp", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_stringp_true() {
         let fs = FerricString::new("hello", StringEncoding::Utf8).unwrap();
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("stringp", vec![RuntimeExpr::Literal(Value::String(fs))]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     // -------------------------------------------------------------------
@@ -10114,103 +9732,67 @@ mod tests {
 
     #[test]
     fn eval_lexemep_true_for_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let sym = st.intern_symbol("hello", StringEncoding::Utf8).unwrap();
+        let (mut engine, vm, bs) = test_ctx();
+        let sym = engine
+            .symbol_table
+            .intern_symbol("hello", StringEncoding::Utf8)
+            .unwrap();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("lexemep", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_lexemep_true_for_string() {
         let fs = FerricString::new("hi", StringEncoding::Utf8).unwrap();
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("lexemep", vec![RuntimeExpr::Literal(Value::String(fs))]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_lexemep_false_for_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("lexemep", vec![int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -10227,71 +9809,45 @@ mod tests {
     fn eval_multifieldp_true_for_multifield() {
         use ferric_rules_core::value::Multifield;
         let mf = Multifield::new();
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call(
             "multifieldp",
             vec![RuntimeExpr::Literal(Value::Multifield(Box::new(mf)))],
         );
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_multifieldp_false_for_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("multifieldp", vec![int(0)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -10306,101 +9862,62 @@ mod tests {
 
     #[test]
     fn eval_evenp_true_for_even_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("evenp", vec![int(4)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_evenp_true_for_zero() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("evenp", vec![int(0)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_evenp_false_for_odd_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("evenp", vec![int(7)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -10421,101 +9938,62 @@ mod tests {
 
     #[test]
     fn eval_oddp_true_for_odd_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("oddp", vec![int(7)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_oddp_false_for_zero() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("oddp", vec![int(0)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn eval_oddp_false_for_even_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("oddp", vec![int(4)]);
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -10554,32 +10032,22 @@ mod tests {
 
     #[test]
     fn eval_to_integer_type_error_on_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let sym = st.intern_symbol("foo", StringEncoding::Utf8).unwrap();
+        let (mut engine, vm, bs) = test_ctx();
+        let sym = engine
+            .symbol_table
+            .intern_symbol("foo", StringEncoding::Utf8)
+            .unwrap();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("integer", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr);
@@ -10610,32 +10078,22 @@ mod tests {
 
     #[test]
     fn eval_to_float_type_error_on_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let sym = st.intern_symbol("bar", StringEncoding::Utf8).unwrap();
+        let (mut engine, vm, bs) = test_ctx();
+        let sym = engine
+            .symbol_table
+            .intern_symbol("bar", StringEncoding::Utf8)
+            .unwrap();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("float", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr);
@@ -10677,32 +10135,22 @@ mod tests {
 
     #[test]
     fn eval_type_error_add_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let sym = st.intern_symbol("foo", StringEncoding::Utf8).unwrap();
+        let (mut engine, vm, bs) = test_ctx();
+        let sym = engine
+            .symbol_table
+            .intern_symbol("foo", StringEncoding::Utf8)
+            .unwrap();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("+", vec![int(1), RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr);
@@ -10745,20 +10193,20 @@ mod tests {
 
     #[test]
     fn translate_action_expr_literal_integer() {
-        let (mut st, _, _, cfg, _, _, _, _, _) = test_ctx();
+        let (mut engine, _, _) = test_ctx();
         let action = ferric_rules_parser::ActionExpr::Literal(ferric_rules_parser::LiteralValue {
             value: ferric_rules_parser::LiteralKind::Integer(42),
             span: dummy_span(),
         });
-        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+        let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
         assert!(matches!(runtime, RuntimeExpr::Literal(Value::Integer(42))));
     }
 
     #[test]
     fn translate_action_expr_variable() {
-        let (mut st, _, _, cfg, _, _, _, _, _) = test_ctx();
+        let (mut engine, _, _) = test_ctx();
         let action = ferric_rules_parser::ActionExpr::Variable("x".to_string(), dummy_span());
-        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+        let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
         assert!(matches!(
             runtime,
             RuntimeExpr::BoundVar {
@@ -10770,10 +10218,10 @@ mod tests {
 
     #[test]
     fn translate_action_expr_global_var() {
-        let (mut st, _, _, cfg, _, _, _, _, _) = test_ctx();
+        let (mut engine, _, _) = test_ctx();
         let action =
             ferric_rules_parser::ActionExpr::GlobalVariable("count".to_string(), dummy_span());
-        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+        let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
         assert!(matches!(
             runtime,
             RuntimeExpr::GlobalVar {
@@ -10785,7 +10233,7 @@ mod tests {
 
     #[test]
     fn translate_action_expr_function_call() {
-        let (mut st, _, _, cfg, _, _, _, _, _) = test_ctx();
+        let (mut engine, _, _) = test_ctx();
         let action =
             ferric_rules_parser::ActionExpr::FunctionCall(ferric_rules_parser::FunctionCall {
                 name: "+".to_string(),
@@ -10801,7 +10249,7 @@ mod tests {
                 ],
                 span: dummy_span(),
             });
-        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+        let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
         assert!(matches!(
             runtime,
             RuntimeExpr::Call { ref name, ref args, .. } if name == "+" && args.len() == 2
@@ -10814,16 +10262,16 @@ mod tests {
 
     #[test]
     fn translate_sexpr_integer_atom() {
-        let (mut st, _, _, cfg, _, _, _, _, _) = test_ctx();
+        let (mut engine, _, _) = test_ctx();
         let sexpr =
             ferric_rules_parser::SExpr::Atom(ferric_rules_parser::Atom::Integer(42), dummy_span());
-        let runtime = from_sexpr(&sexpr, &mut st, &cfg).unwrap();
+        let runtime = from_sexpr(&sexpr, &mut engine.symbol_table, &engine.config).unwrap();
         assert!(matches!(runtime, RuntimeExpr::Literal(Value::Integer(42))));
     }
 
     #[test]
     fn translate_sexpr_function_call() {
-        let (mut st, _, _, cfg, _, _, _, _, _) = test_ctx();
+        let (mut engine, _, _) = test_ctx();
         let sexpr = ferric_rules_parser::SExpr::List(
             vec![
                 ferric_rules_parser::SExpr::Atom(
@@ -10841,7 +10289,7 @@ mod tests {
             ],
             dummy_span(),
         );
-        let runtime = from_sexpr(&sexpr, &mut st, &cfg).unwrap();
+        let runtime = from_sexpr(&sexpr, &mut engine.symbol_table, &engine.config).unwrap();
         assert!(matches!(
             runtime,
             RuntimeExpr::Call { ref name, ref args, .. } if name == ">" && args.len() == 2
@@ -11101,37 +10549,24 @@ mod tests {
     #[test]
     fn sym_cat_concatenates_values() {
         // sym-cat with string args: the symbol's name should be the concatenation.
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("sym-cat", vec![str_lit("foo"), str_lit("bar")]);
         let result = eval(&mut ctx, &expr).unwrap();
         match result {
             Value::Symbol(sym) => {
-                let name = ctx.symbol_table.resolve_symbol_str(sym);
+                let name = ctx.engine.symbol_table.resolve_symbol_str(sym);
                 assert_eq!(name, Some("foobar"), "sym-cat should intern 'foobar'");
             }
             other => panic!("expected SYMBOL, got {other:?}"),
@@ -11140,37 +10575,24 @@ mod tests {
 
     #[test]
     fn sym_cat_zero_args_returns_empty_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let expr = call("sym-cat", vec![]);
         let result = eval(&mut ctx, &expr).unwrap();
         match result {
             Value::Symbol(sym) => {
-                let name = ctx.symbol_table.resolve_symbol_str(sym);
+                let name = ctx.engine.symbol_table.resolve_symbol_str(sym);
                 assert_eq!(name, Some(""), "sym-cat with no args interns empty string");
             }
             other => panic!("expected SYMBOL, got {other:?}"),
@@ -11179,31 +10601,18 @@ mod tests {
 
     #[test]
     fn gensym_generates_incrementing_symbols() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
 
         let first = eval(&mut ctx, &call("gensym", vec![])).unwrap();
@@ -11220,41 +10629,34 @@ mod tests {
             panic!("expected SYMBOL from gensym*")
         };
 
-        assert_eq!(ctx.symbol_table.resolve_symbol_str(first_sym), Some("gen1"));
         assert_eq!(
-            ctx.symbol_table.resolve_symbol_str(second_sym),
+            ctx.engine.symbol_table.resolve_symbol_str(first_sym),
+            Some("gen1")
+        );
+        assert_eq!(
+            ctx.engine.symbol_table.resolve_symbol_str(second_sym),
             Some("gen2")
         );
-        assert_eq!(ctx.symbol_table.resolve_symbol_str(third_sym), Some("gen3"));
+        assert_eq!(
+            ctx.engine.symbol_table.resolve_symbol_str(third_sym),
+            Some("gen3")
+        );
     }
 
     #[test]
     fn setgen_sets_next_generated_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
 
         let set_result = eval(&mut ctx, &call("setgen", vec![int(10)])).unwrap();
@@ -11264,7 +10666,7 @@ mod tests {
             panic!("expected SYMBOL from gensym")
         };
         assert_eq!(
-            ctx.symbol_table.resolve_symbol_str(generated_sym),
+            ctx.engine.symbol_table.resolve_symbol_str(generated_sym),
             Some("gen10")
         );
     }
@@ -11324,36 +10726,32 @@ mod tests {
 
     #[test]
     fn printout_queues_deferred_output_event() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let channel_sym = st.intern_symbol("t", StringEncoding::Utf8).unwrap();
-        let tab_sym = st.intern_symbol("tab", StringEncoding::Utf8).unwrap();
-        let crlf_sym = st.intern_symbol("crlf", StringEncoding::Utf8).unwrap();
+        let (mut engine, vm, bs) = test_ctx();
+        let channel_sym = engine
+            .symbol_table
+            .intern_symbol("t", StringEncoding::Utf8)
+            .unwrap();
+        let tab_sym = engine
+            .symbol_table
+            .intern_symbol("tab", StringEncoding::Utf8)
+            .unwrap();
+        let crlf_sym = engine
+            .symbol_table
+            .intern_symbol("crlf", StringEncoding::Utf8)
+            .unwrap();
 
         {
             let mut ctx = EvalContext {
                 bindings: &bs,
                 var_map: &vm,
                 callable_locals: None,
-                symbol_table: &mut st,
-                config: &cfg,
-                functions: &fenv,
-                globals: &mut gs,
-                generics: &generics,
                 call_depth: 0,
                 expression_depth: 0,
-                current_module: mr.main_module_id(),
-                module_registry: &mr,
-                function_modules: &em,
-                global_modules: &em,
-                generic_modules: &em,
+                current_module: engine.module_registry.main_module_id(),
                 method_chain: None,
-                input_buffer: None,
-                fact_base: None,
-                fact_epoch: 0,
                 compact_fact_bindings: None,
-                template_resolver: None,
-                initial_fact_id: None,
-                template_defs: None,
+                engine: &mut engine,
+                allow_engine_effects: true,
             };
             let expr = call(
                 "printout",
@@ -11369,7 +10767,7 @@ mod tests {
             assert!(matches!(result, Value::Void));
         }
 
-        let events = gs.take_printout_events();
+        let events = engine.globals.take_printout_events();
         assert!(events.iter().all(|(channel, _)| channel == "t"));
         let output: String = events.into_iter().map(|(_, text)| text).collect();
         assert_eq!(output, "v=\t7\n");
@@ -11404,34 +10802,21 @@ mod tests {
 
     #[test]
     fn load_returns_false_symbol_for_placeholder_path() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &call("load", vec![str_lit("x.clp")])).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -11955,70 +11340,44 @@ mod tests {
 
     #[test]
     fn member_mf_not_found_returns_false() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf = mf_lit(vec![Value::Integer(10), Value::Integer(20)]);
         let expr = call("member$", vec![int(99), mf]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn member_mf_empty_multifield_returns_false() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf = mf_lit(vec![]);
         let expr = call("member$", vec![int(1), mf]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -12044,42 +11403,29 @@ mod tests {
 
     #[test]
     fn member_alias_not_found_returns_false() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf = mf_lit(vec![Value::Integer(3), Value::Integer(4)]);
         let expr = call("member", vec![int(9), mf]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn subsetp_true_when_subset() {
         // (subsetp (create$ 1 2) (create$ 1 2 3)) => TRUE
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf1 = mf_lit(vec![Value::Integer(1), Value::Integer(2)]);
         let mf2 = mf_lit(vec![
             Value::Integer(1),
@@ -12091,35 +11437,22 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn subsetp_true_when_equal_sets() {
         // (subsetp (create$ 1 2) (create$ 1 2)) => TRUE
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf1 = mf_lit(vec![Value::Integer(1), Value::Integer(2)]);
         let mf2 = mf_lit(vec![Value::Integer(1), Value::Integer(2)]);
         let expr = call("subsetp", vec![mf1, mf2]);
@@ -12127,35 +11460,22 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn subsetp_true_for_empty_subset() {
         // (subsetp (create$) (create$ 1 2 3)) => TRUE (empty set is subset of any)
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf1 = mf_lit(vec![]);
         let mf2 = mf_lit(vec![
             Value::Integer(1),
@@ -12167,35 +11487,22 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn subsetp_true_for_both_empty() {
         // (subsetp (create$) (create$)) => TRUE
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf1 = mf_lit(vec![]);
         let mf2 = mf_lit(vec![]);
         let expr = call("subsetp", vec![mf1, mf2]);
@@ -12203,35 +11510,22 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn subsetp_false_when_not_subset() {
         // (subsetp (create$ 1 4) (create$ 1 2 3)) => FALSE (4 not in second)
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf1 = mf_lit(vec![Value::Integer(1), Value::Integer(4)]);
         let mf2 = mf_lit(vec![
             Value::Integer(1),
@@ -12243,35 +11537,22 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
     fn subsetp_false_when_superset_is_empty() {
         // (subsetp (create$ 1) (create$)) => FALSE (1 not in empty)
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let mf1 = mf_lit(vec![Value::Integer(1)]);
         let mf2 = mf_lit(vec![]);
         let expr = call("subsetp", vec![mf1, mf2]);
@@ -12279,29 +11560,16 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_false_symbol(&result, ctx.symbol_table));
+        assert!(is_false_symbol(&result, &ctx.engine.symbol_table));
     }
 
     #[test]
@@ -12331,36 +11599,23 @@ mod tests {
     fn multifieldp_true_for_create_mf_result() {
         // Test that create$ produces a value recognized by multifieldp.
         // (multifieldp (create$ 1 2)) => TRUE
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let inner_expr = call("create$", vec![int(1), int(2)]);
         let expr = call("multifieldp", vec![inner_expr]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
-        assert!(is_true_symbol(&result, ctx.symbol_table));
+        assert!(is_true_symbol(&result, &ctx.engine.symbol_table));
     }
 
     // -----------------------------------------------------------------------
@@ -12517,9 +11772,11 @@ mod tests {
     #[test]
     fn test_format_basic_string() {
         // (format nil "hello %s" "world") => "hello world"
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let (mut engine, vm, bs) = test_ctx();
         let nil_sym = RuntimeExpr::Literal(Value::Symbol(
-            st.intern_symbol("nil", ferric_rules_core::StringEncoding::Utf8)
+            engine
+                .symbol_table
+                .intern_symbol("nil", ferric_rules_core::StringEncoding::Utf8)
                 .unwrap(),
         ));
         let fmt = RuntimeExpr::Literal(Value::String(
@@ -12533,26 +11790,13 @@ mod tests {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::String(s) = result else {
@@ -12753,34 +11997,21 @@ mod tests {
 
     #[test]
     fn test_read_integer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer = std::collections::VecDeque::new();
-        input_buffer.push_back("42".to_string());
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
+        engine.input_buffer.push_back("42".to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(matches!(result, Value::Integer(42)));
@@ -12788,34 +12019,21 @@ mod tests {
 
     #[test]
     fn test_read_float() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer = std::collections::VecDeque::new();
-        input_buffer.push_back("2.5".to_string());
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
+        engine.input_buffer.push_back("2.5".to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(matches!(result, Value::Float(f) if (f - 2.5).abs() < 1e-10));
@@ -12823,111 +12041,74 @@ mod tests {
 
     #[test]
     fn test_read_symbol() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer = std::collections::VecDeque::new();
-        input_buffer.push_back("hello".to_string());
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
+        engine.input_buffer.push_back("hello".to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::Symbol(sym) = result else {
             panic!("expected Symbol");
         };
-        assert_eq!(ctx.symbol_table.resolve_symbol_str(sym), Some("hello"));
+        assert_eq!(
+            ctx.engine.symbol_table.resolve_symbol_str(sym),
+            Some("hello")
+        );
     }
 
     #[test]
     fn test_read_eof_empty_buffer() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer: std::collections::VecDeque<String> =
-            std::collections::VecDeque::new();
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::Symbol(sym) = result else {
             panic!("expected Symbol(EOF)");
         };
-        assert_eq!(ctx.symbol_table.resolve_symbol_str(sym), Some("EOF"));
+        assert_eq!(ctx.engine.symbol_table.resolve_symbol_str(sym), Some("EOF"));
     }
 
     #[test]
     fn test_read_quoted_string() {
         // push `"hello"` (with actual quotes) → String("hello")
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer = std::collections::VecDeque::new();
-        input_buffer.push_back(r#""hello""#.to_string());
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
+        engine.input_buffer.push_back(r#""hello""#.to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::String(s) = result else {
@@ -12942,34 +12123,21 @@ mod tests {
 
     #[test]
     fn test_readline_returns_full_line() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer = std::collections::VecDeque::new();
-        input_buffer.push_back("hello world".to_string());
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
+        engine.input_buffer.push_back("hello world".to_string());
         let expr = call("readline", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::String(s) = result else {
@@ -12980,73 +12148,46 @@ mod tests {
 
     #[test]
     fn test_readline_eof_empty() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer: std::collections::VecDeque<String> =
-            std::collections::VecDeque::new();
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
         let expr = call("readline", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::Symbol(sym) = result else {
             panic!("expected Symbol(EOF)");
         };
-        assert_eq!(ctx.symbol_table.resolve_symbol_str(sym), Some("EOF"));
+        assert_eq!(ctx.engine.symbol_table.resolve_symbol_str(sym), Some("EOF"));
     }
 
     #[test]
     fn test_readline_multiple_lines() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let mut input_buffer = std::collections::VecDeque::new();
-        input_buffer.push_back("first line".to_string());
-        input_buffer.push_back("second line".to_string());
+        let (mut engine, vm, bs) = test_ctx();
+        engine.input_buffer = std::collections::VecDeque::new();
+        engine.input_buffer.push_back("first line".to_string());
+        engine.input_buffer.push_back("second line".to_string());
         let expr = call("readline", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
-            current_module: mr.main_module_id(),
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
+            current_module: engine.module_registry.main_module_id(),
             method_chain: None,
-            input_buffer: Some(&mut input_buffer),
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let first = eval(&mut ctx, &expr).unwrap();
         let second = eval(&mut ctx, &expr).unwrap();
@@ -13091,38 +12232,25 @@ mod tests {
     #[test]
     fn test_get_focus_returns_current_module() {
         // Default focus is MAIN
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let main_id = mr.main_module_id();
+        let (mut engine, vm, bs) = test_ctx();
+        let main_id = engine.module_registry.main_module_id();
         let expr = call("get-focus", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
             current_module: main_id,
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         match result {
             Value::Symbol(sym) => {
-                let name = ctx.symbol_table.resolve_symbol_str(sym).unwrap();
+                let name = ctx.engine.symbol_table.resolve_symbol_str(sym).unwrap();
                 assert_eq!(name, "MAIN");
             }
             _ => panic!("expected Symbol, got {result:?}"),
@@ -13141,33 +12269,20 @@ mod tests {
 
     #[test]
     fn test_get_focus_stack_returns_multifield() {
-        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        let main_id = mr.main_module_id();
+        let (mut engine, vm, bs) = test_ctx();
+        let main_id = engine.module_registry.main_module_id();
         let expr = call("get-focus-stack", vec![]);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
-            symbol_table: &mut st,
-            config: &cfg,
-            functions: &fenv,
-            globals: &mut gs,
-            generics: &generics,
             call_depth: 0,
             expression_depth: 0,
             current_module: main_id,
-            module_registry: &mr,
-            function_modules: &em,
-            global_modules: &em,
-            generic_modules: &em,
             method_chain: None,
-            input_buffer: None,
-            fact_base: None,
-            fact_epoch: 0,
             compact_fact_bindings: None,
-            template_resolver: None,
-            initial_fact_id: None,
-            template_defs: None,
+            engine: &mut engine,
+            allow_engine_effects: true,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         match result {
@@ -13179,7 +12294,7 @@ mod tests {
                 );
                 match &mf.as_slice()[0] {
                     Value::Symbol(sym) => {
-                        let name = ctx.symbol_table.resolve_symbol_str(*sym).unwrap();
+                        let name = ctx.engine.symbol_table.resolve_symbol_str(*sym).unwrap();
                         assert_eq!(name, "MAIN");
                     }
                     other => panic!("expected Symbol in multifield, got {other:?}"),
@@ -13327,22 +12442,22 @@ mod tests {
         /// Notably, integer 0 and float 0.0 ARE truthy in CLIPS (unlike many languages).
         #[test]
         fn truthiness_consistency(n in any::<i64>(), f in -1e10_f64..1e10_f64) {
-            let (st, ..) = test_ctx();
+            let (engine, ..) = test_ctx();
             // Integer invariant: all integers (including 0) are truthy in CLIPS
             prop_assert!(
-                is_truthy(&Value::Integer(n), &st),
+                is_truthy(&Value::Integer(n), &engine.symbol_table),
                 "integer {} should be truthy",
                 n
             );
             // Float invariant: all finite floats (including 0.0) are truthy in CLIPS
             prop_assert!(
-                is_truthy(&Value::Float(f), &st),
+                is_truthy(&Value::Float(f), &engine.symbol_table),
                 "float {} should be truthy",
                 f
             );
             // Void is always falsy
             prop_assert!(
-                !is_truthy(&Value::Void, &st),
+                !is_truthy(&Value::Void, &engine.symbol_table),
                 "Void should be falsy"
             );
         }

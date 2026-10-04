@@ -4,11 +4,6 @@ use ferric_rules_parser::{Action, ActionExpr, FunctionCall, Span};
 
 type ValidationResult = Result<(), (Span, String)>;
 
-/// Validate break placement in callable bodies and standalone expressions.
-pub(crate) fn validate_breaks(body: &[ActionExpr]) -> ValidationResult {
-    validate_breaks_with_templates(body, &|_| false)
-}
-
 /// Fact and slot heads are data; the owning module determines their shape.
 pub(crate) fn validate_breaks_with_templates(
     body: &[ActionExpr],
@@ -171,12 +166,11 @@ fn validate_break_expression(
     }
 }
 
-pub(crate) fn validate_iterator_binds(body: &[ActionExpr]) -> ValidationResult {
-    let mut protected = Vec::new();
-    for expression in body {
-        validate(expression, &mut protected)?;
-    }
-    Ok(())
+pub(crate) fn validate_iterator_binds_with_templates(
+    body: &[ActionExpr],
+    is_template: &dyn Fn(&str) -> bool,
+) -> ValidationResult {
+    validate_body(body, &mut Vec::new(), is_template)
 }
 
 fn binding_name(name: &str) -> &str {
@@ -186,9 +180,10 @@ fn binding_name(name: &str) -> &str {
 fn validate_body(
     body: &[ActionExpr],
     protected: &mut Vec<(String, &'static str)>,
+    is_template: &dyn Fn(&str) -> bool,
 ) -> ValidationResult {
     for expression in body {
-        validate(expression, protected)?;
+        validate(expression, protected, is_template)?;
     }
     Ok(())
 }
@@ -198,53 +193,99 @@ fn validate_iteration(
     name: Option<&str>,
     diagnostic: &'static str,
     protected: &mut Vec<(String, &'static str)>,
+    is_template: &dyn Fn(&str) -> bool,
 ) -> ValidationResult {
     let outer_len = protected.len();
     if let Some(name) = name {
         protected.push((binding_name(name).to_string(), diagnostic));
     }
-    let result = validate_body(body, protected);
+    let result = validate_body(body, protected, is_template);
     protected.truncate(outer_len);
     result
+}
+
+fn validate_binding_slots(
+    slots: &[ActionExpr],
+    protected: &mut Vec<(String, &'static str)>,
+    is_template: &dyn Fn(&str) -> bool,
+) -> ValidationResult {
+    for slot in slots {
+        if let ActionExpr::FunctionCall(slot) = slot {
+            validate_body(&slot.args, protected, is_template)?;
+        } else {
+            validate(slot, protected, is_template)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_binding_call(
+    call: &FunctionCall,
+    protected: &mut Vec<(String, &'static str)>,
+    is_template: &dyn Fn(&str) -> bool,
+) -> ValidationResult {
+    if call.name == "bind" {
+        if let Some(ActionExpr::Variable(name, span)) = call.args.first() {
+            if let Some((_, diagnostic)) = protected
+                .iter()
+                .rev()
+                .find(|(iterator, _)| iterator == binding_name(name))
+            {
+                return Err((
+                    *span,
+                    format!("[{diagnostic}] cannot rebind iteration variable ?{name}"),
+                ));
+            }
+        }
+    }
+    match call.name.as_str() {
+        "assert" => {
+            for argument in &call.args {
+                if let ActionExpr::FunctionCall(fact) = argument {
+                    if is_template(&fact.name) {
+                        validate_binding_slots(&fact.args, protected, is_template)?;
+                    } else {
+                        validate_body(&fact.args, protected, is_template)?;
+                    }
+                } else {
+                    validate(argument, protected, is_template)?;
+                }
+            }
+            Ok(())
+        }
+        "modify" | "duplicate" => {
+            if let Some((target, slots)) = call.args.split_first() {
+                validate(target, protected, is_template)?;
+                validate_binding_slots(slots, protected, is_template)?;
+            }
+            Ok(())
+        }
+        _ => validate_body(&call.args, protected, is_template),
+    }
 }
 
 fn validate(
     expression: &ActionExpr,
     protected: &mut Vec<(String, &'static str)>,
+    is_template: &dyn Fn(&str) -> bool,
 ) -> ValidationResult {
     match expression {
-        ActionExpr::FunctionCall(call) => {
-            if call.name == "bind" {
-                if let Some(ActionExpr::Variable(name, span)) = call.args.first() {
-                    if let Some((_, diagnostic)) = protected
-                        .iter()
-                        .rev()
-                        .find(|(iterator, _)| iterator == binding_name(name))
-                    {
-                        return Err((
-                            *span,
-                            format!("[{diagnostic}] cannot rebind iteration variable ?{name}"),
-                        ));
-                    }
-                }
-            }
-            validate_body(&call.args, protected)
-        }
+        ActionExpr::FunctionCall(call) => validate_binding_call(call, protected, is_template),
         ActionExpr::If {
             condition,
             then_actions,
             else_actions,
             ..
         } => {
-            validate(condition, protected)?;
-            validate_body(then_actions, protected)?;
-            validate_body(else_actions, protected)
+            validate(condition, protected, is_template)?;
+            validate_body(then_actions, protected, is_template)?;
+            validate_body(else_actions, protected, is_template)
         }
         ActionExpr::While {
             condition, body, ..
         } => {
-            validate(condition, protected)?;
-            validate_body(body, protected)
+            validate(condition, protected, is_template)?;
+            validate_body(body, protected, is_template)
         }
         ActionExpr::LoopForCount {
             var_name,
@@ -253,9 +294,15 @@ fn validate(
             body,
             ..
         } => {
-            validate(start, protected)?;
-            validate(end, protected)?;
-            validate_iteration(body, var_name.as_deref(), "PRCDRPSR1", protected)
+            validate(start, protected, is_template)?;
+            validate(end, protected, is_template)?;
+            validate_iteration(
+                body,
+                var_name.as_deref(),
+                "PRCDRPSR1",
+                protected,
+                is_template,
+            )
         }
         ActionExpr::Progn {
             var_name,
@@ -263,14 +310,14 @@ fn validate(
             body,
             ..
         } => {
-            validate(list_expr, protected)?;
+            validate(list_expr, protected, is_template)?;
             // The generated -index name is an ordinary writable local. Only
             // the actual element variable is protected by CLIPS syntax.
-            validate_iteration(body, Some(var_name), "MULTIFUN2", protected)
+            validate_iteration(body, Some(var_name), "MULTIFUN2", protected, is_template)
         }
         ActionExpr::QueryAction { query, body, .. } => {
-            validate(query, protected)?;
-            validate_body(body, protected)
+            validate(query, protected, is_template)?;
+            validate_body(body, protected, is_template)
         }
         ActionExpr::Switch {
             expr,
@@ -278,13 +325,13 @@ fn validate(
             default,
             ..
         } => {
-            validate(expr, protected)?;
+            validate(expr, protected, is_template)?;
             for (value, body) in cases {
-                validate(value, protected)?;
-                validate_body(body, protected)?;
+                validate(value, protected, is_template)?;
+                validate_body(body, protected, is_template)?;
             }
             if let Some(body) = default {
-                validate_body(body, protected)?;
+                validate_body(body, protected, is_template)?;
             }
             Ok(())
         }

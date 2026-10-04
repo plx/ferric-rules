@@ -1,0 +1,13 @@
+(deftemplate p (slot v))
+(deffunction update-one (?x)
+  (bind ?local (+ ?x 1))
+  (bind ?f (assert (p (v ?local))))
+  (bind ?g (modify ?f (v (+ ?local 1))))
+  (bind ?h (duplicate ?g (v (+ ?local 2))))
+  (printout t "locals:" ?x ":" ?local ":" ?g ":" ?h crlf)
+  (retract ?g)
+  ?h)
+(defmethod make ((?x INTEGER)) (assert (p (v ?x))))
+(defrule run =>
+  (printout t "result:[" (update-one 3) "] method:[" (make 9) "]" crlf)
+  (do-for-all-facts ((?f p)) TRUE (printout t ?f ":" ?f:v crlf)))

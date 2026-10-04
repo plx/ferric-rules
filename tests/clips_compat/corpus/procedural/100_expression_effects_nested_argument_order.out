@@ -1,0 +1,3 @@
+prefix[create:1;create:2;(<Fact-1> <Fact-2>)]suffix
+if:[accepted]
+(<Fact-1> <Fact-2> <Fact-3>)

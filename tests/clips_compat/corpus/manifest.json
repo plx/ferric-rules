@@ -3228,6 +3228,320 @@
       "error": "load"
     },
     {
+      "path": "procedural/093_expression_effects_issue_one.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "assert",
+        "modify",
+        "duplicate",
+        "return-values"
+      ]
+    },
+    {
+      "path": "procedural/094_expression_effects_issue_two.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "defmethod",
+        "query-action"
+      ]
+    },
+    {
+      "path": "procedural/095_expression_effects_issue_three.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "query-action",
+        "output-retention"
+      ]
+    },
+    {
+      "path": "procedural/096_expression_effects_assert_return_values.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "assert",
+        "duplicate-suppression",
+        "return-values"
+      ]
+    },
+    {
+      "path": "procedural/097_expression_effects_retract_return_values.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "retract",
+        "return-values"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "procedural/098_expression_effects_modify_duplicate_identity.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "modify",
+        "duplicate",
+        "identity",
+        "return-values"
+      ]
+    },
+    {
+      "path": "procedural/099_expression_effects_modify_into_duplicate.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "modify",
+        "duplicate-suppression"
+      ]
+    },
+    {
+      "path": "procedural/100_expression_effects_nested_argument_order.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "assert",
+        "deffunction",
+        "argument-order",
+        "partial-output"
+      ]
+    },
+    {
+      "path": "procedural/101_expression_effects_callable_mutation_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "defmethod",
+        "local-bind",
+        "return-values"
+      ]
+    },
+    {
+      "path": "procedural/102_expression_effects_query_return_values.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "query-action",
+        "return-values",
+        "break"
+      ]
+    },
+    {
+      "path": "procedural/103_expression_effects_halt_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "halt",
+        "deffunction",
+        "return-values"
+      ]
+    },
+    {
+      "path": "procedural/104_expression_effects_focus_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "focus",
+        "deffunction",
+        "return-values"
+      ]
+    },
+    {
+      "path": "procedural/105_expression_effects_reset_callable_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "deffunction",
+        "local-bind",
+        "output-retention",
+        "fact-epoch"
+      ]
+    },
+    {
+      "path": "procedural/106_expression_effects_reset_count_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "loop-for-count",
+        "local-bind",
+        "output-retention"
+      ]
+    },
+    {
+      "path": "procedural/107_expression_effects_reset_while_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "while",
+        "local-bind"
+      ]
+    },
+    {
+      "path": "procedural/108_expression_effects_reset_top_level.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "output-retention",
+        "fact-epoch"
+      ]
+    },
+    {
+      "path": "procedural/109_expression_effects_reset_query_member.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "query-action",
+        "query-slot",
+        "fact-epoch"
+      ]
+    },
+    {
+      "path": "procedural/110_expression_effects_reset_all_query.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "query-action",
+        "query-slot",
+        "fact-epoch"
+      ]
+    },
+    {
+      "path": "procedural/111_expression_effects_reset_delayed_query.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "delayed-query",
+        "query-slot",
+        "fact-epoch"
+      ]
+    },
+    {
+      "path": "procedural/112_expression_effects_clear_refusal_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "deffunction",
+        "refusal",
+        "fact-index"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/113_expression_effects_clear_refusal_query.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "query-action",
+        "query-slot",
+        "refusal"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/114_expression_effects_missing_mutation_designators.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "modify",
+        "duplicate",
+        "missing-index"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "procedural/115_expression_effects_missing_focus.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "focus",
+        "missing-module"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/116_expression_effects_initializer_assert.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "assert",
+        "deffacts",
+        "initializer",
+        "fact-address"
+      ]
+    },
+    {
+      "path": "procedural/117_expression_effects_initializer_nested_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "deffacts",
+        "initializer",
+        "recursion-guard"
+      ]
+    },
+    {
+      "path": "procedural/118_expression_effects_focus_argument_order.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "focus",
+        "argument-order",
+        "partial-effects"
+      ]
+    },
+    {
+      "path": "procedural/119_expression_effects_focus_partial_failure.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "focus",
+        "argument-order",
+        "partial-effects"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
       "path": "queries/any-factp-empty.clp",
       "level": "boundary",
       "covers": [

@@ -42,6 +42,8 @@ struct Case {
     #[serde(default)]
     recoverable_fact_notices: bool,
     #[serde(default)]
+    recoverable_control_notices: bool,
+    #[serde(default)]
     gap: Option<Gap>,
 }
 
@@ -116,13 +118,24 @@ struct Golden {
     notices: Vec<u8>,
 }
 
-fn golden(bytes: &[u8], error: Option<ErrorPhase>, recoverable_fact_notices: bool) -> Golden {
+fn golden(
+    bytes: &[u8],
+    error: Option<ErrorPhase>,
+    recoverable_fact_notices: bool,
+    recoverable_control_notices: bool,
+) -> Golden {
     let mut output = Vec::new();
     let mut found: [Vec<u8>; 2] = Default::default();
     let mut rest = bytes;
     'scan: while let Some((&first, tail)) = rest.split_first() {
         if recoverable_fact_notices {
             if let Some(length) = fact_notice_length(rest) {
+                rest = &rest[length..];
+                continue 'scan;
+            }
+        }
+        if recoverable_control_notices {
+            if let Some(length) = control_notice_length(rest) {
                 rest = &rest[length..];
                 continue 'scan;
             }
@@ -187,6 +200,36 @@ fn fact_notice_length(bytes: &[u8]) -> Option<usize> {
             == Some(b" expected argument #1 to be of type fact-address or fact-index\n".as_slice())
     })
     .then_some(length)
+}
+
+fn control_notice_length(bytes: &[u8]) -> Option<usize> {
+    const MODULE: &[u8] = b"[PRNTUTIL1] Unable to find defmodule ";
+    const CLEAR: &[u8] = b"[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n";
+    if bytes.starts_with(CLEAR) {
+        return Some(CLEAR.len());
+    }
+    let name = bytes.strip_prefix(MODULE)?;
+    let end = name.iter().position(|&byte| byte == b'\n')?;
+    let name = name[..end].strip_suffix(b".")?;
+    (!name.is_empty()
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_:-".contains(byte)))
+    .then_some(MODULE.len() + end + 1)
+}
+
+fn strip_control_notices(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut rest = bytes;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let Some(length) = control_notice_length(rest) {
+            rest = &rest[length..];
+        } else {
+            output.push(first);
+            rest = tail;
+        }
+    }
+    output
 }
 
 /// CLIPS may append an error to a partially printed line. Keep the program's
@@ -478,10 +521,15 @@ fn manifest_covers_every_program() {
         );
         assert_eq!(
             case.error.is_some(),
-            golden(&expected, None, case.recoverable_fact_notices)
-                .output
-                .split(|&byte| byte == b'\n')
-                .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
+            golden(
+                &expected,
+                None,
+                case.recoverable_fact_notices,
+                case.recoverable_control_notices
+            )
+            .output
+            .split(|&byte| byte == b'\n')
+            .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
             "only a golden with a CLIPS diagnostic has an error phase: {}",
             case.path
         );
@@ -490,6 +538,15 @@ fn manifest_covers_every_program() {
             assert!(
                 (0..expected.len()).any(|index| fact_notice_length(&expected[index..]).is_some()),
                 "missing recoverable fact notice: {}",
+                case.path
+            );
+        }
+        if case.recoverable_control_notices {
+            assert!(case.error.is_none(), "recoverable notices require success");
+            assert!(
+                (0..expected.len())
+                    .any(|index| control_notice_length(&expected[index..]).is_some()),
+                "missing recoverable control notice: {}",
                 case.path
             );
         }
@@ -544,6 +601,7 @@ fn selected_programs() -> Vec<Program> {
                     &std::fs::read(root.join(&case.path).with_extension("out")).unwrap(),
                     case.error,
                     case.recoverable_fact_notices,
+                    case.recoverable_control_notices,
                 ),
                 case,
             }
@@ -558,7 +616,12 @@ fn selected_programs() -> Vec<Program> {
 
 impl Program {
     fn observe(&self, mode: Mode) -> Option<Observation> {
-        observe(&self.case, &self.source, self.input.as_deref(), mode)
+        let mut observation = observe(&self.case, &self.source, self.input.as_deref(), mode)?;
+        if self.case.recoverable_control_notices {
+            observation.notices =
+                String::from_utf8(strip_control_notices(observation.notices.as_bytes())).unwrap();
+        }
+        Some(observation)
     }
 
     /// Whether the program runs, and conforms, without replay.
@@ -681,6 +744,7 @@ fn golden_run_error_preserves_exact_partial_output() {
           [PRCCODE4] Execution halted.\n",
         Some(ErrorPhase::Run),
         false,
+        false,
     );
     assert_eq!(expected.output, b"ready\nprefix \xff ");
     assert!(expected.notices.is_empty());
@@ -690,7 +754,7 @@ fn golden_run_error_preserves_exact_partial_output() {
 fn golden_run_error_preserves_non_diagnostic_bracket_text() {
     let output = b"[USER123] literal\nprefix [USER123] literal\n[USER123]\n\
         [lower1] literal\n[CODE] literal\n[CODE1]\tliteral\n";
-    let expected = golden(output, Some(ErrorPhase::Run), false);
+    let expected = golden(output, Some(ErrorPhase::Run), false, false);
     assert_eq!(expected.output, output);
     assert!(expected.notices.is_empty());
 }
@@ -699,7 +763,7 @@ fn golden_run_error_preserves_non_diagnostic_bracket_text() {
 fn golden_preserves_diagnostics_outside_run_error_cases() {
     let output = b"prefix [ARGACCES5] invalid operand\n[PRCCODE4] Execution halted.\n";
     for phase in [None, Some(ErrorPhase::Load)] {
-        let expected = golden(output, phase, false);
+        let expected = golden(output, phase, false, false);
         assert_eq!(expected.output, output);
         assert!(expected.notices.is_empty());
     }
@@ -709,7 +773,7 @@ fn golden_preserves_diagnostics_outside_run_error_cases() {
 fn golden_run_error_retains_scanner_notices_separately() {
     let notice = NOTICES[0].1;
     let output = format!("prefix {notice}tail [ARGACCES5] invalid operand\n");
-    let expected = golden(output.as_bytes(), Some(ErrorPhase::Run), false);
+    let expected = golden(output.as_bytes(), Some(ErrorPhase::Run), false, false);
     assert_eq!(expected.output, b"prefix tail ");
     assert_eq!(expected.notices, notice.as_bytes());
 }
@@ -720,10 +784,10 @@ fn golden_fact_notices_preserve_exact_partial_output() {
         [ARGACCES5] Function fact-slot-value expected argument #1 to be of type fact-address or fact-index\n\
         [ARGACCES5] Function retract expected argument #2 to be of type fact-address, fact-index, or the symbol *\n\
         continued\n";
-    let expected = golden(source, None, true);
+    let expected = golden(source, None, true, false);
     assert_eq!(expected.output, b"before:FALSE\ncontinued\n");
     assert!(expected.notices.is_empty());
-    assert_eq!(golden(source, None, false).output, source);
+    assert_eq!(golden(source, None, false, false).output, source);
 }
 
 #[test]
@@ -733,5 +797,32 @@ fn golden_fact_notices_retain_fatal_errors_and_literal_near_matches() {
         [ARGACCES5] Function + expected argument #1 to be of type integer or float\n\
         [ARGACCES5] Function fact-slot-value expected argument #2 to be of type symbol\n\
         [PRCCODE4] Execution halted.\n[USER123] literal\n";
-    assert_eq!(golden(source, None, true).output, source);
+    assert_eq!(golden(source, None, true, false).output, source);
+}
+
+#[test]
+fn golden_control_notices_preserve_prefix_and_require_opt_in() {
+    let source =
+        b"clear:[[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n]\n\
+        focus:[[PRNTUTIL1] Unable to find defmodule MISSING.\nFALSE]\ncontinued\n";
+    assert_eq!(
+        golden(source, None, false, true).output,
+        b"clear:[]\nfocus:[FALSE]\ncontinued\n"
+    );
+    assert_eq!(golden(source, None, false, false).output, source);
+    assert_eq!(
+        strip_control_notices(source),
+        b"clear:[]\nfocus:[FALSE]\ncontinued\n"
+    );
+}
+
+#[test]
+fn control_notice_filter_retains_literal_near_matches_and_fatal_errors() {
+    let source = b"[CONSTRCT1] Some constructs are still in use. Clear cannot continue. extra\n\
+        [PRNTUTIL1] Unable to find defmodule MISSING. extra\n\
+        [PRNTUTIL1] Unable to find deftemplate MISSING.\n\
+        [ARGACCES5] Function focus expected argument #1 to be of type symbol\n\
+        [PRCCODE4] Execution halted.\n[USER123] literal\n";
+    assert_eq!(golden(source, None, false, true).output, source);
+    assert_eq!(strip_control_notices(source), source);
 }

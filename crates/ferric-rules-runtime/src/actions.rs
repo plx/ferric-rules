@@ -15,20 +15,18 @@ use ferric_rules_core::beta::{RuleId, Salience};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
 use ferric_rules_core::token::Token;
 use ferric_rules_core::{
-    EncodingError, Fact, FactBase, FactId, OrderedFact, ReteNetwork, Symbol, SymbolTable,
-    TemplateId, Value,
+    EncodingError, Fact, FactBase, FactId, ReteNetwork, SymbolTable, TemplateId, Value,
 };
 use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
 use crate::evaluator::CompactFactBinding;
 use crate::modules::ModuleRegistry;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
+use crate::query_cursor::{ActionQueryCursor, QueryCandidate};
 use crate::router::OutputRouter;
-use crate::templates::RegisteredTemplate;
 use crate::tracing_support::{ferric_event, ferric_span};
 use crate::Engine;
 
-type OrderedFields = smallvec::SmallVec<[Value; 8]>;
 type RuntimeBindingEnv = HashMap<String, Value>;
 
 pub(crate) struct ActionExecutionContext<'a> {
@@ -36,13 +34,24 @@ pub(crate) struct ActionExecutionContext<'a> {
     pub current_module: crate::modules::ModuleId,
 }
 
-#[derive(Default)]
 struct ActionEvalEnv {
+    allow_engine_effects: bool,
     /// Query membership has lexical scope independent of ordinary loop values.
     compact_facts: crate::evaluator::CompactFactBindings,
     runtime_bindings: RuntimeBindingEnv,
     /// Reused storage for the merged frame built while RHS locals exist.
     merged_frame: RuntimeFrame,
+}
+
+impl Default for ActionEvalEnv {
+    fn default() -> Self {
+        Self {
+            allow_engine_effects: true,
+            compact_facts: HashMap::default(),
+            runtime_bindings: HashMap::default(),
+            merged_frame: Default::default(),
+        }
+    }
 }
 
 /// An evaluation frame: its bindings and the names they are keyed by.
@@ -117,36 +126,20 @@ impl ActionEvalEnv {
         rule_info: &'ctx CompiledRuleInfo,
         context: &'ctx mut ActionExecutionContext<'_>,
         compact_facts: &'ctx crate::evaluator::CompactFactBindings,
+        allow_engine_effects: bool,
     ) -> crate::evaluator::EvalContext<'ctx> {
         let engine = &mut *context.engine;
         crate::evaluator::EvalContext {
+            engine,
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
-            symbol_table: &mut engine.symbol_table,
-            config: &engine.config,
-            functions: &engine.functions,
-            globals: &mut engine.globals,
-            generics: &engine.generics,
             call_depth: 0,
             expression_depth: 0,
             callable_locals: None,
             current_module: context.current_module,
-            module_registry: &engine.module_registry,
-            function_modules: &engine.function_modules,
-            global_modules: &engine.global_modules,
-            generic_modules: &engine.generic_modules,
             method_chain: None,
-            input_buffer: Some(&mut engine.input_buffer),
-            fact_base: Some(&engine.fact_base),
-            initial_fact_id: engine.initial_fact_id,
-            fact_epoch: engine.fact_epoch,
-            template_defs: Some(&engine.template_defs),
             compact_fact_bindings: Some(compact_facts),
-            template_resolver: Some(crate::loader::TemplateResolver {
-                template_local_ids: &engine.template_local_ids,
-                template_modules: &engine.template_modules,
-                module_registry: &engine.module_registry,
-            }),
+            allow_engine_effects,
         }
     }
 
@@ -157,30 +150,49 @@ impl ActionEvalEnv {
         runtime_expr: &crate::evaluator::RuntimeExpr,
         context: &mut ActionExecutionContext<'_>,
     ) -> Result<Value, ActionError> {
-        if !self.runtime_bindings.is_empty() {
+        let has_locals = !self.runtime_bindings.is_empty();
+        if has_locals {
+            // Canonicalize activation aliases, but leave mutable RHS names in
+            // CallableLocals alone: unbind must not resurrect a stale overlay.
             build_runtime_eval_bindings(
                 token,
                 rule_info,
-                &self.runtime_bindings,
+                &RuntimeBindingEnv::new(),
                 context,
                 &mut self.merged_frame,
             )?;
+        }
+        // Expressions may bind RHS locals too. Restore the shared map on both
+        // success and error so completed nested effects retain their bindings.
+        let mut locals = crate::evaluator::CallableLocals::from_values(std::mem::take(
+            &mut self.runtime_bindings,
+        ));
+        let result = if has_locals {
             let (bindings, var_map) = &self.merged_frame;
-            let result = Self::eval_runtime_expr_with_bindings(
+            Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
                 bindings,
                 var_map,
                 context,
                 &self.compact_facts,
+                self.allow_engine_effects,
+                &mut locals,
+            )
+        } else {
+            let mut ctx = Self::make_eval_context(
+                token,
+                rule_info,
+                context,
+                &self.compact_facts,
+                self.allow_engine_effects,
             );
-            // Keep the capacity, not the values.
-            self.merged_frame.0.clear();
-            return result;
-        }
-
-        let mut ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
-        crate::evaluator::eval_action_expression(&mut ctx, runtime_expr)
-            .map_err(ActionError::from_action_evaluation)
+            ctx.callable_locals = Some(&mut locals);
+            crate::evaluator::eval_action_expression(&mut ctx, runtime_expr)
+                .map_err(ActionError::from_action_evaluation)
+        };
+        self.runtime_bindings = locals.into_values();
+        self.merged_frame.0.clear();
+        result
     }
 
     fn eval_expr(
@@ -206,36 +218,21 @@ impl ActionEvalEnv {
         var_map: &VarMap,
         context: &mut ActionExecutionContext<'_>,
         compact_facts: &crate::evaluator::CompactFactBindings,
+        allow_engine_effects: bool,
+        locals: &mut crate::evaluator::CallableLocals,
     ) -> Result<Value, ActionError> {
         let engine = &mut *context.engine;
         let mut ctx = crate::evaluator::EvalContext {
+            engine,
             bindings,
             var_map,
-            symbol_table: &mut engine.symbol_table,
-            config: &engine.config,
-            functions: &engine.functions,
-            globals: &mut engine.globals,
-            generics: &engine.generics,
             call_depth: 0,
             expression_depth: 0,
-            callable_locals: None,
+            callable_locals: Some(locals),
             current_module: context.current_module,
-            module_registry: &engine.module_registry,
-            function_modules: &engine.function_modules,
-            global_modules: &engine.global_modules,
-            generic_modules: &engine.generic_modules,
             method_chain: None,
-            input_buffer: Some(&mut engine.input_buffer),
-            fact_base: Some(&engine.fact_base),
-            initial_fact_id: engine.initial_fact_id,
-            fact_epoch: engine.fact_epoch,
-            template_defs: Some(&engine.template_defs),
             compact_fact_bindings: Some(compact_facts),
-            template_resolver: Some(crate::loader::TemplateResolver {
-                template_local_ids: &engine.template_local_ids,
-                template_modules: &engine.template_modules,
-                module_registry: &engine.module_registry,
-            }),
+            allow_engine_effects,
         };
         crate::evaluator::eval_action_expression(&mut ctx, runtime_expr)
             .map_err(ActionError::from_action_evaluation)
@@ -370,10 +367,8 @@ impl ActionError {
 ///
 /// This is called with all the data needed pre-extracted to avoid borrow issues.
 ///
-/// Returns `(fired, reset_requested, clear_requested, errors)` where:
+/// Returns `(fired, errors)` where:
 /// - `fired` is `true` once the already-matched activation reaches execution.
-/// - `reset_requested` is `true` if a `(reset)` action was executed.
-/// - `clear_requested` is `true` if a `(clear)` action was executed.
 /// - `errors` is a list of non-fatal action errors that occurred during execution.
 #[allow(clippy::too_many_lines)] // Sequential action/test evaluation flow with explicit error branches.
 pub(crate) fn execute_actions(
@@ -381,7 +376,7 @@ pub(crate) fn execute_actions(
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     collected_facts: &[FactId],
-) -> (bool, bool, bool, Vec<ActionError>) {
+) -> (bool, Vec<ActionError>) {
     context.engine.config.begin_action_loop_budget();
     ferric_span!(
         debug_span,
@@ -391,8 +386,6 @@ pub(crate) fn execute_actions(
         test_count = rule_info.test_conditions.len()
     );
     let mut errors = Vec::new();
-    let mut reset_requested = false;
-    let mut clear_requested = false;
     let mut eval_env = ActionEvalEnv::default();
     // Defensive: clear any stale deferred events that might have accumulated
     // in non-action evaluation contexts.
@@ -408,6 +401,7 @@ pub(crate) fn execute_actions(
             &context.engine.fact_base,
             context.engine.initial_fact_id,
             context.engine.fact_epoch,
+            context.engine.fact_index_starts_at_zero,
             &mut eval_env.compact_facts,
         );
     }
@@ -418,8 +412,6 @@ pub(crate) fn execute_actions(
             .get(index)
             .and_then(Option::as_ref);
         let action_result = execute_single_action(
-            &mut reset_requested,
-            &mut clear_requested,
             token,
             rule_info,
             &action.call,
@@ -455,30 +447,16 @@ pub(crate) fn execute_actions(
             }
         }
         flush_deferred_printout(context);
-        // Stop executing further actions if clear/reset was requested.
-        if clear_requested || reset_requested {
-            ferric_event!(
-                debug,
-                rule = %rule_info.name,
-                action_index = index,
-                reset_requested,
-                clear_requested,
-                "rule_action_short_circuit"
-            );
-            break;
-        }
     }
 
     ferric_event!(
         debug,
         rule = %rule_info.name,
         error_count = errors.len(),
-        reset_requested,
-        clear_requested,
         "execute_actions_complete"
     );
     context.engine.config.end_action_loop_budget();
-    (true, reset_requested, clear_requested, errors)
+    (true, errors)
 }
 
 /// Evaluate one rule-local predicate for an incoming partial match.
@@ -488,7 +466,10 @@ pub(crate) fn evaluate_test_condition(
     test_condition: &CompiledTestCondition,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<bool, ActionError> {
-    let mut eval_env = ActionEvalEnv::default();
+    let mut eval_env = ActionEvalEnv {
+        allow_engine_effects: false,
+        ..Default::default()
+    };
 
     let CompiledTestCondition::Expr(test_expr) = test_condition;
     let result = eval_env
@@ -511,6 +492,7 @@ pub(crate) fn bind_fact_addresses(
     fact_base: &FactBase,
     initial_fact_id: Option<FactId>,
     fact_epoch: u64,
+    fact_index_starts_at_zero: bool,
 ) {
     let layout = rule_info.activation_layout(symbol_table, encoding);
     for &(id, index) in &layout.fact_address_slots {
@@ -522,6 +504,7 @@ pub(crate) fn bind_fact_addresses(
                 fact_base,
                 initial_fact_id,
                 fact_epoch,
+                fact_index_starts_at_zero,
                 *fact_id,
             ) {
                 token
@@ -540,11 +523,18 @@ fn seed_compact_fact_addresses(
     fact_base: &FactBase,
     initial_fact_id: Option<FactId>,
     fact_epoch: u64,
+    fact_index_starts_at_zero: bool,
     compact_facts: &mut crate::evaluator::CompactFactBindings,
 ) {
     for (name, &index) in addresses {
         if let Some(address) = collected_facts.get(index).and_then(|fact_id| {
-            crate::fact_address::make_fact_address(fact_base, initial_fact_id, fact_epoch, *fact_id)
+            crate::fact_address::make_fact_address(
+                fact_base,
+                initial_fact_id,
+                fact_epoch,
+                fact_index_starts_at_zero,
+                *fact_id,
+            )
         }) {
             compact_facts.insert(
                 name.strip_prefix("$?").unwrap_or(name).to_string(),
@@ -626,8 +616,6 @@ fn build_runtime_eval_bindings(
 #[allow(clippy::too_many_arguments)] // Action dispatch needs full mutable engine/action context.
 #[allow(clippy::too_many_lines)] // if-branch execution adds necessary verbosity
 fn execute_single_action(
-    reset_requested: &mut bool,
-    clear_requested: &mut bool,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     call: &FunctionCall,
@@ -637,49 +625,19 @@ fn execute_single_action(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
-        "assert" => execute_assert(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "retract" => execute_retract(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "modify" => execute_modify(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "duplicate" => execute_duplicate(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "halt" => {
-            context.engine.halt();
-            Ok(())
-        }
-        "reset" => {
-            *reset_requested = true;
-            Ok(())
-        }
-        "clear" => {
-            *clear_requested = true;
-            Ok(())
+        "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear" => {
+            if let Some(runtime_expr) = runtime_call {
+                eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
+            } else {
+                eval_env.eval_expr(
+                    token,
+                    rule_info,
+                    &ActionExpr::FunctionCall(call.clone()),
+                    context,
+                    collected_facts,
+                )
+            }
+            .map(|_| ())
         }
         "printout" => execute_printout(
             token,
@@ -690,14 +648,6 @@ fn execute_single_action(
             collected_facts,
         ),
         "println" => execute_println(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "focus" => execute_focus(
             token,
             rule_info,
             &call.args,
@@ -866,16 +816,7 @@ fn execute_single_action(
                     } else {
                         else_branch
                     };
-                execute_loop_body(
-                    reset_requested,
-                    clear_requested,
-                    token,
-                    rule_info,
-                    branch,
-                    context,
-                    eval_env,
-                    collected_facts,
-                )
+                execute_loop_body(token, rule_info, branch, context, eval_env, collected_facts)
             } else {
                 // Fallback: evaluate as expression (no-op if void).
                 if let Some(runtime_expr) = runtime_call {
@@ -918,8 +859,6 @@ fn execute_single_action(
                     .map_err(ActionError::from)?;
                     // Execute body items.
                     match execute_loop_body(
-                        reset_requested,
-                        clear_requested,
                         token,
                         rule_info,
                         body,
@@ -930,9 +869,6 @@ fn execute_single_action(
                         Ok(()) => {}
                         Err(ActionError::LoopBreak) => break,
                         Err(error) => return Err(error),
-                    }
-                    if *reset_requested || *clear_requested {
-                        break;
                     }
                 }
                 Ok(())
@@ -1023,8 +959,6 @@ fn execute_single_action(
                         };
 
                         match execute_loop_body(
-                            reset_requested,
-                            clear_requested,
                             loop_token,
                             loop_rule_info,
                             body,
@@ -1035,9 +969,6 @@ fn execute_single_action(
                             Ok(()) => {}
                             Err(ActionError::LoopBreak) => break,
                             Err(error) => return Err(error),
-                        }
-                        if *reset_requested || *clear_requested {
-                            break;
                         }
                     }
                     Ok(())
@@ -1091,16 +1022,7 @@ fn execute_single_action(
 
                 // Execute matched body.
                 if let Some(body) = matched_body {
-                    execute_loop_body(
-                        reset_requested,
-                        clear_requested,
-                        token,
-                        rule_info,
-                        body,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
+                    execute_loop_body(token, rule_info, body, context, eval_env, collected_facts)?;
                 }
                 Ok(())
             } else if let Some(runtime_expr) = runtime_call {
@@ -1177,8 +1099,6 @@ fn execute_single_action(
                             let (loop_token, loop_rule_info, _, _) = loop_frame.as_ref().unwrap();
 
                             match execute_loop_body(
-                                reset_requested,
-                                clear_requested,
                                 loop_token,
                                 loop_rule_info,
                                 body,
@@ -1189,9 +1109,6 @@ fn execute_single_action(
                                 Ok(()) => {}
                                 Err(ActionError::LoopBreak) => break,
                                 Err(error) => return Err(error),
-                            }
-                            if *reset_requested || *clear_requested {
-                                break;
                             }
                         }
                         Ok(())
@@ -1244,8 +1161,6 @@ fn execute_single_action(
             }) = query_runtime
             {
                 execute_query_action(
-                    reset_requested,
-                    clear_requested,
                     token,
                     rule_info,
                     name,
@@ -1340,8 +1255,6 @@ fn augment_bindings_with_var(
 /// out so the three loop forms can share it.
 #[allow(clippy::too_many_arguments)]
 fn execute_loop_body(
-    reset_requested: &mut bool,
-    clear_requested: &mut bool,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     body: &[(
@@ -1426,8 +1339,6 @@ fn execute_loop_body(
             }
         };
         execute_single_action(
-            reset_requested,
-            clear_requested,
             token,
             rule_info,
             &branch_call,
@@ -1436,139 +1347,8 @@ fn execute_loop_body(
             eval_env,
             collected_facts,
         )?;
-        if *reset_requested || *clear_requested {
-            break;
-        }
     }
     Ok(())
-}
-
-type QueryCandidate = Vec<(String, CompactFactBinding)>;
-
-/// A live, iterative nested-loop cursor. Each level remembers chronology,
-/// rather than an arena slot, so removal/reuse cannot revive an old member.
-/// Outer members remain selected while their inner levels advance.
-struct ActionQueryCursor {
-    members: Vec<(String, TemplateId)>,
-    after: Vec<Option<u64>>,
-    current: Vec<Option<CompactFactBinding>>,
-    retained: rustc_hash::FxHashMap<FactId, Arc<Fact>>,
-    level: usize,
-    finished: bool,
-}
-
-impl ActionQueryCursor {
-    fn new(
-        bindings: &[(String, String)],
-        context: &mut ActionExecutionContext<'_>,
-    ) -> Result<Self, ActionError> {
-        if bindings.is_empty() {
-            return Err(ActionError::EvalError(
-                "query requires at least one member".into(),
-            ));
-        }
-        let resolver = crate::loader::TemplateResolver {
-            template_local_ids: &context.engine.template_local_ids,
-            template_modules: &context.engine.template_modules,
-            module_registry: &context.engine.module_registry,
-        };
-        let mut names = HashSet::new();
-        let mut members = Vec::with_capacity(bindings.len());
-        for (name, template) in bindings {
-            if !crate::evaluator::valid_query_member(name) || !names.insert(name) {
-                return Err(ActionError::EvalError(
-                    "invalid or duplicate query member".into(),
-                ));
-            }
-            let template = resolver
-                .resolve_query_reference(template, context.current_module)
-                .map_err(ActionError::EvalError)?;
-            members.push((name.clone(), template));
-        }
-        // Resolve every declaration before recognizing an empty product.
-        let finished = members.iter().any(|(_, template)| {
-            context
-                .engine
-                .fact_base
-                .next_template_fact_after(*template, None)
-                .is_none()
-        });
-        Ok(Self {
-            after: vec![None; members.len()],
-            current: vec![None; members.len()],
-            members,
-            retained: rustc_hash::FxHashMap::default(),
-            level: 0,
-            finished,
-        })
-    }
-
-    fn next(
-        &mut self,
-        context: &mut ActionExecutionContext<'_>,
-        query_name: &str,
-    ) -> Result<Option<QueryCandidate>, ActionError> {
-        while !self.finished {
-            let next = context
-                .engine
-                .fact_base
-                .next_template_fact_after(self.members[self.level].1, self.after[self.level]);
-            // Charge traversal as well as predicates: mutation can empty an
-            // inner set while many outer prefixes remain to be visited.
-            if let Some((fact_id, timestamp)) = next {
-                crate::evaluator::consume_action_loop_iteration(
-                    &context.engine.config,
-                    query_name,
-                    None,
-                )
-                .map_err(ActionError::from)?;
-                self.after[self.level] = Some(timestamp);
-                let retained = self.retained.entry(fact_id).or_insert_with(|| {
-                    Arc::new(
-                        context
-                            .engine
-                            .fact_base
-                            .get(fact_id)
-                            .expect("chronological index only yields live facts")
-                            .fact
-                            .clone(),
-                    )
-                });
-                let address = crate::fact_address::make_fact_address(
-                    &context.engine.fact_base,
-                    context.engine.initial_fact_id,
-                    context.engine.fact_epoch,
-                    fact_id,
-                )
-                .expect("chronological index only yields live facts");
-                self.current[self.level] =
-                    Some(CompactFactBinding::retained(address, retained.clone()));
-                if self.level + 1 == self.members.len() {
-                    let candidate = self
-                        .members
-                        .iter()
-                        .zip(&self.current)
-                        .map(|((name, _), member)| {
-                            (
-                                name.clone(),
-                                member.as_ref().expect("complete query tuple").clone(),
-                            )
-                        })
-                        .collect();
-                    return Ok(Some(candidate));
-                }
-                self.level += 1;
-                self.after[self.level] = None;
-            } else if self.level == 0 {
-                self.finished = true;
-            } else {
-                self.current[self.level] = None;
-                self.after[self.level] = None;
-                self.level -= 1;
-            }
-        }
-        Ok(None)
-    }
 }
 
 /// Install both ordinary and compact member scopes once for a predicate/body.
@@ -1618,8 +1398,6 @@ fn with_query_candidate<T>(
 /// Immediate queries resume their chronological cursor after each body.
 #[allow(clippy::too_many_arguments)]
 fn execute_query_action(
-    reset_requested: &mut bool,
-    clear_requested: &mut bool,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     name: &str,
@@ -1636,16 +1414,22 @@ fn execute_query_action(
         return Err(ActionError::UnknownAction(name.into()));
     }
     crate::evaluator::validate_query_predicate(
-        &mut ActionEvalEnv::make_eval_context(token, rule_info, context, &eval_env.compact_facts),
+        &mut ActionEvalEnv::make_eval_context(
+            token,
+            rule_info,
+            context,
+            &eval_env.compact_facts,
+            eval_env.allow_engine_effects,
+        ),
         query,
         name,
         None,
         0,
     )
     .map_err(ActionError::from)?;
-    let mut cursor = ActionQueryCursor::new(bindings, context)?;
+    let mut cursor = ActionQueryCursor::new(bindings, context.engine, context.current_module)?;
     let mut selected = Vec::new();
-    while let Some(candidate) = cursor.next(context, name)? {
+    while let Some(candidate) = cursor.next(context.engine, name)? {
         let result = with_query_candidate(
             &candidate,
             token,
@@ -1656,16 +1440,7 @@ fn execute_query_action(
                 let value = eval_env.eval_runtime_expr(token, rule_info, query, context)?;
                 let matched = crate::evaluator::is_truthy(&value, &context.engine.symbol_table);
                 if matched && !delayed {
-                    execute_loop_body(
-                        reset_requested,
-                        clear_requested,
-                        token,
-                        rule_info,
-                        body,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
+                    execute_loop_body(token, rule_info, body, context, eval_env, collected_facts)?;
                 }
                 Ok(matched)
             },
@@ -1678,7 +1453,7 @@ fn execute_query_action(
         if matched && delayed {
             selected.push(candidate);
         }
-        if *reset_requested || *clear_requested || (matched && stop_after_first) {
+        if matched && stop_after_first {
             return Ok(());
         }
     }
@@ -1692,16 +1467,7 @@ fn execute_query_action(
             context,
             eval_env,
             |token, rule_info, context, eval_env| {
-                execute_loop_body(
-                    reset_requested,
-                    clear_requested,
-                    token,
-                    rule_info,
-                    body,
-                    context,
-                    eval_env,
-                    collected_facts,
-                )
+                execute_loop_body(token, rule_info, body, context, eval_env, collected_facts)
             },
         );
         match result {
@@ -1709,56 +1475,6 @@ fn execute_query_action(
             Err(ActionError::LoopBreak) => break,
             Err(error) => return Err(error),
         }
-        if *reset_requested || *clear_requested {
-            break;
-        }
-    }
-    Ok(())
-}
-
-/// Execute a `focus` action: push module(s) onto the focus stack.
-///
-/// Resolve all arguments, then push in reverse order so the first argument
-/// becomes the top of the stack before the next RHS action executes.
-#[allow(clippy::too_many_arguments)]
-fn execute_focus(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    let mut modules = Vec::with_capacity(args.len());
-    for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        match value {
-            Value::Symbol(sym) => {
-                let name = context
-                    .engine
-                    .symbol_table
-                    .resolve_symbol_str(sym)
-                    .ok_or_else(|| {
-                        ActionError::EvalError("focus: invalid symbol argument".to_string())
-                    })?;
-                let module = context
-                    .engine
-                    .module_registry
-                    .get_by_name(name)
-                    .ok_or_else(|| {
-                        ActionError::EvalError(format!("focus: unknown module `{name}`"))
-                    })?;
-                modules.push(module);
-            }
-            _ => {
-                return Err(ActionError::EvalError(
-                    "focus: expected symbol argument".to_string(),
-                ));
-            }
-        }
-    }
-    for module in modules.into_iter().rev() {
-        context.engine.module_registry.push_focus(module);
     }
     Ok(())
 }
@@ -2559,481 +2275,6 @@ fn execute_println(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn execute_assert(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    // Each argument to assert should be a "function call" representing a fact pattern
-    // e.g., (assert (relation val1 val2)) → args = [FunctionCall("relation", [val1, val2])]
-    for arg in args {
-        match arg {
-            ActionExpr::FunctionCall(fact_pattern) => {
-                let relation = &fact_pattern.name;
-                if let Ok(template_id) = context
-                    .engine
-                    .resolve_template_id(relation, context.current_module)
-                {
-                    let registered = context.engine.template_defs[template_id].clone();
-                    let mut slots = registered.defaults.clone();
-                    apply_template_slot_overrides(
-                        &mut slots,
-                        &fact_pattern.args,
-                        &registered,
-                        token,
-                        rule_info,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
-                    registered
-                        .validate_slots(&slots)
-                        .map_err(ActionError::EvalError)?;
-                    assert_template_and_propagate(
-                        context.engine,
-                        template_id,
-                        slots.into_boxed_slice(),
-                    )?;
-                    continue;
-                }
-                let relation_sym = context
-                    .engine
-                    .symbol_table
-                    .intern_symbol(relation, context.engine.config.string_encoding)
-                    .map_err(ActionError::from)?;
-
-                let mut fields = smallvec::SmallVec::new();
-                for field_expr in &fact_pattern.args {
-                    let value = eval_env.eval_expr(
-                        token,
-                        rule_info,
-                        field_expr,
-                        context,
-                        collected_facts,
-                    )?;
-                    match value {
-                        // CLIPS splices multifield values into ordered assertions.
-                        Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
-                        other => fields.push(other),
-                    }
-                }
-
-                assert_ordered_and_propagate(context.engine, relation_sym, fields)?;
-            }
-            _ => return Err(ActionError::InvalidAssert),
-        }
-    }
-    Ok(())
-}
-
-fn execute_retract(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    for arg in args {
-        let Some(fact_id) = resolve_target_fact_id(
-            "retract",
-            arg,
-            token,
-            rule_info,
-            context,
-            eval_env,
-            collected_facts,
-        )?
-        else {
-            continue;
-        };
-        if Some(fact_id) == context.engine.initial_fact_id {
-            return Err(ActionError::EvalError(
-                "the internal initial-fact is protected and cannot be retracted".to_string(),
-            ));
-        }
-        // A retained query member may already have been retracted by an
-        // earlier body. Repeated retraction of the same address is a no-op.
-        if let Some(entry) = context.engine.fact_base.get(fact_id) {
-            context
-                .engine
-                .rete
-                .retract_fact(fact_id, &entry.fact, &context.engine.fact_base);
-            context.engine.fact_base.retract(fact_id);
-            // Each removal is a matching boundary. A later target expression
-            // may change globals used by predicates unblocked by this fact.
-            context.engine.drain_pending_predicate_matches();
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn execute_modify(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    execute_fact_mutation(
-        token,
-        rule_info,
-        args,
-        FactMutationMode::Modify,
-        context,
-        eval_env,
-        collected_facts,
-    )
-}
-
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn execute_duplicate(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    execute_fact_mutation(
-        token,
-        rule_info,
-        args,
-        FactMutationMode::Duplicate,
-        context,
-        eval_env,
-        collected_facts,
-    )
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FactMutationMode {
-    Modify,
-    Duplicate,
-}
-
-impl FactMutationMode {
-    fn retract_original(self) -> bool {
-        matches!(self, Self::Modify)
-    }
-}
-
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn execute_fact_mutation(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    mode: FactMutationMode,
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    let target = args.first().ok_or(ActionError::InvalidRetract)?;
-    let action = if mode.retract_original() {
-        "modify"
-    } else {
-        "duplicate"
-    };
-    let fact_id = resolve_target_fact_id(
-        action,
-        target,
-        token,
-        rule_info,
-        context,
-        eval_env,
-        collected_facts,
-    )?
-    .ok_or_else(|| ActionError::EvalError(format!("{action}: target fact does not exist")))?;
-    if Some(fact_id) == context.engine.initial_fact_id {
-        return Err(ActionError::EvalError(
-            "the internal initial-fact is protected and cannot be modified or duplicated"
-                .to_string(),
-        ));
-    }
-    let original_fact = get_fact_or_error(&context.engine.fact_base, fact_id)?.clone();
-
-    match &original_fact {
-        Fact::Ordered(ordered) => {
-            let relation = ordered.relation;
-            let mut fields = ordered.fields.clone();
-            apply_ordered_slot_overrides(
-                &mut fields,
-                &args[1..],
-                token,
-                rule_info,
-                context,
-                eval_env,
-                collected_facts,
-            )?;
-            if mode.retract_original() {
-                context
-                    .engine
-                    .fact_base
-                    .ensure_assertion_capacity()
-                    .map_err(|error| ActionError::EvalError(error.to_string()))?;
-                retract_original_fact(
-                    &mut context.engine.fact_base,
-                    &mut context.engine.rete,
-                    fact_id,
-                    &original_fact,
-                );
-            }
-            assert_ordered_and_propagate(context.engine, relation, fields)?;
-        }
-        Fact::Template(template) => {
-            let registered = context
-                .engine
-                .template_defs
-                .get(template.template_id)
-                .cloned()
-                .ok_or_else(|| {
-                    ActionError::UnknownAction(format!(
-                        "template ID {:?} not found in registry",
-                        template.template_id
-                    ))
-                })?;
-            let mut slots = template.slots.to_vec();
-            apply_template_slot_overrides(
-                &mut slots,
-                &args[1..],
-                &registered,
-                token,
-                rule_info,
-                context,
-                eval_env,
-                collected_facts,
-            )?;
-            registered
-                .validate_slots(&slots)
-                .map_err(ActionError::EvalError)?;
-            if mode.retract_original() {
-                context
-                    .engine
-                    .fact_base
-                    .ensure_assertion_capacity()
-                    .map_err(|error| ActionError::EvalError(error.to_string()))?;
-                retract_original_fact(
-                    &mut context.engine.fact_base,
-                    &mut context.engine.rete,
-                    fact_id,
-                    &original_fact,
-                );
-            }
-            assert_template_and_propagate(
-                context.engine,
-                template.template_id,
-                slots.into_boxed_slice(),
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-fn assert_ordered_and_propagate(
-    engine: &mut Engine,
-    relation: Symbol,
-    fields: OrderedFields,
-) -> Result<crate::FactAssertionResult<FactId>, ActionError> {
-    engine
-        .assert_fact_internal(Fact::Ordered(OrderedFact { relation, fields }))
-        .map_err(|error| ActionError::EvalError(error.to_string()))
-}
-
-fn assert_template_and_propagate(
-    engine: &mut Engine,
-    template_id: TemplateId,
-    slots: Box<[Value]>,
-) -> Result<crate::FactAssertionResult<FactId>, ActionError> {
-    engine
-        .assert_fact_internal(Fact::Template(ferric_rules_core::TemplateFact {
-            template_id,
-            slots,
-        }))
-        .map_err(|error| ActionError::EvalError(error.to_string()))
-}
-
-fn retract_original_fact(
-    fact_base: &mut FactBase,
-    rete: &mut ReteNetwork,
-    fact_id: FactId,
-    fact: &Fact,
-) {
-    rete.retract_fact(fact_id, fact, fact_base);
-    fact_base.retract(fact_id);
-}
-
-fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<&Fact, ActionError> {
-    fact_base
-        .get(fact_id)
-        .map(|entry| &entry.fact)
-        .ok_or(ActionError::FactNotFound(fact_id))
-}
-
-/// Fact actions use the current ordinary frame, including query members,
-/// aliases, and inner loop shadowing. Compact slot bindings have a separate
-/// lexical purpose and must not override these ordinary values.
-fn resolve_target_fact_id(
-    action: &str,
-    target: &ActionExpr,
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<Option<FactId>, ActionError> {
-    let fast = match target {
-        // Without RHS locals, a variable reads the activation frame directly;
-        // this is what evaluating it would do, minus building a frame.
-        ActionExpr::Variable(name, _) if eval_env.runtime_bindings.is_empty() => {
-            activation_binding(token, rule_info, name, context)
-        }
-        _ => None,
-    };
-    let value = match fast {
-        Some(value) => value,
-        None => eval_env.eval_expr(token, rule_info, target, context, collected_facts)?,
-    };
-    if !matches!(value, Value::FactAddress(_) | Value::Integer(_)) {
-        return Err(ActionError::EvalError(format!(
-            "{action}: target must be a fact-address or fact index"
-        )));
-    }
-    Ok(crate::evaluator::designated_fact(
-        &context.engine.fact_base,
-        context.engine.initial_fact_id,
-        context.engine.fact_epoch,
-        &value,
-    ))
-}
-
-/// Read a variable from the activation frame (pattern and fact-address bindings).
-fn activation_binding(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    name: &str,
-    context: &ActionExecutionContext<'_>,
-) -> Option<Value> {
-    let name = name.strip_prefix("$?").unwrap_or(name);
-    let symbol = context
-        .engine
-        .symbol_table
-        .find_symbol(name, context.engine.config.string_encoding)?;
-    let id = rule_info.var_map.lookup(symbol)?;
-    token.bindings.get(id).map(|value| (**value).clone())
-}
-
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn apply_ordered_slot_overrides(
-    fields: &mut OrderedFields,
-    slot_overrides: &[ActionExpr],
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts we
-    // interpret FunctionCall args as positional overrides where the "name" is
-    // the index. Template facts take the named-slot path instead.
-    for slot_override in slot_overrides {
-        let ActionExpr::FunctionCall(fc) = slot_override else {
-            continue;
-        };
-
-        let Ok(index) = fc.name.parse::<usize>() else {
-            continue;
-        };
-        if index >= fields.len() {
-            continue;
-        }
-
-        if let Some(first_arg) = fc.args.first() {
-            fields[index] =
-                eval_env.eval_expr(token, rule_info, first_arg, context, collected_facts)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Apply slot overrides to a mutable template slot vector.
-///
-/// Each override in `slot_overrides` is expected to be a `FunctionCall` whose
-/// name is a slot name. Single-field slots require one scalar value; multifield
-/// slots evaluate all expressions and splice their multifield results.
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn apply_template_slot_overrides(
-    slots: &mut [Value],
-    slot_overrides: &[ActionExpr],
-    registered: &RegisteredTemplate,
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    let overrides = registered
-        .slot_overrides(slot_overrides)
-        .map_err(ActionError::EvalError)?;
-    for (slot_idx, call) in overrides {
-        if slot_idx >= slots.len() {
-            return Err(ActionError::EvalError(format!(
-                "slot index {slot_idx} out of bounds for template `{}`",
-                registered.name
-            )));
-        }
-
-        slots[slot_idx] = match registered.slot_types[slot_idx] {
-            ferric_rules_parser::SlotType::Single => {
-                let value = eval_env.eval_expr(
-                    token,
-                    rule_info,
-                    &call.args[0],
-                    context,
-                    collected_facts,
-                )?;
-                if matches!(value, Value::Multifield(_) | Value::Void) {
-                    return Err(ActionError::EvalError(format!(
-                        "single-field slot `{}` in template `{}` requires one scalar value",
-                        call.name, registered.name
-                    )));
-                }
-                value
-            }
-            ferric_rules_parser::SlotType::Multi => {
-                let mut values = ferric_rules_core::Multifield::new();
-                for expression in &call.args {
-                    match eval_env.eval_expr(
-                        token,
-                        rule_info,
-                        expression,
-                        context,
-                        collected_facts,
-                    )? {
-                        Value::Multifield(fields) => {
-                            values.extend(fields.as_slice().iter().cloned());
-                        }
-                        // CLIPS omits expressions that return no value from
-                        // multislot construction while retaining their effects.
-                        Value::Void => {}
-                        value => values.push(value),
-                    }
-                }
-                Value::Multifield(Box::new(values))
-            }
-        };
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3389,11 +2630,13 @@ mod tests {
             &engine.fact_base,
             engine.initial_fact_id,
             engine.fact_epoch,
+            engine.fact_index_starts_at_zero,
         );
         let address = crate::fact_address::make_fact_address(
             &engine.fact_base,
             engine.initial_fact_id,
             engine.fact_epoch,
+            engine.fact_index_starts_at_zero,
             fact_id,
         )
         .unwrap();
@@ -3422,6 +2665,7 @@ mod tests {
             &engine.fact_base,
             engine.initial_fact_id,
             engine.fact_epoch,
+            engine.fact_index_starts_at_zero,
         );
         assert_eq!(empty.bindings.bound_count(), 0);
     }
@@ -3490,12 +2734,8 @@ mod action_query_validation_tests {
             args: Vec::new(),
             span: Span::new(Position::new(), Position::new(), FileId(0)),
         };
-        let mut reset = false;
-        let mut clear = false;
         context.engine.config.begin_action_loop_budget();
         let result = execute_single_action(
-            &mut reset,
-            &mut clear,
             &token,
             &info,
             &action,
@@ -3505,7 +2745,6 @@ mod action_query_validation_tests {
             &[],
         );
         context.engine.config.end_action_loop_budget();
-        assert!(!reset && !clear);
         assert_eq!(context.engine.fact_base.len(), initial_count);
         assert!(matches!(
             context.engine.globals.get(context.current_module, "hits"),

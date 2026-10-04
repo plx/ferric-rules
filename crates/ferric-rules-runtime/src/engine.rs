@@ -140,6 +140,7 @@ impl<Id: Copy> FactAssertionResult<Id> {
 ///   LEX, and MEA conflict strategies and a module focus stack.
 /// - Per-channel output capture (`get_output`) and queued input (`push_input`)
 ///   for `read` and `readline`.
+#[allow(clippy::struct_excessive_bools)] // Independent execution, recursion, and fact-chronology state.
 pub struct Engine {
     pub(crate) fact_base: FactBase,
     pub(crate) host: HostState,
@@ -188,6 +189,8 @@ pub struct Engine {
     /// implementation fact, and retraction rejects its ID.
     pub(crate) initial_fact_id: Option<FactId>,
     pub(crate) fact_epoch: u64,
+    pub(crate) fact_index_starts_at_zero: bool,
+    pub(crate) reset_in_progress: bool,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
@@ -256,6 +259,8 @@ impl Engine {
             generic_modules: HashMap::default(),
             initial_fact_id: None,
             fact_epoch: 0,
+            fact_index_starts_at_zero: false,
+            reset_in_progress: false,
             action_diagnostics: Vec::new(),
             processing_predicates: false,
             halted: false,
@@ -336,7 +341,7 @@ impl Engine {
     /// Install the protected initial fact as a distinct system assertion.
     /// A same-named host fact remains a user fact with its original identity.
     pub(crate) fn ensure_initial_fact(&mut self) -> Result<(), EngineError> {
-        if self.initial_fact_id.is_some() {
+        if self.initial_fact_id.is_some() || self.fact_index_starts_at_zero {
             return Ok(());
         }
         let relation = self
@@ -1056,23 +1061,21 @@ impl Engine {
 
     /// Execute RHS actions for a rule activation.
     ///
-    /// Returns `(logically_fired, reset_requested, clear_requested, action_error)`.
+    /// Returns `(logically_fired, action_error)`.
     /// - `logically_fired` is `true` if the already-matched activation executed.
-    /// - `reset_requested` is `true` if a `(reset)` action was executed in the RHS.
-    /// - `clear_requested` is `true` if a `(clear)` action was executed in the RHS.
     /// - `action_error` is `true` if evaluation produced an action diagnostic.
     fn execute_activation_actions(
         &mut self,
         rule_id: RuleId,
         token_id: ferric_rules_core::token::TokenId,
-    ) -> (bool, bool, bool, bool) {
+    ) -> (bool, bool) {
         ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
         let Some(mut token) = self.rete.token_store.get(token_id).cloned() else {
             ferric_event!(debug, rule = rule_id.0, token = ?token_id, "activation_missing_token");
             self.action_diagnostics.push(ActionError::EvalError(format!(
                 "internal invariant violation: activation for rule {rule_id:?} references missing token {token_id:?}"
             )));
-            return (false, false, false, true);
+            return (false, true);
         };
 
         // Clone the handle so we can pass both this rule and the full map to
@@ -1082,14 +1085,14 @@ impl Engine {
             self.action_diagnostics.push(ActionError::EvalError(format!(
                 "internal invariant violation: activation for rule {rule_id:?} has no executable metadata"
             )));
-            return (false, false, false, true);
+            return (false, true);
         };
 
         let Some(current_module) = rule_index_get(&self.rule_modules, rule_id).copied() else {
             self.action_diagnostics.push(ActionError::EvalError(format!(
                 "internal invariant violation: activation for rule {rule_id:?} has no module metadata"
             )));
-            return (false, false, false, true);
+            return (false, true);
         };
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
@@ -1102,9 +1105,10 @@ impl Engine {
             &self.fact_base,
             self.initial_fact_id,
             self.fact_epoch,
+            self.fact_index_starts_at_zero,
         );
 
-        let (fired, reset_requested, clear_requested, errors) = {
+        let (fired, errors) = {
             let mut action_context = actions::ActionExecutionContext {
                 engine: self,
                 current_module,
@@ -1119,14 +1123,12 @@ impl Engine {
             debug,
             rule = rule_id.0,
             fired,
-            reset_requested,
-            clear_requested,
             diagnostics = errors.len(),
             "activation_actions_complete"
         );
         let action_error = !errors.is_empty();
         self.action_diagnostics.extend(errors);
-        (fired, reset_requested, clear_requested, action_error)
+        (fired, action_error)
     }
 
     /// Pop the next activation eligible under current focus semantics.
@@ -1185,7 +1187,7 @@ impl Engine {
         // Execute actions. Diagnostics remain available through
         // action_diagnostics(), while step() returns Some(fired) to indicate
         // that the activation was processed even when action evaluation fails.
-        let (logically_fired, reset_requested, clear_requested, action_error) =
+        let (logically_fired, action_error) =
             self.execute_activation_actions(activation.rule, activation.token);
         #[cfg(not(feature = "tracing"))]
         let _ = (logically_fired, action_error);
@@ -1194,19 +1196,9 @@ impl Engine {
             rule = activation.rule.0,
             token = ?activation.token,
             logically_fired,
-            reset_requested,
-            clear_requested,
             action_error,
             "engine_step_activation_processed"
         );
-
-        if clear_requested {
-            self.clear();
-        } else if reset_requested {
-            let _ = self.reset();
-        }
-        // After reset or clear, the engine is in a new state.
-        // step() still returns the FiredRule indicating what fired.
 
         self.host.prune(&self.fact_base);
         Ok(Some(fired))
@@ -1286,7 +1278,7 @@ impl Engine {
                 return run_result(rules_fired, HaltReason::AgendaEmpty);
             };
 
-            let (logically_fired, reset_requested, clear_requested, action_error) =
+            let (logically_fired, action_error) =
                 self.execute_activation_actions(activation.rule, activation.token);
 
             if logically_fired {
@@ -1297,8 +1289,6 @@ impl Engine {
                 rule = activation.rule.0,
                 token = ?activation.token,
                 logically_fired,
-                reset_requested,
-                clear_requested,
                 action_error,
                 rules_fired,
                 "engine_run_activation_processed"
@@ -1312,30 +1302,6 @@ impl Engine {
                     "engine_run_complete"
                 );
                 return run_result(rules_fired, HaltReason::ActionError);
-            }
-
-            if clear_requested {
-                self.clear();
-                ferric_event!(
-                    info,
-                    rules_fired,
-                    halt_reason = "clear_requested",
-                    "engine_run_complete"
-                );
-                return run_result(rules_fired, HaltReason::HaltRequested);
-            }
-
-            if reset_requested {
-                let _ = self.reset();
-                // Stop execution after reset — the caller can invoke run() again
-                // with the freshly-reset working memory.
-                ferric_event!(
-                    info,
-                    rules_fired,
-                    halt_reason = "reset_requested",
-                    "engine_run_complete"
-                );
-                return run_result(rules_fired, HaltReason::HaltRequested);
             }
         }
 
@@ -1368,6 +1334,27 @@ impl Engine {
     ///
     /// Evaluation errors stop reset before publishing the failing fact.
     pub fn reset(&mut self) -> Result<(), EngineError> {
+        self.reset_with_output(false)
+    }
+
+    pub(crate) fn reset_for_evaluation(&mut self) -> Result<(), EngineError> {
+        self.flush_expression_output();
+        self.reset_with_output(true)
+    }
+
+    fn reset_with_output(&mut self, preserve_output: bool) -> Result<(), EngineError> {
+        // CLIPS ignores a reset invoked by a reset-time initializer. Do not
+        // create a fresh evaluation root that could evade the recursion limit.
+        if self.reset_in_progress {
+            return Ok(());
+        }
+        self.reset_in_progress = true;
+        let result = self.reset_state(preserve_output);
+        self.reset_in_progress = false;
+        result
+    }
+
+    fn reset_state(&mut self, preserve_output: bool) -> Result<(), EngineError> {
         self.fact_epoch = self
             .fact_epoch
             .checked_add(1)
@@ -1378,9 +1365,12 @@ impl Engine {
         // Clear all runtime state
         self.fact_base = FactBase::new();
         self.initial_fact_id = None;
+        self.fact_index_starts_at_zero = false;
         self.rete.clear_working_memory();
-        self.router.clear();
-        self.action_diagnostics.clear();
+        if !preserve_output {
+            self.router.clear();
+            self.action_diagnostics.clear();
+        }
         self.halted = false;
         // Note: input_buffer is intentionally NOT cleared on reset.
         // Input is live I/O state that should persist across resets.
@@ -1436,6 +1426,8 @@ impl Engine {
         // globals. Host assertions reject retained addresses, so epoch reuse
         // here cannot revive one. Reset preserves carriers and must not wrap.
         self.fact_epoch = self.fact_epoch.wrapping_add(1);
+        self.fact_index_starts_at_zero = false;
+        self.reset_in_progress = false;
         self.host = HostState::new();
         ferric_span!(info_span, "engine_clear");
         self.fact_base = FactBase::new();
@@ -1462,6 +1454,39 @@ impl Engine {
         self.processing_predicates = false;
         self.halted = false;
         self.input_buffer.clear();
+    }
+
+    /// Drain expression output before an effect can clear or replace globals.
+    pub(crate) fn flush_expression_output(&mut self) {
+        for (channel, text) in self.globals.take_printout_events() {
+            self.router.write(&channel, &text);
+        }
+    }
+
+    /// CLIPS first clears facts, then refuses to remove in-use constructs.
+    /// Keep the active rule/callable frames and the existing refraction state.
+    pub(crate) fn clear_for_evaluation(&mut self) -> Result<(), EngineError> {
+        self.flush_expression_output();
+        let epoch = self
+            .fact_epoch
+            .checked_add(1)
+            .ok_or(EngineError::FactEpochExhausted)?;
+        let facts: Vec<_> = self
+            .fact_base
+            .iter()
+            .map(|(id, entry)| (id, entry.fact.clone()))
+            .collect();
+        for (id, fact) in facts {
+            self.rete.retract_fact(id, &fact, &self.fact_base);
+            self.fact_base.retract(id);
+        }
+        self.fact_base = FactBase::new();
+        self.initial_fact_id = None;
+        self.fact_epoch = epoch;
+        self.fact_index_starts_at_zero = true;
+        self.host.clear_facts();
+        self.drain_pending_predicate_matches();
+        Ok(())
     }
 
     /// Check whether the engine is currently halted.

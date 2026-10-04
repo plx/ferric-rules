@@ -290,3 +290,61 @@ def test_fact_notice_flag_requires_success_and_boolean(tmp_path, value, error):
             "unused",
             1,
         )
+
+
+def test_control_notices_require_explicit_success_case_and_stay_in_oracle():
+    output = (
+        "clear:[[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n]\n"
+        "focus:[[PRNTUTIL1] Unable to find defmodule MISSING.\nFALSE]\ncontinued\n"
+    )
+    assert (
+        extract_output(
+            f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_control_notices=True
+        )
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output("BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_control_notices=True)
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        "[CONSTRCT1] Some constructs are still in use. Clear cannot continue. extra\n",
+        "[PRNTUTIL1] Unable to find defmodule MISSING. extra\n",
+        "[PRNTUTIL1] Unable to find deftemplate MISSING.\n",
+        "[ARGACCES5] Function focus expected argument #1 to be of type symbol\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_control_notice_flag_keeps_other_diagnostics_visible(unexpected):
+    notice = "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n"
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{notice}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_control_notices=True,
+        )
+    assert corpus.CONTROL_NOTICE.sub("", unexpected) == unexpected
+
+
+def test_control_notice_flag_does_not_allow_load_or_protocol_diagnostics():
+    notice = "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n"
+    for stdout in (f"{notice}BEGIN\n{notice}END\n", f"BEGIN\n{notice}END\n{notice}"):
+        with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+            extract_output(stdout, "", "BEGIN", "END", recoverable_control_notices=True)
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_control_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "facts/a.clp", "recoverable_control_notices": value, "error": error},
+            "unused",
+            1,
+        )

@@ -66,13 +66,8 @@ fn missing_negative_and_raw_key_integers_do_not_retract_a_fact_or_stop_the_rule(
 }
 
 #[test]
-fn missing_mutation_targets_and_bad_retract_operands_still_stop_execution() {
-    for action in [
-        "(modify 9 (value 2))",
-        "(duplicate -1 (value 2))",
-        "(retract 9 \"not an address\")",
-        "(retract -1 (/ 1 0))",
-    ] {
+fn bad_retract_operands_still_stop_execution() {
+    for action in ["(retract 9 \"not an address\")", "(retract -1 (/ 1 0))"] {
         let mut engine = Engine::new(EngineConfig::default());
         engine
             .load_str(&format!(

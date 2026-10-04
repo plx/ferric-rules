@@ -372,14 +372,15 @@ capture a fact's identity so you can hand it to `retract` or `modify`:
     (retract ?t))
 ```
 
-`modify` rewrites slots in place on a template fact. `retract` removes a
-fact by address. `duplicate` creates a copy with slot overrides.
+`modify` replaces a template fact with a new assertion and returns its address.
+The original address becomes stale, including when slot values are unchanged.
+`retract` removes a fact by address. `duplicate` creates a copy with slot
+overrides. A suppressed duplicate insertion returns `FALSE`.
 
 For control flow inside the RHS, ferric supports the action-level forms:
 `if/then/else`, `while/do`, `loop-for-count`, `progn$`/`foreach`, and
-`switch/case/default`. User-function and method bodies are evaluator
-expressions, not full RHS action sequences: use rule RHS code for fact
-mutation and focus control.
+`switch/case/default`. Fact mutation and focus control also work in ordinary
+expressions, user functions, and methods.
 
 ---
 
@@ -424,11 +425,20 @@ the less-specific method:
 `"int/number(7)"`; `(describe 2.5)` skips straight to NUMBER and yields
 `"number(2.5)"`.
 
-`deffunction` and `defmethod` bodies are evaluator expressions, not full
-RHS action lists. They can call expression functions such as `str-cat`,
-`format`, and `printout`, but fact mutation and agenda/focus control
-(`assert`, `retract`, `modify`, `duplicate`, `focus`, `reset`, `clear`,
-`run`) belong in the calling rule's RHS.
+`deffunction` and `defmethod` bodies support `assert`, `retract`, `modify`,
+`duplicate`, `halt`, `focus`, `reset`, `clear`, and action queries. These calls
+also work inside expressions such as `(bind ?f (assert (reading 7)))`.
+`assert`, `modify`, and `duplicate` return a fact address, or `FALSE` when
+insertion is suppressed; `retract`, `halt`, `reset`, and `clear` return no
+value. Engine mutation is unavailable in rule match conditions, including
+through called functions.
+
+Source `(reset)` takes effect immediately and keeps the active callable's
+parameters, local bindings, and output. Its remaining expressions continue,
+and the run can select new activations afterward. Source `(clear)` retracts
+facts but cannot remove constructs in active use; execution continues with
+those constructs intact. Use the host `engine.clear()` API to remove everything
+between runs. `halt` finishes the current RHS before stopping the run.
 
 Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
 `SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`.
@@ -689,13 +699,14 @@ Two categories of things can go wrong:
 
 **Fatal errors** return `Err` from the fallible engine methods.
 `Engine::with_rules` returns `InitError` on parse or compilation failure;
-`assert_*`, `retract`, `run`, and friends return `EngineError` for
-runtime problems (template not found, encoding violations, stale or foreign
-handles, recursion-limit exceeded).
+Host operations such as `assert_*` and `retract` return `EngineError` for
+problems such as missing templates, encoding violations, or stale or foreign
+handles.
 
 **Non-fatal action diagnostics** are warnings from the most recent `run` or
-`step` — for example, an unresolved module reference in a `focus` action.
-They do not halt execution:
+`step` — for example, division by zero during expression evaluation. The
+run stops with `HaltReason::ActionError`, and the engine remains usable.
+Inspect them after the run:
 
 <!-- example: 12-error-handling/src/main.rs -->
 ```rust
@@ -854,8 +865,11 @@ A non-exhaustive list worth internalizing:
   when only the returned string is needed.
 - **`run` from a rule RHS is a no-op.** Don't try to trigger another run
   mid-firing; use focus/salience instead.
-- **`reset` and `clear` from RHS are deferred.** They set a flag that is
-  checked between activations, not applied mid-action.
+- **Source `reset` is immediate.** It restores facts and globals while
+  preserving active local bindings and output. An unconditional rule that
+  resets can activate again; use a run limit or an explicit halt when needed.
+- **Source `clear` preserves active constructs.** It removes facts, refuses
+  construct removal, and continues the current execution.
 - **Activation order is total per run, not reproducible across runs.**
   Don't rely on two independent runs producing the same interleaving;
   encode precedence with salience or focus if order matters.

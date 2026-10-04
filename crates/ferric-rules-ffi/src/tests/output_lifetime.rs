@@ -26,8 +26,8 @@ unsafe fn engine_with_output(text: &str) -> *mut FerricEngine {
     engine
 }
 
-unsafe fn load_action_rule(engine: *mut FerricEngine, name: &str, action: &str) {
-    let source = CString::new(format!(r"(defrule {name} => ({action}))")).unwrap();
+unsafe fn load_action_rule(engine: *mut FerricEngine, name: &str, actions: &str) {
+    let source = CString::new(format!(r"(defrule {name} => {actions})")).unwrap();
     assert_eq!(
         ferric_engine_load_string(engine, source.as_ptr()),
         FerricError::Ok
@@ -100,51 +100,64 @@ fn clearing_output_and_reset_reclaim_borrowed_snapshots() {
 }
 
 #[test]
-fn action_driven_reset_and_clear_reclaim_borrowed_snapshots() {
+fn action_driven_reset_and_clear_preserve_borrowed_output() {
     unsafe {
         let channel = CString::new("shared").unwrap();
 
         let run_engine = engine_with_output("run-reset");
         assert!(!ferric_engine_get_output(run_engine, channel.as_ptr()).is_null());
         let run_entry = output_cache_lifetime_for_test(run_engine, "shared").unwrap();
-        load_action_rule(run_engine, "reset-output-cache", "reset");
+        load_action_rule(run_engine, "reset-output-cache", "(reset) (halt)");
         let mut fired = 0;
         assert_eq!(
             ferric_engine_run(run_engine, -1, &mut fired),
             FerricError::Ok
         );
         assert_eq!(fired, 1);
-        assert!(run_entry.upgrade().is_none());
-        assert_eq!(output_cache_entry_count_for_test(run_engine), Some(0));
+        assert!(run_entry.upgrade().is_some());
+        assert_eq!(output_cache_entry_count_for_test(run_engine), Some(1));
+        let preserved = ferric_engine_get_output(run_engine, channel.as_ptr());
+        assert!(!preserved.is_null());
+        assert_eq!(CStr::from_ptr(preserved).to_bytes(), b"run-reset");
         assert_eq!(ferric_engine_free(run_engine), FerricError::Ok);
+        assert!(run_entry.upgrade().is_none());
 
         let run_ex_engine = engine_with_output("run-ex-reset");
         assert!(!ferric_engine_get_output(run_ex_engine, channel.as_ptr()).is_null());
         let run_ex_entry = output_cache_lifetime_for_test(run_ex_engine, "shared").unwrap();
-        load_action_rule(run_ex_engine, "reset-output-cache-ex", "reset");
+        load_action_rule(run_ex_engine, "reset-output-cache-ex", "(reset) (halt)");
         let mut reason = FerricHaltReason::AgendaEmpty;
         assert_eq!(
             ferric_engine_run_ex(run_ex_engine, -1, &mut fired, &mut reason),
             FerricError::Ok
         );
         assert_eq!(fired, 1);
-        assert!(run_ex_entry.upgrade().is_none());
-        assert_eq!(output_cache_entry_count_for_test(run_ex_engine), Some(0));
+        assert_eq!(reason, FerricHaltReason::HaltRequested);
+        assert!(run_ex_entry.upgrade().is_some());
+        assert_eq!(output_cache_entry_count_for_test(run_ex_engine), Some(1));
+        let preserved = ferric_engine_get_output(run_ex_engine, channel.as_ptr());
+        assert!(!preserved.is_null());
+        assert_eq!(CStr::from_ptr(preserved).to_bytes(), b"run-ex-reset");
         assert_eq!(ferric_engine_free(run_ex_engine), FerricError::Ok);
+        assert!(run_ex_entry.upgrade().is_none());
 
         let step_engine = engine_with_output("step-clear");
         assert!(!ferric_engine_get_output(step_engine, channel.as_ptr()).is_null());
         let step_entry = output_cache_lifetime_for_test(step_engine, "shared").unwrap();
-        load_action_rule(step_engine, "clear-output-cache", "clear");
+        load_action_rule(step_engine, "clear-output-cache", "(clear)");
         let mut status = 0;
         assert_eq!(
             ferric_engine_step(step_engine, &mut status),
             FerricError::Ok
         );
         assert_eq!(status, 1);
-        assert!(step_entry.upgrade().is_none());
-        assert_eq!(output_cache_entry_count_for_test(step_engine), Some(0));
+        assert!(step_entry.upgrade().is_some());
+        assert_eq!(output_cache_entry_count_for_test(step_engine), Some(1));
+        let preserved = ferric_engine_get_output(step_engine, channel.as_ptr());
+        assert!(!preserved.is_null());
+        assert_eq!(CStr::from_ptr(preserved).to_bytes(), b"step-clear");
         assert_eq!(ferric_engine_free(step_engine), FerricError::Ok);
+        assert!(step_entry.upgrade().is_none());
     }
 }
 

@@ -41,6 +41,7 @@ mod tracing_support;
 pub mod actions;
 mod callable_validation;
 pub mod config;
+mod effects;
 pub mod engine;
 pub mod evaluator;
 pub mod execution;
@@ -53,6 +54,7 @@ pub mod host;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
+mod query_cursor;
 mod query_validation;
 pub mod router;
 #[cfg(feature = "serde")]

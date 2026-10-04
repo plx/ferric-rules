@@ -25,7 +25,13 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 6. Typed fact addresses retain their assertion identity,
+The current schema is 7. Expressions retain executable engine effects, and
+source reset/clear now apply immediately while preserving active execution.
+The chronology flag used after a refused source clear is persisted so restored
+fact indices continue from zero. Schema 6 lacks this flag and the corrected
+execution contract and is rejected with `UnsupportedVersion(6)`.
+
+Typed fact addresses retain their assertion identity,
 working-memory epoch, and public display index. Live, retracted, and dummy
 addresses survive snapshots, including nested values and rule bindings. Restored
 address metadata is checked against the working-memory chronology. Schema 5
@@ -81,7 +87,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`6`) |
+| 8–9 | Little-endian schema version (`7`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

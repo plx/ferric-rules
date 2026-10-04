@@ -33,7 +33,7 @@ fn demo_action_diagnostics() -> anyhow::Result<()> {
     }
     assert!(
         !diags.is_empty(),
-        "expected at least one diagnostic from the unresolved focus action"
+        "expected at least one diagnostic from the division by zero"
     );
 
     engine.clear_action_diagnostics();

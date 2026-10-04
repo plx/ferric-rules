@@ -1879,12 +1879,15 @@ fn reset_from_rhs_clears_facts() {
     (go)
     =>
     (assert (created yes))
-    (reset))
+    (reset)
+    (printout t continued)
+    (halt))
 (deffacts startup (go))
 ";
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
+    assert_eq!(engine.get_output("t"), Some("continued"));
     // After reset-from-RHS, the (created yes) fact should be gone
     // and (go) should be re-asserted from deffacts.
     let facts: Vec<_> = engine.facts().unwrap().collect();
@@ -1902,19 +1905,22 @@ fn reset_from_rhs_clears_facts() {
 }
 
 #[test]
-fn clear_from_rhs_removes_all() {
+fn clear_from_rhs_removes_facts_but_preserves_constructs() {
     let mut engine = new_utf8_engine();
     let source = r"
 (defrule do-clear
     (go)
     =>
-    (clear))
+    (clear)
+    (printout t continued))
 (deffacts startup (go))
 ";
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
-    // After clear, everything should be gone
+    // A live evaluation refuses construct removal after clearing the facts.
+    assert_eq!(engine.rules().len(), 1);
+    assert_eq!(engine.get_output("t"), Some("continued"));
     assert_eq!(engine.facts().unwrap().count(), 0);
     assert_eq!(engine.agenda_len(), 0);
 }

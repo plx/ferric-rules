@@ -29,6 +29,7 @@ impl Engine {
                     address,
                     self.fact_epoch,
                     self.initial_fact_id,
+                    self.fact_index_starts_at_zero,
                 )?,
                 Value::Multifield(fields) => pending.extend(fields.iter()),
                 _ => {}
@@ -39,6 +40,10 @@ impl Engine {
 
     #[allow(clippy::too_many_lines)]
     fn validate_snapshot_metadata(&self) -> Result<(), String> {
+        ensure(
+            !self.fact_index_starts_at_zero || self.initial_fact_id.is_none(),
+            "zero-based cleared fact chronology has an initial fact",
+        )?;
         self.symbol_table.validate_snapshot()?;
         self.fact_base.validate_snapshot(&self.symbol_table)?;
         self.rete
@@ -283,8 +288,11 @@ impl Engine {
                     &|name| self.resolve_template_id(name, *module).is_ok(),
                 )
                 .map_err(|(_, message)| message)?;
-                crate::callable_validation::validate_iterator_binds(&function.body)
-                    .map_err(|(_, message)| message)?;
+                crate::callable_validation::validate_iterator_binds_with_templates(
+                    &function.body,
+                    &|name| self.resolve_template_id(name, *module).is_ok(),
+                )
+                .map_err(|(_, message)| message)?;
             }
         }
         for (module, generics) in &self.generics.generics {
@@ -356,8 +364,11 @@ impl Engine {
                         &|name| self.resolve_template_id(name, *module).is_ok(),
                     )
                     .map_err(|(_, message)| message)?;
-                    crate::callable_validation::validate_iterator_binds(&method.body)
-                        .map_err(|(_, message)| message)?;
+                    crate::callable_validation::validate_iterator_binds_with_templates(
+                        &method.body,
+                        &|name| self.resolve_template_id(name, *module).is_ok(),
+                    )
+                    .map_err(|(_, message)| message)?;
                 }
             }
         }
@@ -477,6 +488,15 @@ impl Engine {
             ensure(depth < 16, "snapshot expression-depth limit is 16")?;
             let mut branches = Vec::new();
             match expr {
+                RuntimeExpr::EffectCall { call } => {
+                    ensure(
+                        matches!(call.name.as_str(), "assert" | "modify" | "duplicate"),
+                        "invalid syntax effect",
+                    )?;
+                    for argument in &call.args {
+                        validate_action_at_depth(argument, depth + 1)?;
+                    }
+                }
                 RuntimeExpr::Literal(value) => self.validate_snapshot_value(value)?,
                 RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {}
                 RuntimeExpr::Call { args, .. } => {
@@ -541,5 +561,16 @@ impl Engine {
 }
 
 fn validate_action(root: &ActionExpr) -> Result<(), String> {
-    crate::evaluator::validate_action_depth(root).map_err(|error| error.to_string())
+    validate_action_at_depth(root, 0)
+}
+
+fn validate_action_at_depth(root: &ActionExpr, initial_depth: usize) -> Result<(), String> {
+    let mut pending = vec![(root, initial_depth)];
+    let mut children = Vec::new();
+    while let Some((expression, depth)) = pending.pop() {
+        ensure(depth < 16, "snapshot expression-depth limit is 16")?;
+        expression.push_children(&mut children);
+        pending.extend(children.drain(..).map(|child| (child, depth + 1)));
+    }
+    Ok(())
 }

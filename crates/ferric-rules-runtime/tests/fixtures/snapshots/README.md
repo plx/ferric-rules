@@ -66,13 +66,20 @@ schema-4 checkpoint with a generic whose fixed parameter has a query and whose
 wildcard has both type and query restrictions. The committed-byte test resumes
 pending matches, exercises reset-time initializers after callable replacement,
 and checks method selection and wildcard bindings after restoration.
-`schema-6.cbor` is the current format. Its source, `schema-6.clp`, adds a typed
+`schema-6.cbor` records typed fact addresses and is explicitly rejected by
+the current runtime. Its source, `schema-6.clp`, adds a typed
 fact address captured by the first firing. Restoration preserves that address,
 eight pending split matches, deferred seed expressions, and method restrictions.
 The previous fixture bytes remain unchanged.
 
-Regenerate schema 6 only after an intentional change to its unreleased layout:
+`schema-7.cbor` is the current format. `schema-7.clp` preserves a dormant
+assertion expression in its seed initializer and adds a function, method, and
+rule that exercise mutation and action-query return values after restoration.
+Separate round-trip tests preserve fact numbering and refraction after source
+clear refuses construct removal. All older fixture bytes remain unchanged.
+
+Regenerate schema 7 only after an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_six_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_seven_fixture -- --ignored
 ```

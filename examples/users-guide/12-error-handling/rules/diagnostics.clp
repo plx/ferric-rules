@@ -1,5 +1,4 @@
-(defrule focus-missing
+(defrule divide-by-zero
     (begin)
     =>
-    (focus DOES-NOT-EXIST)
-    (printout t "tried to focus a missing module" crlf))
+    (printout t (/ 1 0) crlf))
