@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "0d53f00a653460bcd115097f04b3a747fd780030",
+    "ferric_revision": "20f2757ab117ebbc9a7d904d50635929fe16d0ed",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
