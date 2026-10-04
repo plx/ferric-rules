@@ -58,6 +58,27 @@ network-topology tie differences described with
 | Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | Three `patterns/400` sharing characterizations |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 
+### Accepted UTF-8 and format divergences
+
+The decision for [#394](https://github.com/plx/ferric-rules/issues/394) is to
+retain UTF-8 strings, symbols, and output, and to reject malformed `format`
+directives. The four output/format cases above are **accepted permanent
+compatibility differences**. They remain active characterizations so changes
+to these behaviors still require review.
+
+The three byte-output cases preserve valid UTF-8 by producing U+FFFD when
+CLIPS stores or emits invalid byte sequences. Reproducing those bytes would
+require a byte-lexeme model and byte-oriented interfaces throughout the parser,
+runtime, C ABI, and language bindings. The earlier implementation is preserved
+in the `archive/compat-final-integration` tag; this project keeps its existing
+text interfaces.
+
+For malformed directives such as `%5-3d`, CLIPS delegates to C `printf`, whose
+behavior depends on the libc implementation. Ferric keeps its checked format
+grammar and reports a format error. Valid supported directives retain their
+existing differential coverage. This decision changes no engine behavior or
+CLIPS goldens and does not reclassify the four cases as conformance.
+
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
 constraint inside a negated ordered pattern, tracked in

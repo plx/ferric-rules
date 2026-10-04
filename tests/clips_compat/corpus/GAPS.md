@@ -7,8 +7,8 @@ gaps and exact Ferric observations; `.out` always records CLIPS 6.30 behavior.
 A future fix must remove/update its manifest characterization.
 
 The fixes for #320 to #346 resolved the gaps listed below. The manifest still
-characterizes four output/format divergences and four equal-salience tie
-cases. Three involving identical negative/NCC joins record the explicit
+characterizes four [accepted permanent output/format divergences](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)
+and four equal-salience tie cases. Three involving identical negative/NCC joins record the explicit
 node-sharing boundary left out of [#400](https://github.com/plx/ferric-rules/issues/400);
 the supported shared-positive and blocker-history ordering cases conform. One
 further pre-existing multi-pattern `exists` case records a different network
