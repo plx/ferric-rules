@@ -83,8 +83,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --workspace --locked
-      - run: cargo check --workspace --all-features --locked
+      - run: cargo check --workspace --exclude ferric-rules-python --locked
+      - run: cargo check --workspace --exclude ferric-rules-python --all-features --locked
+
+  python-msrv:
+    name: Python MSRV (Rust 1.83)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.83.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.83.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check -p ferric-rules-python --locked
+      - run: cargo check -p ferric-rules-python --all-features --locked
 
   python-bindings:
     name: Python Bindings (CPython ${{ matrix.python-version }})
@@ -93,8 +113,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest and newest supported CPython (requires-python >=3.9,<3.14).
-        python-version: ["3.9", "3.13"]
+        # Oldest and newest supported CPython (requires-python >=3.9,<3.15).
+        python-version: ["3.9", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -114,7 +134,7 @@ jobs:
       - name: Smoke a host wheel in a clean consumer
         run: scripts/python-consumer-smoke.sh "$(command -v python)"
       - name: Exercise deterministic GIL and shutdown observations
-        if: matrix.python-version == '3.13'
+        if: matrix.python-version == '3.14'
         working-directory: crates/ferric-rules-python
         run: |
           uv run --locked --python "$(command -v python)" \

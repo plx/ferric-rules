@@ -10,7 +10,8 @@ pub mod result;
 pub mod value;
 
 /// The `ferric` Python module.
-#[pymodule]
+// PyO3 defaults to free threading; Ferric retains its GIL-enabled contract.
+#[pymodule(gil_used = true)]
 fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Engine
     m.add_class::<engine::PyEngine>()?;

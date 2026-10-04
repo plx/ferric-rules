@@ -11,7 +11,7 @@ use ferric_rules_runtime::{Engine, FactHandle};
 use crate::value::value_to_python;
 
 /// Fact type discriminator.
-#[pyclass(eq, eq_int, module = "ferric")]
+#[pyclass(from_py_object, eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FactType {
     #[pyo3(name = "ORDERED")]
@@ -42,10 +42,10 @@ pub struct Fact {
     pub template_name: Option<String>,
     /// Field values (ordered: positional fields; template: slot values).
     #[pyo3(get)]
-    pub fields: PyObject,
+    pub fields: Py<PyAny>,
     /// Slot name→value mapping (template facts only).
     #[pyo3(get)]
-    pub slots: Option<PyObject>,
+    pub slots: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -106,7 +106,7 @@ pub fn fact_to_python(
                 .resolve_core_symbol(ordered.relation)
                 .unwrap_or("<unknown>")
                 .to_string();
-            let fields: Vec<PyObject> = ordered
+            let fields: Vec<Py<PyAny>> = ordered
                 .fields
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
@@ -128,7 +128,7 @@ pub fn fact_to_python(
                 .template_name_by_id(template.template_id)
                 .unwrap_or("<unknown>")
                 .to_string();
-            let fields: Vec<PyObject> = template
+            let fields: Vec<Py<PyAny>> = template
                 .slots
                 .iter()
                 .map(|v| value_to_python(py, v, engine))

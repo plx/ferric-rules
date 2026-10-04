@@ -40,25 +40,16 @@ release binaries); the script runs pip-audit through `uvx`.
 
 ## Reviewed exceptions
 
-Checked against live advisories and current call sites on September 6, 2026.
-Rust exceptions use cargo-deny's advisory-specific `ignore` entries, with
-`unused-ignored-advisory = "deny"` so an upgrade removes obsolete entries.
-The sole Python exception is passed only for the binding's lockfile. There are
-no npm exceptions, severity cutoffs, or package-wide suppressions. New security
-findings require fixing or an applicability decision in the same reviewed change;
-the entries below do not accept future advisories for these dependencies.
+The pytest exception below was reviewed on September 6, 2026 and is passed
+only for the binding's lockfile. There are no Rust or npm advisory exceptions,
+severity cutoffs, or package-wide suppressions. Cargo-deny's
+`unused-ignored-advisory = "deny"` remains enabled. New security findings require
+fixing or an applicability decision in the same reviewed change; this exception
+does not accept future advisories for the dependency.
 
 | Advisory and affected surface | Applicability, mitigation, and reconsideration condition |
 | --- | --- |
-| [RUSTSEC-2025-0020](https://rustsec.org/advisories/RUSTSEC-2025-0020.html), PyO3 0.23.5 in the Python extension | The vulnerable `PyString::from_object` / `from_object_bound` decoder is not called. `src/value.rs` downcasts strings then extracts UTF-8, and creates strings with `PyString::new`; those use different PyO3 paths. Reconsider before adding encoding/decoding APIs or upgrading PyO3; remove when using >=0.24.1. |
-| [RUSTSEC-2026-0177](https://rustsec.org/advisories/RUSTSEC-2026-0177.html), PyO3 0.23.5 in the Python extension | The vulnerable `PyCFunction::new_closure` / `new_closure_bound` constructors are not called. Generated `#[pymethods]` and the `wrap_pyfunction!` instance-count function use C method definitions, not closure construction. Reconsider before introducing Python callbacks or upgrading PyO3; remove when using >=0.29.0. GIL presence alone is **not** the justification. |
 | [GHSA-6w46-j5rx-g56g](https://github.com/advisories/GHSA-6w46-j5rx-g56g), pytest 8.4.2 in Python 3.9 development tests | The patched pytest 9 requires Python >=3.10. Keep the declared Python 3.9 binding support: the suite's `conftest.py` creates an unpredictable private parent using `TemporaryDirectory` and configures pytest's `basetemp` inside it, avoiding the shared `/tmp/pytest-of-USER` path. A regression checks ownership and mode 0700 on POSIX. pytest is absent from wheels. Explicit `--basetemp` overrides are the caller's responsibility. Remove when a fixed Python-3.9-compatible pytest exists or Python 3.9 support is deliberately retired. |
-
-Reproduce the PyO3 applicability inspection with
-`rg 'from_object|new_closure|PyString|wrap_pyfunction' crates/ferric-rules-python/src`
-and inspect the matching constructors/extractors in the locked PyO3 source.
-Changes to those call sites must reassess the exception; unrelated Cargo graph
-changes do not create new renewal work.
 
 ## September 6 replacement evidence
 
@@ -68,7 +59,9 @@ fast-uri, js-yaml, nanoid, and postcss. Targeted uv updates patched click,
 Pygments, and pytest on Python >=3.10. Removing the experimental bincode,
 MessagePack and Postcard snapshot codecs later removed bincode
 (RUSTSEC-2025-0141), paste/rmp (RUSTSEC-2024-0436) and postcard from the
-dependency graph, leaving the entries above.
+dependency graph. Upgrading PyO3 to 0.29.3 removed the remaining Rust advisory
+exceptions for RUSTSEC-2025-0020 and RUSTSEC-2026-0177; the pytest exception
+above remains.
 
 Rust license allowlists, crate-specific MPL permission for the cbindgen build
 tool, and generated [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) remain.

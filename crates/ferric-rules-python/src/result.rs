@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 
 /// Why execution stopped.
-#[pyclass(eq, eq_int, module = "ferric")]
+#[pyclass(from_py_object, eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HaltReason {
     /// The agenda was empty.
@@ -32,7 +32,7 @@ impl From<ferric_rules_runtime::HaltReason> for HaltReason {
 }
 
 /// Result of an execution run.
-#[pyclass(module = "ferric")]
+#[pyclass(from_py_object, module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct RunResult {
     /// Number of rules fired.
@@ -63,7 +63,7 @@ impl From<ferric_rules_runtime::RunResult> for RunResult {
 }
 
 /// Information about a fired rule.
-#[pyclass(module = "ferric")]
+#[pyclass(from_py_object, module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct FiredRule {
     /// Name of the rule that fired.

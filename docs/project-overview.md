@@ -115,9 +115,9 @@ that touch Rust crates or Cargo manifests (`scaling.yml`).
   launcher programs; `docker/bench-runner/` — container for bench runs.
 - `.github/workflows/` — CI:
   - every pull request to `main`: `ci.yml` (Rust format/clippy/tests plus the
-    tracing checks and users-guide examples, MSRV 1.75, Python/Node/Go
-    bindings, FFI sanitizer harnesses, cross-binding conformance, Python
-    tools; skipped for site-only changes),
+    tracing checks and users-guide examples, Rust MSRV 1.75 for the workspace
+    excluding the Python binding (MSRV 1.83), Python/Node/Go bindings, FFI
+    sanitizer harnesses, cross-binding conformance, Python tools; skipped for site-only changes),
     `pr-assessment.yml` (base-vs-head CLIPS compatibility comparison through
     `compat-compare.yml`; its `PR Compatibility Gate` check is required), and
     `dependency-policy.yml` (advisory, license, and notices checks; also
