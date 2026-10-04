@@ -4650,6 +4650,186 @@
       "error": "load"
     },
     {
+      "path": "queries/typed-fact-address-issue-repro.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "arithmetic-rejection",
+        "query-members",
+        "integer-index"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-missing-index-repro.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "missing-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-negative-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "negative-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-identity-and-predicates.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "identity",
+        "predicates",
+        "fact-index"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-query-results.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "query-members",
+        "flattened-results"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-stored-multifields.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "template-slot",
+        "multifield",
+        "ordered-field",
+        "snapshot"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-stale-address-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "stale-address",
+        "global",
+        "identity",
+        "snapshot"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "queries/typed-fact-address-dummy-default.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "dummy-address",
+        "derived-default",
+        "snapshot"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-generic-dispatch.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "generic-dispatch",
+        "dummy-address"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-str-cat-rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "string-rejection",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-sym-cat-rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "symbol-rejection",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-integer-is-only-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "integer-index",
+        "forged-handle",
+        "retract"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-retract-mixed-designators.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-missing-value-in-expression.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "missing-index",
+        "expression-result"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-slot-type-rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "template-slot",
+        "type-rejection"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/typed-fact-address-stale-stored-identity.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "stale-address",
+        "identity",
+        "template-slot",
+        "snapshot"
+      ]
+    },
+    {
       "path": "stdlib/001_add_integers.clp",
       "level": "basic",
       "covers": [

@@ -8,7 +8,11 @@
 //! tests), use [`AtomKey`].
 
 use smallvec::SmallVec;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
+use crate::fact::{FactId, Timestamp};
 
 use crate::string::FerricString;
 use crate::symbol::{InstanceName, Symbol};
@@ -38,6 +42,94 @@ pub struct ExternalTypeId(pub u32);
 pub struct ExternalAddress {
     pub type_id: ExternalTypeId,
     pub token: u64,
+}
+
+/// A rule-language fact identity, retaining its public index after retraction.
+///
+/// Addresses belong to a working-memory epoch. The fact key and assertion
+/// timestamp distinguish reused arena entries; the epoch distinguishes resets.
+/// The cached index is presentation metadata and does not participate in equality.
+/// Host assertion APIs reject these values, including nested addresses: use the
+/// engine's host fact handles to access facts from an embedding application.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct FactAddress(Option<Arc<FactAddressData>>);
+
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+struct FactAddressData {
+    fact_id: FactId,
+    epoch: u64,
+    timestamp: Timestamp,
+    public_index: u64,
+}
+
+impl FactAddress {
+    /// The CLIPS derived default for a FACT-ADDRESS slot.
+    #[must_use]
+    pub const fn dummy() -> Self {
+        Self(None)
+    }
+
+    /// Construct an internal address from assertion metadata.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new(fact_id: FactId, epoch: u64, timestamp: Timestamp, public_index: u64) -> Self {
+        Self(Some(Arc::new(FactAddressData {
+            fact_id,
+            epoch,
+            timestamp,
+            public_index,
+        })))
+    }
+
+    #[must_use]
+    pub const fn is_dummy(&self) -> bool {
+        self.0.is_none()
+    }
+
+    #[must_use]
+    pub fn fact_id(&self) -> Option<FactId> {
+        self.0.as_ref().map(|data| data.fact_id)
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> Option<u64> {
+        self.0.as_ref().map(|data| data.epoch)
+    }
+
+    #[must_use]
+    pub fn timestamp(&self) -> Option<Timestamp> {
+        self.0.as_ref().map(|data| data.timestamp)
+    }
+
+    #[must_use]
+    pub fn public_index(&self) -> Option<u64> {
+        self.0.as_ref().map(|data| data.public_index)
+    }
+}
+
+impl PartialEq for FactAddress {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                (a.epoch, a.fact_id, a.timestamp) == (b.epoch, b.fact_id, b.timestamp)
+            }
+            _ => false,
+        }
+    }
+}
+impl Eq for FactAddress {}
+
+impl Hash for FactAddress {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0
+            .as_ref()
+            .map(|data| (data.epoch, data.fact_id, data.timestamp))
+            .hash(state);
+    }
 }
 
 /// An ordered collection of [`Value`]s.
@@ -202,6 +294,8 @@ pub enum Value {
     /// A CLIPS instance name such as `[widget]`, distinct from SYMBOL. Ferric
     /// has no object system, so no instance needs to exist.
     InstanceName(InstanceName),
+    /// A typed rule-language fact identity.
+    FactAddress(FactAddress),
 }
 
 impl Value {
@@ -217,6 +311,7 @@ impl Value {
         match (self, other) {
             (Self::Symbol(a), Self::Symbol(b)) => a == b,
             (Self::InstanceName(a), Self::InstanceName(b)) => a == b,
+            (Self::FactAddress(a), Self::FactAddress(b)) => a == b,
             (Self::String(a), Self::String(b)) => a == b,
             (Self::Integer(a), Self::Integer(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
@@ -239,6 +334,7 @@ impl Value {
         match self {
             Self::Symbol(_) => "SYMBOL",
             Self::InstanceName(_) => "INSTANCE-NAME",
+            Self::FactAddress(_) => "FACT-ADDRESS",
             Self::String(_) => "STRING",
             Self::Integer(_) => "INTEGER",
             Self::Float(_) => "FLOAT",
@@ -375,6 +471,7 @@ impl IntoFieldValues for FerricString {
 /// This means `-0.0 != +0.0` and each NaN bit pattern is a distinct key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AtomKey {
+    FactAddress(FactAddress),
     Symbol(Symbol),
     InstanceName(InstanceName),
     String(FerricString),
@@ -409,6 +506,7 @@ impl TryFrom<&Value> for AtomKey {
         match value {
             Value::Symbol(s) => Ok(Self::Symbol(*s)),
             Value::InstanceName(name) => Ok(Self::InstanceName(*name)),
+            Value::FactAddress(address) => Ok(Self::FactAddress(address.clone())),
             Value::String(s) => Ok(Self::String(s.clone())),
             Value::Integer(i) => Ok(Self::Integer(*i)),
             Value::Float(f) => Ok(Self::FloatBits(f.to_bits())),
@@ -426,6 +524,7 @@ impl From<AtomKey> for Value {
         match value {
             AtomKey::Symbol(s) => Value::Symbol(s),
             AtomKey::InstanceName(name) => Value::InstanceName(name),
+            AtomKey::FactAddress(address) => Value::FactAddress(address),
             AtomKey::String(s) => Value::String(s),
             AtomKey::Integer(i) => Value::Integer(i),
             AtomKey::FloatBits(bits) => Value::Float(f64::from_bits(bits)),
@@ -446,7 +545,7 @@ impl From<AtomKey> for Value {
 
 #[cfg(feature = "serde")]
 mod serde_impl {
-    use super::{AtomKey, FerricString, InstanceName, Multifield, Symbol, Value};
+    use super::{AtomKey, FactAddress, FerricString, InstanceName, Multifield, Symbol, Value};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     // ---- Value ----
@@ -460,11 +559,15 @@ mod serde_impl {
         Multifield(Box<Multifield>),
         Void,
         InstanceName(InstanceName),
+        FactAddress(FactAddress),
     }
 
     impl Serialize for Value {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             match self {
+                Value::FactAddress(address) => {
+                    ValueSurrogate::FactAddress(address.clone()).serialize(serializer)
+                }
                 Value::Symbol(s) => ValueSurrogate::Symbol(*s).serialize(serializer),
                 Value::InstanceName(name) => {
                     ValueSurrogate::InstanceName(*name).serialize(serializer)
@@ -485,6 +588,7 @@ mod serde_impl {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
             let surrogate = ValueSurrogate::deserialize(deserializer)?;
             Ok(match surrogate {
+                ValueSurrogate::FactAddress(address) => Value::FactAddress(address),
                 ValueSurrogate::Symbol(s) => Value::Symbol(s),
                 ValueSurrogate::String(s) => Value::String(s),
                 ValueSurrogate::Integer(i) => Value::Integer(i),
@@ -505,11 +609,15 @@ mod serde_impl {
         Integer(i64),
         FloatBits(u64),
         InstanceName(InstanceName),
+        FactAddress(FactAddress),
     }
 
     impl Serialize for AtomKey {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             match self {
+                AtomKey::FactAddress(address) => {
+                    AtomKeySurrogate::FactAddress(address.clone()).serialize(serializer)
+                }
                 AtomKey::Symbol(s) => AtomKeySurrogate::Symbol(*s).serialize(serializer),
                 AtomKey::InstanceName(name) => {
                     AtomKeySurrogate::InstanceName(*name).serialize(serializer)
@@ -528,6 +636,7 @@ mod serde_impl {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
             let surrogate = AtomKeySurrogate::deserialize(deserializer)?;
             Ok(match surrogate {
+                AtomKeySurrogate::FactAddress(address) => AtomKey::FactAddress(address),
                 AtomKeySurrogate::Symbol(s) => AtomKey::Symbol(s),
                 AtomKeySurrogate::String(s) => AtomKey::String(s),
                 AtomKeySurrogate::Integer(i) => AtomKey::Integer(i),
@@ -542,6 +651,34 @@ mod serde_impl {
 mod tests {
     use super::*;
     use crate::encoding::StringEncoding;
+
+    #[test]
+    fn fact_addresses_compare_and_hash_by_assertion_identity() {
+        use slotmap::Key;
+        let id = crate::fact::FactId::from(slotmap::KeyData::from_ffi(0x1_0000_0001));
+        assert!(!id.is_null());
+        let address = FactAddress::new(id, 2, Timestamp::new(3), 3);
+        let same = FactAddress::new(id, 2, Timestamp::new(3), 99);
+        let other_epoch = FactAddress::new(id, 3, Timestamp::new(3), 3);
+        let other_assertion = FactAddress::new(id, 2, Timestamp::new(4), 4);
+        let value = Value::FactAddress(address.clone());
+        assert_eq!(value.type_name(), "FACT-ADDRESS");
+        assert!(value.structural_eq(&Value::FactAddress(same.clone())));
+        assert!(!value.structural_eq(&Value::Integer(3)));
+        assert_ne!(address, other_epoch);
+        assert_ne!(address, other_assertion);
+        assert_ne!(address, FactAddress::dummy());
+        let mut identities = std::collections::HashSet::new();
+        identities.insert(AtomKey::FactAddress(address));
+        identities.insert(AtomKey::FactAddress(same));
+        identities.insert(AtomKey::FactAddress(other_epoch));
+        assert_eq!(identities.len(), 2);
+        assert!(AtomKey::from_value(&value)
+            .unwrap()
+            .to_value()
+            .structural_eq(&value));
+        assert_eq!(FactAddress::default(), FactAddress::dummy());
+    }
 
     // --- AtomKey float bit semantics ---
 

@@ -1,0 +1,6 @@
+(<Fact-2>)
+(<Fact-1> <Fact-2> <Fact-1> <Fact-3> <Fact-2> <Fact-3>)
+first:<Fact-1>
+all:<Fact-2>
+all:<Fact-3>
+delayed:<Fact-3>

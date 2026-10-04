@@ -47,9 +47,23 @@ def decode(data: bytes) -> str:
 
 
 DIAGNOSTIC = re.compile(r"(?m)^\[[A-Z]+\d+\][ \t]")
+FACT_NOTICE = re.compile(
+    r"\[PRNTUTIL1\] Unable to find fact f-[0-9]+\.\n"
+    r"|\[ARGACCES5\] Function (?:fact-existp|fact-relation|fact-slot-names|fact-slot-value) "
+    r"expected argument #1 to be of type fact-address or fact-index\n"
+    r"|\[ARGACCES5\] Function retract expected argument #[1-9][0-9]* "
+    r"to be of type fact-address, fact-index, or the symbol \*\n"
+)
 
 
-def extract_output(stdout: str, stderr: str, begin: str, end: str, error: str | None = None) -> str:
+def extract_output(
+    stdout: str,
+    stderr: str,
+    begin: str,
+    end: str,
+    error: str | None = None,
+    recoverable_fact_notices: bool = False,
+) -> str:
     """Require exactly one complete frame and check reference diagnostics.
 
     Only a case that declares a CLIPS run-time error may print diagnostics in
@@ -82,6 +96,10 @@ def extract_output(stdout: str, stderr: str, begin: str, end: str, error: str | 
     checked = output
     for notice in SCANNER_NOTICES:
         checked = checked.replace(notice, "")
+    if recoverable_fact_notices:
+        checked, count = FACT_NOTICE.subn("", checked)
+        if count == 0:
+            raise ReferenceFailure("expected a recoverable CLIPS fact notice")
     if error == "run" and not DIAGNOSTIC.search(checked):
         raise ReferenceFailure(f"expected a CLIPS runtime diagnostic:\n{output}")
     # Unanchored, unlike DIAGNOSTIC: a diagnostic printed after other text on
@@ -191,6 +209,11 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         raise ReferenceFailure(f"unknown error phase: {error!r}")
     if error == "load" and (resets != 1 or input_path.exists()):
         raise ReferenceFailure("a load error case has no runs")
+    recoverable_fact_notices = case.get("recoverable_fact_notices", False)
+    if not isinstance(recoverable_fact_notices, bool) or (
+        recoverable_fact_notices and error is not None
+    ):
+        raise ReferenceFailure("recoverable_fact_notices requires a successful run")
     source = batch_source(f"tests/clips_compat/corpus/{case['path']}", begin, end, resets, error)
     strategy = case.get("strategy")
     if strategy not in (None, "breadth"):
@@ -242,7 +265,7 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         raise ReferenceFailure(f"CLIPS exit {process.returncode}: {stderr}")
     if error == "load":
         return extract_load_error(stdout, stderr, begin, end)
-    output = extract_output(stdout, stderr, begin, end, error)
+    output = extract_output(stdout, stderr, begin, end, error, recoverable_fact_notices)
     return extract_runs(output, begin, end, resets)
 
 

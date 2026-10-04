@@ -571,3 +571,90 @@ fn full_assert_query_retract_cycle() {
         ferric_engine_free(engine);
     }
 }
+
+#[test]
+fn fact_addresses_fail_ffi_egress_without_exposing_a_partial_value() {
+    for (slot, expression) in [
+        ("(slot address)", "?f"),
+        ("(multislot address)", "(create$ \"allocated first\" ?f)"),
+    ] {
+        unsafe {
+            let engine = ferric_engine_new();
+            let source = CString::new(format!(
+                "(deftemplate item (slot value))
+                 (deftemplate saved {slot})
+                 (defglobal ?*address* = FALSE)
+                 (deffacts seed (item (value 7)))
+                 (defrule capture ?f <- (item) =>
+                   (bind ?*address* {expression})
+                   (assert (saved (address {expression}))))"
+            ))
+            .unwrap();
+            assert_eq!(
+                ferric_engine_load_string(engine, source.as_ptr()),
+                FerricError::Ok
+            );
+            assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
+            let original = first_fact_id(&*engine);
+            let mut fired = 0;
+            assert_eq!(
+                crate::engine::ferric_engine_run(engine, -1, &mut fired),
+                FerricError::Ok
+            );
+            assert_eq!(fired, 1);
+            let global = CString::new("address").unwrap();
+            for _ in 0..2 {
+                let mut out = crate::types::ferric_value_integer(99);
+                assert_eq!(
+                    ferric_engine_get_global(engine, global.as_ptr(), &mut out),
+                    FerricError::InvalidArgument
+                );
+                assert_eq!(out.value_type, FerricValueType::Void.as_raw());
+                assert_eq!(out.integer, 0);
+                assert!(out.multifield_ptr.is_null());
+                let error = CStr::from_ptr(crate::engine::ferric_engine_last_error(engine));
+                assert!(error.to_str().unwrap().contains("fact addresses"));
+            }
+            let saved = (*engine)
+                .engine
+                .facts()
+                .unwrap()
+                .map(|(id, _)| id.as_raw())
+                .find(|id| *id != original)
+                .expect("capture asserted the saved template fact");
+            let mut out = FerricValue::void();
+            assert_eq!(
+                ferric_engine_get_fact_field(engine, saved, 0, &mut out),
+                FerricError::InvalidArgument
+            );
+            assert_eq!(out.value_type, FerricValueType::Void.as_raw());
+            assert_eq!(
+                ferric_engine_get_fact_field(engine, original, 0, &mut out),
+                FerricError::Ok
+            );
+            assert_eq!(out.integer, 7);
+            ferric_value_free(&mut out);
+            assert_eq!(ferric_engine_retract(engine, original), FerricError::Ok);
+            assert_eq!(
+                ferric_engine_get_global(engine, global.as_ptr(), &mut out),
+                FerricError::InvalidArgument
+            );
+            assert_eq!(out.value_type, FerricValueType::Void.as_raw());
+            ferric_engine_free(engine);
+        }
+    }
+}
+
+#[test]
+fn deeply_nested_fact_addresses_are_rejected_by_ffi_conversion() {
+    use ferric_rules_core::{FactAddress, Value};
+    let engine = ferric_rules_runtime::Engine::new(ferric_rules_runtime::EngineConfig::default());
+    let mut value = Value::FactAddress(FactAddress::dummy());
+    for _ in 0..3 {
+        value = Value::Multifield(Box::new([Value::Integer(7), value].into_iter().collect()));
+    }
+    let error = crate::types::value_to_ferric(&value, &engine)
+        .err()
+        .expect("nested addresses cannot become FFI integers");
+    assert!(error.contains("fact addresses"));
+}

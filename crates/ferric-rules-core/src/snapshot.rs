@@ -22,7 +22,19 @@ pub(crate) use require_eq;
 
 use crate::fact::{Fact, FactBase};
 use crate::symbol::SymbolTable;
-use crate::value::Value;
+use crate::value::{AtomKey, Value};
+
+fn validate_index_key_metadata(actual: &AtomKey, expected: &AtomKey) -> Result<(), String> {
+    // Key equality deliberately ignores an address's cached public spelling.
+    // Index rebuilds must compare that metadata against the source value too.
+    if let (AtomKey::FactAddress(actual), AtomKey::FactAddress(expected)) = (actual, expected) {
+        require!(
+            actual.public_index() == expected.public_index(),
+            "inconsistent fact address index metadata"
+        );
+    }
+    Ok(())
+}
 
 impl SymbolTable {
     #[doc(hidden)]
@@ -85,6 +97,71 @@ impl SymbolTable {
 }
 
 impl FactBase {
+    /// Check a rule-language address against persisted working-memory metadata.
+    #[doc(hidden)]
+    pub fn validate_snapshot_fact_address(
+        &self,
+        address: &crate::value::FactAddress,
+        epoch: u64,
+        initial_fact_id: Option<crate::fact::FactId>,
+    ) -> Result<(), String> {
+        use slotmap::Key;
+        let Some(id) = address.fact_id() else {
+            return Ok(());
+        };
+        let address_epoch = address.epoch().expect("real address has epoch");
+        let timestamp = address.timestamp().expect("real address has timestamp");
+        let index = address.public_index().expect("real address has index");
+        require!(!id.is_null(), "null fact address key");
+        require!(address_epoch <= epoch, "fact address has future epoch");
+        require!(
+            timestamp.get() < u64::MAX,
+            "fact address has exhausted timestamp"
+        );
+        require!(
+            index <= timestamp.get() + 1,
+            "fact address index exceeds assertion timestamp"
+        );
+        require!(
+            index == 0 || index == timestamp.get() || index == timestamp.get() + 1,
+            "fact address has impossible historical public index"
+        );
+        if address_epoch == epoch {
+            require!(
+                timestamp < self.next_timestamp,
+                "fact address has future timestamp"
+            );
+            let expected = if initial_fact_id == Some(id) {
+                let initial = self
+                    .get(id)
+                    .ok_or("fact address has missing initial fact")?;
+                require!(
+                    initial.timestamp == timestamp,
+                    "fact address has inconsistent initial timestamp"
+                );
+                0
+            } else if initial_fact_id
+                .and_then(|id| self.get(id))
+                .is_some_and(|initial| initial.timestamp < timestamp)
+            {
+                timestamp.get()
+            } else {
+                timestamp.get() + 1
+            };
+            require!(
+                index == expected,
+                "fact address has inconsistent public index"
+            );
+            if let Some(entry) = self.get(id) {
+                require!(
+                    timestamp <= entry.timestamp,
+                    "fact address precedes key allocation"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn validate_snapshot(&self, symbols: &SymbolTable) -> Result<(), String> {
         // MAX is the exhausted sentinel. Checked insertion preserves this state
@@ -423,9 +500,19 @@ fn validate_constant(
             | Test::GreaterThan(value)
             | Test::LessThan(value)
             | Test::GreaterOrEqual(value)
-            | Test::LessOrEqual(value) => symbols.validate_snapshot_value(&value.to_value())?,
+            | Test::LessOrEqual(value) => {
+                require!(
+                    !matches!(value, crate::value::AtomKey::FactAddress(_)),
+                    "fact address cannot be a source constant"
+                );
+                symbols.validate_snapshot_value(&value.to_value())?;
+            }
             Test::EqualAny(values) => {
                 for value in values {
+                    require!(
+                        !matches!(value, crate::value::AtomKey::FactAddress(_)),
+                        "fact address cannot be a source constant"
+                    );
                     symbols.validate_snapshot_value(&value.to_value())?;
                 }
             }
@@ -470,6 +557,20 @@ fn parent(node: &BetaNode) -> Option<NodeId> {
 }
 
 impl ReteNetwork {
+    /// Visit persisted binding values after structural graph validation.
+    #[doc(hidden)]
+    pub fn validate_snapshot_binding_values(
+        &self,
+        validate: impl Fn(&Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for token in self.token_store.tokens.values() {
+            for value in token.bindings.bindings.iter().flatten() {
+                validate(value)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Validate persisted graph identities, runtime memberships, and reverse indexes.
     #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
@@ -638,7 +739,10 @@ impl ReteNetwork {
                         .ok_or("unexpected beta variable index")?;
                     require_eq!(keys.len(), expected.len());
                     for (key, ids) in keys {
-                        let expected = expected.get(key).ok_or("wrong beta binding key")?;
+                        let (expected_key, expected) = expected
+                            .get_key_value(key)
+                            .ok_or("wrong beta binding key")?;
+                        validate_index_key_metadata(key, expected_key)?;
                         require!(
                             ids == expected,
                             "inconsistent beta binding membership or order"
@@ -1125,7 +1229,10 @@ impl ReteNetwork {
                     .ok_or("unexpected indexed alpha slot")?;
                 require_eq!(keys.len(), expected.len());
                 for (key, ids) in keys {
-                    let expected = expected.get(key).ok_or("unexpected alpha binding key")?;
+                    let (expected_key, expected) = expected
+                        .get_key_value(key)
+                        .ok_or("unexpected alpha binding key")?;
+                    validate_index_key_metadata(key, expected_key)?;
                     require!(
                         ids.iter().eq(expected.iter()),
                         "inconsistent alpha index membership or order"
@@ -1776,6 +1883,143 @@ impl crate::compiler::ReteCompiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_rejects_impossible_public_indexes_from_older_epochs() {
+        use crate::value::FactAddress;
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("item", crate::StringEncoding::Ascii)
+            .unwrap();
+        let mut previous = FactBase::new();
+        for _ in 0..3 {
+            previous.assert_ordered(relation, smallvec::smallvec![]);
+        }
+        let id = previous.assert_ordered(relation, smallvec::smallvec![]);
+        let timestamp = previous.get(id).unwrap().timestamp;
+        assert_eq!(timestamp.get(), 3);
+        let current = FactBase::new();
+        for index in [0, 3, 4] {
+            let address = FactAddress::new(id, 1, timestamp, index);
+            current
+                .validate_snapshot_fact_address(&address, 2, None)
+                .unwrap();
+        }
+        let malformed = FactAddress::new(id, 1, timestamp, 1);
+        assert!(current
+            .validate_snapshot_fact_address(&malformed, 2, None)
+            .unwrap_err()
+            .contains("impossible historical public index"));
+    }
+
+    #[test]
+    fn snapshot_rejects_fact_address_metadata_in_rete_index_keys() {
+        use crate::alpha::SlotIndex;
+        use crate::beta::{JoinTestType, RuleId, Salience};
+        use crate::binding::VarId;
+        use crate::value::{AtomKey, FactAddress};
+
+        for (corrupt_alpha, invalid_index) in [(true, 0), (true, 99), (false, 0), (false, 99)] {
+            let mut symbols = SymbolTable::new();
+            let left = symbols
+                .intern_symbol("left", crate::StringEncoding::Ascii)
+                .unwrap();
+            let right = symbols
+                .intern_symbol("right", crate::StringEncoding::Ascii)
+                .unwrap();
+            let target_relation = symbols
+                .intern_symbol("target", crate::StringEncoding::Ascii)
+                .unwrap();
+            let mut facts = FactBase::new();
+            let target = facts.assert_ordered(target_relation, smallvec::smallvec![]);
+            let timestamp = facts.get(target).unwrap().timestamp;
+            let address = FactAddress::new(target, 0, timestamp, 1);
+            let valid_key = AtomKey::FactAddress(address.clone());
+            let invalid_address = FactAddress::new(target, 0, timestamp, invalid_index);
+            // An older epoch's zero index is individually plausible, but it is
+            // still inconsistent with the address stored in facts and bindings.
+            if invalid_index == 0 {
+                facts
+                    .validate_snapshot_fact_address(&invalid_address, 1, None)
+                    .unwrap();
+            }
+            let invalid_key = AtomKey::FactAddress(invalid_address);
+            assert_eq!(valid_key, invalid_key, "public spelling is not identity");
+
+            let mut rete = ReteNetwork::new();
+            let left_entry = rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(left));
+            let left_memory = rete.alpha.create_memory(left_entry);
+            let right_entry = rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(right));
+            let right_memory = rete.alpha.create_memory(right_entry);
+            let variable = VarId(0);
+            let slot = SlotIndex::Ordered(0);
+            let (first_join, first_memory) = rete.beta.create_join_node(
+                rete.beta.root_id(),
+                left_memory,
+                vec![],
+                vec![(slot, variable)],
+            );
+            rete.beta
+                .get_memory_mut(first_memory)
+                .unwrap()
+                .request_var_index_empty(variable);
+            rete.alpha
+                .get_memory_mut(right_memory)
+                .unwrap()
+                .request_index_empty(slot);
+            let (last_join, _) = rete.beta.create_join_node(
+                first_join,
+                right_memory,
+                vec![JoinTest {
+                    alpha_slot: slot,
+                    beta_var: variable,
+                    test_type: JoinTestType::Equal,
+                }],
+                vec![],
+            );
+            rete.beta
+                .create_terminal_node(last_join, RuleId(1), Salience::DEFAULT);
+            for relation in [left, right] {
+                let id = facts.assert_ordered(
+                    relation,
+                    smallvec::smallvec![Value::FactAddress(address.clone())],
+                );
+                rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+            }
+            rete.validate_snapshot(&facts, &symbols).unwrap();
+            if corrupt_alpha {
+                let keys = rete
+                    .alpha
+                    .get_memory_mut(right_memory)
+                    .unwrap()
+                    .slot_indices
+                    .get_mut(&slot)
+                    .unwrap();
+                let members = keys.remove(&valid_key).unwrap();
+                keys.insert(invalid_key, members);
+            } else {
+                let keys = rete
+                    .beta
+                    .get_memory_mut(first_memory)
+                    .unwrap()
+                    .var_indices
+                    .get_mut(&variable)
+                    .unwrap();
+                let members = keys.remove(&valid_key).unwrap();
+                keys.insert(invalid_key, members);
+            }
+            // Address identity still matches, but the persisted presentation
+            // metadata must match the rebuilt key for each index family.
+            assert!(rete
+                .validate_snapshot(&facts, &symbols)
+                .unwrap_err()
+                .contains("inconsistent fact address index metadata"));
+        }
+    }
 
     #[test]
     fn snapshot_disjunction_checks_nested_constants_and_limits() {

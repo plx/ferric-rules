@@ -71,6 +71,9 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
                 .collect::<Vec<_>>()
         }),
         Value::ExternalAddress(_) => json!({"type": "external_address"}),
+        Value::FactAddress(address) => json!({
+            "type": "fact_address", "public_index": address.public_index(),
+        }),
     }
 }
 

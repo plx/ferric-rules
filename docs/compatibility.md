@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 695
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 711
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -77,6 +77,7 @@ the same value types and working-memory semantics as CLIPS.
 | `STRING` | Quoted string (e.g., `"hello"`) |
 | `INSTANCE-NAME` | Bracketed name (e.g., `[widget]`), distinct from SYMBOL |
 | `MULTIFIELD` | Ordered sequence of values |
+| `FACT-ADDRESS` | Opaque fact identity, displayed as `<Fact-N>` or `<Dummy Fact>` |
 
 Instance names are values only: Ferric has no object system, so `[widget]`
 names no instance. They match, compare, print and round-trip through
@@ -1014,22 +1015,35 @@ error; CLIPS instead reports an unknown name and continues with `FALSE`.
 
 #### Fact addresses
 
-A fact address (`?f <- (...)`, a query member, or a `find-fact` result) is an
-opaque INTEGER handle in Ferric, not a FACT-ADDRESS value. It works with
-`retract`, `modify`, `duplicate` and the fact functions, but printing it shows
-a large integer where CLIPS prints `<Fact-3>`, `integerp` returns TRUE, and
-arithmetic on it gives a meaningless number. `retract` and the fact functions
-above also take the CLIPS fact index that `fact-index` returns, so
-`(fact-relation (fact-index ?f))` names the relation of `?f`'s fact; an index is
-found by scanning working memory.
+A fact address (`?f <- (...)`, a query member, or an element of a `find-fact`
+result) has type `FACT-ADDRESS`. It prints `<Fact-N>` using the public assertion
+index, works with `retract`, `modify`, `duplicate`, and fact introspection,
+and compares by identity with `eq` and `neq`. It is neither an INTEGER nor a
+NUMBER: arithmetic, `str-cat`, and `sym-cat` reject it. Addresses can be stored
+in fact fields, slots, multifields, and globals; engine snapshots preserve
+their identities.
 
-An index that names no fact differs from CLIPS. CLIPS always continues:
-`retract` does nothing and the functions return `FALSE`, after printing
-`[PRNTUTIL1] Unable to find fact f-N.` for `retract`, `fact-slot-value` and
-`fact-slot-names`, or an `[ARGACCES5]` type notice for a negative index. In
-Ferric, `retract` and `fact-slot-value` make it an action error, which ends the
-run; `fact-existp`, `fact-relation` and `fact-slot-names` return `FALSE`
-without a notice.
+An INTEGER designator always means a public fact index. It cannot be decoded
+as an internal address. `(fact-relation (fact-index ?f))` therefore names
+`?f`'s relation while the fact is live.
+
+Retraction preserves an address's printed `<Fact-N>` identity. `fact-index`
+then returns `-1`; `fact-existp`, `fact-relation`, `fact-slot-names`, and
+`fact-slot-value` return `FALSE`. An address does not become an address to a
+replacement fact. A runtime assertion using the derived default for a
+`FACT-ADDRESS` slot receives `<Dummy Fact>`, a distinct address value with no
+referenced fact; its introspection results are the same as a stale address.
+
+A missing or negative fact index also returns `FALSE` from `fact-existp`,
+`fact-relation`, `fact-slot-names`, and `fact-slot-value`; `retract` does
+nothing. Evaluation continues with later
+operands and actions. CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]`
+notices for some of these calls; Ferric omits those notices. Invalid slots
+and unsupported operand types keep their ordinary error behavior.
+
+`save-facts` renders addresses as quoted strings, such as `"<Fact-1>"` or
+`"<Dummy Fact>"`, matching CLIPS. These fact files do not preserve address
+identity; use an engine snapshot when identity must survive persistence.
 
 ### I/O Functions
 
@@ -1529,7 +1543,8 @@ diagnostics are emitted to stderr.
 ### Template type declarations
 
 Primitive template slot unions (`SYMBOL`, `STRING`, `INTEGER`, `FLOAT`,
-`NUMBER`, `LEXEME`, `EXTERNAL-ADDRESS`) are retained and checked. Default values,
+`NUMBER`, `LEXEME`, `INSTANCE-NAME`, `FACT-ADDRESS`, `EXTERNAL-ADDRESS`) are
+retained and checked. Default values,
 seed facts, and literal rule assertions are validated before their construct is
 installed; runtime values and host template assertions are always validated.
 Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects

@@ -209,7 +209,6 @@ fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
         "(cardinality 1 2)",
         "(default-dynamic (+ 1 2))",
         "(default (+ 1 2))",
-        "(type FACT-ADDRESS)",
         "(type)",
         "(type INTEGER) (type FLOAT)",
     ] {

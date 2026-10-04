@@ -980,6 +980,7 @@ impl Engine {
         )
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) fn validate_method_queries<'a>(
         &self,
         parameters: &HashSet<String>,
@@ -1730,6 +1731,7 @@ impl Engine {
                     Some(SlotValueType::Integer) => Value::Integer(0),
                     Some(SlotValueType::Float) => Value::Float(0.0),
                     Some(SlotValueType::InstanceName) => Value::InstanceName(InstanceName::from_symbol(self.compile_symbol("nil")?)),
+                    Some(SlotValueType::FactAddress) => Value::FactAddress(ferric_rules_core::FactAddress::dummy()),
                     Some(SlotValueType::ExternalAddress) => return Err(Self::compile_error_at(&slot_def.span, "an external-address slot requires (default ?NONE); Ferric cannot derive a host-owned token")),
                 }
                 }
@@ -1882,6 +1884,7 @@ impl Engine {
                     input_buffer: None,
                     fact_base: Some(&self.fact_base),
                     initial_fact_id: self.initial_fact_id,
+                    fact_epoch: self.fact_epoch,
                     template_defs: None,
                     compact_fact_bindings: None,
                     // Globals currently persist initializer values for reset,

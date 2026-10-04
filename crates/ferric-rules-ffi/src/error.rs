@@ -154,7 +154,9 @@ pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
         | EngineError::DuplicateSlot { .. }
         | EngineError::InvalidSlotValue { .. }
         | EngineError::ProtectedInitialFact => FerricError::InvalidArgument,
-        EngineError::FactTimestampExhausted(_) => FerricError::InternalError,
+        EngineError::FactTimestampExhausted(_) | EngineError::FactEpochExhausted => {
+            FerricError::InternalError
+        }
         EngineError::FactInitialization { .. } => FerricError::RuntimeError,
     }
 }

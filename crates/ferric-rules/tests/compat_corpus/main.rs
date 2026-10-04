@@ -40,6 +40,8 @@ struct Case {
     #[serde(default)]
     error: Option<ErrorPhase>,
     #[serde(default)]
+    recoverable_fact_notices: bool,
+    #[serde(default)]
     gap: Option<Gap>,
 }
 
@@ -114,11 +116,17 @@ struct Golden {
     notices: Vec<u8>,
 }
 
-fn golden(bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
+fn golden(bytes: &[u8], error: Option<ErrorPhase>, recoverable_fact_notices: bool) -> Golden {
     let mut output = Vec::new();
     let mut found: [Vec<u8>; 2] = Default::default();
     let mut rest = bytes;
     'scan: while let Some((&first, tail)) = rest.split_first() {
+        if recoverable_fact_notices {
+            if let Some(length) = fact_notice_length(rest) {
+                rest = &rest[length..];
+                continue 'scan;
+            }
+        }
         for (index, (_, notice)) in NOTICES.iter().enumerate() {
             if let Some(after) = rest.strip_prefix(notice.as_bytes()) {
                 found[index].extend_from_slice(notice.as_bytes());
@@ -141,6 +149,44 @@ fn golden(bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
         output,
         notices: [warnings, errors].concat(),
     }
+}
+
+/// Only these exact recoverable fact-designator notices may be omitted. In
+/// particular, fatal slot/operand errors and other bracketed output stay intact.
+fn fact_notice_length(bytes: &[u8]) -> Option<usize> {
+    fn digits_then(bytes: &[u8], suffix: &[u8], nonzero: bool) -> bool {
+        let count = bytes
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        count > 0 && (!nonzero || bytes[0] != b'0') && &bytes[count..] == suffix
+    }
+    let length = bytes.iter().position(|&byte| byte == b'\n')? + 1;
+    let line = &bytes[..length];
+    if let Some(index) = line.strip_prefix(b"[PRNTUTIL1] Unable to find fact f-") {
+        return digits_then(index, b".\n", false).then_some(length);
+    }
+    let function = line.strip_prefix(b"[ARGACCES5] Function ")?;
+    if let Some(argument) = function.strip_prefix(b"retract expected argument #") {
+        return digits_then(
+            argument,
+            b" to be of type fact-address, fact-index, or the symbol *\n",
+            true,
+        )
+        .then_some(length);
+    }
+    [
+        "fact-existp",
+        "fact-relation",
+        "fact-slot-names",
+        "fact-slot-value",
+    ]
+    .iter()
+    .any(|name| {
+        function.strip_prefix(name.as_bytes())
+            == Some(b" expected argument #1 to be of type fact-address or fact-index\n".as_slice())
+    })
+    .then_some(length)
 }
 
 /// CLIPS may append an error to a partially printed line. Keep the program's
@@ -432,13 +478,21 @@ fn manifest_covers_every_program() {
         );
         assert_eq!(
             case.error.is_some(),
-            golden(&expected, None)
+            golden(&expected, None, case.recoverable_fact_notices)
                 .output
                 .split(|&byte| byte == b'\n')
                 .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
             "only a golden with a CLIPS diagnostic has an error phase: {}",
             case.path
         );
+        if case.recoverable_fact_notices {
+            assert!(case.error.is_none(), "recoverable notices require success");
+            assert!(
+                (0..expected.len()).any(|index| fact_notice_length(&expected[index..]).is_some()),
+                "missing recoverable fact notice: {}",
+                case.path
+            );
+        }
         if root.join(&case.path).with_extension("in").is_file() {
             assert_eq!(case.resets, 1, "input replay across resets is not defined");
         }
@@ -489,6 +543,7 @@ fn selected_programs() -> Vec<Program> {
                 expected: golden(
                     &std::fs::read(root.join(&case.path).with_extension("out")).unwrap(),
                     case.error,
+                    case.recoverable_fact_notices,
                 ),
                 case,
             }
@@ -625,6 +680,7 @@ fn golden_run_error_preserves_exact_partial_output() {
         b"ready\nprefix \xff [ARGACCES5] invalid operand\n\
           [PRCCODE4] Execution halted.\n",
         Some(ErrorPhase::Run),
+        false,
     );
     assert_eq!(expected.output, b"ready\nprefix \xff ");
     assert!(expected.notices.is_empty());
@@ -634,7 +690,7 @@ fn golden_run_error_preserves_exact_partial_output() {
 fn golden_run_error_preserves_non_diagnostic_bracket_text() {
     let output = b"[USER123] literal\nprefix [USER123] literal\n[USER123]\n\
         [lower1] literal\n[CODE] literal\n[CODE1]\tliteral\n";
-    let expected = golden(output, Some(ErrorPhase::Run));
+    let expected = golden(output, Some(ErrorPhase::Run), false);
     assert_eq!(expected.output, output);
     assert!(expected.notices.is_empty());
 }
@@ -643,7 +699,7 @@ fn golden_run_error_preserves_non_diagnostic_bracket_text() {
 fn golden_preserves_diagnostics_outside_run_error_cases() {
     let output = b"prefix [ARGACCES5] invalid operand\n[PRCCODE4] Execution halted.\n";
     for phase in [None, Some(ErrorPhase::Load)] {
-        let expected = golden(output, phase);
+        let expected = golden(output, phase, false);
         assert_eq!(expected.output, output);
         assert!(expected.notices.is_empty());
     }
@@ -653,7 +709,29 @@ fn golden_preserves_diagnostics_outside_run_error_cases() {
 fn golden_run_error_retains_scanner_notices_separately() {
     let notice = NOTICES[0].1;
     let output = format!("prefix {notice}tail [ARGACCES5] invalid operand\n");
-    let expected = golden(output.as_bytes(), Some(ErrorPhase::Run));
+    let expected = golden(output.as_bytes(), Some(ErrorPhase::Run), false);
     assert_eq!(expected.output, b"prefix tail ");
     assert_eq!(expected.notices, notice.as_bytes());
+}
+
+#[test]
+fn golden_fact_notices_preserve_exact_partial_output() {
+    let source = b"before:[PRNTUTIL1] Unable to find fact f-9.\nFALSE\n\
+        [ARGACCES5] Function fact-slot-value expected argument #1 to be of type fact-address or fact-index\n\
+        [ARGACCES5] Function retract expected argument #2 to be of type fact-address, fact-index, or the symbol *\n\
+        continued\n";
+    let expected = golden(source, None, true);
+    assert_eq!(expected.output, b"before:FALSE\ncontinued\n");
+    assert!(expected.notices.is_empty());
+    assert_eq!(golden(source, None, false).output, source);
+}
+
+#[test]
+fn golden_fact_notices_retain_fatal_errors_and_literal_near_matches() {
+    let source = b"[PRNTUTIL1] Unable to find fact f-nine.\n\
+        prefix [PRNTUTIL1] Unable to find fact f-9. extra\n\
+        [ARGACCES5] Function + expected argument #1 to be of type integer or float\n\
+        [ARGACCES5] Function fact-slot-value expected argument #2 to be of type symbol\n\
+        [PRCCODE4] Execution halted.\n[USER123] literal\n";
+    assert_eq!(golden(source, None, true).output, source);
 }

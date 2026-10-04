@@ -270,3 +270,42 @@ class TestHashContract:
         with pytest.raises(AttributeError):
             value.value = "changed"
         assert {value: 1}[value_type("stable")] == 1
+
+
+class TestFactAddressBoundary:
+    @pytest.mark.parametrize("expression", ["?f", '(create$ "allocated first" ?f)'])
+    def test_fact_addresses_are_rejected_without_losing_engine_state(self, engine, expression):
+        engine.load(
+            f"""
+            (deftemplate item (slot value))
+            (defglobal ?*address* = FALSE)
+            (deffacts seed (item (value 7)))
+            (defrule capture ?f <- (item) => (bind ?*address* {expression}))
+            """
+        )
+        engine.reset()
+        fact = engine.facts()[0]
+        assert engine.run().rules_fired == 1
+        with pytest.raises(TypeError, match="fact addresses.*not supported"):
+            engine.get_global("address")
+        assert engine.get_fact(fact.id).slots["value"] == 7
+        engine.retract(fact.id)
+        with pytest.raises(TypeError, match="fact addresses.*not supported"):
+            engine.get_global("address")
+        assert engine.fact_count == 0
+
+    @pytest.mark.parametrize("slot", ["(slot address)", "(multislot address)"])
+    def test_fact_snapshot_rejects_address_fields(self, engine, slot):
+        engine.load(
+            f"""
+            (deftemplate saved {slot})
+            (defrule capture ?f <- (item ?value) => (assert (saved (address ?f))))
+            """
+        )
+        engine.reset()
+        original = engine.assert_fact("item", 7)
+        assert engine.run().rules_fired == 1
+        with pytest.raises(TypeError, match="fact addresses.*not supported"):
+            engine.facts()
+        assert engine.get_fact(original).fields == [7]
+        assert engine.fact_count == 2

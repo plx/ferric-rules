@@ -225,3 +225,68 @@ def test_reference_container_is_isolated_and_can_read_generated_batch(tmp_path, 
     ]
     assert command[command.index("-v") + 1].endswith(":/workspace:ro")
     assert batch_modes == [0o444]
+
+
+def test_recoverable_fact_notices_require_explicit_success_case_and_stay_in_oracle():
+    output = (
+        "prefix:[PRNTUTIL1] Unable to find fact f-9.\nFALSE\n"
+        "[ARGACCES5] Function fact-slot-value expected argument #1 "
+        "to be of type fact-address or fact-index\n"
+        "[ARGACCES5] Function retract expected argument #2 "
+        "to be of type fact-address, fact-index, or the symbol *\ncontinued\n"
+    )
+    assert (
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_fact_notices=True)
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output("BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_fact_notices=True)
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        "[PRNTUTIL1] Unable to find fact f-9. extra\n",
+        "[ARGACCES5] Function + expected argument #1 to be of type integer or float\n",
+        "[ARGACCES5] Function fact-slot-value expected argument #2 to be of type symbol\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_recoverable_fact_notice_flag_does_not_hide_fatal_or_changed_diagnostics(unexpected):
+    notice = "[PRNTUTIL1] Unable to find fact f-9.\n"
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{notice}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_fact_notices=True,
+        )
+
+
+def test_fact_notice_allowance_does_not_extend_outside_program_frame():
+    notice = "[PRNTUTIL1] Unable to find fact f-9.\n"
+    for stdout in (f"{notice}BEGIN\n{notice}END\n", f"BEGIN\n{notice}END\n{notice}"):
+        with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+            extract_output(stdout, "", "BEGIN", "END", recoverable_fact_notices=True)
+
+
+def test_fact_notice_matching_preserves_literal_near_matches():
+    output = (
+        "[PRNTUTIL1] Unable to find fact f-nine.\n"
+        "prefix [PRNTUTIL1] Unable to find fact f-9. extra\n"
+    )
+    assert corpus.FACT_NOTICE.sub("", output) == output
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_fact_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "facts/a.clp", "recoverable_fact_notices": value, "error": error},
+            "unused",
+            1,
+        )

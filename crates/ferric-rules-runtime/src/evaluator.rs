@@ -13,12 +13,13 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use crate::fact_address::{live_fact_id, make_fact_address, public_fact_index};
 use crate::field_scanner::{FieldScanner, FieldToken};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
 use ferric_rules_core::symbol::{InstanceName, Symbol, SymbolTable};
 use ferric_rules_core::value::Value;
-use ferric_rules_core::{Fact, FactBase, FactId, StringEncoding, TemplateId};
+use ferric_rules_core::{Fact, FactAddress, FactBase, FactId, StringEncoding, TemplateId};
 
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStore, UserFunction};
@@ -309,32 +310,41 @@ pub(crate) type CompactFactBindings = std::collections::HashMap<String, CompactF
 /// after retraction; ordinary LHS addresses continue to require a live fact.
 #[derive(Clone, Debug)]
 pub(crate) struct CompactFactBinding {
-    fact_id: FactId,
+    address: FactAddress,
     retained: Option<Arc<Fact>>,
 }
 
 impl CompactFactBinding {
-    pub(crate) fn live(fact_id: FactId) -> Self {
+    pub(crate) fn live(address: FactAddress) -> Self {
         Self {
-            fact_id,
+            address,
             retained: None,
         }
     }
 
-    pub(crate) fn retained(fact_id: FactId, fact: Arc<Fact>) -> Self {
+    pub(crate) fn retained(address: FactAddress, fact: Arc<Fact>) -> Self {
         Self {
-            fact_id,
+            address,
             retained: Some(fact),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn fact_id(&self) -> FactId {
-        self.fact_id
+        self.address
+            .fact_id()
+            .expect("query members are real facts")
     }
 
-    fn record<'a>(&'a self, facts: Option<&'a FactBase>) -> Option<&'a Fact> {
+    pub(crate) fn address(&self) -> &FactAddress {
+        &self.address
+    }
+
+    fn record<'a>(&'a self, facts: Option<&'a FactBase>, epoch: u64) -> Option<&'a Fact> {
         facts
-            .and_then(|facts| facts.get(self.fact_id))
+            .and_then(|facts| {
+                live_fact_id(facts, epoch, &self.address).and_then(|id| facts.get(id))
+            })
             .map(|entry| &entry.fact)
             .or(self.retained.as_deref())
     }
@@ -390,6 +400,8 @@ pub struct EvalContext<'a> {
     pub input_buffer: Option<&'a mut VecDeque<String>>,
     /// Optional read-only access to the fact base for introspection builtins.
     pub fact_base: Option<&'a ferric_rules_core::FactBase>,
+    /// Lifecycle identity, advanced whenever reset or clear replaces the fact base.
+    pub(crate) fact_epoch: u64,
     /// Lexical fact scope for the parser's compact `?fact:slot` form.
     pub(crate) compact_fact_bindings: Option<&'a CompactFactBindings>,
     /// Live template visibility for expression-query restrictions.
@@ -931,6 +943,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         method_chain: ctx.method_chain.clone(),
                         input_buffer: ctx.input_buffer.as_deref_mut(),
                         fact_base: ctx.fact_base,
+                        fact_epoch: ctx.fact_epoch,
                         compact_fact_bindings: ctx.compact_fact_bindings,
                         template_resolver: ctx.template_resolver,
                         initial_fact_id: ctx.initial_fact_id,
@@ -1039,6 +1052,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             method_chain: ctx.method_chain.clone(),
                             input_buffer: ctx.input_buffer.as_deref_mut(),
                             fact_base: ctx.fact_base,
+                            fact_epoch: ctx.fact_epoch,
                             compact_fact_bindings: ctx.compact_fact_bindings,
                             template_resolver: ctx.template_resolver,
                             initial_fact_id: ctx.initial_fact_id,
@@ -1329,20 +1343,18 @@ fn eval_fact_query(
         });
     }
     let mut compact_facts = ctx.compact_fact_bindings.cloned().unwrap_or_default();
-    for ((member, _), choices) in members.iter().zip(&candidates) {
-        compact_facts.insert(member.clone(), CompactFactBinding::live(choices[0]));
-    }
     let mut cursor = vec![0; members.len()];
     loop {
         consume_action_loop_iteration(ctx.config, name, span.cloned())?;
         for (index, ((member, _), variable)) in members.iter().zip(&member_vars).enumerate() {
-            use slotmap::Key;
             let fact = candidates[index][cursor[index]];
-            let address = Value::Integer(i64::from_ne_bytes(fact.data().as_ffi().to_ne_bytes()));
-            bindings.set(*variable, ValueRef::new(address));
-            *compact_facts
-                .get_mut(member)
-                .expect("query member has a compact binding") = CompactFactBinding::live(fact);
+            let address = make_fact_address(fact_base, ctx.initial_fact_id, ctx.fact_epoch, fact)
+                .ok_or_else(|| query_error(name, "query fact has no address", span))?;
+            bindings.set(
+                *variable,
+                ValueRef::new(Value::FactAddress(address.clone())),
+            );
+            compact_facts.insert(member.clone(), CompactFactBinding::live(address));
         }
         let value = with_callable_local_scope(
             ctx,
@@ -1368,6 +1380,7 @@ fn eval_fact_query(
                     method_chain: ctx.method_chain.clone(),
                     input_buffer: ctx.input_buffer.as_deref_mut(),
                     fact_base: ctx.fact_base,
+                    fact_epoch: ctx.fact_epoch,
                     compact_fact_bindings: Some(&compact_facts),
                     template_resolver: ctx.template_resolver,
                     initial_fact_id: ctx.initial_fact_id,
@@ -1609,6 +1622,7 @@ fn execute_callable_body(
         method_chain,
         input_buffer: ctx.input_buffer.as_deref_mut(),
         fact_base: ctx.fact_base,
+        fact_epoch: ctx.fact_epoch,
         compact_fact_bindings: None,
         template_resolver: ctx.template_resolver,
         initial_fact_id: ctx.initial_fact_id,
@@ -1710,6 +1724,7 @@ fn value_matches_type(value: &Value, type_name: &str) -> bool {
         "INSTANCE-NAME" => matches!(value, Value::InstanceName(_)),
         "MULTIFIELD" => matches!(value, Value::Multifield(_)),
         "EXTERNAL-ADDRESS" => matches!(value, Value::ExternalAddress(_)),
+        "FACT-ADDRESS" => matches!(value, Value::FactAddress(_)),
         _ => false,
     }
 }
@@ -1724,6 +1739,7 @@ fn generic_value_type_name(value: &Value) -> &'static str {
         Value::InstanceName(_) => "INSTANCE-NAME",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
+        Value::FactAddress(_) => "FACT-ADDRESS",
         Value::Void => "VOID",
     }
 }
@@ -1742,8 +1758,8 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
     let mut count = 0usize;
     // Tracks whether each concrete type has been counted:
     // 0=INTEGER, 1=FLOAT, 2=SYMBOL, 3=STRING, 4=MULTIFIELD, 5=EXTERNAL-ADDRESS,
-    // 6=INSTANCE-NAME
-    let mut seen = [false; 7];
+    // 6=INSTANCE-NAME, 7=FACT-ADDRESS
+    let mut seen = [false; 8];
     for t in restrictions {
         match t.as_str() {
             "INTEGER" if !seen[0] => {
@@ -1792,6 +1808,10 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
             }
             "INSTANCE-NAME" if !seen[6] => {
                 seen[6] = true;
+                count += 1;
+            }
+            "FACT-ADDRESS" if !seen[7] => {
+                seen[7] = true;
                 count += 1;
             }
             _ => {}
@@ -1946,6 +1966,7 @@ fn method_queries_match(
         method_chain: None,
         input_buffer: ctx.input_buffer.as_deref_mut(),
         fact_base: ctx.fact_base,
+        fact_epoch: ctx.fact_epoch,
         compact_fact_bindings: None,
         template_resolver: ctx.template_resolver,
         initial_fact_id: ctx.initial_fact_id,
@@ -4292,7 +4313,13 @@ fn builtin_to_float(
 /// to resolve symbol names.
 ///
 /// Shared by `str-cat` and `sym-cat`.  Multifield elements are space-separated.
-fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mut String) {
+fn concat_values_to_string(
+    ctx: &EvalContext<'_>,
+    values: &[Value],
+    buf: &mut String,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
     use std::fmt::Write as _;
     for val in values {
         match val {
@@ -4314,19 +4341,26 @@ fn concat_values_to_string(ctx: &mut EvalContext<'_>, values: &[Value], buf: &mu
             }
             Value::String(s) => buf.push_str(s.as_str()),
             Value::Multifield(mf) => {
-                // Collect first to avoid holding borrow through recursive call.
-                let elems: Vec<Value> = mf.iter().cloned().collect();
-                for (i, elem) in elems.iter().enumerate() {
+                for (i, elem) in mf.iter().enumerate() {
                     if i > 0 {
                         buf.push(' ');
                     }
-                    concat_values_to_string(ctx, std::slice::from_ref(elem), buf);
+                    concat_values_to_string(ctx, std::slice::from_ref(elem), buf, function, span)?;
                 }
             }
             Value::Void => {}
             Value::ExternalAddress(_) => buf.push_str("<ExternalAddress>"),
+            Value::FactAddress(_) => {
+                return Err(EvalError::TypeError {
+                    function: function.into(),
+                    expected: "STRING, SYMBOL, INSTANCE-NAME, INTEGER, or FLOAT".into(),
+                    actual: "FACT-ADDRESS".into(),
+                    span: span.cloned(),
+                })
+            }
         }
     }
+    Ok(())
 }
 
 /// `str-cat` — concatenate 0+ values into a STRING.
@@ -4342,7 +4376,7 @@ fn builtin_str_cat(
 ) -> Result<Value, EvalError> {
     let values = eval_args(ctx, args)?;
     let mut result = String::new();
-    concat_values_to_string(ctx, &values, &mut result);
+    concat_values_to_string(ctx, &values, &mut result, "str-cat", span)?;
     let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
             function: "str-cat".to_string(),
@@ -4364,7 +4398,7 @@ fn builtin_sym_cat(
 ) -> Result<Value, EvalError> {
     let values = eval_args(ctx, args)?;
     let mut result = String::new();
-    concat_values_to_string(ctx, &values, &mut result);
+    concat_values_to_string(ctx, &values, &mut result, "sym-cat", span)?;
     let sym = ctx
         .symbol_table
         .intern_symbol(&result, ctx.config.string_encoding)
@@ -6167,57 +6201,17 @@ fn builtin_get_focus_stack(
 // Fact introspection builtins
 // ===========================================================================
 
-/// Decode the canonical address representation without normalizing an ordinary
-/// integer into a live key. Liveness and protected-fact policies belong to callers.
-pub(crate) fn checked_fact_address(value: &Value) -> Option<FactId> {
-    use slotmap::Key;
-
-    let Value::Integer(encoded) = value else {
-        return None;
-    };
-    let bits = u64::from_ne_bytes(encoded.to_ne_bytes());
-    let data = slotmap::KeyData::from_ffi(bits);
-    let fact_id = FactId::from(data);
-    // from_ffi normalizes even generations, so a plain integer like 1 can
-    // otherwise alias a live first-generation key. Slot zero is reserved.
-    // Exact forged canonical integers remain indistinguishable from addresses
-    // until the runtime has a distinct fact-address value type.
-    (data.as_ffi() == bits && !fact_id.is_null() && bits & u64::from(u32::MAX) != 0)
-        .then_some(fact_id)
-}
-
-/// A live fact's public index, as `fact-index` reports it. CLIPS gives
-/// `initial-fact` index zero and numbers the other facts from one, in
-/// assertion order; the protected fact can follow host-created facts.
-fn public_fact_index(
-    fact_base: &FactBase,
-    initial_fact_id: Option<FactId>,
-    fact_id: FactId,
-) -> Option<u64> {
-    let entry = fact_base.get(fact_id)?;
-    if initial_fact_id == Some(fact_id) {
-        return Some(0);
-    }
-    let initial_precedes = initial_fact_id
-        .and_then(|id| fact_base.get(id))
-        .is_some_and(|initial| initial.timestamp < entry.timestamp);
-    if initial_precedes {
-        Some(entry.timestamp.get())
-    } else {
-        entry.timestamp.get().checked_add(1)
-    }
-}
-
 /// The fact a CLIPS fact designator names: a fact address, or an INTEGER
-/// fact index as `fact-index` returns it. An address is returned even when
-/// stale; an index names only a live fact, found by scanning working memory.
+/// fact index as `fact-index` returns it. Both forms resolve only live facts;
+/// integer values are never decoded as internal slot-map keys.
 pub(crate) fn designated_fact(
     fact_base: &FactBase,
     initial_fact_id: Option<FactId>,
+    epoch: u64,
     value: &Value,
 ) -> Option<FactId> {
-    if let Some(address) = checked_fact_address(value) {
-        return Some(address);
+    if let Value::FactAddress(address) = value {
+        return live_fact_id(fact_base, epoch, address);
     }
     let Value::Integer(index) = *value else {
         return None;
@@ -6238,7 +6232,7 @@ fn eval_fact_designator(
     span: Option<&SourceSpan>,
 ) -> Result<Option<FactId>, EvalError> {
     let value = eval_inner(ctx, arg)?;
-    if !matches!(value, Value::Integer(_)) {
+    if !matches!(value, Value::Integer(_) | Value::FactAddress(_)) {
         return Err(EvalError::TypeError {
             function: function.into(),
             expected: "fact-address or INTEGER fact index".into(),
@@ -6246,9 +6240,9 @@ fn eval_fact_designator(
             span: span.cloned(),
         });
     }
-    Ok(ctx
-        .fact_base
-        .and_then(|fact_base| designated_fact(fact_base, ctx.initial_fact_id, &value)))
+    Ok(ctx.fact_base.and_then(|fact_base| {
+        designated_fact(fact_base, ctx.initial_fact_id, ctx.fact_epoch, &value)
+    }))
 }
 
 /// `(fact-existp <fact-address-or-index>)` — whether the fact is in working memory.
@@ -6271,9 +6265,6 @@ fn builtin_fact_existp(
 
 /// `(fact-index <fact-address>)` — return the public assertion index, or -1
 /// when the addressed fact has been retracted.
-///
-/// Query bindings currently encode addresses as integers. Validate that
-/// representation without confusing small integer indices with addresses.
 fn builtin_fact_index(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6287,14 +6278,17 @@ fn builtin_fact_index(
         actual: generic_value_type_name(&val).into(),
         span: span.cloned(),
     };
-    let fact_id = checked_fact_address(&val).ok_or_else(invalid_address)?;
+    let Value::FactAddress(address) = &val else {
+        return Err(invalid_address());
+    };
     let Some(fact_base) = ctx.fact_base else {
         return Ok(Value::Integer(-1));
     };
-    if fact_base.get(fact_id).is_none() {
+    if live_fact_id(fact_base, ctx.fact_epoch, address).is_none() {
         return Ok(Value::Integer(-1));
     }
-    let index = public_fact_index(fact_base, ctx.initial_fact_id, fact_id)
+    let index = address
+        .public_index()
         .and_then(|index| i64::try_from(index).ok())
         .ok_or_else(|| EvalError::UnsupportedOperation {
             operation: "fact-index".into(),
@@ -6407,7 +6401,7 @@ fn builtin_compact_fact_slot_ref(
         });
     };
     let fact = member
-        .record(ctx.fact_base)
+        .record(ctx.fact_base, ctx.fact_epoch)
         .ok_or_else(|| EvalError::TypeError {
             function: COMPACT_FACT_SLOT_REF.into(),
             expected: "live or retained query fact".into(),
@@ -6441,7 +6435,7 @@ fn builtin_compact_fact_slot_ref(
 /// For template facts, returns the value at the named slot position.
 /// For ordered facts, the only valid slot name is `"implied"`, which returns
 /// a multifield of all field values. Missing evaluator metadata returns FALSE;
-/// stale facts and invalid slots report an error.
+/// missing/stale facts return FALSE; invalid slots on live facts report an error.
 fn builtin_fact_slot_value(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6449,22 +6443,22 @@ fn builtin_fact_slot_value(
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-slot-value", args, 2, span)?;
     let values = eval_args(ctx, args)?;
-    let Value::Integer(idx) = &values[0] else {
+    if !matches!(values[0], Value::Integer(_) | Value::FactAddress(_)) {
         return Err(EvalError::TypeError {
             function: "fact-slot-value".into(),
             expected: "fact-address or INTEGER fact index".into(),
             actual: generic_value_type_name(&values[0]).into(),
             span: span.cloned(),
         });
-    };
+    }
     let slot_name = as_lexeme_str(&values[1], ctx.symbol_table, "fact-slot-value", span)?;
-    // An unknown index reads as the null fact, which reports it missing.
-    let fact_id = ctx
-        .fact_base
-        .and_then(|fact_base| designated_fact(fact_base, ctx.initial_fact_id, &values[0]))
-        .unwrap_or_default();
+    let Some(fact_id) = ctx.fact_base.and_then(|fact_base| {
+        designated_fact(fact_base, ctx.initial_fact_id, ctx.fact_epoch, &values[0])
+    }) else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
     let value = read_fact_slot_value(ctx, fact_id, &slot_name, "fact-slot-value", span, || {
-        format!("fact {idx} does not exist")
+        "fact does not exist".into()
     })?;
     Ok(value.unwrap_or_else(|| clips_false(ctx.symbol_table, ctx.config.string_encoding)))
 }
@@ -6739,6 +6733,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -6748,9 +6743,18 @@ mod tests {
         (result, gs.take_printout_events())
     }
 
-    fn encoded_address(id: ferric_rules_core::FactId) -> Value {
-        use slotmap::Key;
-        Value::Integer(i64::from_ne_bytes(id.data().as_ffi().to_ne_bytes()))
+    fn test_fact_address(engine: &crate::Engine, id: FactId) -> FactAddress {
+        make_fact_address(
+            &engine.fact_base,
+            engine.initial_fact_id,
+            engine.fact_epoch,
+            id,
+        )
+        .expect("test fact is live")
+    }
+
+    fn address_value(engine: &crate::Engine, id: FactId) -> Value {
+        Value::FactAddress(test_fact_address(engine, id))
     }
 
     fn eval_index(
@@ -6778,6 +6782,10 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: facts,
+            fact_epoch: match &address {
+                Value::FactAddress(address) => address.epoch().unwrap_or(0),
+                _ => 0,
+            },
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id,
@@ -6873,6 +6881,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: Some(&engine.fact_base),
+            fact_epoch: engine.fact_epoch,
             compact_fact_bindings: scope,
             template_resolver: Some(crate::loader::TemplateResolver {
                 template_local_ids: &engine.template_local_ids,
@@ -7300,14 +7309,18 @@ mod tests {
     #[test]
     fn callable_local_query_scope_masks_members_and_restores_on_early_exits() {
         let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
         let slot = compact_ref(&mut engine, "f", "value");
         let mut locals = CallableLocals::default();
         with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
             eval(ctx, &local_bind("f", vec![int(99)])).unwrap();
             eval(ctx, &local_bind("f:value", vec![int(91)])).unwrap();
             let same_fact = call(
-                "=",
-                vec![local_read("f"), RuntimeExpr::Literal(encoded_address(fact))],
+                "eq",
+                vec![
+                    local_read("f"),
+                    RuntimeExpr::Literal(Value::FactAddress(address.clone())),
+                ],
             );
             let nested = expression_query("any-factp", &[("f", "item")], same_fact.clone());
             let predicate = call(
@@ -7410,7 +7423,17 @@ mod tests {
             let expected: ferric_rules_core::Multifield =
                 [first, first, first, second, second, first, second, second]
                     .into_iter()
-                    .map(encoded_address)
+                    .map(|fact| {
+                        Value::FactAddress(
+                            make_fact_address(
+                                ctx.fact_base.unwrap(),
+                                ctx.initial_fact_id,
+                                ctx.fact_epoch,
+                                fact,
+                            )
+                            .unwrap(),
+                        )
+                    })
                     .collect();
             assert!(result.structural_eq(&Value::Multifield(Box::new(expected))));
         });
@@ -7514,8 +7537,10 @@ mod tests {
     #[test]
     fn expression_query_shadows_and_restores_both_scopes_on_success_and_error() {
         let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
         add_query_item(&mut engine, 20);
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let slot = compact_ref(&mut engine, "f", "value");
         let inner = expression_query(
             "any-factp",
@@ -7537,7 +7562,7 @@ mod tests {
         with_compact_context(&mut engine, Some(&scope), |ctx| {
             let result = eval(ctx, &outer).unwrap();
             assert!(
-                matches!(result, Value::Multifield(fields) if fields.len() == 1 && fields[0].structural_eq(&encoded_address(fact)))
+                matches!(result, Value::Multifield(fields) if fields.len() == 1 && fields[0].structural_eq(&Value::FactAddress(address.clone())))
             );
             assert!(eval(ctx, &error).is_err());
             assert!(matches!(
@@ -7644,7 +7669,9 @@ mod tests {
     #[test]
     fn compact_slot_reads_scalar_and_multifield_from_lexical_fact() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         for slot in ["value", "tags"] {
             let compact = compact_ref(&mut engine, "f", slot);
             let RuntimeExpr::Call { args, .. } = &compact else {
@@ -7652,7 +7679,10 @@ mod tests {
             };
             let explicit = call(
                 "fact-slot-value",
-                vec![RuntimeExpr::Literal(encoded_address(fact)), args[1].clone()],
+                vec![
+                    RuntimeExpr::Literal(Value::FactAddress(address.clone())),
+                    args[1].clone(),
+                ],
             );
             with_compact_context(&mut engine, Some(&scope), |ctx| {
                 let value = eval(ctx, &compact).unwrap();
@@ -7676,14 +7706,19 @@ mod tests {
         let fact = engine
             .fact_base
             .assert_ordered(relation, smallvec::smallvec![Value::Integer(7)]);
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let compact = compact_ref(&mut engine, "f", "implied");
         let RuntimeExpr::Call { args, .. } = &compact else {
             unreachable!();
         };
         let explicit = call(
             "fact-slot-value",
-            vec![RuntimeExpr::Literal(encoded_address(fact)), args[1].clone()],
+            vec![
+                RuntimeExpr::Literal(Value::FactAddress(address.clone())),
+                args[1].clone(),
+            ],
         );
         with_compact_context(&mut engine, Some(&scope), |ctx| {
             assert!(matches!(
@@ -7700,7 +7735,9 @@ mod tests {
     #[test]
     fn compact_slot_rejects_malformed_arguments_without_evaluating_them() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let compact = compact_ref(&mut engine, "f", "value");
         let RuntimeExpr::Call { args, .. } = compact else {
             unreachable!();
@@ -7742,7 +7779,9 @@ mod tests {
     #[test]
     fn compact_slot_reports_absent_scope_stale_fact_and_missing_slot() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let compact = compact_ref(&mut engine, "f", "value");
         with_compact_context(&mut engine, None, |ctx| {
             assert!(
@@ -7775,8 +7814,9 @@ mod tests {
     #[test]
     fn retained_compact_record_keeps_old_identity_while_explicit_reads_stay_live() {
         let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
         let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
-        let member = CompactFactBinding::retained(fact, Arc::clone(&record));
+        let member = CompactFactBinding::retained(address.clone(), Arc::clone(&record));
         let shared = member.clone();
         assert!(Arc::ptr_eq(
             member.retained.as_ref().unwrap(),
@@ -7794,12 +7834,15 @@ mod tests {
         };
         let explicit = call(
             "fact-slot-value",
-            vec![RuntimeExpr::Literal(encoded_address(fact)), args[1].clone()],
+            vec![
+                RuntimeExpr::Literal(Value::FactAddress(address.clone())),
+                args[1].clone(),
+            ],
         );
         let replacement_slot = call(
             "fact-slot-value",
             vec![
-                RuntimeExpr::Literal(encoded_address(replacement)),
+                RuntimeExpr::Literal(address_value(&engine, replacement)),
                 args[1].clone(),
             ],
         );
@@ -7814,7 +7857,7 @@ mod tests {
                 ctx,
                 &call(
                     "fact-existp",
-                    vec![RuntimeExpr::Literal(encoded_address(fact))],
+                    vec![RuntimeExpr::Literal(Value::FactAddress(address.clone()))],
                 ),
             )
             .unwrap();
@@ -7823,17 +7866,13 @@ mod tests {
                 ctx,
                 &call(
                     "fact-index",
-                    vec![RuntimeExpr::Literal(encoded_address(fact))]
+                    vec![RuntimeExpr::Literal(Value::FactAddress(address.clone()))]
                 )
             )
             .unwrap()
             .structural_eq(&Value::Integer(-1)));
-            // Preserve the explicit accessor's existing stale-address error;
-            // retaining a compact member must not turn it into a live fact.
-            assert!(matches!(
-                eval(ctx, &explicit),
-                Err(EvalError::TypeError { .. })
-            ));
+            // A retained compact record does not revive its ordinary address.
+            assert!(!is_truthy(&eval(ctx, &explicit).unwrap(), ctx.symbol_table));
             assert!(eval(ctx, &replacement_slot)
                 .unwrap()
                 .structural_eq(&Value::Integer(20)));
@@ -7843,10 +7882,11 @@ mod tests {
     #[test]
     fn retained_compact_scope_survives_nested_result_queries_and_their_errors() {
         let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
         let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
         let scope = CompactFactBindings::from([(
             "f".into(),
-            CompactFactBinding::retained(fact, Arc::clone(&record)),
+            CompactFactBinding::retained(address.clone(), Arc::clone(&record)),
         )]);
         engine.fact_base.retract(fact).unwrap();
         add_query_item(&mut engine, 20);
@@ -7896,9 +7936,12 @@ mod tests {
     #[test]
     fn retained_compact_record_requires_template_metadata_and_rejects_ordered_records() {
         let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
         let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
-        let scope =
-            CompactFactBindings::from([("f".into(), CompactFactBinding::retained(fact, record))]);
+        let scope = CompactFactBindings::from([(
+            "f".into(),
+            CompactFactBinding::retained(address.clone(), record),
+        )]);
         engine.fact_base.retract(fact).unwrap();
         let compact = compact_ref(&mut engine, "f", "value");
         with_compact_context(&mut engine, Some(&scope), |ctx| {
@@ -7921,10 +7964,11 @@ mod tests {
         let ordered = engine
             .fact_base
             .assert_ordered(relation, smallvec::smallvec![Value::Integer(3)]);
+        let ordered_address = test_fact_address(&engine, ordered);
         let record = Arc::new(engine.fact_base.retract(ordered).unwrap().fact);
         let scope = CompactFactBindings::from([(
             "f".into(),
-            CompactFactBinding::retained(ordered, record),
+            CompactFactBinding::retained(ordered_address, record),
         )]);
         let implied = compact_ref(&mut engine, "f", "implied");
         with_compact_context(&mut engine, Some(&scope), |ctx| {
@@ -7935,34 +7979,46 @@ mod tests {
     }
 
     #[test]
-    fn checked_fact_address_preserves_stale_identity_without_normalizing_integers() {
-        let (mut engine, fact) = compact_test_engine();
-        let address = encoded_address(fact);
-        assert_eq!(checked_fact_address(&address), Some(fact));
-        engine.fact_base.retract(fact).unwrap();
-        assert_eq!(checked_fact_address(&address), Some(fact));
-        for invalid in [
-            Value::Integer(0),
-            Value::Integer(1),
-            Value::Integer(-1),
-            Value::Float(1.0),
-            Value::Void,
-        ] {
-            assert_eq!(checked_fact_address(&invalid), None);
-        }
+    fn integer_designators_never_alias_slot_map_address_bits() {
+        use slotmap::Key;
+        let (engine, fact) = compact_test_engine();
+        let raw = i64::from_ne_bytes(fact.data().as_ffi().to_ne_bytes());
+        assert_eq!(
+            designated_fact(
+                &engine.fact_base,
+                engine.initial_fact_id,
+                engine.fact_epoch,
+                &Value::Integer(raw)
+            ),
+            None
+        );
+        assert_eq!(
+            designated_fact(
+                &engine.fact_base,
+                engine.initial_fact_id,
+                engine.fact_epoch,
+                &address_value(&engine, fact)
+            ),
+            Some(fact)
+        );
     }
 
     #[test]
     fn compact_slot_requires_context_while_explicit_accessor_keeps_false_fallback() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let compact = compact_ref(&mut engine, "f", "value");
         let RuntimeExpr::Call { args, .. } = &compact else {
             unreachable!();
         };
         let explicit = call(
             "fact-slot-value",
-            vec![RuntimeExpr::Literal(encoded_address(fact)), args[1].clone()],
+            vec![
+                RuntimeExpr::Literal(Value::FactAddress(address.clone())),
+                args[1].clone(),
+            ],
         );
         for missing_fact_base in [true, false] {
             with_compact_context(&mut engine, Some(&scope), |ctx| {
@@ -7984,7 +8040,9 @@ mod tests {
     #[test]
     fn compact_slot_access_stays_lazy_under_boolean_short_circuiting() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let missing = compact_ref(&mut engine, "f", "missing");
         with_compact_context(&mut engine, Some(&scope), |ctx| {
             let truth =
@@ -8003,7 +8061,9 @@ mod tests {
     #[test]
     fn compact_slot_scope_survives_scalar_loop_and_progn_shadowing() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
+        let address = test_fact_address(&engine, fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::live(address.clone()))]);
         let compact = compact_ref(&mut engine, "f", "value");
         let body = vec![(
             ferric_rules_parser::ActionExpr::Variable("unused".into(), dummy_span()),
@@ -8038,9 +8098,12 @@ mod tests {
     #[test]
     fn compact_slot_scope_is_not_inherited_by_callable_or_method_bodies() {
         let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
         let record = Arc::new(engine.fact_base.retract(fact).unwrap().fact);
-        let scope =
-            CompactFactBindings::from([("f".into(), CompactFactBinding::retained(fact, record))]);
+        let scope = CompactFactBindings::from([(
+            "f".into(),
+            CompactFactBinding::retained(address.clone(), record),
+        )]);
         let body = [ferric_rules_parser::ActionExpr::FunctionCall(
             ferric_rules_parser::FunctionCall {
                 name: COMPACT_FACT_SLOT_REF.into(),
@@ -8074,6 +8137,179 @@ mod tests {
     }
 
     #[test]
+    fn typed_fact_addresses_reject_numeric_and_string_coercion() {
+        let (mut engine, fact) = compact_test_engine();
+        let address = address_value(&engine, fact);
+        engine
+            .load_str(
+                "(defmethod address-kind ((?value FACT-ADDRESS)) address)
+             (defmethod address-kind ((?value INTEGER)) integer)",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            for predicate in ["integerp", "numberp"] {
+                let value = eval(
+                    ctx,
+                    &call(predicate, vec![RuntimeExpr::Literal(address.clone())]),
+                )
+                .unwrap();
+                assert!(is_false_symbol(&value, ctx.symbol_table));
+            }
+            for (name, args) in [
+                ("+", vec![RuntimeExpr::Literal(address.clone()), int(0)]),
+                ("integer", vec![RuntimeExpr::Literal(address.clone())]),
+                ("str-cat", vec![RuntimeExpr::Literal(address.clone())]),
+                ("sym-cat", vec![RuntimeExpr::Literal(address.clone())]),
+            ] {
+                assert!(matches!(eval(ctx, &call(name, args)),
+                    Err(EvalError::TypeError { function, .. }) if function == name));
+            }
+            let kind = eval(
+                ctx,
+                &call("address-kind", vec![RuntimeExpr::Literal(address.clone())]),
+            )
+            .unwrap();
+            let Value::Symbol(kind) = kind else {
+                panic!("expected kind symbol")
+            };
+            assert_eq!(ctx.symbol_table.resolve_symbol_str(kind), Some("address"));
+            let same = eval(
+                ctx,
+                &call(
+                    "eq",
+                    vec![
+                        RuntimeExpr::Literal(address.clone()),
+                        RuntimeExpr::Literal(address.clone()),
+                    ],
+                ),
+            )
+            .unwrap();
+            assert!(is_true_symbol(&same, ctx.symbol_table));
+            let different = eval(
+                ctx,
+                &call("eq", vec![RuntimeExpr::Literal(address.clone()), int(1)]),
+            )
+            .unwrap();
+            assert!(is_false_symbol(&different, ctx.symbol_table));
+            // Host-created nested multifields must not hide a forbidden address.
+            let nested = Value::Multifield(Box::new([address.clone()].into_iter().collect()));
+            assert!(
+                matches!(eval(ctx, &call("str-cat", vec![RuntimeExpr::Literal(nested)])),
+                Err(EvalError::TypeError { function, .. }) if function == "str-cat")
+            );
+        });
+    }
+
+    #[test]
+    fn fact_addresses_keep_their_spelling_but_do_not_alias_after_reset() {
+        let (mut engine, fact) = compact_test_engine();
+        let address = test_fact_address(&engine, fact);
+        let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
+        let scope = CompactFactBindings::from([(
+            "f".into(),
+            CompactFactBinding::retained(address.clone(), record),
+        )]);
+        engine
+            .load_str("(deffacts seed (item (value 20) (tags c)))")
+            .unwrap();
+        engine.reset().unwrap();
+        let replacement = engine
+            .fact_base
+            .facts_by_template(engine.template_ids["item"])
+            .next()
+            .unwrap();
+        assert_eq!(replacement, fact, "reset reuses the slot-map identity");
+        assert_eq!(
+            address.timestamp(),
+            Some(engine.fact_base.get(replacement).unwrap().timestamp)
+        );
+        assert_eq!(
+            live_fact_id(&engine.fact_base, engine.fact_epoch, &address),
+            None
+        );
+        assert_ne!(address, test_fact_address(&engine, replacement));
+
+        let mut printed = String::new();
+        let values = Value::Multifield(Box::new(
+            [
+                Value::FactAddress(address.clone()),
+                Value::FactAddress(FactAddress::dummy()),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        crate::value_print::append_printout_value(&values, &engine.symbol_table, &mut printed);
+        assert_eq!(printed, "(<Fact-1> <Dummy Fact>)");
+        let compact = compact_ref(&mut engine, "f", "value");
+        let RuntimeExpr::Call { args, .. } = &compact else {
+            unreachable!()
+        };
+        let explicit = call(
+            "fact-slot-value",
+            vec![
+                RuntimeExpr::Literal(Value::FactAddress(address.clone())),
+                args[1].clone(),
+            ],
+        );
+        with_compact_context(&mut engine, Some(&scope), |ctx| {
+            assert!(eval(ctx, &compact)
+                .unwrap()
+                .structural_eq(&Value::Integer(10)));
+            assert!(is_false_symbol(
+                &eval(ctx, &explicit).unwrap(),
+                ctx.symbol_table
+            ));
+            assert!(eval(
+                ctx,
+                &call(
+                    "fact-index",
+                    vec![RuntimeExpr::Literal(Value::FactAddress(address.clone()))]
+                )
+            )
+            .unwrap()
+            .structural_eq(&Value::Integer(-1)));
+        });
+    }
+
+    #[test]
+    fn missing_fact_slot_targets_are_false_but_live_invalid_slots_still_error() {
+        let (mut engine, fact) = compact_test_engine();
+        let address = address_value(&engine, fact);
+        let compact = compact_ref(&mut engine, "f", "value");
+        let RuntimeExpr::Call { args, .. } = compact else {
+            unreachable!()
+        };
+        let missing = compact_ref(&mut engine, "f", "missing");
+        let RuntimeExpr::Call {
+            args: missing_args, ..
+        } = missing
+        else {
+            unreachable!()
+        };
+        with_compact_context(&mut engine, None, |ctx| {
+            for target in [
+                Value::Integer(-1),
+                Value::Integer(99),
+                Value::FactAddress(FactAddress::dummy()),
+            ] {
+                let result = eval(
+                    ctx,
+                    &call(
+                        "fact-slot-value",
+                        vec![RuntimeExpr::Literal(target), args[1].clone()],
+                    ),
+                )
+                .unwrap();
+                assert!(is_false_symbol(&result, ctx.symbol_table));
+            }
+            assert!(
+                matches!(eval(ctx, &call("fact-slot-value", vec![RuntimeExpr::Literal(address), missing_args[1].clone()])),
+                Err(EvalError::TypeError { actual, .. }) if actual.contains("unknown slot"))
+            );
+        });
+    }
+
+    #[test]
     fn fact_index_keeps_host_facts_stable_when_initial_fact_is_installed_late() {
         let mut engine = crate::Engine::new(EngineConfig::utf8());
         let host_initial = engine
@@ -8084,7 +8320,7 @@ mod tests {
         users.sort_by_key(|id| engine.fact_base.get(*id).unwrap().timestamp);
         for (id, expected) in users.iter().zip([1, 2]) {
             assert_eq!(
-                eval_index(Some(&engine.fact_base), None, encoded_address(*id)).unwrap(),
+                eval_index(Some(&engine.fact_base), None, address_value(&engine, *id)).unwrap(),
                 expected
             );
         }
@@ -8099,7 +8335,7 @@ mod tests {
                 eval_index(
                     Some(&engine.fact_base),
                     Some(protected),
-                    encoded_address(*id)
+                    address_value(&engine, *id)
                 )
                 .unwrap(),
                 expected
@@ -8109,7 +8345,7 @@ mod tests {
             eval_index(
                 Some(&engine.fact_base),
                 Some(protected),
-                encoded_address(protected)
+                address_value(&engine, protected)
             )
             .unwrap(),
             0
@@ -8117,15 +8353,11 @@ mod tests {
         engine.ensure_initial_fact().unwrap();
         assert_eq!(engine.fact_base.len(), 3);
 
+        let removed_address = address_value(&engine, users[0]);
         engine.retract(host_initial).unwrap();
         engine.assert_ordered("new-item", 8_i64).unwrap();
         assert_eq!(
-            eval_index(
-                Some(&engine.fact_base),
-                Some(protected),
-                encoded_address(users[0])
-            )
-            .unwrap(),
+            eval_index(Some(&engine.fact_base), Some(protected), removed_address).unwrap(),
             -1
         );
         let (new_id, _) = engine
@@ -8137,7 +8369,7 @@ mod tests {
             eval_index(
                 Some(&engine.fact_base),
                 Some(protected),
-                encoded_address(new_id)
+                address_value(&engine, new_id)
             )
             .unwrap(),
             3
@@ -8176,19 +8408,15 @@ mod tests {
     }
 
     #[test]
-    fn fact_index_preserves_signed_address_bits_and_reports_absent_addresses() {
+    fn fact_index_reports_dummy_and_absent_addresses() {
         let engine = crate::Engine::with_rules("").unwrap();
-        let initial = encoded_address(engine.initial_fact_id.unwrap());
+        let initial = address_value(&engine, engine.initial_fact_id.unwrap());
         assert_eq!(eval_index(None, None, initial).unwrap(), -1);
-        // Canonical high generations are encoded as negative integers. They
-        // must remain addresses; this unallocated generation is simply absent.
-        let negative_address =
-            Value::Integer(i64::from_ne_bytes(0x8000_0001_0000_0001_u64.to_ne_bytes()));
         assert_eq!(
             eval_index(
                 Some(&engine.fact_base),
                 engine.initial_fact_id,
-                negative_address
+                Value::FactAddress(FactAddress::dummy())
             )
             .unwrap(),
             -1
@@ -8215,7 +8443,7 @@ mod tests {
                 .iter()
                 .max_by_key(|(_, entry)| entry.timestamp)
                 .unwrap();
-            let result = eval_index(Some(&engine.fact_base), None, encoded_address(id));
+            let result = eval_index(Some(&engine.fact_base), None, address_value(&engine, id));
             if timestamp == maximum - 1 {
                 assert_eq!(result.unwrap(), i64::MAX);
             } else {
@@ -8314,6 +8542,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8364,6 +8593,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8420,6 +8650,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8460,6 +8691,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8503,6 +8735,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8549,6 +8782,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8622,6 +8856,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8671,6 +8906,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8704,6 +8940,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8748,6 +8985,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8798,6 +9036,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8859,6 +9098,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8922,6 +9162,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -8979,6 +9220,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9162,6 +9404,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9194,6 +9437,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9226,6 +9470,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9258,6 +9503,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9290,6 +9536,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9322,6 +9569,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9358,6 +9606,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9390,6 +9639,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9428,6 +9678,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9468,6 +9719,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9508,6 +9760,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9547,6 +9800,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9580,6 +9834,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9642,6 +9897,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9674,6 +9930,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9706,6 +9963,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9738,6 +9996,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9770,6 +10029,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9803,6 +10063,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9836,6 +10097,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9873,6 +10135,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9906,6 +10169,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9938,6 +10202,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -9982,6 +10247,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10017,6 +10283,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10059,6 +10326,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10091,6 +10359,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10123,6 +10392,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10171,6 +10441,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10203,6 +10474,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10235,6 +10507,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10302,6 +10575,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10357,6 +10631,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10423,6 +10698,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10845,6 +11121,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10883,6 +11160,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10921,6 +11199,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -10971,6 +11250,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11069,6 +11349,7 @@ mod tests {
                 method_chain: None,
                 input_buffer: None,
                 fact_base: None,
+                fact_epoch: 0,
                 compact_fact_bindings: None,
                 template_resolver: None,
                 initial_fact_id: None,
@@ -11143,6 +11424,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11695,6 +11977,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11728,6 +12011,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11782,6 +12066,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11821,6 +12106,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11856,6 +12142,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11895,6 +12182,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11930,6 +12218,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -11969,6 +12258,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12004,6 +12294,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12062,6 +12353,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12256,6 +12548,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12483,6 +12776,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12517,6 +12811,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12551,6 +12846,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12588,6 +12884,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12626,6 +12923,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12667,6 +12965,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12704,6 +13003,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12742,6 +13042,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12812,6 +13113,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,
@@ -12861,6 +13163,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            fact_epoch: 0,
             compact_fact_bindings: None,
             template_resolver: None,
             initial_fact_id: None,

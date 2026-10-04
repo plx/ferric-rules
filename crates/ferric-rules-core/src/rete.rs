@@ -2047,6 +2047,7 @@ fn values_join_eq(a: &Value, b: &Value) -> Option<bool> {
         (Value::Float(a), Value::Float(b)) => Some(a.to_bits() == b.to_bits()),
         (Value::String(a), Value::String(b)) => Some(a == b),
         (Value::ExternalAddress(a), Value::ExternalAddress(b)) => Some(a == b),
+        (Value::FactAddress(a), Value::FactAddress(b)) => Some(a == b),
         (Value::Multifield(_), Value::Multifield(_)) => Some(a.structural_eq(b)),
         // Void is an internal placeholder, not a comparable join value.
         (Value::Void, _) | (_, Value::Void) => None,

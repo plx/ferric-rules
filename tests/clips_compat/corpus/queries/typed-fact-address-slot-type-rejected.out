@@ -1,0 +1,7 @@
+
+[CSTRNCHK1] A literal slot value found in the assert command
+does not match the allowed types for slot ref.
+
+ERROR:
+(deffacts MAIN::seed
+   (holder (ref 1)

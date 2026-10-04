@@ -58,6 +58,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 
 | Feature | Corpus status |
 |---|---|
+| Fact addresses | Distinct values print public indices, compare by identity, reject numeric/string coercion, dispatch as FACT-ADDRESS, and survive in slots, multifields, globals, and snapshot replays. Stale/dummy values, missing/negative integer indices, raw-key-looking integers, and recoverable notices have exact CLIPS oracles. |
 | Assertion expressions | Ordered/template deffacts evaluate arithmetic, globals, and user functions; multifield results splice into ordered fields and multislots. Repeated reset covers `gensym*`, late global definitions, function redefinitions, and evaluation order. Unknown functions, local variables, and statically invalid scalar multifields fail load; globals can be defined after their seed expressions. Host tests cover top-level assertions and reset failures. |
 | Format and printout output | `format t` writes and returns its string; nested format/printout/deffunction calls preserve argument evaluation order. Runtime errors preserve partial output, and `format nil` suppresses only its own write. |
 | Source numeric scanner | Delimiter-bounded numeric candidates cover trailing/leading decimal points, signed zero, exponents, numeric-looking symbols, incomplete exponents, source integer clamping, compact constraint connectives, and CR-only comments. Nonoverflow cases compare source values with `explode$`; general symbol tokenization remains outside this coverage. |

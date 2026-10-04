@@ -383,3 +383,36 @@ fn ordered_host_names_cannot_bypass_private_or_qualified_templates() {
     }
     assert_eq!(engine.fact_count(), 0);
 }
+
+#[test]
+fn rule_fact_addresses_are_rejected_even_in_owned_fact_copies() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n))
+         (deffacts seed (item (n 1)))
+         (defrule retain ?f <- (item) => (assert (saved ?f)))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    let handle = engine.find_facts("saved").unwrap()[0].0;
+    let owned = engine.get_fact_owned(handle).unwrap().unwrap();
+    let Fact::Ordered(fact) = engine.get_fact(handle).unwrap().unwrap() else {
+        panic!("ordered saved fact")
+    };
+    let raw = fact.fields[0].clone();
+    assert!(matches!(raw, Value::FactAddress(_)));
+    for value in [
+        raw.clone(),
+        Value::Multifield(Box::new([raw].into_iter().collect())),
+    ] {
+        assert!(matches!(
+            engine.assert_ordered("copy", value),
+            Err(EngineError::InvalidHostValue(_))
+        ));
+    }
+    assert!(matches!(
+        engine.assert(owned),
+        Err(EngineError::InvalidHostValue(_))
+    ));
+    assert!(engine.find_facts("copy").unwrap().is_empty());
+    assert_eq!(engine.find_facts("saved").unwrap().len(), 1);
+}
