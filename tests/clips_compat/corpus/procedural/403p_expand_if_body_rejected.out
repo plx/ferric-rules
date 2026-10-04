@@ -1,0 +1,9 @@
+[EXPRNPSR4] $ Sequence operator not a valid argument for progn.
+
+ERROR:
+(defrule MAIN::r
+   =>
+   (if TRUE
+      then
+      (expand$ (create$ a b))
+      )

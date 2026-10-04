@@ -641,6 +641,24 @@ fn execute_single_action(
             }
             .map(|_| ())
         }
+        "printout" | "bind"
+            if call.args.iter().any(
+                |arg| matches!(arg, ActionExpr::FunctionCall(expansion) if expansion.name == "expand$"),
+            ) =>
+        {
+            if let Some(runtime_expr) = runtime_call {
+                eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
+            } else {
+                eval_env.eval_expr(
+                    token,
+                    rule_info,
+                    &ActionExpr::FunctionCall(call.clone()),
+                    context,
+                    collected_facts,
+                )
+            }
+            .map(|_| ())
+        }
         "printout" => execute_printout(
             token,
             rule_info,
@@ -778,6 +796,25 @@ fn execute_single_action(
                 };
                 eval_result.map(|_| ())
             }
+        }
+        "progn" => {
+            let compiled_args = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => Some(args),
+                _ => None,
+            };
+            let body: Vec<_> = call
+                .args
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    let compiled = compiled_args
+                        .and_then(|args| args.get(index))
+                        .cloned()
+                        .map(Box::new);
+                    (source.clone(), compiled)
+                })
+                .collect();
+            execute_loop_body(token, rule_info, &body, context, eval_env, collected_facts)
         }
         "if" => {
             // `(if <cond> then <action>* [else <action>*])` special form.

@@ -1,0 +1,6 @@
+[ARGACCES5] Function sqrt expected argument #1 to be of type integer or float
+
+ERROR:
+(defrule MAIN::fail
+   =>
+   (sqrt wrong)

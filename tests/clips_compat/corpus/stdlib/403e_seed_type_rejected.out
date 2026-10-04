@@ -1,0 +1,6 @@
+[ARGACCES5] Function seed expected argument #1 to be of type integer
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (seed 1.5)

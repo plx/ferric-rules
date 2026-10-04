@@ -1,0 +1,6 @@
+[EXPRNPSR4] $ Sequence operator not a valid argument for assert.
+
+ERROR:
+(defrule MAIN::r
+   =>
+   (assert (p (expand$ (create$ a b))))

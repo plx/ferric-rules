@@ -1,0 +1,6 @@
+[ARGACCES5] Function length$ expected argument #1 to be of type multifield, symbol, or string
+
+ERROR:
+(defrule MAIN::fail
+   =>
+   (length$ 1)

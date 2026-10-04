@@ -1094,8 +1094,16 @@ impl Engine {
     /// let result = engine.load_str("(assert (person John 30))").unwrap();
     /// assert_eq!(result.asserted_facts.len(), 1);
     /// ```
-    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
+        let previous_depth = self.source_load_depth;
+        self.source_load_depth += 1;
+        let result = self.load_str_inner(source);
+        self.source_load_depth = previous_depth;
+        result
+    }
+
+    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
+    fn load_str_inner(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
         crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
@@ -1210,7 +1218,31 @@ impl Engine {
             let mut rules_with_module = Vec::new();
             let mut pending_ordered_fact_names = HashSet::new();
             let mut callable_load = PendingCallables::default();
+            let mut declaration_asserts = assert_forms.iter().peekable();
             for construct in interpret_result.constructs {
+                let offset = match &construct {
+                    Construct::Rule(value) => value.span.start.offset,
+                    Construct::Template(value) => value.span.start.offset,
+                    Construct::Facts(value) => value.span.start.offset,
+                    Construct::Function(value) => value.span.start.offset,
+                    Construct::Global(value) => value.span.start.offset,
+                    Construct::Module(value) => value.span.start.offset,
+                    Construct::Generic(value) => value.span.start.offset,
+                    Construct::Method(value) => value.span.start.offset,
+                };
+                while declaration_asserts
+                    .peek()
+                    .is_some_and(|expr| expr.span().start.offset < offset)
+                {
+                    if let Ok(expression) = ferric_rules_parser::interpret_action_expr(
+                        declaration_asserts.next().expect("peeked assertion"),
+                    ) {
+                        self.declare_expression_templates(
+                            &expression,
+                            self.module_registry.current_module(),
+                        );
+                    }
+                }
                 match construct {
                     Construct::Rule(rule) => {
                         // Determine the owning module for this rule. If the rule
@@ -1230,16 +1262,19 @@ impl Engine {
                         } else {
                             self.module_registry.current_module()
                         };
+                        self.declare_rule_templates(&rule, owning_module);
                         // Query restrictions must exist where the rule is written;
                         // later declarations must not make an invalid query loadable.
                         if let Err(error) = rule.actions.iter().try_for_each(|action| {
-                            action.call.args.iter().try_for_each(|expr| {
-                                self.validate_expression_query_declarations(
-                                    expr,
-                                    owning_module,
-                                    None,
-                                )
-                            })
+                            crate::effects::evaluated_arguments(self, owning_module, &action.call)
+                                .into_iter()
+                                .try_for_each(|expr| {
+                                    self.validate_expression_query_declarations(
+                                        expr,
+                                        owning_module,
+                                        None,
+                                    )
+                                })
                         }) {
                             errors.push(error);
                             continue;
@@ -1247,6 +1282,20 @@ impl Engine {
                         rules_with_module.push((rule, owning_module));
                     }
                     Construct::Template(template) => {
+                        for slot in &template.slots {
+                            if let Some(
+                                ferric_rules_parser::DefaultValue::Expressions(expressions)
+                                | ferric_rules_parser::DefaultValue::Dynamic(expressions),
+                            ) = &slot.default
+                            {
+                                for expression in expressions {
+                                    self.declare_expression_templates(
+                                        expression,
+                                        self.module_registry.current_module(),
+                                    );
+                                }
+                            }
+                        }
                         // Register template BEFORE compiling rules so that
                         // rules referencing this template can resolve the ID.
                         let name = Self::template_local_name(&template.name);
@@ -1316,6 +1365,7 @@ impl Engine {
                                         FactBody::Ordered(fact) => &fact.relation,
                                         FactBody::Template(fact) => &fact.template,
                                     };
+                                    self.declare_fact_templates(fact, module);
                                     if self.resolve_template_id(relation, module).is_err() {
                                         pending_ordered_fact_names
                                             .insert(Self::template_local_name(relation));
@@ -1327,6 +1377,10 @@ impl Engine {
                         }
                     }
                     Construct::Function(func) => {
+                        let declaration_module = self.module_registry.current_module();
+                        for expression in &func.body {
+                            self.declare_expression_templates(expression, declaration_module);
+                        }
                         if let Err(error) = func
                             .body
                             .iter()
@@ -1376,6 +1430,12 @@ impl Engine {
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
+                        for definition in &global.globals {
+                            self.declare_expression_templates(
+                                &definition.value,
+                                self.module_registry.current_module(),
+                            );
+                        }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
                             errors.push(e);
@@ -1410,6 +1470,10 @@ impl Engine {
                         result.generics.push(generic);
                     }
                     Construct::Method(method) => {
+                        let declaration_module = self.module_registry.current_module();
+                        for expression in &method.body {
+                            self.declare_expression_templates(expression, declaration_module);
+                        }
                         if let Err(error) = method
                             .body
                             .iter()
@@ -1472,6 +1536,14 @@ impl Engine {
                 }
             }
 
+            for expr in declaration_asserts {
+                if let Ok(expression) = ferric_rules_parser::interpret_action_expr(expr) {
+                    self.declare_expression_templates(
+                        &expression,
+                        self.module_registry.current_module(),
+                    );
+                }
+            }
             self.validate_pending_callables(&mut callable_load, &mut errors);
 
             // Compile rules so rete has patterns before facts arrive.
@@ -1506,6 +1578,10 @@ impl Engine {
             self.module_registry.set_current_module(saved_module);
         }
 
+        // Construct parsing is complete. A top-level assertion may now build a
+        // new construct through a field expression without reentering a loader
+        // that still owns provisional construct definitions.
+        self.source_load_depth -= 1;
         // Process assert forms AFTER rules are compiled so facts flow through rete
         for expr in &assert_forms {
             if let Some(list) = expr.as_list() {
@@ -1880,6 +1956,7 @@ impl Engine {
             id
         };
         self.template_modules.insert(template_id, owning_module);
+        self.declare_explicit_template(&template.name, owning_module);
 
         Ok(())
     }
@@ -2146,6 +2223,7 @@ impl Engine {
         for prepared in installed {
             last_result = self.install_prepared_rule(prepared);
         }
+        self.rule_declarations.push((module, local_name));
         Ok(last_result)
     }
 
@@ -2184,6 +2262,7 @@ impl Engine {
             self.resolve_template_id(name, current_module).is_ok()
         })
         .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+        self.validate_pattern_builtin_calls(&rule.patterns, current_module)?;
         for action in &rule.actions {
             self.validate_rule_action_call(
                 &action.call,
@@ -2191,6 +2270,66 @@ impl Engine {
                 &rule.name,
                 &HashSet::new(),
             )?;
+        }
+        Ok(())
+    }
+
+    fn validate_pattern_builtin_calls(
+        &self,
+        patterns: &[Pattern],
+        module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
+        let mut pending: Vec<_> = patterns.iter().collect();
+        let mut constraints = Vec::new();
+        let mut expressions = Vec::new();
+        while let Some(pattern) = pending.pop() {
+            match pattern {
+                Pattern::Ordered(pattern) => constraints.extend(&pattern.constraints),
+                Pattern::Template(pattern) => {
+                    constraints.extend(
+                        pattern
+                            .slot_constraints
+                            .iter()
+                            .flat_map(|slot| &slot.constraints),
+                    );
+                }
+                Pattern::Test(expression, _) => expressions.push(expression),
+                Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
+                    pending.push(inner);
+                }
+                Pattern::And(children, _)
+                | Pattern::Or(children, _)
+                | Pattern::Exists(children, _)
+                | Pattern::Forall(children, _)
+                | Pattern::Logical(children, _) => pending.extend(children),
+            }
+        }
+        while let Some(constraint) = constraints.pop() {
+            match constraint {
+                Constraint::Predicate(expression, _) | Constraint::ReturnValue(expression, _) => {
+                    expressions.push(expression);
+                }
+                Constraint::Not(inner, _) => constraints.push(inner),
+                Constraint::And(children, _) | Constraint::Or(children, _) => {
+                    constraints.extend(children);
+                }
+                _ => {}
+            }
+        }
+        for expression in expressions {
+            let expression = ferric_rules_parser::interpret_action_expr(expression)
+                .map_err(LoadError::Interpret)?;
+            self.validate_sequence_expansion(&expression, module, true, false)?;
+            let mut pending = vec![&expression];
+            while let Some(expression) = pending.pop() {
+                if let ActionExpr::FunctionCall(call) = expression {
+                    crate::builtin_validation::validate_call(call)
+                        .map_err(|message| Self::compile_error_at(&call.span, &message))?;
+                    pending.extend(crate::effects::evaluated_arguments(self, module, call));
+                } else {
+                    expression.push_children(&mut pending);
+                }
+            }
         }
         Ok(())
     }
@@ -2203,6 +2342,23 @@ impl Engine {
         rule_name: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
+        if call.name == "expand$" {
+            return Err(Self::compile_error_at(
+                &call.span,
+                "[EXPRNPSR4] sequence expansion is not valid as a body action",
+            ));
+        }
+        let expansion_allowed = Self::allows_sequence_arguments(&call.name);
+        for argument in crate::effects::evaluated_arguments(self, current_module, call) {
+            self.validate_sequence_expansion(
+                argument,
+                current_module,
+                expansion_allowed,
+                call.name == "progn" || Self::is_rule_action_wrapper(&call.name),
+            )?;
+        }
+        crate::builtin_validation::validate_call(call)
+            .map_err(|message| Self::compile_error_at(&call.span, &message))?;
         Self::validate_query_member_rebinding(call, query_members)?;
         match call.name.as_str() {
             "refresh-agenda" => Err(Self::compile_error_at(
@@ -2370,6 +2526,8 @@ impl Engine {
                     current_module,
                     rule_name,
                 )?;
+                crate::builtin_validation::validate_call(call)
+                    .map_err(|message| Self::compile_error_at(&call.span, &message))?;
                 for arg in &call.args {
                     self.validate_action_expr_as_expression(
                         arg,
@@ -2795,6 +2953,114 @@ impl Engine {
         Ok(())
     }
 
+    fn allows_sequence_arguments(name: &str) -> bool {
+        !matches!(
+            name,
+            "progn" | "return" | "expand$" | "assert" | "modify" | "duplicate"
+        )
+    }
+
+    /// Explicit sequence operators are arguments of ordinary calls, never
+    /// body actions, control-form operands, or fact/slot syntax fields.
+    fn validate_sequence_expansion(
+        &self,
+        expression: &ActionExpr,
+        module: crate::modules::ModuleId,
+        root_allowed: bool,
+        root_return_allowed: bool,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![(expression, root_allowed, root_return_allowed)];
+        while let Some((expression, allowed, return_allowed)) = pending.pop() {
+            if let ActionExpr::FunctionCall(call) = expression {
+                if call.name == "expand$" && !allowed {
+                    return Err(Self::compile_error_at(
+                        &call.span,
+                        "[EXPRNPSR4] sequence operator is not valid in this argument position",
+                    ));
+                }
+                if call.name == "return" && !return_allowed {
+                    return Err(Self::compile_error_at(
+                        &call.span,
+                        "[PRCDRPSR2] return is not valid inside an argument expression",
+                    ));
+                }
+                let children_allowed = Self::allows_sequence_arguments(&call.name);
+                let children_return_allowed = call.name == "progn" && return_allowed;
+                pending.extend(
+                    crate::effects::evaluated_arguments(self, module, call)
+                        .into_iter()
+                        .map(|child| (child, children_allowed, children_return_allowed)),
+                );
+            } else {
+                let mut body = Vec::new();
+                let mut operands: Vec<&ActionExpr> = Vec::new();
+                // Conditions, bounds, selectors, and query predicates are
+                // expression operands rather than procedural body positions.
+                match expression {
+                    ActionExpr::If {
+                        condition,
+                        then_actions,
+                        else_actions,
+                        ..
+                    } => {
+                        operands.push(condition);
+                        body.extend(then_actions.iter().chain(else_actions));
+                    }
+                    ActionExpr::While {
+                        condition,
+                        body: actions,
+                        ..
+                    } => {
+                        operands.push(condition);
+                        body.extend(actions);
+                    }
+                    ActionExpr::LoopForCount {
+                        start,
+                        end,
+                        body: actions,
+                        ..
+                    } => {
+                        operands.extend([start.as_ref(), end.as_ref()]);
+                        body.extend(actions);
+                    }
+                    ActionExpr::Progn {
+                        list_expr,
+                        body: actions,
+                        ..
+                    } => {
+                        operands.push(list_expr);
+                        body.extend(actions);
+                    }
+                    ActionExpr::QueryAction {
+                        query,
+                        body: actions,
+                        ..
+                    } => {
+                        operands.push(query);
+                        body.extend(actions);
+                    }
+                    ActionExpr::Switch {
+                        expr,
+                        cases,
+                        default,
+                        ..
+                    } => {
+                        operands.push(expr);
+                        for (selector, actions) in cases {
+                            operands.push(selector);
+                            body.extend(actions);
+                        }
+                        body.extend(default.iter().flatten());
+                    }
+                    _ => {}
+                }
+                pending.extend(body.into_iter().map(|child| (child, false, return_allowed)));
+                pending.extend(operands.into_iter().map(|child| (child, false, false)));
+            }
+        }
+        Ok(())
+    }
+
     // Templates must exist at the definition site. Callable names in staged
     // definitions are checked after recovery settles their kind and visibility.
     fn validate_expression_query_structure(
@@ -2802,6 +3068,7 @@ impl Engine {
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
+        self.validate_sequence_expansion(expr, current_module, true, true)?;
         let mut pending = vec![expr];
         while let Some(expr) = pending.pop() {
             if let ActionExpr::QueryAction {
@@ -2816,6 +3083,8 @@ impl Engine {
                 self.validate_query_predicate_bindings(query, current_module)?;
             }
             if let ActionExpr::FunctionCall(call) = expr {
+                crate::builtin_validation::validate_call(call)
+                    .map_err(|message| Self::compile_error_at(&call.span, &message))?;
                 pending.extend(crate::effects::evaluated_arguments(
                     self,
                     current_module,

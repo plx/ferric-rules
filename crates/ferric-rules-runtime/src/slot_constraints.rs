@@ -33,13 +33,29 @@ impl PartialEq for RuntimeAllowedValueSet {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct RuntimeSlotConstraints {
     /// Missing kinds are unrestricted; a present empty list forbids that kind.
     pub allowed_values: Vec<RuntimeAllowedValueSet>,
+    /// Original source order across kinds and facets, used by CLIPS introspection.
+    pub allowed_values_in_order: Vec<Value>,
     pub range: Option<NumericRange>,
     pub cardinality: Option<Cardinality>,
+}
+
+impl PartialEq for RuntimeSlotConstraints {
+    fn eq(&self, other: &Self) -> bool {
+        self.allowed_values == other.allowed_values
+            && self.range == other.range
+            && self.cardinality == other.cardinality
+            && self.allowed_values_in_order.len() == other.allowed_values_in_order.len()
+            && self
+                .allowed_values_in_order
+                .iter()
+                .zip(&other.allowed_values_in_order)
+                .all(|(left, right)| left.structural_eq(right))
+    }
 }
 
 pub(crate) fn value_kind(value: &Value) -> Option<SlotValueType> {
@@ -99,8 +115,19 @@ pub(crate) fn compile_constraints(
             })
         })
         .collect::<Result<_, String>>()?;
+    let mut source_order: Vec<_> = source
+        .allowed_values
+        .iter()
+        .flat_map(|set| &set.values)
+        .collect();
+    source_order.sort_by_key(|literal| literal.span.start.offset);
+    let allowed_values_in_order = source_order
+        .into_iter()
+        .map(|literal| literal_value(&literal.value, symbols, encoding))
+        .collect::<Result<_, _>>()?;
     Ok(RuntimeSlotConstraints {
         allowed_values,
+        allowed_values_in_order,
         range: source.range,
         cardinality: source.cardinality,
     })
@@ -268,6 +295,31 @@ impl RuntimeSlotConstraints {
             for value in &set.values {
                 symbols.validate_snapshot_value(value)?;
             }
+        }
+        let expected_count: usize = self.allowed_values.iter().map(|set| set.values.len()).sum();
+        if self.allowed_values_in_order.len() != expected_count
+            || self.allowed_values_in_order.iter().any(|value| {
+                !self
+                    .allowed_values
+                    .iter()
+                    .any(|set| Some(set.kind) == value_kind(value))
+            })
+            || self.allowed_values.iter().any(|set| {
+                let ordered: Vec<_> = self
+                    .allowed_values_in_order
+                    .iter()
+                    .filter(|value| value_kind(value) == Some(set.kind))
+                    .collect();
+                ordered.len() != set.values.len()
+                    || ordered
+                        .iter()
+                        .zip(&set.values)
+                        .any(|(left, right)| !left.structural_eq(right))
+            })
+        {
+            return Err(
+                "allowed-values source order disagrees with normalized constraints".to_owned(),
+            );
         }
         if let Some(range) = self.range {
             if self
@@ -631,6 +683,32 @@ mod tests {
     }
 
     #[test]
+    fn allowed_value_source_order_preserves_cross_facet_order_and_validates_sidecar() {
+        let (_, mut constraints, symbols) = compiled(
+            "(slot x (allowed-integers 1 2) (allowed-symbols x y) (allowed-strings \"s\"))",
+        );
+        assert!(matches!(
+            constraints.allowed_values_in_order[0],
+            Value::Integer(1)
+        ));
+        assert!(matches!(
+            constraints.allowed_values_in_order[2],
+            Value::Symbol(_)
+        ));
+        assert!(constraints
+            .validate_metadata(None, SlotType::Single, &symbols)
+            .is_ok());
+        constraints.allowed_values_in_order.swap(0, 1);
+        assert!(constraints
+            .validate_metadata(None, SlotType::Single, &symbols)
+            .is_err());
+        constraints.allowed_values_in_order.clear();
+        assert!(constraints
+            .validate_metadata(None, SlotType::Single, &symbols)
+            .is_err());
+    }
+
+    #[test]
     fn malformed_normalized_constraints_are_rejected() {
         let (_, mut constraints, symbols) = compiled("(slot x (allowed-values a 1))");
         constraints.allowed_values.reverse();
@@ -665,6 +743,10 @@ mod tests {
         assert!(constraints.validate_field(&Value::Integer(1)).is_ok());
         assert!(constraints.validate_field(&Value::Integer(3)).is_err());
         for values in [vec![], vec![Value::Integer(1)]] {
+            let previous_len = constraints.allowed_values_in_order.len();
+            constraints
+                .allowed_values_in_order
+                .extend(values.iter().cloned());
             constraints.allowed_values.push(RuntimeAllowedValueSet {
                 kind: SlotValueType::Integer,
                 values,
@@ -674,6 +756,7 @@ mod tests {
                 .unwrap_err()
                 .contains("numeric range conflicts"));
             constraints.allowed_values.pop();
+            constraints.allowed_values_in_order.truncate(previous_len);
         }
     }
 }

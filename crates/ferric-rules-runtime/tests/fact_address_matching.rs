@@ -164,9 +164,9 @@ fn missing_fact_indices_return_false_but_slot_and_argument_errors_still_stop() {
 
     for expression in [
         "(fact-slot-value 1 absent)",
-        "(fact-slot-value 9 7)",
+        "(funcall fact-slot-value 9 7)",
         "(fact-slot-value -1 (/ 1 0))",
-        "(fact-slot-value \"1\" v)",
+        "(funcall fact-slot-value \"1\" v)",
     ] {
         let mut engine = Engine::new(EngineConfig::default());
         engine

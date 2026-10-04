@@ -15,6 +15,29 @@ fn ensure(condition: bool, message: &str) -> Result<(), String> {
 }
 
 impl Engine {
+    fn validate_declaration_names(
+        &self,
+        declarations: &[(crate::modules::ModuleId, String)],
+    ) -> Result<rustc_hash::FxHashSet<(crate::modules::ModuleId, String)>, String> {
+        let mut names = rustc_hash::FxHashSet::default();
+        for (module, name) in declarations {
+            ensure(
+                self.module_registry.get(*module).is_some(),
+                "construct declaration has a dangling module",
+            )?;
+            ensure(
+                matches!(crate::qualified_name::parse_qualified_name(name),
+                    Ok(crate::qualified_name::QualifiedName::Unqualified(local)) if !local.is_empty()),
+                "construct declaration has an invalid local name",
+            )?;
+            ensure(
+                names.insert((*module, name.clone())),
+                "duplicate construct declaration",
+            )?;
+        }
+        Ok(names)
+    }
+
     pub(super) fn validate_restored_state(&self) -> Result<(), SerializationError> {
         self.validate_snapshot_metadata()
             .map_err(SerializationError::InvalidState)
@@ -45,6 +68,7 @@ impl Engine {
             "zero-based cleared fact chronology has an initial fact",
         )?;
         self.symbol_table.validate_snapshot()?;
+        self.globals.random.validate_snapshot()?;
         self.fact_base.validate_snapshot(&self.symbol_table)?;
         self.rete
             .validate_snapshot(&self.fact_base, &self.symbol_table)?;
@@ -64,6 +88,13 @@ impl Engine {
         )?;
         let modules = &self.module_registry;
         modules.validate_snapshot()?;
+        let template_names = self.validate_declaration_names(&self.template_declarations)?;
+        let rule_names = self.validate_declaration_names(&self.rule_declarations)?;
+        ensure(
+            self.template_declarations.first()
+                == Some(&(modules.main_module_id(), "initial-fact".to_owned())),
+            "template declaration order lacks the initial fact",
+        )?;
         // Requested call depth is application configuration; the evaluator
         // always applies its fixed effective ceiling, including after restore.
         ensure(
@@ -76,6 +107,7 @@ impl Engine {
             "multiple terminals share an executable rule ID",
         )?;
         let mut live_rules = 0;
+        let mut live_rule_names = rustc_hash::FxHashSet::default();
         for (index, info) in self.rule_info.iter().enumerate() {
             let Some(info) = info else {
                 ensure(
@@ -94,6 +126,8 @@ impl Engine {
             )?;
             let module = self.rule_modules[index].ok_or("rule has no module")?;
             ensure(modules.get(module).is_some(), "rule has dangling module")?;
+            let name = crate::qualified_name::parse_qualified_name(&info.name)?;
+            live_rule_names.insert((module, name.local_name().to_owned()));
             // One source rule with `or` conditions lowers to several executable
             // rules. Their public names may coincide; the unique slot/terminal
             // association above is their executable identity.
@@ -131,6 +165,10 @@ impl Engine {
             "terminal lacks runtime rule metadata",
         )?;
         ensure(
+            live_rule_names == rule_names,
+            "rule declaration order disagrees with active rules",
+        )?;
+        ensure(
             self.template_defs.len() == self.template_ids.len(),
             "inconsistent template name index",
         )?;
@@ -148,6 +186,12 @@ impl Engine {
                     .get(id)
                     .is_some_and(|module| modules.get(*module).is_some()),
                 "template has dangling module",
+            )?;
+            let module = self.template_modules[id];
+            let name = crate::qualified_name::parse_qualified_name(&template.name)?;
+            ensure(
+                template_names.contains(&(module, name.local_name().to_owned())),
+                "template declaration order omits an explicit template",
             )?;
             let count = template.slot_names.len();
             ensure(

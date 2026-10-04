@@ -1,0 +1,6 @@
+[ARGACCES4] Function abs expected exactly 1 argument(s)
+
+ERROR:
+(defrule MAIN::fail
+   =>
+   (abs 1 2)

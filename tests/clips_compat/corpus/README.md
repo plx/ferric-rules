@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 796 small programs progress from individual features to
+CLIPS subset. Its 889 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 792 clean conformance cases, 120 of which
+CLIPS-verified output oracle. There are 885 clean conformance cases, 170 of which
 reproduce a CLIPS error, and 4 active characterizations of documented
 differences: CLIPS output that is not UTF-8, and malformed `format` directives.
 
@@ -93,6 +93,10 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   Their golden retains the notices; comparison omits them from ordinary output
   and from Ferric's separate notice routers. Changed messages, fatal errors,
   load diagnostics, and undeclared cases remain failures.
+- Cases marked `recoverable_random_notices: true` allow only the exact
+  `MISCFUN2` wrong-count and `MISCFUN3` reversed-bounds notices. The oracle
+  retains them; comparison removes them from ordinary output and from Ferric's
+  notice router while requiring successful execution and the correct draws.
 - A separate exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error
   routers, interleaved with `t` in the oracle; the runner removes them from the
@@ -139,7 +143,8 @@ Every program gets a separate Docker container, a read-only source mount, a
 removed explicitly. Load success, complete output/statistics frames, diagnostics,
 and the firing bound are all checked before accepting output. During source
 loading, the specific warnings for redefining the built-in MAIN module or a
-deffunction and the exact integer-overflow scanner notice are allowed.
+deffunction, defgeneric, deftemplate, or defrule, and the exact integer-overflow
+scanner notice are allowed.
 Other diagnostic codes fail reference verification unless the case
 declares an `error`. A load-error case is loaded with `load*`, which must fail
 with a diagnostic; a run-error case must print at least one run-time diagnostic.

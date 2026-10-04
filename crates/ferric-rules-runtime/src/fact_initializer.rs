@@ -333,16 +333,26 @@ impl Engine {
         expressions
             .iter()
             .map(|expression| {
-                self.validate_source_default_control(expression, module)?;
+                self.validate_source_default_control(expression, module, "template default")?;
                 self.prepare_field(expression, module, &mut locals, false)
             })
             .collect()
+    }
+
+    pub(crate) fn prepare_eval_expression(
+        &mut self,
+        expression: &ActionExpr,
+        module: ModuleId,
+    ) -> Result<RuntimeExpr, LoadError> {
+        self.validate_source_default_control(expression, module, "eval")?;
+        self.prepare_field(expression, module, &mut HashSet::new(), false)
     }
 
     fn validate_source_default_control(
         &self,
         root: &ActionExpr,
         module: ModuleId,
+        context: &str,
     ) -> Result<(), LoadError> {
         let mut pending = vec![root];
         while let Some(expression) = pending.pop() {
@@ -351,7 +361,7 @@ impl Engine {
                     if call.name == "return" {
                         return Err(invalid_at(
                             call.span,
-                            "[PRCDRPSR2] The return function is not valid in a template default.",
+                            &format!("[PRCDRPSR2] The return function is not valid in {context}."),
                         ));
                     }
                     pending.extend(crate::effects::evaluated_arguments(self, module, call));
@@ -399,6 +409,10 @@ impl Engine {
         locals: &mut HashSet<String>,
         allow_local_reads: bool,
     ) -> Result<PreparedFact, LoadError> {
+        self.declare_implicit_template(name, module);
+        for expression in fields {
+            self.declare_expression_templates(expression, module);
+        }
         let relation = self
             .symbol_table
             .intern_symbol(name, self.config.string_encoding)

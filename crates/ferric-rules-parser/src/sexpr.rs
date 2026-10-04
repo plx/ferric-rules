@@ -207,6 +207,18 @@ pub fn parse_sexprs(source: &str, file_id: FileId) -> ParseResult {
     parser.parse_all()
 }
 
+/// Parse one expression, ignoring subsequent input, as CLIPS `eval` and `build` do.
+/// Trailing input is not lexed; errors within the first expression remain errors.
+pub fn parse_first_sexpr(source: &str, file_id: FileId) -> ParseResult {
+    match crate::lexer::lex_first(source, file_id) {
+        Ok(tokens) => Parser::new(tokens).parse_all(),
+        Err(errors) => ParseResult {
+            exprs: Vec::new(),
+            errors: errors.into_iter().map(ParseError::from).collect(),
+        },
+    }
+}
+
 struct Parser {
     tokens: Vec<SpannedToken>,
     position: usize,
@@ -831,6 +843,34 @@ mod proptests {
                     span.end.offset, s.len(), s
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod first_expression_tests {
+    use super::{parse_first_sexpr, FileId};
+
+    #[test]
+    fn ignores_unlexable_trailing_source_after_a_complete_first_form() {
+        for (source, end) in [("(+ 1 2) \"unterminated", 7), ("42 )", 2), ("abc \0", 3)] {
+            let parsed = parse_first_sexpr(source, FileId(0));
+            assert!(parsed.errors.is_empty(), "{source:?}: {:?}", parsed.errors);
+            assert_eq!(parsed.exprs.len(), 1);
+            assert_eq!(parsed.exprs[0].span().end.offset, end);
+        }
+    }
+
+    #[test]
+    fn balances_lists_using_real_tokens_and_preserves_first_form_errors() {
+        let parsed = parse_first_sexpr("; comment\r\n(a \"()\\\"\" (b)) garbage", FileId(0));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.exprs[0].as_list().unwrap().len(), 3);
+        for source in [") (valid)", "(a", "\"unterminated", "\0 7"] {
+            assert!(
+                !parse_first_sexpr(source, FileId(0)).errors.is_empty(),
+                "{source:?}"
+            );
         }
     }
 }

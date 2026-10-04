@@ -1,0 +1,7 @@
+(defglobal ?*q* = 0)
+        (deffunction probe () (bind ?*q* (+ ?*q* 1)) TRUE)
+        (defgeneric chain)
+        (defmethod chain 1 (?x) (printout t "base:" ?x ":" (next-methodp) ";") ?x)
+        (defmethod chain 2 ((?x NUMBER (probe))) (printout t "number:" ?x ":" (next-methodp) ";") (call-next-method))
+        (defmethod chain 3 ((?x INTEGER)) (printout t "integer:" ?x ":" (next-methodp) ":" (next-methodp) ";") (call-next-method))
+        (defrule report => (printout t (chain 7) "|" ?*q* crlf (call-specific-method chain 2 8) "|" ?*q* crlf (next-methodp) crlf))

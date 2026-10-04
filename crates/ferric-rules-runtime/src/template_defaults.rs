@@ -60,7 +60,7 @@ fn evaluate_expressions(
     Ok(Value::Multifield(Box::new(fields)))
 }
 
-fn evaluate_dynamic(
+pub(crate) fn evaluate_dynamic(
     ctx: &mut EvalContext<'_>,
     default: &DynamicSlotDefault,
     slot_type: SlotType,

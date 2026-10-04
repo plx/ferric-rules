@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 8")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 9")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 8;
+const SCHEMA_VERSION: u16 = 9;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -202,6 +202,8 @@ struct EngineSnapshotRef<'a> {
     module_registry: &'a ModuleRegistry,
     rule_modules: &'a RuleIndex<ModuleId>,
     template_modules: &'a slotmap::SecondaryMap<TemplateId, ModuleId>,
+    template_declarations: &'a Vec<(ModuleId, String)>,
+    rule_declarations: &'a Vec<(ModuleId, String)>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")]
     function_modules: &'a ModuleNameMap<ModuleId>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")]
@@ -238,6 +240,8 @@ struct EngineSnapshotOwned {
     module_registry: ModuleRegistry,
     rule_modules: RuleIndex<ModuleId>,
     template_modules: slotmap::SecondaryMap<TemplateId, ModuleId>,
+    template_declarations: Vec<(ModuleId, String)>,
+    rule_declarations: Vec<(ModuleId, String)>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")]
     function_modules: ModuleNameMap<ModuleId>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")]
@@ -258,6 +262,9 @@ impl EngineSnapshotOwned {
             fact_base: self.fact_base,
             host: crate::host::HostState::new(),
             reset_in_progress: false,
+            source_load_depth: 0,
+            active_rules: Vec::new(),
+            active_callables: Vec::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,
@@ -275,6 +282,13 @@ impl EngineSnapshotOwned {
             module_registry: self.module_registry,
             rule_modules: self.rule_modules,
             template_modules: self.template_modules,
+            template_declaration_names: self
+                .template_declarations
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect(),
+            template_declarations: self.template_declarations,
+            rule_declarations: self.rule_declarations,
             function_modules: self.function_modules,
             global_modules: self.global_modules,
             generic_modules: self.generic_modules,
@@ -349,6 +363,8 @@ impl Engine {
             module_registry: &self.module_registry,
             rule_modules: &self.rule_modules,
             template_modules: &self.template_modules,
+            template_declarations: &self.template_declarations,
+            rule_declarations: &self.rule_declarations,
             function_modules: &self.function_modules,
             global_modules: &self.global_modules,
             generic_modules: &self.generic_modules,
@@ -457,7 +473,13 @@ impl Engine {
                     .constraints
                     .iter()
                     .flat_map(|constraints| &constraints.allowed_values)
-                    .flat_map(|set| &set.values),
+                    .flat_map(|set| &set.values)
+                    .chain(
+                        template
+                            .constraints
+                            .iter()
+                            .flat_map(|constraints| &constraints.allowed_values_in_order),
+                    ),
             );
             if values
                 .into_iter()
@@ -622,6 +644,16 @@ mod tests {
         let changes = [
             ("/constraints", serde_json::json!([]), "slot vectors"),
             ("/dynamic_defaults", serde_json::json!([]), "slot vectors"),
+            (
+                "/constraints/0/allowed_values_in_order",
+                serde_json::json!([]),
+                "source order",
+            ),
+            (
+                "/constraints/0/allowed_values_in_order/0",
+                serde_json::json!({"Integer": 1}),
+                "source order",
+            ),
             (
                 "/constraints/0/allowed_values/0/values/0",
                 serde_json::json!({"Integer": 1}),
@@ -1859,11 +1891,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-8 fixture: ordered and template splits,
+    /// Source of the committed schema-9 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-8.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-9.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -2021,11 +2053,26 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_eight_snapshot_resumes_matches_initializers_methods_addresses_and_defaults()
-    {
+    fn committed_schema_eight_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-8.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(8))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_nine_snapshot_resumes_matches_initializers_methods_addresses_and_defaults()
+    {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-9.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
+        assert_eq!(integer_rows(&engine, "random-first"), [[71_876_166]]);
+        let mut random = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        random
+            .load_str("(assert (random-resume (fixture-random)))")
+            .unwrap();
+        assert_eq!(integer_rows(&random, "random-resume"), [[708_592_740]]);
         let address = engine.get_global("fixture-address").unwrap();
         assert!(
             matches!(address, Value::FactAddress(address) if address.public_index().is_some_and(|index| index > 0))
@@ -2118,11 +2165,77 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-8 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_eight_fixture() {
+    fn builtin_state_resumes_in_every_snapshot_format() {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                r#"
+            (deftemplate z (slot x))
+            (deftemplate a (slot value (allowed-values z 7 "a" 2.5)))
+            (deftemplate z (slot y))
+            (defrule first (never) =>)
+            (defrule second (never) =>)
+            (defrule first (never) =>)
+            (assert (draw (progn (seed 42) (random))))
+            (defrule report (resume) =>
+              (printout t (get-deftemplate-list) "|" (get-defrule-list) "|"
+                (deftemplate-slot-allowed-values a value) "|" (random) crlf))
+        "#,
+            )
+            .unwrap();
+        let expected = "(initial-fact a z never draw resume)|(second first report)|(z 7 \"a\" 2.5)|708592740\n";
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            restored.load_str("(assert (resume))").unwrap();
+            restored.run(RunLimit::Unlimited).unwrap();
+            assert_eq!(restored.get_output("t"), Some(expected));
+            assert!(restored.action_diagnostics().is_empty());
+        }
+    }
+
+    #[test]
+    fn snapshots_reject_invalid_random_state_and_construct_declarations() {
+        let engine = Engine::with_rules(
+            "(deftemplate item (slot value (allowed-values a 7))) (defrule r (never) =>)",
+        )
+        .unwrap();
+        for field in ["template_declarations", "rule_declarations"] {
+            for operation in ["duplicate", "missing", "module", "qualified"] {
+                let invalid = alter_state(&engine, |state| {
+                    let entries = state[field].as_array_mut().unwrap();
+                    match operation {
+                        "duplicate" => entries.push(entries[0].clone()),
+                        "missing" => entries.clear(),
+                        "module" => entries[0][0] = serde_json::json!(999),
+                        "qualified" => entries[0][1] = serde_json::json!("MAIN::name"),
+                        _ => unreachable!(),
+                    }
+                });
+                assert!(
+                    matches!(invalid, Err(SerializationError::InvalidState(_))),
+                    "{field}: {operation}"
+                );
+            }
+        }
+        for front in [31, usize::MAX] {
+            let invalid = alter_state(&engine, |state| {
+                state["globals"]["random"]["front"] = serde_json::json!(front);
+            });
+            assert!(matches!(invalid, Err(SerializationError::InvalidState(_))));
+        }
+        let invalid = alter_state(&engine, |state| {
+            state["globals"]["random"]["words"] = serde_json::json!(vec![0; 31]);
+        });
+        assert!(matches!(invalid, Err(SerializationError::InvalidState(_))));
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-9 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_nine_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-8.cbor");
+            .join("tests/fixtures/snapshots/schema-9.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

@@ -25,7 +25,12 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 8. Templates retain allowed-value lists, numeric ranges,
+The current schema is 9. Snapshots retain the per-engine random generator's
+position, construct declaration order for introspection, and the original order
+of allowed slot values. Restoring never reseeds the random stream or sorts those
+lists. Schema 8 lacks this state and is rejected with `UnsupportedVersion(8)`.
+
+Templates retain allowed-value lists, numeric ranges,
 multislot cardinality constraints, evaluated static defaults, and deferred dynamic
 defaults with their defining module. Restoring a snapshot does not execute
 defaults; omitted slots evaluate dynamic defaults when a fact is asserted.
@@ -93,7 +98,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`8`) |
+| 8–9 | Little-endian schema version (`9`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

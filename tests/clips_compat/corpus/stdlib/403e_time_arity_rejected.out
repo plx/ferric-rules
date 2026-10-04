@@ -1,0 +1,6 @@
+[ARGACCES4] Function time expected exactly 0 argument(s)
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (printout t (time 1)

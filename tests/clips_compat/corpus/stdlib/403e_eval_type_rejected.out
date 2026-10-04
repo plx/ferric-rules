@@ -1,0 +1,6 @@
+[ARGACCES5] Function eval expected argument #1 to be of type symbol or string
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (printout t (eval 3)

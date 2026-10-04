@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 796
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 889
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -825,6 +825,13 @@ reevaluates candidate queries, including their side effects:
 ;; (annotate 7) => "int+num(7)"
 ```
 
+`(next-methodp)` tests for another applicable method without advancing the
+current chain; its parameter queries can have side effects.
+`(override-next-method <args>...)` searches less-specific methods using replacement
+arguments. `(call-specific-method <generic> <index> <args>...)` invokes the
+selected method when its restrictions match. Nested calls restore the caller's
+method-chain context afterward.
+
 ### Wildcard Parameters
 
 Methods support wildcard parameters for variable-arity dispatch, with the
@@ -918,8 +925,17 @@ which rules are eligible to fire, not which facts are visible.
 
 ## 16.10 Standard Library
 
-Ferric implements the following standard library functions. All behave
-identically to their CLIPS counterparts for the supported argument types.
+Ferric implements the functions below, with CLIPS 6.30 reference cases for
+supported behavior. Compatibility boundaries are called out here and in §16.11;
+this is not a claim that every built-in or argument combination is identical.
+
+Known arity and literal argument types are checked while loading constructs.
+For example, `(abs 1 2)`, `(eq a)`, and `(min 1 a)` reject the containing rule
+with an `ARGACCES4` or `ARGACCES5` diagnostic. An invalid replacement retains
+the previous rule or callable, and independent later definitions can still
+load. Computed values and dynamically selected `funcall` targets retain runtime
+checks. An explicit `expand$` defers the surrounding call's arity check until
+its fields have been expanded.
 
 ### Math Functions
 
@@ -930,7 +946,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `*` | Multiplication | `(* 4 5)` => `20` |
 | `/` | Division | `(/ 10 3)` => `3.333...` |
 | `div` | Integer division | `(div 10 3)` => `3` |
-| `mod` | Modulo | `(mod 10 3)` => `1` |
+| `mod` | Remainder; FLOAT if either operand is FLOAT | `(mod 7.5 2)` => `1.5` |
 | `abs` | Absolute value | `(abs -5)` => `5` |
 | `min` | Minimum | `(min 3 7)` => `3` |
 | `max` | Maximum | `(max 3 7)` => `7` |
@@ -955,6 +971,12 @@ identically to their CLIPS counterparts for the supported argument types.
 tie: `(max 1 1.0)` is `1`. For a FLOAT, `round` computes `ceil(x - 0.5)` as
 CLIPS does, so `(round -0.49999999999999994)` is `-1`.
 
+Domain errors in `sqrt`, `asin`, `acos`, `acosh`, `atanh`, `log`, `log10`,
+and `**` stop the current run with an `EMATHFUN1` diagnostic. Zero logarithm
+arguments report `EMATHFUN2`; a `tan` asymptote reports `EMATHFUN3`. Following
+CLIPS, overflow from functions such as `(exp 1000)` can still return `inf.0`.
+These errors preserve output already produced and stop later RHS actions.
+
 ### Type Conversion
 
 | Function | Description |
@@ -969,11 +991,14 @@ CLIPS does, so `(round -0.49999999999999994)` is `-1`.
 | `=` | First numeric operand equals every subsequent operand |
 | `!=` / `<>` | First numeric operand differs from every subsequent operand |
 | `>`, `<`, `>=`, `<=` | Each adjacent numeric pair satisfies the ordering |
-| `eq` | Value equality (type-sensitive) |
-| `neq` | Value inequality |
+| `eq` | First operand equals every subsequent operand (type-sensitive) |
+| `neq` | First operand differs from every subsequent operand (type-sensitive) |
 
 Numeric comparisons take two or more operands and stop at the first failed
 comparison: `(< 2 1 (later-call))` returns FALSE without calling `later-call`.
+`eq` and `neq` also take two or more operands and stop at the first failed
+comparison. `(neq a b b)` is TRUE: the later operands need not differ from
+each other.
 
 ### Logical Functions
 
@@ -1013,11 +1038,18 @@ comparison: `(< 2 1 (later-call))` returns FALSE without calling `later-call`.
 | `string-to-field` | First CLIPS field of a STRING, SYMBOL or INSTANCE-NAME | `(string-to-field "42 rest")` => `42` |
 | `explode$` | Every CLIPS field of a STRING, as a multifield | `(explode$ "a \"b c\" 3")` => `(a "b c" 3)` |
 | `symbol-to-instance-name` | SYMBOL to INSTANCE-NAME | `(symbol-to-instance-name x)` => `[x]` |
-| `instance-name-to-symbol` | INSTANCE-NAME (or SYMBOL) to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
+| `instance-name-to-symbol` | INSTANCE-NAME to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
 
-The string functions read an INSTANCE-NAME as its name without brackets, and
-count characters (Unicode scalar values).
+`str-cat` and `sym-cat` require at least one argument. They accept STRING,
+SYMBOL, INSTANCE-NAME, INTEGER, and FLOAT values; a multifield, address, or
+VOID result is an error. A failing operand prevents evaluation of later
+operands. Use `implode$` when a multifield's printed fields are wanted.
+
+Character-oriented string functions read an INSTANCE-NAME without brackets
+and count Unicode scalar values. `length` and `length$` instead accept a
+MULTIFIELD, SYMBOL, or STRING: they count fields for a multifield and bytes
+for a lexeme. Both return `6` for `"héllo"`.
 
 `string-to-field`, `explode$` and `read` use the CLIPS 6.30 field scanner:
 quoted strings (with `\` escapes) are one STRING field, numbers keep their
@@ -1044,7 +1076,7 @@ files that use CR-only line endings.
 |----------|-------------|---------|
 | `create$` | Create a multifield | `(create$ a b c)` |
 | `implode$` | Convert multifield fields to a STRING | `(implode$ (create$ a 3))` => `"a 3"` |
-| `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
+| `length`, `length$` | Multifield field count or SYMBOL/STRING byte length | `(length$ (create$ a b c))` => `3` |
 | `nth$` | Get nth element (1-indexed), `nil` if absent | `(nth$ 2 (create$ a b c))` => `b` |
 | `member$` | Find element position or contiguous subsequence range | `(member$ b (create$ a b c))` => `2` |
 | `subsetp` | Subset test | `(subsetp (create$ a) (create$ a b))` => `TRUE` |
@@ -1053,11 +1085,14 @@ files that use CR-only line endings.
 | `replace$` | Replace range with values | `(replace$ (create$ a b c) 2 2 x)` => `(a x c)` |
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
+| `expand$` | Expand a multifield into an ordinary call's argument list | `(+ (expand$ (create$ 1 2 3)))` => `6` |
+| `delete-member$` | Remove matching fields or contiguous subsequences | `(delete-member$ (create$ a b a c) a)` => `(b c)` |
+| `replace-member$` | Replace matching fields or subsequences | `(replace-member$ (create$ a b a) x a)` => `(x b x)` |
 | `sort` | Stable predicate sort of scalar and multifield arguments | `(sort > (create$ 3 1 2))` => `(1 2 3)` |
 
 `nth$` returns `nil` for a position that is zero, negative or past the end.
-CLIPS rejects a literal FLOAT position at load; Ferric truncates it when it
-runs. `member$` returns an INTEGER for a single-field match and a `(start end)`
+Literal FLOAT positions are rejected at load; computed FLOAT positions are
+truncated at runtime, following CLIPS. `member$` returns an INTEGER for a single-field match and a `(start end)`
 pair for a longer contiguous one: `(member$ (create$ b c) (create$ a b c d))`
 is `(2 3)`.
 
@@ -1071,6 +1106,66 @@ predicate answers "should these two be exchanged?", so `(sort > (create$ 3 1
 2))` returns `(1 2 3)`. It is a stable merge sort that calls the predicate in
 the same order as CLIPS 6.30. A predicate error or an unknown name is an action
 error; CLIPS instead reports an unknown name and continues with `FALSE`.
+
+Explicit `expand$` operands are evaluated first, in source order; remaining
+operands keep their ordinary evaluation order and short-circuit behavior.
+Expansion applies to function argument lists, not standalone body actions or
+raw `assert` fact fields. Ordinary `progn` evaluates its expressions in order
+and returns the last value, or FALSE for an empty body; it does not accept
+sequence expansion directly in its body.
+
+`funcall` evaluates all its operands before invoking the selected function,
+including operands of short-circuit targets such as `and` and `eq`. Argument
+effects can install a new callable definition before that invocation begins.
+
+### Construct Introspection
+
+| Functions | Result |
+|-----------|--------|
+| `get-deftemplate-list`, `get-defglobal-list`, `get-defrule-list` | Names owned by the current or specified module; `*` returns qualified names from all modules |
+| `deftemplate-slot-names` | Slot names, including `implied` for an ordered relation |
+| `deftemplate-slot-existp`, `deftemplate-slot-multip`, `deftemplate-slot-singlep` | Slot existence or cardinality kind |
+| `deftemplate-slot-types`, `deftemplate-slot-allowed-values` | Declared types or allowed values |
+| `deftemplate-slot-range`, `deftemplate-slot-cardinality` | Numeric or field-count bounds |
+| `deftemplate-slot-defaultp` | `static`, `dynamic`, or FALSE when no default exists |
+| `deftemplate-slot-default-value` | Stored static value, evaluation of the dynamic default, or `?NONE` |
+
+Ordered relation declarations remain available to introspection after their
+last fact is retracted and across reset. Querying a dynamic default evaluates
+its expression, including side effects; merely listing slots or asking the
+default kind does not.
+
+### Dynamic Source, Randomness, and Time
+
+| Function | Behavior |
+|----------|----------|
+| `eval` | Evaluate the first expression in a STRING or SYMBOL and return its value |
+| `build` | Load the first construct in a STRING or SYMBOL; return TRUE or FALSE |
+| `assert-string`, `str-assert` | Assert the first fact in a STRING; return its address or FALSE for a suppressed duplicate |
+| `seed` | Set the random stream from one INTEGER seed; returns VOID |
+| `random` | Return an INTEGER, optionally within inclusive INTEGER bounds |
+| `time` | Return wall-clock seconds since the Unix epoch as a FLOAT |
+
+Dynamic source uses the active module and does not capture surrounding local
+variables or method-chain state. Normal expression, source-size, and execution
+limits still apply. `build` is unavailable while another construct is being
+loaded, including in a construct initializer; pinned CLIPS 6.30 crashes for
+these reentrant initializer cases. Use a host load call or a later RHS action.
+A failed `build` returns FALSE and reports its load diagnostics; earlier effects
+of incremental loading are retained. A currently executing rule or callable
+cannot be replaced, including through a helper's `build` call; the original
+definition remains installed.
+
+Each engine owns its random state, and snapshots preserve that state. Seeded
+explicit draws match the pinned glibc-based CLIPS 6.30 reference. Ferric does
+not consume this stream to assign random agenda activation ties: CLIPS code
+that interleaves random draws with activation creation can therefore observe a
+different sequence. This does not add support for the Random conflict strategy.
+`time` is inherently nondeterministic. Reversed `random` bounds produce a
+recoverable `MISCFUN3` notice and return the unbounded draw. A wrong argument
+count that reaches execution likewise consumes and returns a draw, emits
+`MISCFUN2`, and skips its operands. Literal calls with more than two arguments
+are rejected at load, following CLIPS's source restriction.
 
 ### Fact Introspection Functions
 
@@ -1179,6 +1274,15 @@ The following features are explicitly out of scope.
 | Triple-nested negation | Not supported | Decompose into multiple rules |
 | `(exists (not ...))` | Not supported | Use separate rules |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
+| File routers (`open` and file-backed logical-name I/O) | Not supported | `close` is a compatibility stub; use host I/O, captured output, `load-facts`, or `save-facts` |
+| Source command `load` | Compatibility stub returning FALSE | Use host `Engine::load_str` / `load_file`, or `build` for one construct |
+| Environment commands `load*`, `facts`, `batch*`, `exit`, `ppfact` | Not supported | Drive loading, inspection, batching, and process lifetime from the host |
+| Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
+| Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
+| `set-salience-evaluation` | Not supported | Salience is static; dynamic salience evaluation is unavailable |
+| Reentrant `build` during construct initialization | Explicitly rejected | Invoke it after loading; the pinned reference crashes on these initializer cases |
+| Generic and method redefinition through `build` or source loading | Partial support | Repeated `defgeneric` declarations and an occupied explicit method index are rejected. An implicit method with equivalent restrictions is added with a new index instead of replacing the prior method, unlike CLIPS. New methods with distinct restrictions are supported. |
+| Other absent non-COOL built-ins | Not supported | A name omitted from the supported surface is not implicitly provided; unknown calls report `EXPRNPSR3` |
 
 ---
 

@@ -1,0 +1,6 @@
+[ARGACCES4] Function replace-member$ expected at least 3 argument(s)
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (replace-member$ (create$ a) X)

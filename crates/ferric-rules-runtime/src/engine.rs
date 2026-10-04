@@ -4,7 +4,7 @@
 //! for embedding applications, including fact assertion/retraction and
 //! transferable ownership for serialized host work.
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use thiserror::Error;
@@ -159,6 +159,10 @@ pub struct Engine {
     // retain a cheap handle; redefinition installs a fresh allocation so captured
     // facts keep the exact shape against which they were validated.
     pub(crate) template_defs: slotmap::SlotMap<TemplateId, Arc<RegisteredTemplate>>,
+    /// Persistent template names in declaration order, including implicit ordered relations.
+    pub(crate) template_declarations: Vec<(ModuleId, String)>,
+    /// Derived membership index; omitted from snapshots.
+    pub(crate) template_declaration_names: HashSet<String>,
     pub(crate) template_local_ids: crate::loader::TemplateLocalIndex,
     /// Output router for capturing `printout` and related I/O.
     pub(crate) router: OutputRouter,
@@ -174,6 +178,8 @@ pub struct Engine {
     pub(crate) module_registry: ModuleRegistry,
     /// Rule-to-module association for focus-aware execution.
     pub(crate) rule_modules: RuleIndex<ModuleId>,
+    /// Active source rule names in declaration order, independent of reused executable slots.
+    pub(crate) rule_declarations: Vec<(ModuleId, String)>,
     /// Template-to-module association for visibility checking.
     pub(crate) template_modules: slotmap::SecondaryMap<ferric_rules_core::TemplateId, ModuleId>,
     /// Function-to-module association for consistency-check bookkeeping.
@@ -191,6 +197,11 @@ pub struct Engine {
     pub(crate) fact_epoch: u64,
     pub(crate) fact_index_starts_at_zero: bool,
     pub(crate) reset_in_progress: bool,
+    pub(crate) source_load_depth: usize,
+    /// Transient executing callable identities, retained across nested evaluator frames.
+    pub(crate) active_callables: Vec<(ModuleId, String)>,
+    /// Currently executing RHS definitions; transient across snapshot transfer.
+    pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
@@ -207,6 +218,21 @@ impl Engine {
         if rules.is_empty() {
             return;
         }
+        let retired: HashSet<_> = rules
+            .iter()
+            .filter_map(|rule| {
+                let info = rule_index_get(&self.rule_info, *rule)?;
+                let module = *rule_index_get(&self.rule_modules, *rule)?;
+                Some((
+                    module,
+                    info.name
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&info.name)
+                        .to_owned(),
+                ))
+            })
+            .collect();
         for rule in rules {
             if let Some(slot) = self.rule_info.get_mut(rule.0 as usize) {
                 *slot = None;
@@ -215,6 +241,19 @@ impl Engine {
                 *slot = None;
             }
         }
+        let remaining: HashSet<_> = self
+            .rule_info
+            .iter()
+            .zip(&self.rule_modules)
+            .filter_map(|(info, module)| {
+                Some((
+                    *module.as_ref()?,
+                    info.as_ref()?.name.rsplit("::").next()?.to_owned(),
+                ))
+            })
+            .collect();
+        self.rule_declarations
+            .retain(|entry| !retired.contains(entry) || remaining.contains(entry));
         self.compiler.remove_rules(&mut self.rete, rules);
     }
 
@@ -245,6 +284,8 @@ impl Engine {
             rule_info: Vec::new(),
             template_ids: HashMap::default(),
             template_defs: slotmap::SlotMap::with_key(),
+            template_declarations: vec![(ModuleId(0), "initial-fact".to_owned())],
+            template_declaration_names: std::iter::once("initial-fact".to_owned()).collect(),
             template_local_ids: crate::loader::TemplateLocalIndex::default(),
             router: OutputRouter::new(),
             functions: FunctionEnv::new(),
@@ -253,6 +294,7 @@ impl Engine {
             generics: GenericRegistry::new(),
             module_registry: ModuleRegistry::new(),
             rule_modules: Vec::new(),
+            rule_declarations: Vec::new(),
             template_modules: slotmap::SecondaryMap::new(),
             function_modules: HashMap::default(),
             global_modules: HashMap::default(),
@@ -261,6 +303,9 @@ impl Engine {
             fact_epoch: 0,
             fact_index_starts_at_zero: false,
             reset_in_progress: false,
+            source_load_depth: 0,
+            active_callables: Vec::new(),
+            active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
             halted: false,
@@ -323,6 +368,14 @@ impl Engine {
         &mut self,
         fact: Fact,
     ) -> Result<FactAssertionResult<FactId>, EngineError> {
+        if let Fact::Ordered(ordered) = &fact {
+            if let Some(name) = self
+                .resolve_core_symbol(ordered.relation)
+                .map(str::to_owned)
+            {
+                self.declare_implicit_template(&name, self.module_registry.current_module());
+            }
+        }
         Ok(
             match self
                 .fact_base
@@ -1111,6 +1164,7 @@ impl Engine {
             self.fact_index_starts_at_zero,
         );
 
+        self.active_rules.push((current_module, Arc::clone(&info)));
         let (fired, errors) = {
             let mut action_context = actions::ActionExecutionContext {
                 engine: self,
@@ -1118,6 +1172,7 @@ impl Engine {
             };
             actions::execute_actions(&token, info.as_ref(), &mut action_context, &collected_facts)
         };
+        self.active_rules.pop();
         // Retractions and modifications performed by RHS actions can unblock
         // negative nodes and create new predicate candidates.
         self.drain_pending_predicate_matches();
@@ -1441,13 +1496,20 @@ impl Engine {
         self.template_ids.clear();
         self.template_defs = slotmap::SlotMap::with_key();
         self.template_local_ids.clear();
+        self.template_declarations = vec![(ModuleId(0), "initial-fact".to_owned())];
+        self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
         self.router.clear();
         self.functions = FunctionEnv::new();
+        // Clear removes constructs and bindings, but does not reseed the
+        // environment's random stream (nor affect another engine's stream).
+        let random = std::mem::take(&mut self.globals.random);
         self.globals = GlobalStore::new();
+        self.globals.random = random;
         self.registered_globals.clear();
         self.generics = GenericRegistry::new();
         self.module_registry = ModuleRegistry::new();
         self.rule_modules.clear();
+        self.rule_declarations.clear();
         self.template_modules = slotmap::SecondaryMap::new();
         self.function_modules.clear();
         self.global_modules.clear();

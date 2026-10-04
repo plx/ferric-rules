@@ -153,7 +153,7 @@ fn undefrule_cycles_reclaim_graphs_and_keep_independent_rules_live() {
         engine
             .load_str(&format!(
                 "(defrule temporary-{cycle} (unused-{cycle}) =>)
-             (defrule erase (declare (salience 100)) => (undefrule temporary-{cycle} erase))"
+             (defrule erase (declare (salience 100)) => (undefrule temporary-{cycle}) (undefrule erase))"
             ))
             .unwrap();
         run(&mut engine, 1);

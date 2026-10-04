@@ -1550,7 +1550,7 @@
         "summary": "Documented divergence: CLIPS stores the byte of an escaped end of input, which is not UTF-8; Ferric strings are UTF-8 and hold U+FFFD",
         "observed": {
           "phase": "complete",
-          "output": "first:FALSE:FALSE:TRUE:FALSE:[unfinished�]\neof:FALSE:FALSE:FALSE:TRUE:[EOF]\n",
+          "output": "first:FALSE:FALSE:TRUE:FALSE:[unfinished\ufffd]\neof:FALSE:FALSE:FALSE:TRUE:[EOF]\n",
           "notices": "\n[SCANNER1] Encountered End-Of-File while scanning a string\n",
           "diagnostics": []
         }
@@ -6762,7 +6762,7 @@
         "summary": "Documented divergence: %.1s cuts a UTF-8 character; CLIPS emits the partial byte, Ferric U+FFFD",
         "observed": {
           "phase": "complete",
-          "output": "[  é|é|�]\n",
+          "output": "[  \u00e9|\u00e9|\ufffd]\n",
           "diagnostics": []
         }
       }
@@ -6822,7 +6822,7 @@
         "summary": "Documented divergence: %c of a byte of 128 or more; CLIPS emits the raw byte, Ferric U+FFFD",
         "observed": {
           "phase": "complete",
-          "output": "precision:[A|A|   A|A   ]\nempty:[|   |:end]\nzero:[|   |:end]\nbytes:[�|  �|�|�]\n",
+          "output": "precision:[A|A|   A|A   ]\nempty:[|   |:end]\nzero:[|   |:end]\nbytes:[\ufffd|  \ufffd|\ufffd|\ufffd]\n",
           "diagnostics": []
         }
       }
@@ -8013,6 +8013,868 @@
         "printout",
         "deffunction"
       ]
+    },
+    {
+      "path": "generics/403g_next_methodp_queries.clp",
+      "level": "interaction",
+      "covers": [
+        "generic-method-control",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "generics/403g_override_preserves_chain.clp",
+      "level": "interaction",
+      "covers": [
+        "generic-method-control",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "generics/403g_specific_nested_chain.clp",
+      "level": "interaction",
+      "covers": [
+        "generic-method-control",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "procedural/403p_expand_assert_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "assert"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_expand_body_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_expand_if_body_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "if"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_expand_nested_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_expand_progn_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "progn"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_expand_return_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_progn_callable_return.clp",
+      "level": "interaction",
+      "covers": [
+        "progn",
+        "return",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/403p_progn_operand_return_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "progn",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/403p_progn_rule_control.clp",
+      "level": "interaction",
+      "covers": [
+        "progn",
+        "break",
+        "return",
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/403p_progn_values_bindings.clp",
+      "level": "interaction",
+      "covers": [
+        "progn",
+        "bind"
+      ]
+    },
+    {
+      "path": "stdlib/403b_acos.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_acosh.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_arity_abs.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_arity_eq.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_arity_str_cat.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_arity_str_length.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_asin.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_atanh.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_equality_short_circuit.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403b_equality_variadic.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403b_length_lexeme_bytes.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403b_literal_length.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_literal_min.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_literal_mod.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_literal_sqrt.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "issue-403"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403b_log10_zero.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_log_negative.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_log_zero.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_math_valid_boundaries.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403b_mod_numeric.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403b_pow_fraction.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_pow_zero.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_sqrt.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_str_cat_multifield.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_str_cat_void.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_sym_cat_multifield.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403b_tan_asymptote.clp",
+      "level": "basic",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403i_construct_module_lists.clp",
+      "level": "interaction",
+      "covers": [
+        "construct-introspection",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403i_declaration_order_lifecycle.clp",
+      "level": "interaction",
+      "resets": 2,
+      "covers": [
+        "construct-introspection",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403i_qualified_private_constructs.clp",
+      "level": "interaction",
+      "covers": [
+        "construct-introspection",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403i_template_metadata.clp",
+      "level": "interaction",
+      "covers": [
+        "construct-introspection",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "stdlib/403m_delete_member_arity_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "delete-member$",
+        "arity"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403m_delete_member_empty_pattern.clp",
+      "level": "boundary",
+      "covers": [
+        "delete-member$",
+        "evaluation-error"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403m_delete_member_patterns.clp",
+      "level": "interaction",
+      "covers": [
+        "delete-member$",
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/403m_delete_member_type_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "delete-member$",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403m_expand_arity_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "arity"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403m_expand_call_targets.clp",
+      "level": "interaction",
+      "covers": [
+        "expand$",
+        "deffunction",
+        "defgeneric",
+        "funcall",
+        "defmodule"
+      ]
+    },
+    {
+      "path": "stdlib/403m_expand_delete_repro.clp",
+      "level": "interaction",
+      "covers": [
+        "expand$",
+        "delete-member$"
+      ]
+    },
+    {
+      "path": "stdlib/403m_expand_dynamic_type.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "primitive-types"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403m_expand_effects_once.clp",
+      "level": "interaction",
+      "covers": [
+        "expand$",
+        "assert",
+        "deffunction",
+        "evaluation-order"
+      ]
+    },
+    {
+      "path": "stdlib/403m_expand_empty_arity.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "arity"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403m_expand_fixed_arity.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "arity"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403m_expand_order_lazy.clp",
+      "level": "interaction",
+      "covers": [
+        "expand$",
+        "evaluation-order",
+        "and"
+      ]
+    },
+    {
+      "path": "stdlib/403m_expand_printout_bind.clp",
+      "level": "interaction",
+      "covers": [
+        "expand$",
+        "printout",
+        "bind"
+      ]
+    },
+    {
+      "path": "stdlib/403m_expand_scalar_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "expand$",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403m_member_empty_inputs.clp",
+      "level": "interaction",
+      "covers": [
+        "delete-member$",
+        "replace-member$",
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/403m_member_type_equality.clp",
+      "level": "interaction",
+      "covers": [
+        "delete-member$",
+        "replace-member$",
+        "primitive-types"
+      ]
+    },
+    {
+      "path": "stdlib/403m_replace_member_arity_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "replace-member$",
+        "arity"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403m_replace_member_empty_and_self.clp",
+      "level": "interaction",
+      "covers": [
+        "replace-member$",
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/403m_replace_member_empty_pattern.clp",
+      "level": "boundary",
+      "covers": [
+        "replace-member$",
+        "evaluation-error"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403m_replace_member_patterns.clp",
+      "level": "interaction",
+      "covers": [
+        "replace-member$",
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/403e_random_seed_stream.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed"
+      ]
+    },
+    {
+      "path": "stdlib/403e_random_inclusive_bounds.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed",
+        "integer-boundaries"
+      ]
+    },
+    {
+      "path": "stdlib/403e_random_seed_wrapping.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed",
+        "integer-boundaries"
+      ]
+    },
+    {
+      "path": "stdlib/403e_random_operand_order.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed",
+        "evaluation-order"
+      ]
+    },
+    {
+      "path": "stdlib/403e_random_invalid_range_recovers.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed",
+        "diagnostic-recovery"
+      ],
+      "recoverable_random_notices": true
+    },
+    {
+      "path": "stdlib/403e_time_value.clp",
+      "level": "interaction",
+      "covers": [
+        "time",
+        "floatp"
+      ]
+    },
+    {
+      "path": "stdlib/403e_eval_values.clp",
+      "level": "interaction",
+      "covers": [
+        "eval",
+        "defglobal",
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/403e_eval_first_form.clp",
+      "level": "interaction",
+      "covers": [
+        "eval",
+        "source-scanning"
+      ]
+    },
+    {
+      "path": "stdlib/403e_eval_fresh_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "eval",
+        "bind",
+        "loop-for-count",
+        "lexical-scope"
+      ]
+    },
+    {
+      "path": "stdlib/403e_eval_definition_module.clp",
+      "level": "interaction",
+      "covers": [
+        "eval",
+        "deffunction",
+        "defmodule",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/403e_assert_string_aliases.clp",
+      "level": "interaction",
+      "covers": [
+        "assert-string",
+        "str-assert",
+        "fact-slot-value",
+        "source-scanning"
+      ]
+    },
+    {
+      "path": "stdlib/403e_assert_string_duplicate.clp",
+      "level": "interaction",
+      "covers": [
+        "assert-string",
+        "fact-existp",
+        "fact-duplication"
+      ]
+    },
+    {
+      "path": "stdlib/403e_build_rule_use.clp",
+      "level": "interaction",
+      "covers": [
+        "build",
+        "assert-string",
+        "defrule",
+        "deftemplate"
+      ]
+    },
+    {
+      "path": "stdlib/403e_build_function_first_form.clp",
+      "level": "interaction",
+      "covers": [
+        "build",
+        "eval",
+        "deffunction",
+        "source-scanning"
+      ]
+    },
+    {
+      "path": "stdlib/403e_build_nonconstruct_recovers.clp",
+      "level": "interaction",
+      "covers": [
+        "build",
+        "assert-string",
+        "diagnostic-recovery"
+      ]
+    },
+    {
+      "path": "stdlib/403e_eval_parameter_isolation.clp",
+      "level": "boundary",
+      "covers": [
+        "eval",
+        "deffunction",
+        "lexical-scope"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403e_eval_calls_have_separate_locals.clp",
+      "level": "boundary",
+      "covers": [
+        "eval",
+        "bind",
+        "lexical-scope"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403e_eval_unknown_function.clp",
+      "level": "boundary",
+      "covers": [
+        "eval",
+        "unknown-function"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403e_eval_return_context.clp",
+      "level": "boundary",
+      "covers": [
+        "eval",
+        "return"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403e_assert_string_invalid_source.clp",
+      "level": "boundary",
+      "covers": [
+        "assert-string",
+        "source-scanning"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403e_random_arity_recovers.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed",
+        "arity",
+        "evaluation-order"
+      ],
+      "recoverable_random_notices": true
+    },
+    {
+      "path": "stdlib/403e_seed_type_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "seed",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403e_time_arity_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "time",
+        "arity"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403e_eval_type_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "eval",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403e_assert_string_type_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "assert-string",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403e_build_arity_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "build",
+        "arity"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "stdlib/403e_funcall_arity_evaluates_arguments.clp",
+      "level": "boundary",
+      "covers": [
+        "funcall",
+        "abs",
+        "arity",
+        "evaluation-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/403e_funcall_eager_arguments.clp",
+      "level": "interaction",
+      "covers": [
+        "funcall",
+        "eq",
+        "and",
+        "evaluation-order"
+      ]
+    },
+    {
+      "path": "stdlib/403e_random_funcall_arity_recovers.clp",
+      "level": "interaction",
+      "covers": [
+        "random",
+        "seed",
+        "funcall",
+        "evaluation-order"
+      ],
+      "recoverable_random_notices": true
     }
   ]
 }

@@ -1,0 +1,6 @@
+[ARGACCES5] Function delete-member$ expected argument #1 to be of type multifield
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (delete-member$ 1 a)

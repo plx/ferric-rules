@@ -1,0 +1,6 @@
+[ARGACCES4] Function delete-member$ expected at least 2 argument(s)
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (delete-member$ (create$ a))

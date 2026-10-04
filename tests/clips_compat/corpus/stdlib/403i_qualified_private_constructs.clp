@@ -1,0 +1,7 @@
+(defmodule A)
+        (deftemplate item (slot x))
+        (defgeneric g)
+        (defmethod g 1 (?x) ?x)
+        (defmodule B)
+        (defrule report => (printout t (deftemplate-slot-names A::item) "|" (call-specific-method A::g 1 7) crlf))
+        (defrule MAIN::start => (focus B))

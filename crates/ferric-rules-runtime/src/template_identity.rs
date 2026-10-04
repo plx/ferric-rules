@@ -163,3 +163,215 @@ impl Engine {
         }
     }
 }
+
+impl Engine {
+    pub(crate) fn declare_implicit_template(&mut self, raw: &str, module: ModuleId) {
+        let Ok(parsed) = crate::qualified_name::parse_qualified_name(raw) else {
+            return;
+        };
+        let local = parsed.local_name();
+        // Until ordered relations gain module-local identities, all callers share
+        // the first declaration's owner, matching their shared fact identity.
+        if self.template_declaration_names.contains(local)
+            || self.resolve_template_id(raw, module).is_ok()
+        {
+            return;
+        }
+        let owner = parsed
+            .module_name()
+            .and_then(|name| self.module_registry.get_by_name(name))
+            .unwrap_or(module);
+        self.template_declaration_names.insert(local.to_owned());
+        self.template_declarations.push((owner, local.to_owned()));
+    }
+
+    pub(crate) fn declare_explicit_template(&mut self, raw: &str, module: ModuleId) {
+        let local = raw.rsplit("::").next().unwrap_or(raw);
+        if !self.template_declaration_names.insert(local.to_owned()) {
+            self.template_declarations
+                .retain(|(owner, name)| *owner != module || name != local);
+        }
+        self.template_declarations.push((module, local.to_owned()));
+    }
+
+    pub(crate) fn has_implicit_template(&self, raw: &str, module: ModuleId) -> bool {
+        let Ok(parsed) = crate::qualified_name::parse_qualified_name(raw) else {
+            return false;
+        };
+        self.template_declarations.iter().any(|(owner, name)| {
+            name == parsed.local_name()
+                && parsed.module_name().map_or(true, |wanted| {
+                    self.module_registry.module_name(*owner) == Some(wanted)
+                })
+                && (parsed.module_name().is_some()
+                    || self.module_registry.is_construct_visible(
+                        module,
+                        *owner,
+                        "deftemplate",
+                        name,
+                    ))
+                && !self.template_defs.iter().any(|(id, template)| {
+                    self.template_modules.get(id) == Some(owner)
+                        && template.name.rsplit("::").next() == Some(name.as_str())
+                })
+        })
+    }
+
+    pub(crate) fn declare_expression_templates(
+        &mut self,
+        expression: &ActionExpr,
+        module: ModuleId,
+    ) {
+        let mut declarations = Vec::new();
+        self.collect_expression_templates(expression, module, &mut declarations);
+        declarations.sort_by_key(|(offset, _)| *offset);
+        for (_, name) in declarations {
+            self.declare_implicit_template(&name, module);
+        }
+    }
+
+    fn collect_expression_templates(
+        &self,
+        expression: &ActionExpr,
+        module: ModuleId,
+        names: &mut Vec<(usize, String)>,
+    ) {
+        match expression {
+            ActionExpr::FunctionCall(call) => {
+                if call.name == "assert" {
+                    for expression in &call.args {
+                        if let ActionExpr::FunctionCall(fact) = expression {
+                            if self.resolve_template_id(&fact.name, module).is_err() {
+                                names.push((fact.span.start.offset, fact.name.clone()));
+                            }
+                        }
+                    }
+                }
+                for expression in crate::effects::evaluated_arguments(self, module, call) {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                self.collect_expression_templates(condition, module, names);
+                for expression in then_actions.iter().chain(else_actions) {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                self.collect_expression_templates(condition, module, names);
+                for expression in body {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                self.collect_expression_templates(start, module, names);
+                self.collect_expression_templates(end, module, names);
+                for expression in body {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                self.collect_expression_templates(list_expr, module, names);
+                for expression in body {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                self.collect_expression_templates(query, module, names);
+                for expression in body {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_expression_templates(expr, module, names);
+                for (condition, body) in cases {
+                    self.collect_expression_templates(condition, module, names);
+                    for expression in body {
+                        self.collect_expression_templates(expression, module, names);
+                    }
+                }
+                for expression in default.iter().flatten() {
+                    self.collect_expression_templates(expression, module, names);
+                }
+            }
+            ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {}
+        }
+    }
+
+    pub(crate) fn declare_fact_templates(
+        &mut self,
+        fact: &ferric_rules_parser::FactBody,
+        module: ModuleId,
+    ) {
+        use ferric_rules_parser::{FactBody, FactValue};
+        let mut expressions = Vec::new();
+        match fact {
+            FactBody::Ordered(fact) => {
+                self.declare_implicit_template(&fact.relation, module);
+                expressions.extend(fact.values.iter().filter_map(|value| match value {
+                    FactValue::Expression(expression) => Some(expression.as_ref()),
+                    _ => None,
+                }));
+            }
+            FactBody::Template(fact) => {
+                let explicit = self.resolve_template_id(&fact.template, module).is_ok();
+                self.declare_implicit_template(&fact.template, module);
+                for slot in &fact.slot_values {
+                    if explicit {
+                        expressions.extend(slot.values.iter().filter_map(|value| match value {
+                            FactValue::Expression(expression) => Some(expression.as_ref()),
+                            _ => None,
+                        }));
+                    } else if let Some(expression) = &slot.ordered_expression {
+                        expressions.push(expression);
+                    }
+                }
+            }
+        }
+        for expression in expressions {
+            self.declare_expression_templates(expression, module);
+        }
+    }
+
+    pub(crate) fn declare_rule_templates(&mut self, rule: &RuleConstruct, module: ModuleId) {
+        let mut patterns: Vec<_> = rule.patterns.iter().rev().collect();
+        while let Some(pattern) = patterns.pop() {
+            match pattern {
+                Pattern::Ordered(pattern) => {
+                    self.declare_implicit_template(&pattern.relation, module);
+                }
+                Pattern::Not(pattern, _) | Pattern::Assigned { pattern, .. } => {
+                    patterns.push(pattern);
+                }
+                Pattern::And(children, _)
+                | Pattern::Or(children, _)
+                | Pattern::Exists(children, _)
+                | Pattern::Forall(children, _)
+                | Pattern::Logical(children, _) => patterns.extend(children.iter().rev()),
+                Pattern::Template(_) | Pattern::Test(..) => {}
+            }
+        }
+        for action in &rule.actions {
+            self.declare_expression_templates(
+                &ActionExpr::FunctionCall(action.call.clone()),
+                module,
+            );
+        }
+    }
+}

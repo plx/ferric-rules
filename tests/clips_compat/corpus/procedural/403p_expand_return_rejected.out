@@ -1,0 +1,6 @@
+[EXPRNPSR4] $ Sequence operator not a valid argument for return.
+
+ERROR:
+(deffunction MAIN::f
+   ()
+   (return (expand$ (create$ 7)))

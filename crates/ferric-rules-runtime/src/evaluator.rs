@@ -159,6 +159,24 @@ pub enum EvalError {
     #[doc(hidden)]
     #[error("internal break control escaped its loop at {}", format_span(.span.as_ref()))]
     BreakControl { span: Option<SourceSpan> },
+
+    #[error("[EMATHFUN1] Domain error for {function} function at {}", format_span(.span.as_ref()))]
+    MathDomain {
+        function: String,
+        span: Option<SourceSpan>,
+    },
+
+    #[error("[EMATHFUN2] Argument overflow for {function} function at {}", format_span(.span.as_ref()))]
+    MathOverflow {
+        function: String,
+        span: Option<SourceSpan>,
+    },
+
+    #[error("[EMATHFUN3] Singularity at asymptote in {function} function at {}", format_span(.span.as_ref()))]
+    MathSingularity {
+        function: String,
+        span: Option<SourceSpan>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +304,7 @@ pub enum RuntimeExpr {
 /// Active generic dispatch chain for `call-next-method` support.
 ///
 /// When a generic method is executing, this tracks the ordered list of
-/// arity/type-compatible candidates and the current position. Restriction
+/// methods and the current position. Restriction
 /// queries run only while selecting the current or next method.
 #[derive(Clone, Debug)]
 pub struct MethodChain {
@@ -294,7 +312,7 @@ pub struct MethodChain {
     pub generic_name: String,
     /// Module where the generic is defined.
     pub generic_module: crate::modules::ModuleId,
-    /// Arity/type-compatible candidates, sorted most-specific-first.
+    /// All methods, sorted most-specific-first; replacement arguments may change applicability.
     pub candidate_methods: Vec<crate::functions::RegisteredMethod>,
     /// Index of the currently executing method in `candidate_methods`.
     pub current_index: usize,
@@ -746,6 +764,14 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 })
         }
         RuntimeExpr::Call { name, args, span } => {
+            // CLIPS expands explicit sequence operands before evaluating the
+            // remaining arguments. Keep those ordinary expressions intact so
+            // short-circuit calls still decide whether to evaluate them.
+            let expanded = expand_call_arguments(ctx, args)?;
+            let args = expanded.as_deref().unwrap_or(args);
+            if expanded.is_some() {
+                validate_expanded_arity(name, args.len(), span.as_ref())?;
+            }
             // Per-call events preserve call structure without per-frame spans.
             // Cap deep-call emission to avoid amplifying stack pressure in
             // pathological recursion.
@@ -1656,6 +1682,30 @@ fn dispatch_user_function(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
+    with_active_callable(ctx, fn_module, &func.name, |ctx| {
+        dispatch_user_function_inner(ctx, func, fn_module, args, span)
+    })
+}
+
+fn with_active_callable<T>(
+    ctx: &mut EvalContext<'_>,
+    module: crate::modules::ModuleId,
+    name: &str,
+    evaluate: impl FnOnce(&mut EvalContext<'_>) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    ctx.engine.active_callables.push((module, name.to_owned()));
+    let result = evaluate(ctx);
+    ctx.engine.active_callables.pop();
+    result
+}
+
+fn dispatch_user_function_inner(
+    ctx: &mut EvalContext<'_>,
+    func: &UserFunction,
+    fn_module: crate::modules::ModuleId,
+    args: &[RuntimeExpr],
+    span: Option<SourceSpan>,
+) -> Result<Value, EvalError> {
     let span_ref = span.as_ref();
     let max_call_depth = ctx.engine.config.effective_max_call_depth();
 
@@ -1990,6 +2040,9 @@ fn select_method(
     span: Option<&SourceSpan>,
 ) -> Result<Option<SelectedMethod>, EvalError> {
     for (index, method) in chain.candidate_methods.iter().enumerate().skip(start) {
+        if !method_accepts_arguments(method, &chain.arg_values) {
+            continue;
+        }
         let (var_map, bindings) = bind_callable_arguments(
             ctx,
             &chain.generic_name,
@@ -2037,12 +2090,27 @@ fn dispatch_generic(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     let arg_values = eval_args(ctx, args)?;
-    let mut candidates: Vec<_> = generic
-        .methods
-        .iter()
-        .filter(|method| method_accepts_arguments(method, &arg_values))
+    // Argument effects may legally replace a generic's methods before it is
+    // executing. Selection observes the current definition after those effects.
+    let generic = ctx
+        .engine
+        .generics
+        .get(generic_module, &generic.name)
         .cloned()
-        .collect();
+        .unwrap_or_else(|| generic.clone());
+    with_active_callable(ctx, generic_module, &generic.name, |ctx| {
+        dispatch_generic_values(ctx, &generic, generic_module, arg_values, span)
+    })
+}
+
+fn dispatch_generic_values(
+    ctx: &mut EvalContext<'_>,
+    generic: &GenericFunction,
+    generic_module: crate::modules::ModuleId,
+    arg_values: Vec<Value>,
+    span: Option<SourceSpan>,
+) -> Result<Value, EvalError> {
+    let mut candidates = generic.methods.clone();
     candidates.sort_by(compare_method_specificity);
     if candidates.is_empty() {
         return Err(no_applicable_method(&generic.name, &arg_values, span));
@@ -2127,6 +2195,208 @@ fn dispatch_call_next_method(
         chain.generic_module,
         Some(chain),
     )
+}
+
+/// Generic control operations preserve the caller's chain and argument values.
+pub(crate) fn dispatch_method_control(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<SourceSpan>,
+) -> Result<Value, EvalError> {
+    match name {
+        "next-methodp" => {
+            check_arity_exact(name, args, 0, span.as_ref())?;
+            let applicable = if let Some(chain) = ctx.method_chain.clone() {
+                select_method(ctx, &chain, chain.current_index + 1, span.as_ref())?.is_some()
+            } else {
+                false
+            };
+            Ok(clips_bool(
+                applicable,
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            ))
+        }
+        "override-next-method" => {
+            let mut chain = ctx
+                .method_chain
+                .clone()
+                .ok_or_else(|| EvalError::TypeError {
+                    function: name.to_owned(),
+                    expected: "called from within a generic method body".to_owned(),
+                    actual: "called outside generic dispatch context".to_owned(),
+                    span: span.clone(),
+                })?;
+            chain.arg_values = eval_args(ctx, args)?;
+            let selected = select_method(ctx, &chain, chain.current_index + 1, span.as_ref())?
+                .ok_or_else(|| {
+                    no_applicable_method(&chain.generic_name, &chain.arg_values, span.clone())
+                })?;
+            invoke_control_method(ctx, chain, &selected, span)
+        }
+        "call-specific-method" => dispatch_specific_method(ctx, args, span),
+        _ => unreachable!("unknown generic control operation"),
+    }
+}
+
+fn invoke_control_method(
+    ctx: &mut EvalContext<'_>,
+    mut chain: MethodChain,
+    selected: &SelectedMethod,
+    span: Option<SourceSpan>,
+) -> Result<Value, EvalError> {
+    if ctx.call_depth >= ctx.engine.config.effective_max_call_depth() {
+        return Err(EvalError::RecursionLimit {
+            name: chain.generic_name.clone(),
+            depth: ctx.call_depth,
+            span,
+        });
+    }
+    chain.current_index = selected.index;
+    let method = chain.candidate_methods[selected.index].clone();
+    execute_callable_body(
+        ctx,
+        &selected.var_map,
+        &selected.bindings,
+        &method.body,
+        chain.generic_module,
+        Some(chain),
+    )
+}
+
+fn specific_generic(
+    ctx: &EvalContext<'_>,
+    raw: &str,
+    span: Option<&SourceSpan>,
+) -> Result<(crate::modules::ModuleId, GenericFunction), EvalError> {
+    let missing = || EvalError::UnsupportedOperation {
+        operation: "call-specific-method".to_owned(),
+        reason: format!("unable to find generic function `{raw}`"),
+        span: span.cloned(),
+    };
+    let parsed = parse_qualified_name(raw).map_err(|_| missing())?;
+    let (module, local) = match &parsed {
+        QualifiedName::Qualified { module, name } => {
+            let owner = ctx
+                .engine
+                .module_registry
+                .get_by_name(module)
+                .ok_or_else(missing)?;
+            (owner, name.as_str())
+        }
+        QualifiedName::Unqualified(name) => {
+            let owners = ctx.engine.generics.modules_for_name(name);
+            let owner = resolve_unqualified_callable_module(
+                ctx,
+                name,
+                "defgeneric",
+                &owners,
+                ctx.engine.generics.contains(ctx.current_module, name),
+                AmbiguityMessages {
+                    expected: "unambiguous generic function",
+                    actual: "multiple visible generic functions",
+                },
+                span.cloned(),
+            )?
+            .ok_or_else(missing)?;
+            (owner, name.as_str())
+        }
+    };
+    let generic = ctx
+        .engine
+        .generics
+        .get(module, local)
+        .cloned()
+        .ok_or_else(missing)?;
+    Ok((module, generic))
+}
+
+fn dispatch_specific_method(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<SourceSpan>,
+) -> Result<Value, EvalError> {
+    let name = "call-specific-method";
+    check_arity_min(name, args, 2, span.as_ref())?;
+    let value = eval_inner(ctx, &args[0])?;
+    let Value::Symbol(symbol) = value else {
+        return Err(EvalError::TypeError {
+            function: name.to_owned(),
+            expected: "SYMBOL generic name".to_owned(),
+            actual: value.type_name().to_owned(),
+            span,
+        });
+    };
+    let raw = ctx
+        .engine
+        .symbol_table
+        .resolve_symbol_str(symbol)
+        .unwrap_or("")
+        .to_owned();
+    // Resolve each selector before evaluating operands that CLIPS would skip on failure.
+    let (module, generic) = specific_generic(ctx, &raw, span.as_ref())?;
+    let value = eval_inner(ctx, &args[1])?;
+    let Value::Integer(index) = value else {
+        return Err(EvalError::TypeError {
+            function: name.to_owned(),
+            expected: "INTEGER method index".to_owned(),
+            actual: value.type_name().to_owned(),
+            span,
+        });
+    };
+    // Selector effects run before the generic is executing and can add methods.
+    let generic = ctx
+        .engine
+        .generics
+        .get(module, &generic.name)
+        .cloned()
+        .unwrap_or(generic);
+    let mut methods = generic.methods.clone();
+    methods.sort_by(compare_method_specificity);
+    let position = methods
+        .iter()
+        .position(|method| i64::from(method.index) == index)
+        .ok_or_else(|| EvalError::UnsupportedOperation {
+            operation: name.to_owned(),
+            reason: format!("unable to find method `{raw}` #{index}"),
+            span: span.clone(),
+        })?;
+    with_active_callable(ctx, module, &generic.name, |ctx| {
+        let values = eval_args(ctx, &args[2..])?;
+        let method = &methods[position];
+        if !method_accepts_arguments(method, &values) {
+            return Err(no_applicable_method(&raw, &values, span));
+        }
+        let (var_map, bindings) = bind_callable_arguments(
+            ctx,
+            &raw,
+            &method.parameters,
+            method.wildcard_parameter.as_deref(),
+            &values,
+            span.as_ref(),
+        )?;
+        if !method_queries_match(ctx, method, module, &var_map, &bindings)? {
+            return Err(no_applicable_method(&raw, &values, span));
+        }
+        let chain = MethodChain {
+            generic_name: generic.name.clone(),
+            generic_module: module,
+            candidate_methods: methods,
+            current_index: position,
+            arg_values: values,
+        };
+        invoke_control_method(
+            ctx,
+            chain,
+            &SelectedMethod {
+                index: position,
+                var_map,
+                bindings,
+            },
+            span,
+        )
+    })
 }
 
 fn bind_callable_arguments(
@@ -2823,6 +3093,17 @@ fn as_float(v: &Value, function: &str, span: Option<&SourceSpan>) -> Result<f64,
 /// Returns true if `name` is a supported evaluator builtin callable.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn is_builtin_callable(name: &str) -> bool {
+    if crate::introspection::is_builtin(name)
+        || matches!(
+            name,
+            "next-methodp" | "call-specific-method" | "override-next-method"
+        )
+    {
+        return true;
+    }
+    if crate::environment::is_builtin(name) {
+        return true;
+    }
     matches!(
         name,
         "+" | "-"
@@ -2872,6 +3153,10 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "str-length"
             | "sub-string"
             | "create$"
+            | "expand$"
+            | "delete-member$"
+            | "replace-member$"
+            | "progn"
             | "length"
             | "length$"
             | "subseq$"
@@ -2963,6 +3248,18 @@ fn dispatch_builtin(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     let span_ref = span.as_ref();
+    if crate::introspection::is_builtin(name) {
+        return crate::introspection::eval(ctx, name, args, span_ref);
+    }
+    if matches!(
+        name,
+        "next-methodp" | "call-specific-method" | "override-next-method"
+    ) {
+        return dispatch_method_control(ctx, name, args, span);
+    }
+    if crate::environment::is_builtin(name) {
+        return crate::environment::eval(ctx, name, args, span_ref);
+    }
     match name {
         "retract" | "halt" | "focus" | "reset" | "clear" => {
             crate::effects::eval_call(ctx, name, args, span_ref)
@@ -3061,6 +3358,13 @@ fn dispatch_builtin(
 
         // Multifield
         "create$" => builtin_create_mf(ctx, args, span_ref),
+        "expand$" => Err(EvalError::UnsupportedOperation {
+            operation: "expand$".into(),
+            reason: "expand$ requires an argument position in another function call".into(),
+            span,
+        }),
+        "delete-member$" => builtin_edit_members(ctx, args, span_ref, false),
+        "replace-member$" => builtin_edit_members(ctx, args, span_ref, true),
         "length" => builtin_length(ctx, args, span_ref),
         "length$" => builtin_length_mf(ctx, args, span_ref),
         "subseq$" => builtin_subseq_mf(ctx, args, span_ref),
@@ -3112,6 +3416,16 @@ fn dispatch_builtin(
 
         // Special forms
         "bind" => dispatch_bind(ctx, args, span_ref),
+        "progn" => {
+            let mut result = clips_false(
+                &mut ctx.engine.symbol_table,
+                ctx.engine.config.string_encoding,
+            );
+            for arg in args {
+                result = eval_inner(ctx, arg)?;
+            }
+            Ok(result)
+        }
 
         _ => Err(EvalError::UnknownFunction {
             name: name.to_string(),
@@ -3351,6 +3665,56 @@ fn check_arity_min(
 // Evaluate arguments helper
 // ---------------------------------------------------------------------------
 
+/// Expand each explicit sequence operand once, in source order. Ordinary
+/// operands remain expressions, preserving their original evaluation policy.
+fn expand_call_arguments(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+) -> Result<Option<Vec<RuntimeExpr>>, EvalError> {
+    if !args
+        .iter()
+        .any(|arg| matches!(arg, RuntimeExpr::Call { name, .. } if name == "expand$"))
+    {
+        return Ok(None);
+    }
+    let mut expanded = Vec::with_capacity(args.len());
+    for arg in args {
+        if let RuntimeExpr::Call { name, args, span } = arg {
+            if name == "expand$" {
+                check_arity_exact("expand$", args, 1, span.as_ref())?;
+                let value = eval_inner(ctx, &args[0])?;
+                let Value::Multifield(fields) = value else {
+                    return Err(EvalError::TypeError {
+                        function: "expand$".into(),
+                        expected: "MULTIFIELD".into(),
+                        actual: generic_value_type_name(&value).into(),
+                        span: span.clone(),
+                    });
+                };
+                expanded.extend(fields.iter().cloned().map(RuntimeExpr::Literal));
+                continue;
+            }
+        }
+        expanded.push(arg.clone());
+    }
+    Ok(Some(expanded))
+}
+
+fn validate_expanded_arity(
+    name: &str,
+    count: usize,
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
+    crate::builtin_validation::validate_runtime_arity(name, count).map_err(|message| {
+        EvalError::ArityMismatch {
+            name: name.into(),
+            expected: message,
+            actual: count,
+            span: span.cloned(),
+        }
+    })
+}
+
 fn eval_args(ctx: &mut EvalContext<'_>, args: &[RuntimeExpr]) -> Result<Vec<Value>, EvalError> {
     let mut values = Vec::with_capacity(args.len());
     for arg in args {
@@ -3529,30 +3893,28 @@ fn builtin_int_div(
     Ok(Value::Integer(lhs / rhs))
 }
 
-/// `mod` (2 args, integer modulo)
-#[allow(clippy::cast_possible_truncation)]
+/// `mod` preserves integers only when both operands are integers.
+#[allow(clippy::cast_precision_loss)]
 fn builtin_mod(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("mod", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let lhs = match as_numeric(&values[0], "mod", span)? {
-        Numeric::Int(i) => i,
-        Numeric::Flt(f) => f as i64,
-    };
-    let rhs = match as_numeric(&values[1], "mod", span)? {
-        Numeric::Int(i) => i,
-        Numeric::Flt(f) => f as i64,
-    };
-    if rhs == 0 {
+    let lhs = as_numeric(&eval_inner(ctx, &args[0])?, "mod", span)?;
+    let rhs = as_numeric(&eval_inner(ctx, &args[1])?, "mod", span)?;
+    if matches!(rhs, Numeric::Int(0)) || matches!(rhs, Numeric::Flt(value) if value == 0.0) {
         return Err(EvalError::DivisionByZero {
             function: "mod".to_string(),
             span: span.cloned(),
         });
     }
-    Ok(Value::Integer(lhs % rhs))
+    Ok(match (lhs, rhs) {
+        (Numeric::Int(lhs), Numeric::Int(rhs)) => Value::Integer(lhs.checked_rem(rhs).unwrap_or(0)),
+        (Numeric::Int(lhs), Numeric::Flt(rhs)) => Value::Float(lhs as f64 % rhs),
+        (Numeric::Flt(lhs), Numeric::Int(rhs)) => Value::Float(lhs % rhs as f64),
+        (Numeric::Flt(lhs), Numeric::Flt(rhs)) => Value::Float(lhs % rhs),
+    })
 }
 
 /// `abs` (1 arg)
@@ -3632,6 +3994,7 @@ fn builtin_sqrt(
     check_arity_exact("sqrt", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "sqrt", span)?;
+    require_math_domain("sqrt", f >= 0.0, span)?;
     Ok(Value::Float(f.sqrt()))
 }
 
@@ -3665,6 +4028,12 @@ fn builtin_tan(
     check_arity_exact("tan", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "tan", span)?;
+    if f.cos().abs() < 1.0e-15 {
+        return Err(EvalError::MathSingularity {
+            function: "tan".into(),
+            span: span.cloned(),
+        });
+    }
     Ok(Value::Float(f.tan()))
 }
 
@@ -3676,6 +4045,7 @@ fn builtin_asin(
     check_arity_exact("asin", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "asin", span)?;
+    require_math_domain("asin", (-1.0..=1.0).contains(&f), span)?;
     Ok(Value::Float(f.asin()))
 }
 
@@ -3687,6 +4057,7 @@ fn builtin_acos(
     check_arity_exact("acos", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "acos", span)?;
+    require_math_domain("acos", (-1.0..=1.0).contains(&f), span)?;
     Ok(Value::Float(f.acos()))
 }
 
@@ -3765,6 +4136,7 @@ fn builtin_acosh(
     check_arity_exact("acosh", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "acosh", span)?;
+    require_math_domain("acosh", f >= 1.0, span)?;
     Ok(Value::Float(f.acosh()))
 }
 
@@ -3776,6 +4148,7 @@ fn builtin_atanh(
     check_arity_exact("atanh", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "atanh", span)?;
+    require_math_domain("atanh", f.abs() < 1.0, span)?;
     Ok(Value::Float(f.atanh()))
 }
 
@@ -3798,6 +4171,7 @@ fn builtin_log(
     check_arity_exact("log", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "log", span)?;
+    validate_log_argument("log", f, span)?;
     Ok(Value::Float(f.ln()))
 }
 
@@ -3809,6 +4183,7 @@ fn builtin_log10(
     check_arity_exact("log10", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "log10", span)?;
+    validate_log_argument("log10", f, span)?;
     Ok(Value::Float(f.log10()))
 }
 
@@ -3821,7 +4196,42 @@ fn builtin_pow(
     let values = eval_args(ctx, args)?;
     let base = as_float(&values[0], "**", span)?;
     let exp = as_float(&values[1], "**", span)?;
+    require_math_domain(
+        "**",
+        !(base == 0.0 && exp <= 0.0 || base < 0.0 && exp.fract() != 0.0),
+        span,
+    )?;
     Ok(Value::Float(base.powf(exp)))
+}
+
+fn require_math_domain(
+    function: &str,
+    valid: bool,
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
+    if valid {
+        Ok(())
+    } else {
+        Err(EvalError::MathDomain {
+            function: function.into(),
+            span: span.cloned(),
+        })
+    }
+}
+
+fn validate_log_argument(
+    function: &str,
+    value: f64,
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
+    require_math_domain(function, value >= 0.0, span)?;
+    if value == 0.0 {
+        return Err(EvalError::MathOverflow {
+            function: function.into(),
+            span: span.cloned(),
+        });
+    }
+    Ok(())
 }
 
 fn builtin_pi(
@@ -4041,9 +4451,15 @@ fn builtin_eq(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("eq", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let result = values[0].structural_eq(&values[1]);
+    check_arity_min("eq", args, 2, span)?;
+    let first = eval_inner(ctx, &args[0])?;
+    let mut result = true;
+    for argument in &args[1..] {
+        if !first.structural_eq(&eval_inner(ctx, argument)?) {
+            result = false;
+            break;
+        }
+    }
     Ok(clips_bool(
         result,
         &mut ctx.engine.symbol_table,
@@ -4057,9 +4473,15 @@ fn builtin_neq(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("neq", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let result = !values[0].structural_eq(&values[1]);
+    check_arity_min("neq", args, 2, span)?;
+    let first = eval_inner(ctx, &args[0])?;
+    let mut result = true;
+    for argument in &args[1..] {
+        if first.structural_eq(&eval_inner(ctx, argument)?) {
+            result = false;
+            break;
+        }
+    }
     Ok(clips_bool(
         result,
         &mut ctx.engine.symbol_table,
@@ -4360,7 +4782,7 @@ fn builtin_to_float(
 /// Append each value's string representation to `buf`, using the symbol table
 /// to resolve symbol names.
 ///
-/// Shared by `str-cat` and `sym-cat`.  Multifield elements are space-separated.
+/// Shared by `str-cat` and `sym-cat`; only scalar printable atoms are accepted.
 fn concat_values_to_string(
     ctx: &EvalContext<'_>,
     values: &[Value],
@@ -4388,23 +4810,16 @@ fn concat_values_to_string(
                 }
             }
             Value::String(s) => buf.push_str(s.as_str()),
-            Value::Multifield(mf) => {
-                for (i, elem) in mf.iter().enumerate() {
-                    if i > 0 {
-                        buf.push(' ');
-                    }
-                    concat_values_to_string(ctx, std::slice::from_ref(elem), buf, function, span)?;
-                }
-            }
-            Value::Void => {}
-            Value::ExternalAddress(_) => buf.push_str("<ExternalAddress>"),
-            Value::FactAddress(_) => {
+            Value::Multifield(_)
+            | Value::Void
+            | Value::ExternalAddress(_)
+            | Value::FactAddress(_) => {
                 return Err(EvalError::TypeError {
                     function: function.into(),
                     expected: "STRING, SYMBOL, INSTANCE-NAME, INTEGER, or FLOAT".into(),
-                    actual: "FACT-ADDRESS".into(),
+                    actual: generic_value_type_name(val).into(),
                     span: span.cloned(),
-                })
+                });
             }
         }
     }
@@ -4416,15 +4831,24 @@ fn concat_values_to_string(
 /// Each argument is converted to its string representation and the results
 /// are concatenated.  Integers format as decimal strings, floats always
 /// include a decimal point, symbols and strings contribute their content,
-/// multifields contribute space-separated elements.
+/// multifields and address values are rejected.
 fn builtin_str_cat(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
+    check_arity_min("str-cat", args, 1, span)?;
     let mut result = String::new();
-    concat_values_to_string(ctx, &values, &mut result, "str-cat", span)?;
+    for argument in args {
+        let value = eval_inner(ctx, argument)?;
+        concat_values_to_string(
+            ctx,
+            std::slice::from_ref(&value),
+            &mut result,
+            "str-cat",
+            span,
+        )?;
+    }
     let fs = FerricString::new(&result, ctx.engine.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
             function: "str-cat".to_string(),
@@ -4444,9 +4868,18 @@ fn builtin_sym_cat(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let values = eval_args(ctx, args)?;
+    check_arity_min("sym-cat", args, 1, span)?;
     let mut result = String::new();
-    concat_values_to_string(ctx, &values, &mut result, "sym-cat", span)?;
+    for argument in args {
+        let value = eval_inner(ctx, argument)?;
+        concat_values_to_string(
+            ctx,
+            std::slice::from_ref(&value),
+            &mut result,
+            "sym-cat",
+            span,
+        )?;
+    }
     let sym = ctx
         .engine
         .symbol_table
@@ -5032,50 +5465,46 @@ fn builtin_create_mf(
     Ok(Value::Multifield(Box::new(result)))
 }
 
-/// `length` — compatibility alias for multifield/string length.
+/// `length` and `length$` accept a multifield, symbol, or string.
+/// Lexemes count stored bytes, rather than Unicode scalar values.
 fn builtin_length(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("length", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        #[allow(clippy::cast_possible_wrap)] // container length fits in i64 in practice
-        Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
-        Value::String(s) => {
-            let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
-            Ok(Value::Integer(char_len))
-        }
-        _ => Err(EvalError::TypeError {
-            function: "length".to_string(),
-            expected: "MULTIFIELD or STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    builtin_length_value(ctx, args, span, "length")
 }
 
-/// `length$` — return the length of a multifield.
-///
-/// Takes 1 argument (must be MULTIFIELD). Returns an INTEGER.
 fn builtin_length_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("length$", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        #[allow(clippy::cast_possible_wrap)] // multifield length fits in i64 in practice
-        Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
-        _ => Err(EvalError::TypeError {
-            function: "length$".to_string(),
-            expected: "MULTIFIELD".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    builtin_length_value(ctx, args, span, "length$")
+}
+
+fn builtin_length_value(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    function: &str,
+) -> Result<Value, EvalError> {
+    check_arity_exact(function, args, 1, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    let length = match &value {
+        Value::Multifield(values) => values.len(),
+        Value::String(value) => value.as_bytes().len(),
+        Value::Symbol(value) => ctx.engine.symbol_table.resolve_symbol(*value).len(),
+        _ => {
+            return Err(EvalError::TypeError {
+                function: function.into(),
+                expected: "MULTIFIELD, SYMBOL, or STRING".into(),
+                actual: generic_value_type_name(&value).into(),
+                span: span.cloned(),
+            })
+        }
+    };
+    Ok(Value::Integer(i64::try_from(length).unwrap_or(i64::MAX)))
 }
 
 /// `subseq$` — extract a 1-indexed inclusive multifield slice.
@@ -5550,6 +5979,85 @@ fn builtin_replace_mf(
     Ok(Value::Multifield(Box::new(result)))
 }
 
+/// Delete or replace every scalar/subsequence search match in a multifield.
+fn builtin_edit_members(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    replace: bool,
+) -> Result<Value, EvalError> {
+    let name = if replace {
+        "replace-member$"
+    } else {
+        "delete-member$"
+    };
+    check_arity_min(name, args, if replace { 3 } else { 2 }, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    let Value::Multifield(fields) = value else {
+        return Err(EvalError::TypeError {
+            function: name.into(),
+            expected: "MULTIFIELD".into(),
+            actual: generic_value_type_name(&value).into(),
+            span: span.cloned(),
+        });
+    };
+    let mut fields: Vec<Value> = fields.iter().cloned().collect();
+    let replacement = if replace {
+        match eval_inner(ctx, &args[1])? {
+            Value::Multifield(fields) => fields.iter().cloned().collect(),
+            value => vec![value],
+        }
+    } else {
+        Vec::new()
+    };
+    let patterns = eval_args(ctx, &args[if replace { 2 } else { 1 }..])?;
+    let mut cursor = 0;
+    while let Some((position, length)) = find_member_pattern(&fields, &patterns, cursor) {
+        if length == 0 {
+            return Err(EvalError::TypeError {
+                function: name.into(),
+                expected: "nonempty search pattern for a nonempty multifield".into(),
+                actual: "empty MULTIFIELD".into(),
+                span: span.cloned(),
+            });
+        }
+        fields.splice(position..position + length, replacement.iter().cloned());
+        // Deletion can create a new match across the removed fields. Replacement
+        // skips its inserted fields, so a replacement containing the search
+        // pattern cannot repeatedly replace itself.
+        cursor = if replace {
+            position + replacement.len()
+        } else {
+            0
+        };
+    }
+    Ok(Value::Multifield(Box::new(fields.into_iter().collect())))
+}
+
+fn find_member_pattern(
+    fields: &[Value],
+    patterns: &[Value],
+    start: usize,
+) -> Option<(usize, usize)> {
+    for position in start..fields.len() {
+        for pattern in patterns {
+            let expected = match pattern {
+                Value::Multifield(values) => values.as_slice(),
+                value => std::slice::from_ref(value),
+            };
+            if fields[position..].len() >= expected.len()
+                && fields[position..position + expected.len()]
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| actual.structural_eq(expected))
+            {
+                return Some((position, expected.len()));
+            }
+        }
+    }
+    None
+}
+
 /// `first$` — return first element as a single-element multifield.
 fn builtin_first_mf(
     ctx: &mut EvalContext<'_>,
@@ -5720,7 +6228,20 @@ fn builtin_funcall(
             })
         }
     };
-    resolve_named_callable(ctx, &fn_name, span)?.call(ctx, &fn_name, &args[1..], span.cloned())
+    resolve_named_callable(ctx, &fn_name, span)?;
+    // funcall evaluates its operands before invoking even a short-circuit target
+    // or checking that target's arity. Resolve first so an unknown name does not
+    // evaluate operands; preserve values as single arguments until dispatch.
+    let arguments = eval_args(ctx, &args[1..])?
+        .into_iter()
+        .map(RuntimeExpr::Literal)
+        .collect::<Vec<_>>();
+    // random's own count check draws and returns that value with a notice.
+    if fn_name != "random" {
+        validate_expanded_arity(&fn_name, arguments.len(), span)?;
+    }
+    // Eager operands may build a replacement before the target starts executing.
+    resolve_named_callable(ctx, &fn_name, span)?.call(ctx, &fn_name, &arguments, span.cloned())
 }
 
 /// A function named by a runtime value (`funcall`, `sort`).
@@ -10548,13 +11069,11 @@ mod tests {
     }
 
     #[test]
-    fn str_cat_zero_args_returns_empty_string() {
-        let expr = call("str-cat", vec![]);
-        let result = eval_expr(&expr).unwrap();
-        match result {
-            Value::String(s) => assert_eq!(s.as_str(), ""),
-            other => panic!("expected STRING, got {other:?}"),
-        }
+    fn str_cat_zero_args_rejected() {
+        assert!(matches!(
+            eval_expr(&call("str-cat", vec![])),
+            Err(EvalError::ArityMismatch { .. })
+        ));
     }
 
     #[test]
@@ -10658,30 +11177,11 @@ mod tests {
     }
 
     #[test]
-    fn sym_cat_zero_args_returns_empty_symbol() {
-        let (mut engine, vm, bs) = test_ctx();
-        let mut ctx = EvalContext {
-            global_module: None,
-            bindings: &bs,
-            var_map: &vm,
-            callable_locals: None,
-            call_depth: 0,
-            expression_depth: 0,
-            current_module: engine.module_registry.main_module_id(),
-            method_chain: None,
-            compact_fact_bindings: None,
-            engine: &mut engine,
-            allow_engine_effects: true,
-        };
-        let expr = call("sym-cat", vec![]);
-        let result = eval(&mut ctx, &expr).unwrap();
-        match result {
-            Value::Symbol(sym) => {
-                let name = ctx.engine.symbol_table.resolve_symbol_str(sym);
-                assert_eq!(name, Some(""), "sym-cat with no args interns empty string");
-            }
-            other => panic!("expected SYMBOL, got {other:?}"),
-        }
+    fn sym_cat_zero_args_rejected() {
+        assert!(matches!(
+            eval_expr(&call("sym-cat", vec![])),
+            Err(EvalError::ArityMismatch { .. })
+        ));
     }
 
     #[test]

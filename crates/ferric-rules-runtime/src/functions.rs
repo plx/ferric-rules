@@ -160,6 +160,7 @@ pub struct GlobalStore {
     )]
     pub(crate) values: ModuleNameMap<Value>,
     pub(crate) gensym_counter: i64,
+    pub(crate) random: crate::random::RandomState,
     printout_events: Vec<(String, String)>,
 }
 
@@ -168,6 +169,7 @@ impl Default for GlobalStore {
         Self {
             values: HashMap::default(),
             gensym_counter: 1,
+            random: crate::random::RandomState::default(),
             printout_events: Vec::new(),
         }
     }
