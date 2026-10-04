@@ -1,0 +1,11 @@
+
+[EXPRNPSR2] Expected a constant, variable, or expression.
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for fact-set query function.
+
+ERROR:
+(defrule MAIN::bad
+   =>
+   (do-for-all-facts ((?f item))
+      TRUE
+      (loop-for-count (?f:end(

@@ -143,17 +143,23 @@ fn qualified_function_call_unknown_module() {
 (defrule test-call (go) => (printout t (NONEXISTENT::add 3 4) crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
-    engine.reset().unwrap();
-    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
+    let errors = engine
+        .load_str(source)
+        .expect_err("unknown qualified call must fail at load");
     assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("NONEXISTENT")
-                && (msg.contains("unknown module") || msg.contains("unknown"))
+        errors.iter().any(|error| {
+            let message = error.to_string();
+            message.contains("EXPRNPSR3") && message.contains("NONEXISTENT::add")
         }),
-        "expected unknown module error, got: {diagnostics:?}"
+        "{errors:?}"
+    );
+    engine.reset().unwrap();
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
 }
 
@@ -378,16 +384,23 @@ fn qualified_function_call_wrong_module() {
 (defrule test-call (go) => (printout t (MAIN::add 3 4) crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
-    engine.reset().unwrap();
-    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
+    let errors = engine
+        .load_str(source)
+        .expect_err("unknown qualified call must fail at load");
     assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("MAIN::add") && msg.contains("unknown")
+        errors.iter().any(|error| {
+            let message = error.to_string();
+            message.contains("EXPRNPSR3") && message.contains("MAIN::add")
         }),
-        "expected unknown function for wrong module qualification, got: {diagnostics:?}"
+        "{errors:?}"
+    );
+    engine.reset().unwrap();
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
 }
 
@@ -444,13 +457,23 @@ fn no_silent_fallback_to_builtin() {
 (defrule test-call (go) => (printout t (MAIN::+ 3 4) crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
-    engine.reset().unwrap();
-    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
+    let errors = engine
+        .load_str(source)
+        .expect_err("unknown qualified call must fail at load");
     assert!(
-        !diagnostics.is_empty(),
-        "expected error for MAIN::+ (should not silently resolve to builtin)"
+        errors.iter().any(|error| {
+            let message = error.to_string();
+            message.contains("EXPRNPSR3") && message.contains("MAIN::+")
+        }),
+        "{errors:?}"
+    );
+    engine.reset().unwrap();
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
 }
 
@@ -798,19 +821,22 @@ fn cross_module_function_not_visible_without_import() {
 (defrule test-call (go) => (printout t (add 3 4) crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
-    engine.reset().unwrap();
-    engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
+    let errors = engine
+        .load_str(source)
+        .expect_err("invisible unqualified call must fail at load");
     assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("not visible")
-                || msg.contains("not accessible")
-                || msg.contains("unknown")
-                || msg.contains("NotVisible")
-        }),
-        "expected visibility error when no import, got: {diagnostics:?}"
+        errors
+            .iter()
+            .any(|error| error.to_string().contains("EXPRNPSR3")),
+        "{errors:?}"
+    );
+    engine.reset().unwrap();
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
 }
 

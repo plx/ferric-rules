@@ -334,6 +334,8 @@ impl Engine {
         Self::validate_fact_initializer_bindings(expression, locals, allow_local_reads)?;
         crate::callable_validation::validate_iterator_binds(std::slice::from_ref(expression))
             .map_err(|(span, message)| invalid_at(span, &message))?;
+        crate::callable_validation::validate_breaks(std::slice::from_ref(expression))
+            .map_err(|(span, message)| invalid_at(span, &message))?;
         self.validate_expression_query_declarations(expression, module, None)?;
         self.validate_action_expr_as_expression(
             expression,

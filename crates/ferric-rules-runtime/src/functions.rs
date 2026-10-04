@@ -268,8 +268,14 @@ pub struct RegisteredMethod {
     /// Type restrictions per parameter (same length as `parameters`).
     /// Empty vec for a parameter means "any type".
     pub type_restrictions: Vec<Vec<String>>,
+    /// Optional applicability query for each fixed parameter.
+    pub parameter_queries: Vec<Option<ActionExpr>>,
     /// Optional wildcard parameter name.
     pub wildcard_parameter: Option<String>,
+    /// Restrictions applied to each original excess argument.
+    pub wildcard_type_restrictions: Vec<String>,
+    /// Query evaluated with all parameter bindings in scope.
+    pub wildcard_query: Option<ActionExpr>,
     /// Method body expressions.
     pub body: Vec<ferric_rules_parser::ActionExpr>,
 }
@@ -350,6 +356,36 @@ impl GenericRegistry {
         wildcard_parameter: Option<String>,
         body: Vec<ferric_rules_parser::ActionExpr>,
     ) {
+        let parameter_queries = vec![None; parameters.len()];
+        self.register_restricted_method(
+            module,
+            name,
+            index,
+            parameters,
+            type_restrictions,
+            parameter_queries,
+            wildcard_parameter,
+            Vec::new(),
+            None,
+            body,
+        );
+    }
+
+    /// Register a method with type and query restrictions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_restricted_method(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        index: Option<i32>,
+        parameters: Vec<String>,
+        type_restrictions: Vec<Vec<String>>,
+        parameter_queries: Vec<Option<ActionExpr>>,
+        wildcard_parameter: Option<String>,
+        wildcard_type_restrictions: Vec<String>,
+        wildcard_query: Option<ActionExpr>,
+        body: Vec<ActionExpr>,
+    ) -> i32 {
         let generic = get_or_insert_module_entry_with(&mut self.generics, module, name, || {
             GenericFunction::new(name.to_string())
         });
@@ -358,9 +394,13 @@ impl GenericRegistry {
             index: actual_index,
             parameters,
             type_restrictions,
+            parameter_queries,
             wildcard_parameter,
+            wildcard_type_restrictions,
+            wildcard_query,
             body,
         });
+        actual_index
     }
 
     /// Look up a generic function by name.
@@ -1244,7 +1284,10 @@ mod tests {
             index,
             parameters: vec!["x".to_string()],
             type_restrictions: vec![vec![]],
+            parameter_queries: vec![None],
             wildcard_parameter: None,
+            wildcard_type_restrictions: vec![],
+            wildcard_query: None,
             body: vec![],
         }
     }

@@ -150,6 +150,14 @@ pub enum EvalError {
         reason: String,
         span: Option<SourceSpan>,
     },
+
+    #[error("`break` is not valid outside a loop body at {}", format_span(.span.as_ref()))]
+    BreakOutsideLoop { span: Option<SourceSpan> },
+
+    /// Internal non-local control signal consumed by the nearest loop body.
+    #[doc(hidden)]
+    #[error("internal break control escaped its loop at {}", format_span(.span.as_ref()))]
+    BreakControl { span: Option<SourceSpan> },
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +193,7 @@ pub enum RuntimeExpr {
     ///
     /// Evaluates `condition`; if truthy evaluates `then_branch` in order and
     /// returns the last value, otherwise evaluates `else_branch`.
-    /// Returns `Value::Void` when the selected branch is empty.
+    /// Returns the `FALSE` symbol when the selected branch is empty.
     ///
     /// Each branch entry pairs the original parser `ActionExpr` (needed by
     /// the action executor for assert/retract/printout arg handling) with its
@@ -200,8 +208,7 @@ pub enum RuntimeExpr {
     /// CLIPS `(while <condition> do <action>*)` loop.
     ///
     /// Evaluates `condition` before each iteration; executes `body` while
-    /// truthy. Returns the last body value from the last iteration, or the
-    /// `FALSE` symbol if never entered.
+    /// truthy. Returns `FALSE` after completion or `break`.
     ///
     /// Body entries follow the same paired representation as `If` branches.
     While {
@@ -226,7 +233,7 @@ pub enum RuntimeExpr {
     /// Evaluates `list_expr` to a multifield value, then iterates each element
     /// binding `var_name` to the element and `<var_name>-index` to the 1-based
     /// index. Returns the last body value from the last iteration, or `FALSE`
-    /// if the multifield is empty.
+    /// if the multifield is empty. A `break` returns `Value::Void`.
     Progn {
         var_name: String,
         list_expr: Box<RuntimeExpr>,
@@ -274,17 +281,17 @@ pub enum RuntimeExpr {
 /// Active generic dispatch chain for `call-next-method` support.
 ///
 /// When a generic method is executing, this tracks the ordered list of
-/// applicable methods and the current position so `call-next-method` can
-/// advance to the next one.
+/// arity/type-compatible candidates and the current position. Restriction
+/// queries run only while selecting the current or next method.
 #[derive(Clone, Debug)]
 pub struct MethodChain {
     /// Name of the generic function being dispatched.
     pub generic_name: String,
     /// Module where the generic is defined.
     pub generic_module: crate::modules::ModuleId,
-    /// All applicable methods, sorted most-specific-first.
-    pub applicable_methods: Vec<crate::functions::RegisteredMethod>,
-    /// Index of the currently executing method in `applicable_methods`.
+    /// Arity/type-compatible candidates, sorted most-specific-first.
+    pub candidate_methods: Vec<crate::functions::RegisteredMethod>,
+    /// Index of the currently executing method in `candidate_methods`.
     pub current_index: usize,
     /// The evaluated argument values (used to rebind parameters in the next method).
     pub arg_values: Vec<Value>,
@@ -591,23 +598,40 @@ impl Drop for EvalRunGuard {
 ///
 /// Root entrypoint for expression evaluation. Recursive evaluation should flow
 /// through `eval_inner`, which keeps tracing lightweight on deep call stacks.
-#[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
 pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
+    finish_root_evaluation(eval_with_budget(ctx, expr))
+}
+
+/// Action loops consume breaks at their own lexical boundary. Ordinary callers
+/// use `eval`, which rejects any control signal that escaped its expression.
+pub(crate) fn eval_action_expression(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+) -> Result<Value, EvalError> {
+    match eval_with_budget(ctx, expr) {
+        Err(EvalError::ReturnControl { span, .. }) => {
+            Err(EvalError::ReturnOutsideCallable { span })
+        }
+        other => other,
+    }
+}
+
+fn eval_with_budget(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
     let owns_action_loop_budget = ctx.config.begin_action_loop_budget_if_inactive();
 
     #[cfg(feature = "tracing")]
     let result = {
         if EvalRunGuard::is_active() {
-            finish_root_evaluation(eval_inner(ctx, expr))
+            eval_inner(ctx, expr)
         } else {
             let _run_guard = EvalRunGuard::enter_root();
             ferric_span!(debug_span, "eval_root", call_depth = ctx.call_depth);
-            finish_root_evaluation(eval_inner(ctx, expr))
+            eval_inner(ctx, expr)
         }
     };
 
     #[cfg(not(feature = "tracing"))]
-    let result = { finish_root_evaluation(eval_inner(ctx, expr)) };
+    let result = { eval_inner(ctx, expr) };
 
     if owns_action_loop_budget {
         ctx.config.end_action_loop_budget();
@@ -627,6 +651,7 @@ fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, Eva
         Err(EvalError::ReturnControl { span, .. }) => {
             Err(EvalError::ReturnOutsideCallable { span })
         }
+        Err(EvalError::BreakControl { span }) => Err(EvalError::BreakOutsideLoop { span }),
         other => other,
     }
 }
@@ -789,40 +814,26 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             } else {
                 else_branch
             };
-            let mut result = Value::Void;
-            for (action_expr, rt_expr) in branch {
-                if let Some(rt) = rt_expr {
-                    result = eval_inner(ctx, rt)?;
-                } else {
-                    // Pre-compilation failed; translate on the fly.
-                    let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                    result = eval_inner(ctx, &rt)?;
-                }
-            }
-            Ok(result)
+            eval_sequence(ctx, branch)
         }
         RuntimeExpr::While {
             condition,
             body,
             span,
         } => {
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             loop {
                 let cond_value = eval_inner(ctx, condition)?;
                 if !is_truthy(&cond_value, ctx.symbol_table) {
                     break;
                 }
                 consume_action_loop_iteration(ctx.config, "while", span.clone())?;
-                for (action_expr, rt_expr) in body {
-                    if let Some(rt) = rt_expr {
-                        result = eval_inner(ctx, rt)?;
-                    } else {
-                        let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                        result = eval_inner(ctx, &rt)?;
-                    }
+                match eval_sequence(ctx, body) {
+                    Ok(_) => {}
+                    Err(EvalError::BreakControl { .. }) => break,
+                    Err(error) => return Err(error),
                 }
             }
-            Ok(result)
+            Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
         }
         RuntimeExpr::LoopForCount {
             var_name,
@@ -895,7 +906,6 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 None => None,
             };
 
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             with_callable_local_scope(ctx, var_name.as_deref(), var_name.as_deref(), |ctx| {
                 for counter in start_int..=end_int {
                     consume_action_loop_iteration(ctx.config, "loop-for-count", span.clone())?;
@@ -927,22 +937,15 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         template_defs: ctx.template_defs,
                     };
 
-                    for (action_expr, rt_expr) in body {
-                        if let Some(rt) = rt_expr {
-                            result = eval_inner(&mut iter_ctx, rt)?;
-                        } else {
-                            let rt = from_action_expr(
-                                action_expr,
-                                iter_ctx.symbol_table,
-                                iter_ctx.config,
-                            )?;
-                            result = eval_inner(&mut iter_ctx, &rt)?;
-                        }
+                    match eval_sequence(&mut iter_ctx, body) {
+                        Ok(_) => {}
+                        Err(EvalError::BreakControl { .. }) => break,
+                        Err(error) => return Err(error),
                     }
                 }
                 Ok(())
             })?;
-            Ok(result)
+            Ok(false_val)
         }
         RuntimeExpr::Progn {
             var_name,
@@ -1042,17 +1045,13 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             template_defs: ctx.template_defs,
                         };
 
-                        for (action_expr, rt_expr) in body {
-                            if let Some(rt) = rt_expr {
-                                result = eval_inner(&mut iter_ctx, rt)?;
-                            } else {
-                                let rt = from_action_expr(
-                                    action_expr,
-                                    iter_ctx.symbol_table,
-                                    iter_ctx.config,
-                                )?;
-                                result = eval_inner(&mut iter_ctx, &rt)?;
+                        match eval_sequence(&mut iter_ctx, body) {
+                            Ok(value) => result = value,
+                            Err(EvalError::BreakControl { .. }) => {
+                                result = Value::Void;
+                                break;
                             }
+                            Err(error) => return Err(error),
                         }
                     }
                     Ok(())
@@ -1071,32 +1070,14 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             for (test_val_expr, case_body) in cases {
                 let test_value = eval_inner(ctx, test_val_expr)?;
                 if disc_value.structural_eq(&test_value) {
-                    let mut result = Value::Void;
-                    for (action_expr, rt_expr) in case_body {
-                        if let Some(rt) = rt_expr {
-                            result = eval_inner(ctx, rt)?;
-                        } else {
-                            let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                            result = eval_inner(ctx, &rt)?;
-                        }
-                    }
-                    return Ok(result);
+                    return eval_sequence(ctx, case_body);
                 }
             }
             // No case matched; fall to default
             if let Some(default_body) = default {
-                let mut result = Value::Void;
-                for (action_expr, rt_expr) in default_body {
-                    if let Some(rt) = rt_expr {
-                        result = eval_inner(ctx, rt)?;
-                    } else {
-                        let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                        result = eval_inner(ctx, &rt)?;
-                    }
-                }
-                Ok(result)
+                eval_sequence(ctx, default_body)
             } else {
-                Ok(Value::Void)
+                Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
             }
         }
         RuntimeExpr::QueryAction {
@@ -1107,6 +1088,23 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             span,
         } => eval_fact_query(ctx, name, bindings, query, body.is_empty(), span.as_ref()),
     }
+}
+
+/// Evaluate a structured body while preserving non-local control signals.
+fn eval_sequence(
+    ctx: &mut EvalContext<'_>,
+    body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
+) -> Result<Value, EvalError> {
+    let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+    for (source, compiled) in body {
+        result = if let Some(expression) = compiled {
+            eval_inner(ctx, expression)?
+        } else {
+            let expression = from_action_expr(source, ctx.symbol_table, ctx.config)?;
+            eval_inner(ctx, &expression)?
+        };
+    }
+    Ok(result)
 }
 
 /// Assertion chronology is independent of slot-map position after retraction.
@@ -1617,11 +1615,14 @@ fn execute_callable_body(
         template_defs: ctx.template_defs,
     };
 
-    let mut result = Value::Void;
+    let mut result = clips_false(inner_ctx.symbol_table, inner_ctx.config.string_encoding);
     for body_expr in &body_exprs {
         match eval_inner(&mut inner_ctx, body_expr) {
             Ok(value) => result = value,
             Err(EvalError::ReturnControl { value, .. }) => return Ok(value),
+            Err(EvalError::BreakControl { span }) => {
+                return Err(EvalError::BreakOutsideLoop { span })
+            }
             Err(error) => return Err(error),
         }
     }
@@ -1803,43 +1804,70 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
 /// than `b`, `Ordering::Greater` if `b` is more specific, and `Ordering::Equal` only
 /// when the two methods are identical in specificity (resolved by index tie-break).
 ///
-/// Comparison is performed parameter-by-parameter (left to right). A parameter with
-/// fewer covered concrete types is more specific. After all explicit parameters, a
-/// method without a wildcard is more specific than one with a wildcard.
+/// Compare parameters left to right: fewer covered primitive types is more
+/// specific, then a query outranks no query. A fixed parameter outranks a
+/// wildcard at the same position; two wildcards compare their restrictions.
 fn compare_method_specificity(
     a: &crate::functions::RegisteredMethod,
     b: &crate::functions::RegisteredMethod,
 ) -> std::cmp::Ordering {
-    let max_params = a.type_restrictions.len().max(b.type_restrictions.len());
-    for i in 0..max_params {
-        let a_count = a
-            .type_restrictions
-            .get(i)
-            .map_or(usize::MAX, |r| restriction_concrete_type_count(r));
-        let b_count = b
-            .type_restrictions
-            .get(i)
-            .map_or(usize::MAX, |r| restriction_concrete_type_count(r));
-        let ord = a_count.cmp(&b_count);
-        if ord != std::cmp::Ordering::Equal {
-            return ord; // Fewer concrete types = more specific = Less
+    for i in 0..a.parameters.len().min(b.parameters.len()) {
+        let a_types = a.type_restrictions.get(i).map_or(&[][..], Vec::as_slice);
+        let b_types = b.type_restrictions.get(i).map_or(&[][..], Vec::as_slice);
+        let order = compare_parameter_specificity(
+            a_types,
+            a.parameter_queries.get(i).is_some_and(Option::is_some),
+            b_types,
+            b.parameter_queries.get(i).is_some_and(Option::is_some),
+        );
+        if !order.is_eq() {
+            return order;
         }
     }
-    // Tie-break 1: method without wildcard > method with wildcard.
+    // At the first unmatched position, a fixed parameter outranks a wildcard,
+    // even when only the wildcard carries a primitive type restriction.
+    let fixed_count = b.parameters.len().cmp(&a.parameters.len());
+    if !fixed_count.is_eq() {
+        return fixed_count;
+    }
     match (
         a.wildcard_parameter.is_some(),
         b.wildcard_parameter.is_some(),
     ) {
         (false, true) => return std::cmp::Ordering::Less,
         (true, false) => return std::cmp::Ordering::Greater,
-        _ => {}
+        (true, true) => {
+            let order = compare_parameter_specificity(
+                &a.wildcard_type_restrictions,
+                a.wildcard_query.is_some(),
+                &b.wildcard_type_restrictions,
+                b.wildcard_query.is_some(),
+            );
+            if !order.is_eq() {
+                return order;
+            }
+        }
+        (false, false) => {}
     }
-    // Tie-break 2: lower index wins (preserves CLIPS definition order).
     a.index.cmp(&b.index)
 }
 
-/// Check if a method is applicable for the given evaluated arguments.
-fn method_applicable(method: &crate::functions::RegisteredMethod, arg_values: &[Value]) -> bool {
+fn compare_parameter_specificity(
+    a_types: &[String],
+    a_query: bool,
+    b_types: &[String],
+    b_query: bool,
+) -> std::cmp::Ordering {
+    restriction_concrete_type_count(a_types)
+        .cmp(&restriction_concrete_type_count(b_types))
+        .then_with(|| b_query.cmp(&a_query))
+}
+
+/// Check arity and primitive restrictions without running query expressions.
+fn method_accepts_arguments(
+    method: &crate::functions::RegisteredMethod,
+    arg_values: &[Value],
+) -> bool {
     let required_count = method.parameters.len();
     let has_wildcard = method.wildcard_parameter.is_some();
 
@@ -1868,10 +1896,122 @@ fn method_applicable(method: &crate::functions::RegisteredMethod, arg_values: &[
         }
     }
 
-    true
+    // Restrictions apply to the original values, before wildcard binding
+    // flattens multifield arguments into the parameter's field sequence.
+    !has_wildcard
+        || method.wildcard_type_restrictions.is_empty()
+        || arg_values[required_count..].iter().all(|value| {
+            method
+                .wildcard_type_restrictions
+                .iter()
+                .any(|kind| value_matches_type(value, kind))
+        })
 }
 
-/// Dispatch a call to a generic function.
+struct SelectedMethod {
+    index: usize,
+    var_map: VarMap,
+    bindings: BindingSet,
+}
+
+/// Each candidate gets all parameter bindings before any query runs. Caller
+/// locals and method chains are not visible in a restriction query's scope.
+fn method_queries_match(
+    ctx: &mut EvalContext<'_>,
+    method: &crate::functions::RegisteredMethod,
+    module: crate::modules::ModuleId,
+    var_map: &VarMap,
+    bindings: &BindingSet,
+) -> Result<bool, EvalError> {
+    if method.parameter_queries.iter().all(Option::is_none) && method.wildcard_query.is_none() {
+        return Ok(true);
+    }
+    let mut locals = CallableLocals::default();
+    let mut query_ctx = EvalContext {
+        bindings,
+        var_map,
+        callable_locals: Some(&mut locals),
+        symbol_table: ctx.symbol_table,
+        config: ctx.config,
+        functions: ctx.functions,
+        globals: ctx.globals,
+        generics: ctx.generics,
+        call_depth: ctx.call_depth + 1,
+        expression_depth: ctx.expression_depth,
+        current_module: module,
+        module_registry: ctx.module_registry,
+        function_modules: ctx.function_modules,
+        global_modules: ctx.global_modules,
+        generic_modules: ctx.generic_modules,
+        method_chain: None,
+        input_buffer: ctx.input_buffer.as_deref_mut(),
+        fact_base: ctx.fact_base,
+        compact_fact_bindings: None,
+        template_resolver: ctx.template_resolver,
+        initial_fact_id: ctx.initial_fact_id,
+        template_defs: ctx.template_defs,
+    };
+    for query in method
+        .parameter_queries
+        .iter()
+        .flatten()
+        .chain(method.wildcard_query.iter())
+    {
+        let expression = from_action_expr(query, query_ctx.symbol_table, query_ctx.config)?;
+        let value = finish_root_evaluation(eval_inner(&mut query_ctx, &expression))?;
+        if !is_truthy(&value, query_ctx.symbol_table) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn select_method(
+    ctx: &mut EvalContext<'_>,
+    chain: &MethodChain,
+    start: usize,
+    span: Option<&SourceSpan>,
+) -> Result<Option<SelectedMethod>, EvalError> {
+    for (index, method) in chain.candidate_methods.iter().enumerate().skip(start) {
+        let (var_map, bindings) = bind_callable_arguments(
+            ctx,
+            &chain.generic_name,
+            &method.parameters,
+            method.wildcard_parameter.as_deref(),
+            &chain.arg_values,
+            span,
+        )?;
+        if method_queries_match(ctx, method, chain.generic_module, &var_map, &bindings)? {
+            return Ok(Some(SelectedMethod {
+                index,
+                var_map,
+                bindings,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn no_applicable_method(name: &str, arg_values: &[Value], span: Option<SourceSpan>) -> EvalError {
+    ferric_event!(
+        debug,
+        callable = name,
+        arg_count = arg_values.len(),
+        "dispatch_generic_no_applicable_method"
+    );
+    EvalError::NoApplicableMethod {
+        name: name.to_owned(),
+        actual_types: arg_values
+            .iter()
+            .map(generic_value_type_name)
+            .collect::<Vec<_>>()
+            .join(", "),
+        span,
+    }
+}
+
+/// Dispatch a call after evaluating arguments once. Primitive restrictions are
+/// side-effect-free; queries remain lazy throughout the call-next-method chain.
 fn dispatch_generic(
     ctx: &mut EvalContext<'_>,
     generic: &GenericFunction,
@@ -1879,89 +2019,54 @@ fn dispatch_generic(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let max_call_depth = ctx.config.effective_max_call_depth();
-    // Evaluate all arguments first (eager evaluation).
     let arg_values = eval_args(ctx, args)?;
-
-    // Collect all applicable methods, sorted by specificity (most specific first).
-    let mut applicable: Vec<crate::functions::RegisteredMethod> = generic
+    let mut candidates: Vec<_> = generic
         .methods
         .iter()
-        .filter(|m| method_applicable(m, &arg_values))
+        .filter(|method| method_accepts_arguments(method, &arg_values))
         .cloned()
         .collect();
-    applicable.sort_by(compare_method_specificity);
-
-    if applicable.is_empty() {
-        ferric_event!(
-            debug,
-            callable = %generic.name,
-            arg_count = arg_values.len(),
-            "dispatch_generic_no_applicable_method"
-        );
-        let types: Vec<&str> = arg_values.iter().map(generic_value_type_name).collect();
-        return Err(EvalError::NoApplicableMethod {
-            name: generic.name.clone(),
-            actual_types: types.join(", "),
-            span,
-        });
+    candidates.sort_by(compare_method_specificity);
+    if candidates.is_empty() {
+        return Err(no_applicable_method(&generic.name, &arg_values, span));
     }
-
-    let method = applicable[0].clone();
-
-    // Check recursion limit.
+    let max_call_depth = ctx.config.effective_max_call_depth();
     if ctx.call_depth >= max_call_depth {
-        ferric_event!(
-            warn,
-            callable = %generic.name,
-            call_depth = ctx.call_depth,
-            max_call_depth,
-            "eval_recursion_limit_reached"
-        );
+        ferric_event!(warn, callable = %generic.name, call_depth = ctx.call_depth, max_call_depth, "eval_recursion_limit_reached");
         return Err(EvalError::RecursionLimit {
             name: generic.name.clone(),
             depth: ctx.call_depth,
             span,
         });
     }
-
-    // Build the dispatch chain for call-next-method support.
-    let chain = MethodChain {
+    let mut chain = MethodChain {
         generic_name: generic.name.clone(),
         generic_module,
-        applicable_methods: applicable,
+        candidate_methods: candidates,
         current_index: 0,
-        arg_values: arg_values.clone(),
+        arg_values,
     };
-
-    // Build parameter bindings for the selected method.
-    let (fn_var_map, fn_bindings) = bind_callable_arguments(
-        ctx,
-        &generic.name,
-        &method.parameters,
-        method.wildcard_parameter.as_deref(),
-        &arg_values,
-        span.as_ref(),
-    )?;
-    // The method body executes in the generic's definition module.
+    let selected = select_method(ctx, &chain, 0, span.as_ref())?
+        .ok_or_else(|| no_applicable_method(&generic.name, &chain.arg_values, span))?;
+    chain.current_index = selected.index;
+    let method = chain.candidate_methods[selected.index].clone();
     execute_callable_body(
         ctx,
-        &fn_var_map,
-        &fn_bindings,
+        &selected.var_map,
+        &selected.bindings,
         &method.body,
         generic_module,
         Some(chain),
     )
 }
 
-/// Handle `(call-next-method)` — advance to the next method in the generic dispatch chain.
+/// Each call-next-method invocation searches again from its caller's position,
+/// retaining original arguments and re-evaluating the reached query expressions.
 fn dispatch_call_next_method(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let max_call_depth = ctx.config.effective_max_call_depth();
-    // call-next-method takes no arguments.
     if !args.is_empty() {
         return Err(EvalError::ArityMismatch {
             name: "call-next-method".to_string(),
@@ -1970,78 +2075,40 @@ fn dispatch_call_next_method(
             span,
         });
     }
-
-    // Must be inside a generic method dispatch chain.
-    let chain = match &ctx.method_chain {
-        Some(c) => c.clone(),
-        None => {
-            return Err(EvalError::TypeError {
-                function: "call-next-method".to_string(),
-                expected: "called from within a generic method body".to_string(),
-                actual: "called outside generic dispatch context".to_string(),
-                span,
-            });
-        }
-    };
-
-    let next_index = chain.current_index + 1;
-    if next_index >= chain.applicable_methods.len() {
-        ferric_event!(
-            debug,
-            callable = %chain.generic_name,
-            current_index = chain.current_index,
-            "call_next_method_missing_next"
-        );
-        return Err(EvalError::NoApplicableMethod {
-            name: format!("call-next-method for `{}`", chain.generic_name),
-            actual_types: "no next method in dispatch chain".to_string(),
+    let Some(mut chain) = ctx.method_chain.clone() else {
+        return Err(EvalError::TypeError {
+            function: "call-next-method".to_string(),
+            expected: "called from within a generic method body".to_string(),
+            actual: "called outside generic dispatch context".to_string(),
             span,
         });
-    }
-
-    // Recursion limit check.
+    };
+    let max_call_depth = ctx.config.effective_max_call_depth();
     if ctx.call_depth >= max_call_depth {
-        ferric_event!(
-            warn,
-            callable = %chain.generic_name,
-            call_depth = ctx.call_depth,
-            max_call_depth,
-            "eval_recursion_limit_reached"
-        );
+        ferric_event!(warn, callable = %chain.generic_name, call_depth = ctx.call_depth, max_call_depth, "eval_recursion_limit_reached");
         return Err(EvalError::RecursionLimit {
             name: format!("call-next-method for `{}`", chain.generic_name),
             depth: ctx.call_depth,
             span,
         });
     }
-
-    let next_method = chain.applicable_methods[next_index].clone();
-
-    // Bind parameters for the next method using the original arguments.
-    let (fn_var_map, fn_bindings) = bind_callable_arguments(
-        ctx,
-        &chain.generic_name,
-        &next_method.parameters,
-        next_method.wildcard_parameter.as_deref(),
-        &chain.arg_values,
-        span.as_ref(),
-    )?;
-
-    // Execute next method body with updated chain position.
-    let next_chain = MethodChain {
-        generic_name: chain.generic_name.clone(),
-        generic_module: chain.generic_module,
-        applicable_methods: chain.applicable_methods.clone(),
-        current_index: next_index,
-        arg_values: chain.arg_values.clone(),
-    };
+    let selected = select_method(ctx, &chain, chain.current_index + 1, span.as_ref())?
+        .ok_or_else(|| {
+            ferric_event!(debug, callable = %chain.generic_name, current_index = chain.current_index, "call_next_method_missing_next");
+            EvalError::NoApplicableMethod {
+                name: format!("call-next-method for `{}`", chain.generic_name),
+                actual_types: "no next method in dispatch chain".to_string(), span,
+            }
+        })?;
+    chain.current_index = selected.index;
+    let method = chain.candidate_methods[selected.index].clone();
     execute_callable_body(
         ctx,
-        &fn_var_map,
-        &fn_bindings,
-        &next_method.body,
+        &selected.var_map,
+        &selected.bindings,
+        &method.body,
         chain.generic_module,
-        Some(next_chain),
+        Some(chain),
     )
 }
 
@@ -2069,10 +2136,17 @@ fn bind_callable_arguments(
     }
 
     if let Some(wildcard_name) = wildcard_parameter {
-        let extra_values = arg_values[parameters.len()..]
-            .iter()
-            .cloned()
-            .collect::<ferric_rules_core::Multifield>();
+        let mut extra_values = ferric_rules_core::Multifield::new();
+        for value in &arg_values[parameters.len()..] {
+            match value {
+                Value::Multifield(fields) => {
+                    for field in fields.iter() {
+                        extra_values.push(field.clone());
+                    }
+                }
+                value => extra_values.push(value.clone()),
+            }
+        }
         bind_parameter(
             ctx,
             callable_name,
@@ -2779,6 +2853,7 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "get-focus-stack"
             | "close"
             | "return"
+            | "break"
             | "load"
             | "undefrule"
             | "ppdefrule"
@@ -2962,6 +3037,7 @@ fn dispatch_builtin(
         "readline" => builtin_readline(ctx, args, span_ref),
         "close" => builtin_close(ctx, args, span_ref),
         "return" => builtin_return(ctx, args, span_ref),
+        "break" => builtin_break(args, span_ref),
         "load" => builtin_load(ctx, args, span_ref),
         "undefrule" => builtin_undefrule(ctx, args, span_ref),
         "ppdefrule" => builtin_ppdefrule(ctx, args, span_ref),
@@ -5633,6 +5709,13 @@ fn builtin_close(
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
+fn builtin_break(args: &[RuntimeExpr], span: Option<&SourceSpan>) -> Result<Value, EvalError> {
+    check_arity_exact("break", args, 0, span)?;
+    Err(EvalError::BreakControl {
+        span: span.cloned(),
+    })
+}
+
 /// `return` — unwind the current callable with its argument (or VOID).
 fn builtin_return(
     ctx: &mut EvalContext<'_>,
@@ -6809,6 +6892,238 @@ mod tests {
         }
     }
 
+    fn source_action(source: &str) -> ferric_rules_parser::ActionExpr {
+        let parsed = ferric_rules_parser::parse_sexprs(source, ferric_rules_parser::FileId(0));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        ferric_rules_parser::interpret_action_expr(&parsed.exprs[0]).unwrap()
+    }
+
+    fn eval_source(ctx: &mut EvalContext<'_>, source: &str) -> Result<Value, EvalError> {
+        let expression = from_action_expr(&source_action(source), ctx.symbol_table, ctx.config)?;
+        eval(ctx, &expression)
+    }
+
+    #[test]
+    fn procedural_defaults_are_false_values_in_callable_expressions() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction nop ()) (defmethod nopm ((?x INTEGER)))
+             (deffunction conditional (?x) (if (> ?x 0) then yes))
+             (deffunction count () (loop-for-count 2 do 77))
+             (deffunction spin () (bind ?n 0) (while (< ?n 2) do (bind ?n (+ ?n 1))))",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            for source in [
+                "(nop)",
+                "(nopm 1)",
+                "(conditional -1)",
+                "(count)",
+                "(spin)",
+                "(switch 1 (case 2 then yes))",
+                "(foreach ?x (create$) ?x)",
+            ] {
+                let value = eval_source(ctx, source).unwrap();
+                assert!(
+                    matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("FALSE")),
+                    "{source}: {value:?}"
+                );
+            }
+            let fields = eval_source(ctx, "(create$ a (conditional -1) b)").unwrap();
+            assert!(matches!(fields, Value::Multifield(values) if values.len() == 3));
+        });
+    }
+
+    #[test]
+    fn evaluator_breaks_stop_the_nearest_loop_and_restore_local_scope() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction nested () (bind ?n 0)
+                (loop-for-count (?i 1 3) do
+                    (loop-for-count (?j 1 4) do (bind ?n (+ ?n 1)) (break))
+                    (bind ?n (+ ?n 10))) ?n)
+             (deffunction early () (loop-for-count 5 do (return 7)) 99)",
+            )
+            .unwrap();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            assert!(matches!(
+                eval_source(ctx, "(nested)").unwrap(),
+                Value::Integer(33)
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(early)").unwrap(),
+                Value::Integer(7)
+            ));
+            eval(ctx, &local_bind("x", vec![int(99)])).unwrap();
+            for source in ["(while TRUE do (break))", "(loop-for-count 5 do (break))"] {
+                let value = eval_source(ctx, source).unwrap();
+                assert!(!is_truthy(&value, ctx.symbol_table), "{source}");
+            }
+            for source in [
+                "(progn$ (?x (create$ a b c)) (if (eq ?x b) then (break)) ?x)",
+                "(foreach ?x (create$ a b c) (if (eq ?x b) then (break)) ?x)",
+            ] {
+                assert!(
+                    matches!(eval_source(ctx, source).unwrap(), Value::Void),
+                    "{source}"
+                );
+                assert!(matches!(
+                    eval(ctx, &local_read("x")).unwrap(),
+                    Value::Integer(99)
+                ));
+            }
+            let value = eval_source(ctx, "(foreach ?x (create$ a b c) ?x)").unwrap();
+            assert!(
+                matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("c"))
+            );
+        });
+    }
+
+    #[test]
+    fn escaped_breaks_cannot_cross_callable_or_public_evaluator_boundaries() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine.load_str("(deffunction broken () 0)").unwrap();
+        // Bypass source validation to exercise the runtime boundary directly.
+        engine.functions.register(
+            engine.module_registry.main_module_id(),
+            UserFunction {
+                name: "broken".into(),
+                parameters: Vec::new(),
+                wildcard_parameter: None,
+                body: vec![source_action("(break)")],
+            },
+        );
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(matches!(
+                eval_source(ctx, "(break)"),
+                Err(EvalError::BreakOutsideLoop { .. })
+            ));
+            assert!(matches!(
+                eval_action_expression(ctx, &call("break", vec![])),
+                Err(EvalError::BreakControl { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(while TRUE do (broken))"),
+                Err(EvalError::BreakOutsideLoop { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(break 1)"),
+                Err(EvalError::ArityMismatch { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn wildcard_bindings_flatten_only_excess_arguments_after_type_selection() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction count ($?values) (length$ ?values))
+             (deffunction sizes (?first $?rest) (create$ (length$ ?first) (length$ ?rest)))
+             (defmethod symbols (($?values SYMBOL)) (length$ ?values))
+             (defmethod fields (($?values MULTIFIELD)) (length$ ?values))
+             (defmethod queried (($?values (= (length$ ?values) 3))) (length$ ?values))",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            for (source, expected) in [
+                ("(count (create$ a b c))", 3),
+                ("(count x (create$ a b) y)", 4),
+                ("(count (create$))", 0),
+                ("(symbols a b)", 2),
+                ("(symbols)", 0),
+                ("(fields (create$ a b) (create$ c))", 3),
+                ("(queried a (create$ b c))", 3),
+            ] {
+                assert!(
+                    matches!(eval_source(ctx, source).unwrap(), Value::Integer(value) if value == expected),
+                    "{source}"
+                );
+            }
+            assert!(matches!(
+                eval_source(ctx, "(symbols (create$ a b))"),
+                Err(EvalError::NoApplicableMethod { .. })
+            ));
+            let sizes = eval_source(ctx, "(sizes (create$ 1 2) 3 (create$ 4 5))").unwrap();
+            assert!(sizes.structural_eq(&Value::Multifield(Box::new(
+                [Value::Integer(2), Value::Integer(3)].into_iter().collect()
+            ))));
+        });
+    }
+
+    #[test]
+    fn method_queries_are_lazy_and_call_next_rechecks_reached_candidates() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine.load_str(
+            "(defglobal ?*queries* = 0)
+             (deffunction probe (?answer) (bind ?*queries* (+ ?*queries* 1)) ?answer)
+             (defmethod choose 10 ((?x INTEGER (probe TRUE))) first)
+             (defmethod choose 20 ((?x NUMBER (probe TRUE))) second)
+             (defmethod chain 10 ((?x INTEGER (probe TRUE))) (create$ (call-next-method) (call-next-method)))
+             (defmethod chain 20 ((?x INTEGER (probe FALSE))) skipped)
+             (defmethod chain 30 ((?x NUMBER (probe TRUE))) third)",
+        ).unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            let value = eval_source(ctx, "(choose 1)").unwrap();
+            assert!(
+                matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("first"))
+            );
+            assert!(matches!(
+                ctx.globals.get(ctx.current_module, "queries"),
+                Some(Value::Integer(1))
+            ));
+            ctx.globals
+                .set(ctx.current_module, "queries", Value::Integer(0));
+            let value = eval_source(ctx, "(chain 1)").unwrap();
+            let Value::Multifield(fields) = value else {
+                panic!("expected two next-method results")
+            };
+            assert_eq!(fields.len(), 2);
+            assert!(fields.iter().all(|value| matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(*symbol) == Some("third"))));
+            assert!(matches!(
+                ctx.globals.get(ctx.current_module, "queries"),
+                Some(Value::Integer(5))
+            ));
+        });
+    }
+
+    #[test]
+    fn method_queries_see_later_parameters_and_errors_abort_selection() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(defmethod later ((?x INTEGER (< ?x ?later)) (?later INTEGER)) yes)
+             (defmethod failure 1 ((?x INTEGER (/ 1 0))) unreachable)
+             (defmethod failure 2 ((?x NUMBER)) fallback)
+             (defmethod priority 1 ((?x (eq ?x 1))) queried)
+             (defmethod priority 2 ((?x INTEGER)) typed)
+             (defmethod shape 1 (($?values INTEGER)) wildcard)
+             (defmethod shape 2 (?x) fixed)",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(eval_source(ctx, "(later 1 2)").is_ok());
+            assert!(matches!(
+                eval_source(ctx, "(later 2 1)"),
+                Err(EvalError::NoApplicableMethod { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(failure 1)"),
+                Err(EvalError::DivisionByZero { .. })
+            ));
+            for (source, expected) in [("(priority 1)", "typed"), ("(shape 1)", "fixed")] {
+                let value = eval_source(ctx, source).unwrap();
+                assert!(
+                    matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some(expected)),
+                    "{source}"
+                );
+            }
+        });
+    }
+
     fn local_bind(name: &str, values: Vec<RuntimeExpr>) -> RuntimeExpr {
         call(
             "bind",
@@ -7692,7 +8007,7 @@ mod tests {
         let compact = compact_ref(&mut engine, "f", "value");
         let body = vec![(
             ferric_rules_parser::ActionExpr::Variable("unused".into(), dummy_span()),
-            Some(Box::new(compact)),
+            Some(Box::new(local_bind("seen", vec![compact]))),
         )];
         let loops = [
             RuntimeExpr::LoopForCount {
@@ -7709,9 +8024,13 @@ mod tests {
                 span: None,
             },
         ];
-        with_compact_context(&mut engine, Some(&scope), |ctx| {
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, Some(&scope), Some(&mut locals), |ctx| {
             for expr in loops {
-                assert!(eval(ctx, &expr).unwrap().structural_eq(&Value::Integer(10)));
+                eval(ctx, &expr).unwrap();
+                assert!(eval(ctx, &local_read("seen"))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(10)));
             }
         });
     }
@@ -7739,7 +8058,7 @@ mod tests {
             let method = MethodChain {
                 generic_name: "test".into(),
                 generic_module: ctx.current_module,
-                applicable_methods: Vec::new(),
+                candidate_methods: Vec::new(),
                 current_index: 0,
                 arg_values: Vec::new(),
             };
@@ -10299,7 +10618,10 @@ mod tests {
             parameters: (0..type_restrictions.len())
                 .map(|i| format!("p{i}"))
                 .collect(),
+            parameter_queries: vec![None; type_restrictions.len()],
             type_restrictions,
+            wildcard_type_restrictions: vec![],
+            wildcard_query: None,
             wildcard_parameter: if wildcard {
                 Some("rest".to_string())
             } else {

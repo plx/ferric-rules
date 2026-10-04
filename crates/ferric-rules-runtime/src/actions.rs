@@ -179,7 +179,8 @@ impl ActionEvalEnv {
         }
 
         let mut ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
-        crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
+        crate::evaluator::eval_action_expression(&mut ctx, runtime_expr)
+            .map_err(ActionError::from_action_evaluation)
     }
 
     fn eval_expr(
@@ -235,7 +236,8 @@ impl ActionEvalEnv {
                 module_registry: &engine.module_registry,
             }),
         };
-        crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
+        crate::evaluator::eval_action_expression(&mut ctx, runtime_expr)
+            .map_err(ActionError::from_action_evaluation)
     }
 }
 
@@ -348,6 +350,19 @@ pub enum ActionError {
     #[doc(hidden)]
     #[error("internal rule return control escaped the action sequence")]
     RuleReturn,
+    /// Internal non-error signal consumed by the nearest action loop.
+    #[doc(hidden)]
+    #[error("internal loop break control escaped the action sequence")]
+    LoopBreak,
+}
+
+impl ActionError {
+    fn from_action_evaluation(error: crate::evaluator::EvalError) -> Self {
+        match error {
+            crate::evaluator::EvalError::BreakControl { .. } => Self::LoopBreak,
+            error => Self::Evaluator(error),
+        }
+    }
 }
 
 /// Execute actions for a fired rule.
@@ -740,6 +755,23 @@ fn execute_single_action(
             // CLIPS allows this but it's unusual. We silently ignore it.
             Ok(())
         }
+        "break" => {
+            if call.args.is_empty() {
+                Err(ActionError::LoopBreak)
+            } else {
+                Err(ActionError::Evaluator(
+                    crate::evaluator::EvalError::ArityMismatch {
+                        name: "break".to_string(),
+                        expected: "0".to_string(),
+                        actual: call.args.len(),
+                        span: Some(crate::evaluator::SourceSpan {
+                            line: call.span.start.line,
+                            column: call.span.start.column,
+                        }),
+                    },
+                ))
+            }
+        }
         "return" => match call.args.as_slice() {
             [] => Err(ActionError::RuleReturn),
             [value_expr] => {
@@ -866,7 +898,7 @@ fn execute_single_action(
                     )
                     .map_err(ActionError::from)?;
                     // Execute body items.
-                    execute_loop_body(
+                    match execute_loop_body(
                         reset_requested,
                         clear_requested,
                         token,
@@ -875,7 +907,11 @@ fn execute_single_action(
                         context,
                         eval_env,
                         collected_facts,
-                    )?;
+                    ) {
+                        Ok(()) => {}
+                        Err(ActionError::LoopBreak) => break,
+                        Err(error) => return Err(error),
+                    }
                     if *reset_requested || *clear_requested {
                         break;
                     }
@@ -967,7 +1003,7 @@ fn execute_single_action(
                             (token, rule_info)
                         };
 
-                        execute_loop_body(
+                        match execute_loop_body(
                             reset_requested,
                             clear_requested,
                             loop_token,
@@ -976,7 +1012,11 @@ fn execute_single_action(
                             context,
                             eval_env,
                             collected_facts,
-                        )?;
+                        ) {
+                            Ok(()) => {}
+                            Err(ActionError::LoopBreak) => break,
+                            Err(error) => return Err(error),
+                        }
                         if *reset_requested || *clear_requested {
                             break;
                         }
@@ -1117,7 +1157,7 @@ fn execute_single_action(
                             }
                             let (loop_token, loop_rule_info, _, _) = loop_frame.as_ref().unwrap();
 
-                            execute_loop_body(
+                            match execute_loop_body(
                                 reset_requested,
                                 clear_requested,
                                 loop_token,
@@ -1126,7 +1166,11 @@ fn execute_single_action(
                                 context,
                                 eval_env,
                                 collected_facts,
-                            )?;
+                            ) {
+                                Ok(()) => {}
+                                Err(ActionError::LoopBreak) => break,
+                                Err(error) => return Err(error),
+                            }
                             if *reset_requested || *clear_requested {
                                 break;
                             }
@@ -1576,7 +1620,7 @@ fn execute_query_action(
     let mut cursor = ActionQueryCursor::new(bindings, context)?;
     let mut selected = Vec::new();
     while let Some(candidate) = cursor.next(context, name)? {
-        let matched = with_query_candidate(
+        let result = with_query_candidate(
             &candidate,
             token,
             rule_info,
@@ -1599,7 +1643,12 @@ fn execute_query_action(
                 }
                 Ok(matched)
             },
-        )?;
+        );
+        let matched = match result {
+            Ok(matched) => matched,
+            Err(ActionError::LoopBreak) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         if matched && delayed {
             selected.push(candidate);
         }
@@ -1610,7 +1659,7 @@ fn execute_query_action(
     for candidate in selected {
         crate::evaluator::consume_action_loop_iteration(&context.engine.config, name, None)
             .map_err(ActionError::from)?;
-        with_query_candidate(
+        let result = with_query_candidate(
             &candidate,
             token,
             rule_info,
@@ -1628,7 +1677,12 @@ fn execute_query_action(
                     collected_facts,
                 )
             },
-        )?;
+        );
+        match result {
+            Ok(()) => {}
+            Err(ActionError::LoopBreak) => break,
+            Err(error) => return Err(error),
+        }
         if *reset_requested || *clear_requested {
             break;
         }

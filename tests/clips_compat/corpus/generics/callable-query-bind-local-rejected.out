@@ -1,0 +1,8 @@
+[GENRCPSR12] Binds are not allowed in query expressions.
+
+ERROR:
+(defmethod MAIN::rejected
+   ((?x (if TRUE
+       then
+       (bind ?y 1)
+       (= ?y 1))

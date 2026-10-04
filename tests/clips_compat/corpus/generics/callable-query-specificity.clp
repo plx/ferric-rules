@@ -1,0 +1,7 @@
+(defgeneric rank)
+(defmethod rank ((?x (integerp ?x))) queried)
+(defmethod rank ((?x INTEGER)) typed)
+(defgeneric shape)
+(defmethod shape (($?x INTEGER)) typed-wildcard)
+(defmethod shape (?x) fixed)
+(defrule run => (printout t (rank 1) ":" (shape 1) ":" (shape 1 2) crlf))

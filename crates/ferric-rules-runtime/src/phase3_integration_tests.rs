@@ -2462,11 +2462,12 @@ mod tests {
         load_ok(
             &mut engine,
             r"
+            (defmodule MAIN (export ?ALL))
             (defglobal ?*offset* = 1)
             (deffunction inc (?x) (+ ?x ?*offset*))
             (defgeneric tag)
             (defmethod tag ((?x INTEGER)) ?x)
-            (defmodule WORK)
+            (defmodule WORK (import MAIN ?ALL))
             (defrule run (go ?x) => (assert (done (inc (tag ?x)))))
             (deffacts startup (go 41))
         ",

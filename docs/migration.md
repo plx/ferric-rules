@@ -75,9 +75,29 @@ multislot pattern holds a sequence of field constraints. In the core,
 `CompilablePattern` has a new `sequence` field, so struct literals need it
 (`sequence: None` for a pattern without multifield fields).
 
-## Pre-1.0 snapshot schema 4
+## Pre-1.0 procedural and callable changes
 
-Snapshots are written with schema 4. Schema 3 snapshots are rejected with
+Anonymous count loops now use CLIPS syntax: replace `(loop-for-count (5) ...)`
+with `(loop-for-count 5 ...)`. Empty callable bodies, unmatched `if`/`switch`
+branches, and completed `while`/`loop-for-count` expressions return `FALSE`.
+Wildcard parameters flatten excess multifield arguments; fixed parameters
+preserve multifields as single arguments. Unknown calls in function and method
+bodies now fail during loading, including calls in branches that never execute.
+Forward references within a load remain supported.
+
+Parser `MethodParameter` struct literals need a `query` field. `MethodConstruct`
+and runtime `RegisteredMethod` also store wildcard type/query restrictions;
+`RegisteredMethod` stores one optional query per fixed parameter. Use `None`
+and empty restriction vectors when there are no queries or wildcard types.
+The existing `GenericRegistry::register_method` API retains its signature;
+`register_restricted_method` accepts the additional restrictions.
+
+## Pre-1.0 snapshot schema 5
+
+Snapshots are written with schema 5. Schema 4 snapshots are rejected with
+`UnsupportedVersion(4)` because generic methods now retain parameter queries
+and typed wildcard restrictions. Callable control-flow and wildcard argument
+semantics have also been corrected. Schema 3 snapshots are rejected with
 `UnsupportedVersion(3)` because deffacts now preserve field initializers and
 evaluate them at reset rather than retaining values computed during loading.
 Schema 2 snapshots are rejected with
@@ -410,7 +430,7 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 4); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 5); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see

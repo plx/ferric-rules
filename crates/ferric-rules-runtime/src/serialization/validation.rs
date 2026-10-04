@@ -78,6 +78,11 @@ impl Engine {
                 info.actions.len() == info.runtime_actions.len(),
                 "inconsistent compiled action index",
             )?;
+            crate::callable_validation::validate_action_breaks_with_templates(
+                &info.actions,
+                &|name| self.resolve_template_id(name, module).is_ok(),
+            )
+            .map_err(|(_, message)| message)?;
             for action in &info.actions {
                 for argument in &action.call.args {
                     validate_action(argument)?;
@@ -255,6 +260,11 @@ impl Engine {
                 for expr in &function.body {
                     validate_action(expr)?;
                 }
+                crate::callable_validation::validate_breaks_with_templates(
+                    &function.body,
+                    &|name| self.resolve_template_id(name, *module).is_ok(),
+                )
+                .map_err(|(_, message)| message)?;
                 crate::callable_validation::validate_iterator_binds(&function.body)
                     .map_err(|(_, message)| message)?;
             }
@@ -289,9 +299,45 @@ impl Engine {
                         method.parameters.len() == method.type_restrictions.len(),
                         "inconsistent method restrictions",
                     )?;
-                    for expr in &method.body {
+                    ensure(
+                        method.parameters.len() == method.parameter_queries.len(),
+                        "inconsistent method queries",
+                    )?;
+                    ensure(
+                        method.wildcard_parameter.is_some()
+                            || (method.wildcard_type_restrictions.is_empty()
+                                && method.wildcard_query.is_none()),
+                        "wildcard restrictions without a wildcard parameter",
+                    )?;
+                    for expr in method
+                        .body
+                        .iter()
+                        .chain(method.parameter_queries.iter().flatten())
+                        .chain(method.wildcard_query.as_ref())
+                    {
                         validate_action(expr)?;
                     }
+                    self.validate_method_queries(
+                        &method
+                            .parameters
+                            .iter()
+                            .cloned()
+                            .chain(method.wildcard_parameter.iter().cloned())
+                            .collect(),
+                        method
+                            .parameter_queries
+                            .iter()
+                            .flatten()
+                            .chain(method.wildcard_query.as_ref()),
+                        *module,
+                        name,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    crate::callable_validation::validate_breaks_with_templates(
+                        &method.body,
+                        &|name| self.resolve_template_id(name, *module).is_ok(),
+                    )
+                    .map_err(|(_, message)| message)?;
                     crate::callable_validation::validate_iterator_binds(&method.body)
                         .map_err(|(_, message)| message)?;
                 }

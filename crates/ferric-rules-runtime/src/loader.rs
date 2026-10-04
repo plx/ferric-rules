@@ -28,7 +28,7 @@ use ferric_rules_parser::{
 
 use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
 use crate::engine::{Engine, EngineError};
-use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
+use crate::functions::{insert_module_entry, GenericFunction, UserFunction};
 use crate::templates::RegisteredTemplate;
 use crate::tracing_support::{ferric_event, ferric_span};
 // GenericRegistry accessed via self.generics (field on Engine)
@@ -252,6 +252,101 @@ struct RuleRhsScope<'a> {
     exported: &'a HashSet<String>,
     existential: &'a HashSet<String>,
     allow_local_reads: bool,
+}
+
+/// Definitions are provisionally visible during loading to support forward
+/// references. Invalid definitions are retired before rules or facts use them.
+#[derive(Default)]
+struct PendingCallables {
+    originals: HashMap<(crate::modules::ModuleId, String), OriginalCallables>,
+    definitions: Vec<PendingCallable>,
+}
+
+struct OriginalCallables {
+    function: Option<UserFunction>,
+    generic: Option<GenericFunction>,
+}
+
+struct PendingCallable {
+    module: crate::modules::ModuleId,
+    definition: CallableDefinition,
+    valid: bool,
+}
+
+enum CallableDefinition {
+    Function(Box<FunctionConstruct>),
+    Generic(GenericConstruct),
+    Method(Box<MethodConstruct>),
+}
+
+impl CallableDefinition {
+    fn name(&self) -> &str {
+        match self {
+            Self::Function(function) => &function.name,
+            Self::Generic(generic) => &generic.name,
+            Self::Method(method) => &method.name,
+        }
+    }
+
+    fn referenced_callables(&self, is_template: &dyn Fn(&str) -> bool) -> HashSet<&str> {
+        let mut expressions: Vec<_> = match self {
+            Self::Function(function) => function.body.iter().collect(),
+            Self::Generic(_) => Vec::new(),
+            Self::Method(method) => method
+                .body
+                .iter()
+                .chain(
+                    method
+                        .parameters
+                        .iter()
+                        .filter_map(|parameter| parameter.query.as_ref()),
+                )
+                .chain(method.wildcard_query.as_ref())
+                .collect(),
+        };
+        let mut names = HashSet::new();
+        while let Some(expression) = expressions.pop() {
+            if let ActionExpr::FunctionCall(call) = expression {
+                names.insert(call.name.as_str());
+                match call.name.as_str() {
+                    "assert" => {
+                        for argument in &call.args {
+                            if let ActionExpr::FunctionCall(fact) = argument {
+                                if is_template(&fact.name) {
+                                    Self::push_slot_values(&fact.args, &mut expressions);
+                                } else {
+                                    expressions.extend(&fact.args);
+                                }
+                            } else {
+                                expressions.push(argument);
+                            }
+                        }
+                        continue;
+                    }
+                    "modify" | "duplicate" => {
+                        if let Some((target, slots)) = call.args.split_first() {
+                            expressions.push(target);
+                            Self::push_slot_values(slots, &mut expressions);
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            expression.push_children(&mut expressions);
+        }
+        names
+    }
+
+    fn push_slot_values<'a>(slots: &'a [ActionExpr], expressions: &mut Vec<&'a ActionExpr>) {
+        for slot in slots {
+            if let ActionExpr::FunctionCall(slot) = slot {
+                expressions.extend(&slot.args);
+            } else {
+                expressions.push(slot);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -495,6 +590,471 @@ pub struct LoadResult {
 }
 
 impl Engine {
+    fn stage_callable(
+        &mut self,
+        pending: &mut PendingCallables,
+        module: crate::modules::ModuleId,
+        definition: CallableDefinition,
+    ) {
+        let name = definition.name().to_owned();
+        pending
+            .originals
+            .entry((module, name.clone()))
+            .or_insert_with(|| OriginalCallables {
+                function: self.functions.get(module, &name).cloned(),
+                generic: self.generics.get(module, &name).cloned(),
+            });
+        // Preserve source-order visibility for immediate global initializers.
+        // A conflicting candidate stays dormant until final callable validation.
+        let _ = self.install_callable(module, &definition);
+        pending.definitions.push(PendingCallable {
+            module,
+            definition,
+            valid: true,
+        });
+    }
+
+    fn install_callable(
+        &mut self,
+        module: crate::modules::ModuleId,
+        definition: &CallableDefinition,
+    ) -> Result<(), LoadError> {
+        match definition {
+            CallableDefinition::Function(function) => {
+                if self.generics.contains(module, &function.name) {
+                    return Err(Self::construct_conflict_error(
+                        "deffunction",
+                        "defgeneric",
+                        &function.name,
+                        &function.span,
+                    ));
+                }
+                self.publish_function(module, function);
+            }
+            CallableDefinition::Generic(generic) => {
+                if self.functions.contains(module, &generic.name) {
+                    return Err(Self::construct_conflict_error(
+                        "defgeneric",
+                        "deffunction",
+                        &generic.name,
+                        &generic.span,
+                    ));
+                }
+                if self.generics.contains(module, &generic.name) {
+                    return Err(Self::duplicate_definition_error(
+                        "defgeneric",
+                        &generic.name,
+                        &generic.span,
+                    ));
+                }
+                insert_module_entry(
+                    &mut self.generic_modules,
+                    module,
+                    generic.name.clone(),
+                    module,
+                );
+                self.generics.register_generic(module, &generic.name);
+            }
+            CallableDefinition::Method(method) => {
+                if self.functions.contains(module, &method.name) {
+                    return Err(Self::construct_conflict_error(
+                        "defmethod",
+                        "deffunction",
+                        &method.name,
+                        &method.span,
+                    ));
+                }
+                if let Some(index) = method.index {
+                    if self.generics.has_method_index(module, &method.name, index) {
+                        return Err(Self::duplicate_method_index_error(
+                            &method.name,
+                            index,
+                            &method.span,
+                        ));
+                    }
+                }
+                insert_module_entry(
+                    &mut self.generic_modules,
+                    module,
+                    method.name.clone(),
+                    module,
+                );
+                self.generics.register_restricted_method(
+                    module,
+                    &method.name,
+                    method.index,
+                    method.parameters.iter().map(|p| p.name.clone()).collect(),
+                    method
+                        .parameters
+                        .iter()
+                        .map(|p| p.type_restrictions.clone())
+                        .collect(),
+                    method.parameters.iter().map(|p| p.query.clone()).collect(),
+                    method.wildcard_parameter.clone(),
+                    method.wildcard_type_restrictions.clone(),
+                    method.wildcard_query.clone(),
+                    method.body.clone(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn publish_function(&mut self, module: crate::modules::ModuleId, function: &FunctionConstruct) {
+        insert_module_entry(
+            &mut self.function_modules,
+            module,
+            function.name.clone(),
+            module,
+        );
+        self.functions.register(
+            module,
+            UserFunction {
+                name: function.name.clone(),
+                parameters: function.parameters.clone(),
+                wildcard_parameter: function.wildcard_parameter.clone(),
+                body: function.body.clone(),
+            },
+        );
+    }
+
+    fn restore_original_callables(&mut self, pending: &PendingCallables) {
+        for ((module, name), original) in &pending.originals {
+            if let Some(entries) = self.functions.functions.get_mut(module) {
+                entries.remove(name.as_str());
+            }
+            if let Some(entries) = self.function_modules.get_mut(module) {
+                entries.remove(name.as_str());
+            }
+            if let Some(entries) = self.generics.generics.get_mut(module) {
+                entries.remove(name.as_str());
+            }
+            if let Some(entries) = self.generic_modules.get_mut(module) {
+                entries.remove(name.as_str());
+            }
+            if let Some(function) = &original.function {
+                self.functions.register(*module, function.clone());
+                insert_module_entry(&mut self.function_modules, *module, name.clone(), *module);
+            }
+            if let Some(generic) = &original.generic {
+                insert_module_entry(
+                    &mut self.generics.generics,
+                    *module,
+                    name.clone(),
+                    generic.clone(),
+                );
+                insert_module_entry(&mut self.generic_modules, *module, name.clone(), *module);
+            }
+        }
+    }
+
+    fn original_blocks_candidate(pending: &PendingCallables, candidate: &PendingCallable) -> bool {
+        let original =
+            &pending.originals[&(candidate.module, candidate.definition.name().to_owned())];
+        match &candidate.definition {
+            CallableDefinition::Function(_) => original.generic.is_some(),
+            CallableDefinition::Generic(_) => {
+                original.function.is_some() || original.generic.is_some()
+            }
+            CallableDefinition::Method(method) => {
+                original.function.is_some()
+                    || original.generic.as_ref().is_some_and(|generic| {
+                        method.index.is_some_and(|index| {
+                            generic.methods.iter().any(|method| method.index == index)
+                        })
+                    })
+            }
+        }
+    }
+
+    fn publish_pending_names(&mut self, pending: &PendingCallables) {
+        self.restore_original_callables(pending);
+        for candidate in &pending.definitions {
+            if !candidate.valid || Self::original_blocks_candidate(pending, candidate) {
+                continue;
+            }
+            match &candidate.definition {
+                CallableDefinition::Function(function) => {
+                    self.publish_function(candidate.module, function);
+                }
+                definition => {
+                    let name = definition.name();
+                    insert_module_entry(
+                        &mut self.generic_modules,
+                        candidate.module,
+                        name.to_owned(),
+                        candidate.module,
+                    );
+                    self.generics.register_generic(candidate.module, name);
+                }
+            }
+        }
+    }
+
+    fn reject_invalid_candidates(
+        &self,
+        pending: &mut PendingCallables,
+        selected: Option<&HashSet<usize>>,
+        errors: &mut Vec<LoadError>,
+    ) -> bool {
+        let mut rejected = Vec::new();
+        for (index, candidate) in pending.definitions.iter().enumerate() {
+            if !candidate.valid || selected.is_some_and(|selected| !selected.contains(&index)) {
+                continue;
+            }
+            let result = match &candidate.definition {
+                CallableDefinition::Function(function) => self.validate_callable_body(
+                    &function.body,
+                    candidate.module,
+                    &function.name,
+                    selected.is_some(),
+                ),
+                CallableDefinition::Method(method) => {
+                    self.validate_method_body(method, candidate.module, selected.is_some())
+                }
+                CallableDefinition::Generic(_) => Ok(()),
+            };
+            if let Err(error) = result {
+                rejected.push((index, error));
+            }
+        }
+        let changed = !rejected.is_empty();
+        let settled = selected.map(|_| self.settled_callable_failures(pending, &rejected));
+        for (index, error) in rejected {
+            if settled
+                .as_ref()
+                .map_or(true, |settled| settled.contains(&index))
+            {
+                pending.definitions[index].valid = false;
+                errors.push(error);
+            }
+        }
+        changed
+    }
+
+    fn settled_callable_failures(
+        &self,
+        pending: &PendingCallables,
+        rejected: &[(usize, LoadError)],
+    ) -> HashSet<usize> {
+        let dependencies: Vec<Vec<usize>> = rejected
+            .iter()
+            .map(|(index, _)| {
+                let caller = &pending.definitions[*index];
+                let names = caller.definition.referenced_callables(&|name| {
+                    self.resolve_template_id(name, caller.module).is_ok()
+                });
+                rejected
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, (other, _))| {
+                        let dependency = &pending.definitions[*other];
+                        if caller.module == dependency.module
+                            && caller.definition.name() == dependency.definition.name()
+                        {
+                            return None;
+                        }
+                        names
+                            .iter()
+                            .any(|name| {
+                                self.references_callable_candidate(name, caller.module, dependency)
+                            })
+                            .then_some(position)
+                    })
+                    .collect()
+            })
+            .collect();
+        // Failures in a callee may uncover an opposite-kind replacement that
+        // repairs its callers. Settle only terminal dependency components;
+        // mutually dependent failures retire together without dropping callers.
+        let reachable: Vec<HashSet<usize>> = (0..rejected.len())
+            .map(|index| {
+                let mut visited = HashSet::new();
+                let mut queue = vec![index];
+                while let Some(next) = queue.pop() {
+                    if visited.insert(next) {
+                        queue.extend(dependencies[next].iter().copied());
+                    }
+                }
+                visited
+            })
+            .collect();
+        rejected
+            .iter()
+            .enumerate()
+            .filter_map(|(position, (index, _))| {
+                reachable[position]
+                    .iter()
+                    .all(|other| reachable[*other].contains(&position))
+                    .then_some(*index)
+            })
+            .collect()
+    }
+
+    fn references_callable_candidate(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+        candidate: &PendingCallable,
+    ) -> bool {
+        match parse_qualified_name(raw_name) {
+            Ok(QualifiedName::Qualified { module, name }) => {
+                name == candidate.definition.name()
+                    && self.module_registry.get_by_name(&module) == Some(candidate.module)
+            }
+            Ok(QualifiedName::Unqualified(name)) => {
+                name == candidate.definition.name()
+                    && ["deffunction", "defgeneric"].iter().any(|kind| {
+                        self.module_registry.is_construct_visible(
+                            current_module,
+                            candidate.module,
+                            kind,
+                            &name,
+                        )
+                    })
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn validate_pending_callables(
+        &mut self,
+        pending: &mut PendingCallables,
+        errors: &mut Vec<LoadError>,
+    ) {
+        loop {
+            // Forward references see every viable candidate name. Do not remove
+            // a caller while a later opposite-kind definition can supply its callee.
+            loop {
+                self.publish_pending_names(pending);
+                if !self.reject_invalid_candidates(pending, None, errors) {
+                    break;
+                }
+            }
+            self.restore_original_callables(pending);
+            let mut selected = HashSet::new();
+            let mut conflicts = Vec::new();
+            for (index, candidate) in pending.definitions.iter().enumerate() {
+                if !candidate.valid {
+                    continue;
+                }
+                match self.install_callable(candidate.module, &candidate.definition) {
+                    Ok(()) => {
+                        selected.insert(index);
+                    }
+                    Err(error) => conflicts.push(error),
+                }
+            }
+            // Selecting a kind can change visibility through kind-specific imports.
+            // Keep unselected candidates available until this choice is stable.
+            if !self.reject_invalid_candidates(pending, Some(&selected), errors) {
+                errors.extend(conflicts);
+                break;
+            }
+        }
+    }
+
+    fn validate_method_body(
+        &self,
+        method: &MethodConstruct,
+        module: crate::modules::ModuleId,
+        validate_visibility: bool,
+    ) -> Result<(), LoadError> {
+        self.validate_callable_body(&method.body, module, &method.name, validate_visibility)?;
+        let parameters = method
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .chain(method.wildcard_parameter.iter().cloned())
+            .collect();
+        self.validate_method_queries_with_visibility(
+            &parameters,
+            method
+                .parameters
+                .iter()
+                .filter_map(|parameter| parameter.query.as_ref())
+                .chain(method.wildcard_query.as_ref()),
+            module,
+            &method.name,
+            validate_visibility,
+        )
+    }
+
+    pub(crate) fn validate_method_queries<'a>(
+        &self,
+        parameters: &HashSet<String>,
+        queries: impl IntoIterator<Item = &'a ActionExpr>,
+        module: crate::modules::ModuleId,
+        name: &str,
+    ) -> Result<(), LoadError> {
+        self.validate_method_queries_with_visibility(parameters, queries, module, name, true)
+    }
+
+    fn validate_method_queries_with_visibility<'a>(
+        &self,
+        parameters: &HashSet<String>,
+        queries: impl IntoIterator<Item = &'a ActionExpr>,
+        module: crate::modules::ModuleId,
+        name: &str,
+        validate_visibility: bool,
+    ) -> Result<(), LoadError> {
+        let scope = RuleRhsScope {
+            exported: parameters,
+            existential: &HashSet::new(),
+            allow_local_reads: true,
+        };
+        for query in queries {
+            crate::evaluator::validate_action_depth(query)
+                .map_err(|error| LoadError::Compile(error.to_string()))?;
+            crate::callable_validation::validate_breaks(std::slice::from_ref(query))
+                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+            crate::callable_validation::validate_iterator_binds(std::slice::from_ref(query))
+                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+            let mut pending = vec![query];
+            while let Some(expression) = pending.pop() {
+                if let ActionExpr::FunctionCall(call) = expression {
+                    if call.name == "bind"
+                        && matches!(call.args.first(), Some(ActionExpr::Variable(..)))
+                    {
+                        return Err(Self::compile_error_at(
+                            &call.span,
+                            "[GENRCPSR12] Binds are not allowed in query expressions.",
+                        ));
+                    }
+                }
+                expression.push_children(&mut pending);
+            }
+            Self::validate_rule_rhs_expr(name, query, &scope, &mut HashSet::new())?;
+            if validate_visibility {
+                self.validate_expression_query_declarations(query, module, Some(name))?;
+            } else {
+                self.validate_expression_query_structure(query, module)?;
+            }
+            self.validate_action_expr_as_expression(query, module, name, &HashSet::new())?;
+        }
+        Ok(())
+    }
+
+    fn validate_callable_body(
+        &self,
+        body: &[ActionExpr],
+        module: crate::modules::ModuleId,
+        name: &str,
+        validate_visibility: bool,
+    ) -> Result<(), LoadError> {
+        crate::callable_validation::validate_breaks_with_templates(body, &|name| {
+            self.resolve_template_id(name, module).is_ok()
+        })
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+        for expression in body {
+            self.validate_action_expr_as_action(expression, module, name, &HashSet::new())?;
+            if validate_visibility {
+                self.validate_expression_query_declarations(expression, module, Some(name))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Load CLIPS source code from a string.
     ///
     /// Parses and processes top-level forms:
@@ -634,6 +1194,7 @@ impl Engine {
             )> = Vec::new();
             let mut rules_with_module = Vec::new();
             let mut pending_ordered_fact_names = HashSet::new();
+            let mut callable_load = PendingCallables::default();
             for construct in interpret_result.constructs {
                 match construct {
                     Construct::Rule(rule) => {
@@ -761,11 +1322,7 @@ impl Engine {
                         }
                         let owning_module = self.module_registry.current_module();
                         if let Err(error) = func.body.iter().try_for_each(|expr| {
-                            self.validate_expression_query_declarations(
-                                expr,
-                                owning_module,
-                                Some(&func.name),
-                            )
+                            self.validate_expression_query_structure(expr, owning_module)
                         }) {
                             errors.push(error);
                             continue;
@@ -791,32 +1348,10 @@ impl Engine {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
                         }
-                        // Conflict check: a deffunction cannot share a name with
-                        // an existing defgeneric (or vice versa).
-                        if self.generics.contains(owning_module, &func.name) {
-                            errors.push(Self::construct_conflict_error(
-                                "deffunction",
-                                "defgeneric",
-                                &func.name,
-                                &func.span,
-                            ));
-                            continue;
-                        }
-                        insert_module_entry(
-                            &mut self.function_modules,
+                        self.stage_callable(
+                            &mut callable_load,
                             owning_module,
-                            func.name.clone(),
-                            owning_module,
-                        );
-                        // Register in the function environment for runtime use.
-                        self.functions.register(
-                            owning_module,
-                            UserFunction {
-                                name: func.name.clone(),
-                                parameters: func.parameters.clone(),
-                                wildcard_parameter: func.wildcard_parameter.clone(),
-                                body: func.body.clone(),
-                            },
+                            CallableDefinition::Function(Box::new(func.clone())),
                         );
                         result.functions.push(func);
                     }
@@ -847,32 +1382,12 @@ impl Engine {
                     }
                     Construct::Generic(generic) => {
                         let owning_module = self.module_registry.current_module();
-                        if self.generics.contains(owning_module, &generic.name) {
-                            errors.push(Self::duplicate_definition_error(
-                                "defgeneric",
-                                &generic.name,
-                                &generic.span,
-                            ));
-                        } else if self.functions.contains(owning_module, &generic.name) {
-                            // Conflict check: a defgeneric cannot share a name with
-                            // an existing deffunction.
-                            errors.push(Self::construct_conflict_error(
-                                "defgeneric",
-                                "deffunction",
-                                &generic.name,
-                                &generic.span,
-                            ));
-                        } else {
-                            insert_module_entry(
-                                &mut self.generic_modules,
-                                owning_module,
-                                generic.name.clone(),
-                                owning_module,
-                            );
-                            // Register the generic function declaration.
-                            self.generics.register_generic(owning_module, &generic.name);
-                            result.generics.push(generic);
-                        }
+                        self.stage_callable(
+                            &mut callable_load,
+                            owning_module,
+                            CallableDefinition::Generic(generic.clone()),
+                        );
+                        result.generics.push(generic);
                     }
                     Construct::Method(method) => {
                         if let Err(error) = method
@@ -884,13 +1399,20 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
-                        if let Err(error) = method.body.iter().try_for_each(|expr| {
-                            self.validate_expression_query_declarations(
-                                expr,
-                                owning_module,
-                                Some(&method.name),
+                        if let Err(error) = method
+                            .body
+                            .iter()
+                            .chain(
+                                method
+                                    .parameters
+                                    .iter()
+                                    .filter_map(|parameter| parameter.query.as_ref()),
                             )
-                        }) {
+                            .chain(method.wildcard_query.as_ref())
+                            .try_for_each(|expr| {
+                                self.validate_expression_query_structure(expr, owning_module)
+                            })
+                        {
                             errors.push(error);
                             continue;
                         }
@@ -915,62 +1437,17 @@ impl Engine {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
                         }
-                        // Conflict check: a defmethod that would auto-create a
-                        // generic cannot share a name with an existing deffunction.
-                        if !self.generics.contains(owning_module, &method.name)
-                            && self.functions.contains(owning_module, &method.name)
-                        {
-                            errors.push(Self::construct_conflict_error(
-                                "defmethod",
-                                "deffunction",
-                                &method.name,
-                                &method.span,
-                            ));
-                            continue;
-                        }
-                        if let Some(index) = method.index {
-                            if self
-                                .generics
-                                .has_method_index(owning_module, &method.name, index)
-                            {
-                                errors.push(Self::duplicate_method_index_error(
-                                    &method.name,
-                                    index,
-                                    &method.span,
-                                ));
-                                continue;
-                            }
-                        }
-                        // Auto-create the generic module entry if it doesn't exist yet
-                        // (a defmethod with no preceding defgeneric auto-creates the generic).
-                        let _ = get_or_insert_module_entry_with(
-                            &mut self.generic_modules,
+                        self.stage_callable(
+                            &mut callable_load,
                             owning_module,
-                            &method.name,
-                            || owning_module,
-                        );
-                        // Register the method in the generic registry.
-                        // Extract parameter names and type restrictions from MethodParameter structs.
-                        let param_names: Vec<String> =
-                            method.parameters.iter().map(|p| p.name.clone()).collect();
-                        let type_restrictions: Vec<Vec<String>> = method
-                            .parameters
-                            .iter()
-                            .map(|p| p.type_restrictions.clone())
-                            .collect();
-                        self.generics.register_method(
-                            owning_module,
-                            &method.name,
-                            method.index,
-                            param_names,
-                            type_restrictions,
-                            method.wildcard_parameter.clone(),
-                            method.body.clone(),
+                            CallableDefinition::Method(Box::new(method.clone())),
                         );
                         result.methods.push(method);
                     }
                 }
             }
+
+            self.validate_pending_callables(&mut callable_load, &mut errors);
 
             // Compile rules so rete has patterns before facts arrive.
             // Templates are already registered at this point.
@@ -1364,6 +1841,8 @@ impl Engine {
                 ));
             }
 
+            crate::callable_validation::validate_breaks(std::slice::from_ref(&def.value))
+                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
             self.validate_expression_query_declarations(&def.value, current_module, None)?;
 
             // Translate the init-value expression.  This must happen before we
@@ -1653,6 +2132,10 @@ impl Engine {
         rule: &RuleConstruct,
         current_module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
+        crate::callable_validation::validate_action_breaks_with_templates(&rule.actions, &|name| {
+            self.resolve_template_id(name, current_module).is_ok()
+        })
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
         for action in &rule.actions {
             self.validate_rule_action_call(
                 &action.call,
@@ -2232,6 +2715,26 @@ impl Engine {
         current_module: crate::modules::ModuleId,
         self_name: Option<&str>,
     ) -> Result<(), LoadError> {
+        self.validate_expression_query_structure(expr, current_module)?;
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::QueryAction { name, query, .. } = expr {
+                if Self::is_result_query(name) {
+                    self.validate_query_predicate_callables(query, current_module, self_name)?;
+                }
+            }
+            expr.push_children(&mut pending);
+        }
+        Ok(())
+    }
+
+    // Templates must exist at the definition site. Callable names in staged
+    // definitions are checked after recovery settles their kind and visibility.
+    fn validate_expression_query_structure(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
         let mut pending = vec![expr];
         while let Some(expr) = pending.pop() {
             if let ActionExpr::QueryAction {
@@ -2245,7 +2748,6 @@ impl Engine {
                 if Self::is_result_query(name) {
                     self.validate_query_declaration(name, bindings, body, span, current_module)?;
                     Self::validate_query_predicate_bindings(query)?;
-                    self.validate_query_predicate_callables(query, current_module, self_name)?;
                 }
             }
             expr.push_children(&mut pending);
@@ -2338,7 +2840,7 @@ impl Engine {
     fn is_declared_expression_callable(
         &self,
         callable: &str,
-        _current_module: crate::modules::ModuleId,
+        current_module: crate::modules::ModuleId,
     ) -> bool {
         if callable == "__fact_slot_ref" {
             return true;
@@ -2348,12 +2850,28 @@ impl Engine {
         }
 
         match parse_qualified_name(callable) {
-            // Keep module-qualified resolution on the runtime path so existing
-            // visibility/module diagnostics remain unchanged.
-            Ok(QualifiedName::Qualified { .. }) => true,
+            Ok(QualifiedName::Qualified { module, name }) => self
+                .module_registry
+                .get_by_name(&module)
+                .is_some_and(|owner| {
+                    self.functions.contains(owner, &name) || self.generics.contains(owner, &name)
+                }),
             Ok(QualifiedName::Unqualified(name)) => {
-                !self.functions.modules_for_name(&name).is_empty()
-                    || !self.generics.modules_for_name(&name).is_empty()
+                self.functions.modules_for_name(&name).iter().any(|owner| {
+                    self.module_registry.is_construct_visible(
+                        current_module,
+                        *owner,
+                        "deffunction",
+                        &name,
+                    )
+                }) || self.generics.modules_for_name(&name).iter().any(|owner| {
+                    self.module_registry.is_construct_visible(
+                        current_module,
+                        *owner,
+                        "defgeneric",
+                        &name,
+                    )
+                })
             }
             Err(_) => false,
         }
@@ -2398,6 +2916,7 @@ impl Engine {
                 | "load"
                 | "close"
                 | "return"
+                | "break"
                 | "if"
                 | "while"
                 | "loop-for-count"
@@ -6937,7 +7456,7 @@ mod tests {
     fn load_recovers_after_malformed_deffunction_and_runs_later_constructs() {
         let mut engine = new_utf8_engine();
         let source = r"
-            (deffunction foo ())
+            (deffunction foo (42))
             (deffunction bar () 42)
             (defrule test (go) => (printout t (bar) crlf))
             (deffacts startup (go))
@@ -6949,7 +7468,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("; ");
         assert!(
-            joined.contains("deffunction requires at least one body expression"),
+            joined.contains("deffunction parameter must be a variable"),
             "expected malformed deffunction diagnostic, got: {joined}"
         );
 

@@ -1,0 +1,9 @@
+
+[EXPRNPSR3] Missing function declaration for missing-call.
+
+ERROR:
+(deffunction MAIN::bad
+   (?x)
+   (if ?x
+      then
+      (missing-call

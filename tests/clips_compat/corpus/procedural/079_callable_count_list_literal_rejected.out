@@ -1,0 +1,7 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for loop-for-count function.
+
+ERROR:
+(defrule MAIN::bad
+   =>
+   (loop-for-count (2

@@ -1,0 +1,7 @@
+
+[EXPRNPSR3] Missing function declaration for helper.
+
+ERROR:
+(deffunction MAIN::caller
+   (?x)
+   (helper

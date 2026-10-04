@@ -534,6 +534,8 @@ pub struct MethodParameter {
     pub name: String,
     /// Type restrictions (e.g., `["INTEGER"]`, `["INTEGER", "FLOAT"]`), empty = any type.
     pub type_restrictions: Vec<String>,
+    /// Optional expression evaluated to determine whether this method applies.
+    pub query: Option<ActionExpr>,
     /// Source span of this parameter.
     pub span: Span,
 }
@@ -552,6 +554,10 @@ pub struct MethodConstruct {
     pub parameters: Vec<MethodParameter>,
     /// Optional wildcard parameter name (without `$?` prefix).
     pub wildcard_parameter: Option<String>,
+    /// Type restrictions applied to each argument consumed by the wildcard.
+    pub wildcard_type_restrictions: Vec<String>,
+    /// Optional query evaluated with the flattened wildcard binding.
+    pub wildcard_query: Option<ActionExpr>,
     /// Method body expressions.
     pub body: Vec<ActionExpr>,
 }
@@ -1171,16 +1177,6 @@ fn interpret_function(elements: &[SExpr], span: Span) -> Result<FunctionConstruc
         }
     }
 
-    // Body (one or more expressions)
-    if idx >= elements.len() {
-        return Err(InterpretError {
-            message: "deffunction requires at least one body expression".to_string(),
-            span,
-            kind: InterpretErrorKind::MissingElement,
-            suggestions: vec!["(deffunction name (?x) (+ ?x 1))".to_string()],
-        });
-    }
-
     let body = interpret_action_expr_sequence(&elements[idx..])?;
 
     Ok(FunctionConstruct {
@@ -1562,6 +1558,8 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
     // Parse parameters
     let mut parameters = Vec::new();
     let mut wildcard_parameter = None;
+    let mut wildcard_type_restrictions = Vec::new();
+    let mut wildcard_query = None;
     let mut parameter_names = HashSet::new();
     let mut register_name = |name: &str, span| {
         if name.is_empty() {
@@ -1583,19 +1581,19 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
                 param_expr.span(),
             ));
         }
-        if let Some(Atom::MultiVar(var_name)) = param_expr.as_atom() {
-            register_name(var_name, param_expr.span())?;
-            wildcard_parameter = Some(var_name.clone());
+        let parameter = interpret_method_parameter(param_expr)?;
+        register_name(&parameter.name, parameter.span)?;
+        let variable = param_expr
+            .as_list()
+            .and_then(|list| list.first())
+            .unwrap_or(param_expr);
+        if matches!(variable.as_atom(), Some(Atom::MultiVar(_))) {
+            wildcard_parameter = Some(parameter.name);
+            wildcard_type_restrictions = parameter.type_restrictions;
+            wildcard_query = parameter.query;
         } else {
-            let parameter = interpret_method_parameter(param_expr)?;
-            register_name(&parameter.name, parameter.span)?;
             parameters.push(parameter);
         }
-    }
-
-    // Body expressions (at least one required)
-    if idx >= elements.len() {
-        return Err(InterpretError::missing("method body", span));
     }
 
     let body = interpret_action_expr_sequence(&elements[idx..])?;
@@ -1606,17 +1604,20 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
         index,
         parameters,
         wildcard_parameter,
+        wildcard_type_restrictions,
+        wildcard_query,
         body,
     })
 }
 
 /// Unrestricted method parameters are bare variables; parentheses introduce
-/// one or more type restrictions rather than another spelling of a bare variable.
+/// type restrictions and/or a final query rather than another spelling of a bare variable.
 fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, InterpretError> {
-    if let Some(Atom::SingleVar(name)) = param_expr.as_atom() {
+    if let Some(Atom::SingleVar(name) | Atom::MultiVar(name)) = param_expr.as_atom() {
         return Ok(MethodParameter {
             name: name.clone(),
             type_restrictions: Vec::new(),
+            query: None,
             span: param_expr.span(),
         });
     }
@@ -1633,7 +1634,7 @@ fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, Int
         ));
     }
     let name = match restriction_list[0].as_atom() {
-        Some(Atom::SingleVar(name)) => name.clone(),
+        Some(Atom::SingleVar(name) | Atom::MultiVar(name)) => name.clone(),
         _ => {
             return Err(InterpretError::expected(
                 "parameter variable (?name)",
@@ -1647,20 +1648,24 @@ fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, Int
             param_expr.span(),
         ));
     }
-    let type_restrictions = restriction_list[1..]
-        .iter()
-        .map(|type_expr| {
-            type_expr.as_symbol().map(str::to_owned).ok_or_else(|| {
-                InterpretError::expected(
-                    "type restriction (symbol like INTEGER, FLOAT)",
-                    type_expr.span(),
-                )
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut type_restrictions = Vec::new();
+    let mut query = None;
+    for (index, restriction) in restriction_list[1..].iter().enumerate() {
+        if let Some(name) = restriction.as_symbol() {
+            type_restrictions.push(name.to_owned());
+        } else if restriction.as_list().is_some() && index + 2 == restriction_list.len() {
+            query = Some(interpret_action_expr_inner(restriction)?);
+        } else {
+            return Err(InterpretError::expected(
+                "type restriction or final query expression",
+                restriction.span(),
+            ));
+        }
+    }
     Ok(MethodParameter {
         name,
         type_restrictions,
+        query,
         span: param_expr.span(),
     })
 }
@@ -2582,66 +2587,57 @@ fn interpret_switch_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Inter
 /// Forms:
 ///   `(loop-for-count (?var start end) do <action>*)`
 ///   `(loop-for-count (?var end) do <action>*)`
-///   `(loop-for-count (end) do <action>*)`
+///   `(loop-for-count end do <action>*)`
 fn interpret_loop_for_count_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
     if rest.is_empty() {
         return Err(InterpretError::missing(
-            "loop spec in (loop-for-count ...)",
+            "loop bound in (loop-for-count ...)",
             span,
         ));
     }
 
-    // First element must be a list containing the loop spec.
-    let spec_list = rest[0]
-        .as_list()
-        .ok_or_else(|| InterpretError::expected("loop spec list", rest[0].span()))?;
-
-    if spec_list.is_empty() {
-        return Err(InterpretError::missing(
-            "loop bound in loop-for-count spec",
-            rest[0].span(),
-        ));
-    }
-
-    // Count complete expressions, not raw atoms: `(?f:end)` is one bound,
-    // while `(?i ?f:start ?f:end)` has a variable and two bounds.
     let default_start = ActionExpr::Literal(LiteralValue {
         value: LiteralKind::Integer(1),
-        span: spec_list[0].span(),
+        span: rest[0].span(),
     });
-    let (first, first_len) = interpret_action_expr_prefix(spec_list, rest[0].span())?;
-    let (var_name, start_expr, end_expr) = if first_len == spec_list.len() {
-        (None, default_start, first)
-    } else {
-        let var = match (spec_list[0].as_atom(), first_len) {
-            (Some(Atom::SingleVar(name)), 1) => name.clone(),
-            _ => {
-                return Err(InterpretError::expected(
-                    "?variable in loop-for-count spec",
-                    spec_list[0].span(),
-                ))
-            }
+    let named_spec = rest[0].as_list().filter(|spec| {
+        matches!(
+            spec.first().and_then(SExpr::as_atom),
+            Some(Atom::SingleVar(_))
+        )
+    });
+    let (var_name, start_expr, end_expr, spec_len) = if let Some(spec) = named_spec {
+        let Some(Atom::SingleVar(name)) = spec[0].as_atom() else {
+            unreachable!()
         };
-        let bounds = &spec_list[first_len..];
-        let (bound, bound_len) = interpret_action_expr_prefix(bounds, rest[0].span())?;
-        if bound_len == bounds.len() {
-            (Some(var), default_start, bound)
+        let bounds = &spec[1..];
+        if bounds.is_empty() {
+            return Err(InterpretError::missing(
+                "end index after loop variable",
+                rest[0].span(),
+            ));
+        }
+        let (first, first_len) = interpret_action_expr_prefix(bounds, rest[0].span())?;
+        if first_len == bounds.len() {
+            (Some(name.clone()), default_start, first, 1)
         } else {
             let (end, end_len) =
-                interpret_action_expr_prefix(&bounds[bound_len..], rest[0].span())?;
-            if bound_len + end_len != bounds.len() {
+                interpret_action_expr_prefix(&bounds[first_len..], rest[0].span())?;
+            if first_len + end_len != bounds.len() {
                 return Err(InterpretError::invalid(
-                    "loop-for-count spec must be (?var end), (?var start end), or (end)",
+                    "loop-for-count spec must be (?var end) or (?var start end)",
                     rest[0].span(),
                 ));
             }
-            (Some(var), bound, end)
+            (Some(name.clone()), first, end, 1)
         }
+    } else {
+        let (end, count) = interpret_action_expr_prefix(rest, span)?;
+        (None, default_start, end, count)
     };
 
-    // The `do` keyword is optional. If present immediately after the spec,
-    // consume it; otherwise body starts right after the spec.
-    let after_spec = &rest[1..];
+    // The optional `do` follows either the named spec or the end expression.
+    let after_spec = &rest[spec_len..];
     let has_do = !after_spec.is_empty() && after_spec[0].as_symbol() == Some("do");
     let body_start = usize::from(has_do);
 
@@ -4467,7 +4463,7 @@ mod tests {
     #[test]
     fn compact_slot_reference_loop_bounds_count_expressions_not_atoms() {
         for (spec, expected_variable, explicit_start) in [
-            ("(?f:end)", None, false),
+            ("?f:end", None, false),
             ("(?i ?f:end)", Some("i"), false),
             ("(?i ?f:start ?f:end)", Some("i"), true),
         ] {
@@ -5168,13 +5164,13 @@ mod tests {
     }
 
     #[test]
-    fn interpret_deffunction_missing_body_errors() {
+    fn interpret_deffunction_empty_body() {
         let result = interpret_source_inner("(deffunction foo (?x))");
-        assert!(!result.errors.is_empty());
-        assert!(matches!(
-            result.errors[0].kind,
-            InterpretErrorKind::MissingElement
-        ));
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Construct::Function(callable) = &result.constructs[0] else {
+            panic!("expected callable")
+        };
+        assert!(callable.body.is_empty());
     }
 
     #[test]
@@ -5639,13 +5635,13 @@ mod tests {
     }
 
     #[test]
-    fn interpret_defmethod_missing_body_errors() {
+    fn interpret_defmethod_empty_body() {
         let result = interpret_source_inner("(defmethod display ((?x INTEGER)))");
-        assert!(!result.errors.is_empty());
-        assert!(matches!(
-            result.errors[0].kind,
-            InterpretErrorKind::MissingElement
-        ));
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Construct::Method(callable) = &result.constructs[0] else {
+            panic!("expected callable")
+        };
+        assert!(callable.body.is_empty());
     }
 
     #[test]
@@ -6255,9 +6251,9 @@ mod tests {
 
     #[test]
     fn interpret_loop_for_count_anonymous() {
-        // `(end)` form — anonymous counter.
+        // A bare end expression uses an anonymous counter.
         let parsed = parse_sexprs(
-            "(defrule test => (loop-for-count (5) do (printout t hi)))",
+            "(defrule test => (loop-for-count 5 do (printout t hi)))",
             file(),
         );
         let config = InterpreterConfig::default();
@@ -6273,6 +6269,71 @@ mod tests {
             var_name.is_none(),
             "anonymous counter should have no var_name"
         );
+    }
+
+    #[test]
+    fn loop_for_count_accepts_end_expressions_and_rejects_parenthesized_literals() {
+        for bound in [
+            "2",
+            "?n",
+            "(+ 1 1)",
+            "?f:end",
+            "(?i (+ 1 1))",
+            "(?i 1 (+ 1 1))",
+        ] {
+            let expression = slot_reference_expression(&format!("(loop-for-count {bound} do yes)"));
+            assert!(matches!(expression, ActionExpr::LoopForCount { .. }));
+        }
+        for bound in ["(2)", "(?i)", "(?f:end)", "()", "(?i 1 2 3)"] {
+            let source = format!("(defrule bad => (loop-for-count {bound} do yes))");
+            assert!(
+                !interpret_source_inner(&source).errors.is_empty(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn method_queries_and_typed_wildcards_are_preserved() {
+        let result = interpret_source_inner(
+            "(defmethod select ((?x INTEGER FLOAT (> ?x 0)) ($?rest SYMBOL (member$ special ?rest))) ?x)",
+        );
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Construct::Method(method) = &result.constructs[0] else {
+            panic!("expected method")
+        };
+        assert_eq!(method.parameters[0].type_restrictions, ["INTEGER", "FLOAT"]);
+        assert!(
+            matches!(&method.parameters[0].query, Some(ActionExpr::FunctionCall(call)) if call.name == ">")
+        );
+        assert_eq!(method.wildcard_parameter.as_deref(), Some("rest"));
+        assert_eq!(method.wildcard_type_restrictions, ["SYMBOL"]);
+        assert!(
+            matches!(&method.wildcard_query, Some(ActionExpr::FunctionCall(call)) if call.name == "member$")
+        );
+        for source in [
+            "(defmethod select ((?x (> ?x 0))) ?x)",
+            "(defmethod select (($?rest SYMBOL)))",
+            "(defmethod select (($?rest (> (length$ ?rest) 0))))",
+        ] {
+            assert!(interpret_source_inner(source).errors.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn method_query_must_be_final_and_wildcard_must_be_last() {
+        for source in [
+            "(defmethod bad ((?x (> ?x 0) INTEGER)) ?x)",
+            "(defmethod bad ((?x (> ?x 0) (< ?x 2))) ?x)",
+            "(defmethod bad (($?rest SYMBOL) ?x) ?x)",
+            "(defmethod bad (($?rest)) FALSE)",
+            "(defmethod bad ((?x 42)) ?x)",
+        ] {
+            assert!(
+                !interpret_source_inner(source).errors.is_empty(),
+                "{source}"
+            );
+        }
     }
 
     #[test]
