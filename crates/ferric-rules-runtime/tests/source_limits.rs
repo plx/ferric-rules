@@ -9,15 +9,10 @@ fn binary_groups(count: usize) -> String {
 }
 
 #[test]
-fn excessive_ce_and_slot_products_fail_before_installation() {
-    let slot_or = std::iter::repeat("0|1")
-        .take(9)
-        .collect::<Vec<_>>()
-        .join(" ");
+fn excessive_ce_products_fail_before_installation() {
     for lhs in [
         binary_groups(9),
         binary_groups(80), // mathematical product exceeds usize; must never wrap
-        format!("(choice {slot_or})"),
         format!("(not (and (seed) {}))", binary_groups(9)),
     ] {
         let mut engine = Engine::new(EngineConfig::default());

@@ -1,0 +1,7 @@
+
+[ANALYSIS4] Variable ?x was referenced in CE #1 slot x before being defined.
+
+ERROR:
+(defrule MAIN::t
+   (mnj (x ?x|?y) (y ?x|?y))
+   =>)

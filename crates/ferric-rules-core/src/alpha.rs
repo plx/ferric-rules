@@ -89,6 +89,26 @@ pub enum ConstantTestType {
     /// The compiler ends the alpha path of a sequence pattern with this, so
     /// joins only enumerate the splits of facts that can match.
     Sequence(Box<crate::sequence::SequencePattern>),
+    /// Disjunction of conjunctions of field tests. An empty branch accepts any
+    /// existing field; an empty disjunction never matches.
+    Any(Vec<Vec<ConstantTest>>),
+}
+
+/// Number of test nodes, including nested disjunctions and empty branches.
+/// Count iteratively so validation can reject deeply nested input safely.
+pub(crate) fn constant_test_count(tests: &[ConstantTest]) -> usize {
+    let mut pending: Vec<_> = tests.iter().collect();
+    let mut count = 0_usize;
+    while let Some(test) = pending.pop() {
+        count = count.saturating_add(1);
+        if let ConstantTestType::Any(branches) = &test.test_type {
+            for branch in branches {
+                count = count.saturating_add(usize::from(branch.is_empty()));
+                pending.extend(branch);
+            }
+        }
+    }
+    count
 }
 
 /// An alpha network node.
@@ -817,9 +837,21 @@ pub(crate) fn evaluate_field_test<'v>(
     test: &ConstantTest,
     field: impl Fn(SlotIndex) -> Option<&'v Value>,
 ) -> bool {
+    evaluate_field_test_inner(test, &field)
+}
+
+fn evaluate_field_test_inner<'v>(
+    test: &ConstantTest,
+    field: &impl Fn(SlotIndex) -> Option<&'v Value>,
+) -> bool {
     match (&test.test_type, field(test.slot)) {
         (ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_), _)
         | (_, None) => false,
+        (ConstantTestType::Any(branches), Some(_)) => branches.iter().any(|branch| {
+            branch
+                .iter()
+                .all(|test| evaluate_field_test_inner(test, field))
+        }),
         (ConstantTestType::Equal(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key == test_key)
         }
@@ -846,52 +878,52 @@ pub(crate) fn evaluate_field_test<'v>(
             })
         }
         (ConstantTestType::EqualSlot(other_slot), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 slot_value.structural_eq(other_value)
             })
         }
         (ConstantTestType::NotEqualSlot(other_slot), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 !slot_value.structural_eq(other_value)
             })
         }
         (ConstantTestType::EqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
         (ConstantTestType::NotEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 !compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
         (ConstantTestType::GreaterThanSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater)
                 })
             })
         }
         (ConstantTestType::LessThanSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less)
                 })
             })
         }
         (ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater | Ordering::Equal)
                 })
             })
         }
         (ConstantTestType::LessOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
-            compare_other_slot(&field, *other_slot, |other_value| {
+            compare_other_slot(field, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less | Ordering::Equal)
                 })
@@ -1429,6 +1461,47 @@ mod tests {
             test_type: ConstantTestType::OrderedFieldCount { min: 1, max: None },
         };
         assert!(!evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn field_disjunction_preserves_conjunctions_and_requires_existing_fields() {
+        let mut table = SymbolTable::new();
+        let relation = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
+        let field = |test_type| ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type,
+        };
+        let test = field(ConstantTestType::Any(vec![
+            vec![field(ConstantTestType::Equal(AtomKey::Integer(10)))],
+            vec![
+                field(ConstantTestType::GreaterThan(AtomKey::Integer(20))),
+                field(ConstantTestType::LessThan(AtomKey::Integer(30))),
+            ],
+            vec![
+                field(ConstantTestType::NotEqual(AtomKey::Integer(-1))),
+                field(ConstantTestType::LessThan(AtomKey::Integer(0))),
+            ],
+        ]));
+        for (value, expected) in [(10, true), (25, true), (-2, true), (-1, false), (30, false)] {
+            let fact = Fact::Ordered(OrderedFact {
+                relation,
+                fields: smallvec![Value::Integer(value)],
+            });
+            assert_eq!(evaluate_test(&fact, &test), expected, "value {value}");
+        }
+        let empty = Fact::Ordered(OrderedFact {
+            relation,
+            fields: smallvec![],
+        });
+        assert!(!evaluate_test(&empty, &test));
+        let unconditional = field(ConstantTestType::Any(vec![vec![]]));
+        assert!(!evaluate_test(&empty, &unconditional));
+        let fact = Fact::Ordered(OrderedFact {
+            relation,
+            fields: smallvec![Value::Integer(0)],
+        });
+        assert!(evaluate_test(&fact, &unconditional));
+        assert!(!evaluate_test(&fact, &field(ConstantTestType::Any(vec![]))));
     }
 
     #[test]

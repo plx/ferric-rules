@@ -1678,6 +1678,332 @@
       ]
     },
     {
+      "path": "patterns/080_field_disjunction_not_ordered.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "ordered-facts"
+      ]
+    },
+    {
+      "path": "patterns/081_field_disjunction_exists_ordered.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "exists",
+        "ordered-facts"
+      ]
+    },
+    {
+      "path": "patterns/082_field_disjunction_overlapping_negative_literal.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "ordered-facts"
+      ]
+    },
+    {
+      "path": "patterns/083_field_disjunction_repeated_literal.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "ordered-facts"
+      ]
+    },
+    {
+      "path": "patterns/084_field_disjunction_forall_missing_witness.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/085_field_disjunction_forall_complete.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/086_field_disjunction_binding_join.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/087_field_disjunction_binding_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/088_field_disjunction_nine_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "ordered-facts",
+        "source-limits"
+      ]
+    },
+    {
+      "path": "patterns/089_field_disjunction_exists_template_sequence.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "exists",
+        "deftemplate",
+        "multislot"
+      ]
+    },
+    {
+      "path": "patterns/090_field_disjunction_not_template.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "deftemplate"
+      ]
+    },
+    {
+      "path": "patterns/091_field_disjunction_negative_binding_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/092_field_disjunction_overlapping_predicate_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "predicate-constraint",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/093_field_disjunction_template_sequence_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multislot",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/094_field_disjunction_exists_ordered_sequence.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "exists",
+        "ordered-facts",
+        "multifield"
+      ]
+    },
+    {
+      "path": "patterns/095_field_disjunction_template_sequence_predicates.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multislot",
+        "predicate-constraint",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/096_field_disjunction_return_value_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "return-value-constraint",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/097_field_disjunction_bound_variable_alternative.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/098_field_disjunction_template_sequence_negative_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multislot",
+        "not",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/099_field_disjunction_unbound_alternative_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "variable-binding"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/100_field_disjunction_not_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/101_field_disjunction_exists_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "exists",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/102_field_disjunction_double_not_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/103_field_disjunction_ncc_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "join",
+        "ncc"
+      ]
+    },
+    {
+      "path": "patterns/104_field_disjunction_multi_exists_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "exists",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/105_field_disjunction_forall_bound_domain_missing.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/106_field_disjunction_forall_bound_domain_complete.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/107_field_disjunction_forall_bound_then_missing.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/108_field_disjunction_forall_bound_then_complete.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/109_field_disjunction_forall_bound_then_filtered.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "forall",
+        "join",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/110_field_disjunction_quantified_support_lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "exists",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [

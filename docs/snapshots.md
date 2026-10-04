@@ -25,12 +25,16 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 2. It replaced schema 1 when ordered and multislot
-patterns started matching whole field sequences (field-count guards, multifield
-match plans and per-token capture lengths), so schema 1 snapshots are rejected
-with `UnsupportedVersion(1)` before payload decoding. To upgrade application
-data, export it with the producing Ferric version and assert it into a newly
-compiled engine; there is no automatic RETE-state migration.
+The current schema is 3. Field-level `|` constraints now remain a single
+predicate in the compiled graph, including inside negated and quantified
+patterns. Schema 2 could store expanded rule variants with incorrect
+multiplicity and matching behavior; it cannot be resumed under the corrected
+semantics. Schema 1 also predates field-count guards, multifield match plans,
+and per-token capture lengths. Both versions are rejected with
+`UnsupportedVersion(1)` or `UnsupportedVersion(2)` before payload decoding.
+To upgrade application data, export it with the producing Ferric version and
+assert it into a newly compiled engine; there is no automatic RETE-state
+migration.
 
 Builds supporting a schema must keep its meaning and pass the stored fixture
 and resume regressions. Changes to the serialized layout or runtime semantics
@@ -61,7 +65,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`2`) |
+| 8–9 | Little-endian schema version (`3`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 596
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 627
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -453,16 +453,20 @@ All of the following are supported:
 
 Source loading rejects input above 16 MiB before parsing. Rule normalization
 and disjunction expansion use checked, conservative work estimates: at most
-256 alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
+256 CE alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
 expanded source per rule. Both normalization passes also share a per-load
 budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
-may reject an unusually redundant OR expression that could be optimized to
-less work; Ferric does not perform that optimization implicitly.
+does not count field-level `|` constraints as rule alternatives: each field
+disjunction is evaluated once, including inside `not`, `exists`, and `forall`.
+A leading `?x&` binds over all alternatives (`?x&a|b` means `?x&(a|b)`).
+The estimate may reject an unusually redundant `or` CE expression that could
+be optimized to less work; Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant
-tests. These bounds keep recursive propagation practical without adding a
-resumable execution subsystem. Boundary regressions exercise combined alpha
+tests, including the children of compound field tests. These bounds keep
+recursive propagation practical without adding a resumable execution subsystem.
+Boundary regressions exercise combined alpha
 and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
 Over-limit constructs fail before installation; previously installed rules and
 facts remain usable. Loading multiple constructs remains incremental, so a

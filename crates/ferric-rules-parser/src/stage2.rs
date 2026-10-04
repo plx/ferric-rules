@@ -1868,6 +1868,8 @@ fn interpret_ordered_pattern(
 /// connective operators (`&`, `|`, `~`) with correct precedence.
 ///
 /// Precedence (highest to lowest): `~` (prefix not) > `&` (and) > `|` (or).
+/// A leading named variable followed by `&` binds the whole connected field,
+/// so `?x&a|b` is `?x&(a|b)` rather than `(?x&a)|b`.
 ///
 /// Returns the parsed `Constraint` and the number of S-expressions consumed
 /// from `exprs`.
@@ -1880,6 +1882,30 @@ fn interpret_constraint_sequence(exprs: &[SExpr]) -> Result<(Constraint, usize),
             Span::point(crate::span::Position::new(), crate::span::FileId(0)),
         ));
     }
+    if matches!(
+        exprs[0].as_atom(),
+        Some(Atom::SingleVar(name) | Atom::MultiVar(name)) if !name.is_empty()
+    ) && exprs
+        .get(1)
+        .is_some_and(|expr| is_connective(expr, Connective::And))
+    {
+        if exprs.len() < 3 {
+            return Err(InterpretError::invalid(
+                "expected constraint after `&`",
+                exprs[1].span(),
+            ));
+        }
+        let binding = interpret_constraint(&exprs[0])?;
+        let (constraint, consumed) = parse_or_expr(&exprs[2..])?;
+        let span = binding.span().merge(constraint.span());
+        let mut terms = vec![binding];
+        match constraint {
+            Constraint::And(constraints, _) => terms.extend(constraints),
+            other => terms.push(other),
+        }
+        return Ok((Constraint::And(terms, span), consumed + 2));
+    }
+
     parse_or_expr(exprs)
 }
 
@@ -5597,6 +5623,143 @@ mod tests {
         assert!(
             matches!(&terms[1], Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "b"))
         );
+    }
+
+    #[test]
+    fn interpret_leading_binding_covers_every_disjunction_alternative() {
+        for field in [
+            "?x&a|b",
+            "?x&~a|b",
+            "?x&:(> ?x 0)|:(< ?x 10)",
+            "?x&=(+ 1 2)|=(+ 3 4)",
+        ] {
+            let result = interpret_source_inner(&format!("(defrule test (data {field} next) =>)"));
+            assert!(result.errors.is_empty(), "{field}: {:?}", result.errors);
+            let Construct::Rule(rule) = &result.constructs[0] else {
+                panic!("expected rule");
+            };
+            let Pattern::Ordered(pattern) = &rule.patterns[0] else {
+                panic!("expected ordered pattern");
+            };
+            assert_eq!(pattern.constraints.len(), 2, "{field}");
+            let Constraint::And(terms, _) = &pattern.constraints[0] else {
+                panic!("expected binding around alternatives for {field}");
+            };
+            assert_eq!(terms.len(), 2, "{field}");
+            assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "x"));
+            assert!(
+                matches!(&terms[1], Constraint::Or(alternatives, _) if alternatives.len() == 2)
+            );
+            assert!(matches!(&pattern.constraints[1], Constraint::Literal(value)
+                if matches!(&value.value, LiteralKind::Symbol(name) if name == "next")));
+        }
+    }
+
+    #[test]
+    fn interpret_connected_constraints_keep_precedence_inside_binding() {
+        let parsed = parse_sexprs("?x&a&~b|c&d", file());
+        let (constraint, consumed) = interpret_constraint_sequence(&parsed.exprs).unwrap();
+        assert_eq!(consumed, parsed.exprs.len());
+        let Constraint::And(binding, _) = constraint else {
+            panic!("expected binding around alternatives");
+        };
+        assert_eq!(binding.len(), 2);
+        assert!(matches!(&binding[0], Constraint::Variable(name, _) if name == "x"));
+        let Constraint::Or(alternatives, _) = &binding[1] else {
+            panic!("expected alternatives after binding");
+        };
+        assert_eq!(alternatives.len(), 2);
+        let Constraint::And(first, _) = &alternatives[0] else {
+            panic!("expected conjunction in first alternative");
+        };
+        assert_eq!(first.len(), 2);
+        assert!(matches!(&first[0], Constraint::Literal(_)));
+        assert!(matches!(&first[1], Constraint::Not(inner, _)
+            if matches!(inner.as_ref(), Constraint::Literal(_))));
+        assert!(matches!(&alternatives[1], Constraint::And(terms, _) if terms.len() == 2));
+    }
+
+    #[test]
+    fn interpret_binding_exception_only_applies_at_start_of_field() {
+        for (field, alternative_count, conjunction_index) in
+            [("a&?x|b", 2, 0), ("a|?x&b|c", 3, 1), ("~a&b|c", 2, 0)]
+        {
+            let parsed = parse_sexprs(field, file());
+            let (constraint, consumed) = interpret_constraint_sequence(&parsed.exprs).unwrap();
+            assert_eq!(consumed, parsed.exprs.len());
+            let Constraint::Or(alternatives, _) = constraint else {
+                panic!("expected ordinary disjunction for {field}");
+            };
+            assert_eq!(alternatives.len(), alternative_count, "{field}");
+            assert!(
+                matches!(&alternatives[conjunction_index], Constraint::And(terms, _)
+                if terms.len() == 2)
+            );
+        }
+    }
+
+    #[test]
+    fn interpret_leading_binding_keeps_flat_conjunctions() {
+        let parsed = parse_sexprs("?x&a&~b", file());
+        let (constraint, consumed) = interpret_constraint_sequence(&parsed.exprs).unwrap();
+        assert_eq!(consumed, parsed.exprs.len());
+        let Constraint::And(terms, _) = constraint else {
+            panic!("expected conjunction");
+        };
+        assert_eq!(terms.len(), 3);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "x"));
+        assert!(matches!(&terms[1], Constraint::Literal(_)));
+        assert!(matches!(&terms[2], Constraint::Not(_, _)));
+    }
+
+    #[test]
+    fn interpret_leading_binding_requires_constraint_after_connective() {
+        for field in ["?x&", "$?x&", "?x&a|", "?x&a&"] {
+            let parsed = parse_sexprs(field, file());
+            let error = interpret_constraint_sequence(&parsed.exprs).unwrap_err();
+            assert!(
+                error.message.contains("expected constraint after"),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn interpret_multislot_binding_covers_every_disjunction_alternative() {
+        for field in [
+            "?t&a|b",
+            "?t&~a|b",
+            "?t&:(> ?t 0)|:(< ?t 10)",
+            "$?t&:(> (length$ $?t) 0)|:(= (length$ $?t) 0)",
+        ] {
+            let result = interpret_source_inner(&format!(
+                "(deftemplate item (multislot tags))
+                 (defrule test (item (tags $? {field} $?)) =>)"
+            ));
+            assert!(result.errors.is_empty(), "{field}: {:?}", result.errors);
+            let Construct::Rule(rule) = &result.constructs[1] else {
+                panic!("expected rule");
+            };
+            let Pattern::Template(pattern) = &rule.patterns[0] else {
+                panic!("expected template pattern");
+            };
+            let fields = &pattern.slot_constraints[0].constraints;
+            assert_eq!(fields.len(), 3);
+            assert!(matches!(&fields[0], Constraint::MultiWildcard(_)));
+            assert!(matches!(&fields[2], Constraint::MultiWildcard(_)));
+            let Constraint::And(terms, _) = &fields[1] else {
+                panic!("expected binding around alternatives for {field}");
+            };
+            assert_eq!(terms.len(), 2);
+            if field.starts_with('$') {
+                assert!(matches!(&terms[0], Constraint::MultiVariable(name, _) if name == "t"));
+            } else {
+                assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "t"));
+            }
+            assert!(
+                matches!(&terms[1], Constraint::Or(alternatives, _) if alternatives.len() == 2)
+            );
+        }
     }
 
     #[test]

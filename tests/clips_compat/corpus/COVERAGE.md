@@ -59,7 +59,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 | Feature | Corpus status |
 |---|---|
 | Brackets in symbols | No dedicated granular program yet; existing lexer tests cover this separately. |
-| Connective constraints | Basic literal disjunction/conjunction/negation and predicate/return-value cases exist; precedence and complex nested expressions remain incomplete. |
+| Connective constraints | Literal, variable, predicate, and return-value disjunctions cover overlapping alternatives, leading bindings, joins, negation, exists, forall, and ordered/template sequence fields. More complex nested expressions remain incomplete. |
 | Implicit initial-fact for empty rules | Empty-LHS startup and repeated-reset refraction cases exist; direct initial-fact identity/order still needs coverage. |
 | Explicit `and` CE | NCC uses `not (and ...)`; an independent top-level `and` control is still missing. |
 | `field` slot alias | No dedicated corpus case yet; parser tests exist separately. |

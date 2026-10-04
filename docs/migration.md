@@ -68,13 +68,15 @@ multislot pattern holds a sequence of field constraints. In the core,
 `CompilablePattern` has a new `sequence` field, so struct literals need it
 (`sequence: None` for a pattern without multifield fields).
 
-## Pre-1.0 snapshot schema 2
+## Pre-1.0 snapshot schema 3
 
-Snapshots are written with schema 2, and schema 1 snapshots are rejected with
-`UnsupportedVersion(1)`: their compiled patterns did not check field counts.
-Restore an old snapshot with the version that produced it, export the
-application data, and assert it into a new engine; see
-[snapshots.md](snapshots.md).
+Snapshots are written with schema 3. Schema 2 snapshots are rejected with
+`UnsupportedVersion(2)`: their compiled graphs could expand field-level `|`
+constraints into rule variants with incorrect matching and firing behavior.
+Schema 1 snapshots remain rejected with `UnsupportedVersion(1)` because their
+compiled patterns did not check field counts. Restore an old snapshot with the
+version that produced it, export the application data, and assert it into a
+new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
@@ -398,9 +400,9 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 2); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 3); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned and schema-1 snapshots are rejected explicitly. Export durable
+  unversioned, schema-1 and schema-2 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
