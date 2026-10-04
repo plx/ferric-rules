@@ -543,7 +543,7 @@ pub enum LoadError {
         column: u32,
     },
 
-    #[error("pattern validation failed")]
+    #[error("pattern validation failed: {}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
     Validation(Vec<ferric_rules_core::PatternValidationError>),
 
     #[error("engine error: {0}")]
@@ -3658,7 +3658,7 @@ impl Engine {
 
     fn collect_existential_local_variables(pattern: &Pattern, variables: &mut HashSet<String>) {
         match pattern {
-            Pattern::Exists(children, _) => {
+            Pattern::Exists(children, _) | Pattern::Forall(children, _) => {
                 for child in children {
                     Self::collect_pattern_binding_variables(child, variables);
                 }
@@ -3675,14 +3675,52 @@ impl Engine {
             }
             Pattern::And(children, _)
             | Pattern::Logical(children, _)
-            | Pattern::Or(children, _)
-            | Pattern::Forall(children, _) => {
+            | Pattern::Or(children, _) => {
                 for child in children {
                     Self::collect_existential_local_variables(child, variables);
                 }
             }
             Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Test(_, _) => {}
         }
+    }
+
+    /// A universal test can read the outer tuple and its own antecedent's
+    /// bindings. Checking this before compilation avoids a dormant unbound
+    /// variable becoming a silent match failure when the first tuple arrives.
+    fn validate_forall_test_scope(
+        &self,
+        rule_name: &str,
+        pattern: &Pattern,
+        exported_variables: &HashSet<String>,
+    ) -> Result<(), LoadError> {
+        let Pattern::Forall(children, _) = pattern else {
+            return Ok(());
+        };
+        let [antecedent, consequent] = children.as_slice() else {
+            return Ok(());
+        };
+        let Some(expression) = Self::test_only_pattern_expression(consequent) else {
+            return Ok(());
+        };
+        let expression = ferric_rules_parser::interpret_action_expr(&expression)
+            .map_err(LoadError::Interpret)?;
+        let mut available = exported_variables.clone();
+        Self::collect_pattern_binding_variables(antecedent, &mut available);
+        let scope = RuleRhsScope {
+            engine: self,
+            module: self.module_registry.current_module(),
+            exported: &available,
+            existential: &HashSet::new(),
+            allow_local_reads: false,
+        };
+        Self::validate_rule_rhs_expr(rule_name, &expression, &scope, &mut HashSet::new()).map_err(
+            |error| match error {
+                LoadError::Compile(message) => LoadError::Compile(
+                    message.replace("unbound RHS variable", "unbound variable in forall test"),
+                ),
+                error => error,
+            },
+        )
     }
 
     fn first_restricted_sexpr_variable(
@@ -3711,9 +3749,12 @@ impl Engine {
             .cloned()
             .collect();
         if let Some(variable) = Self::first_restricted_sexpr_variable(expr, &restricted) {
-            return Err(LoadError::Compile(format!(
-                "rule `{rule_name}` variable ?{variable} is not exported by existential conditional element"
-            )));
+            return Err(Self::compile_error_at(
+                &expr.span(),
+                &format!(
+                    "rule `{rule_name}` variable ?{variable} is not exported by existential conditional element"
+                ),
+            ));
         }
         Ok(())
     }
@@ -3951,120 +3992,6 @@ impl Engine {
         }
     }
 
-    /// Try to extract test CEs from nested contexts (negation, NCC, exists)
-    /// and add them as rule-level test conditions.
-    ///
-    /// Returns `true` if the pattern was fully handled (caller should skip it).
-    /// Returns `false` if the pattern should be processed normally.
-    ///
-    /// Handles these cases:
-    /// - `(not (test expr))` → adds `(not expr)` to `test_conditions`
-    /// - `(not (and (test ...) ...))` where ALL children are test CEs → adds
-    ///   negated conjunction to `test_conditions`
-    /// - `(exists (test expr))` → adds `expr` to `test_conditions`
-    fn try_extract_nested_test_ce(
-        &mut self,
-        pattern: &Pattern,
-        test_conditions: &mut Vec<CompiledTestCondition>,
-    ) -> Result<bool, LoadError> {
-        match pattern {
-            Pattern::Not(inner, _) => {
-                match inner.as_ref() {
-                    // (not (test expr)) → rule fires when expr is false
-                    Pattern::Test(sexpr, _) => {
-                        let inner_expr = crate::evaluator::from_sexpr(
-                            sexpr,
-                            &mut self.symbol_table,
-                            &self.config,
-                        )
-                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                        let negated = crate::evaluator::RuntimeExpr::Call {
-                            name: "not".to_string(),
-                            args: vec![inner_expr],
-                            span: None,
-                        };
-                        test_conditions.push(CompiledTestCondition::Expr(negated));
-                        Ok(true)
-                    }
-                    // (not (and (test1) (test2) ...)) where ALL are test CEs
-                    Pattern::And(inner_patterns, _)
-                        if inner_patterns
-                            .iter()
-                            .all(|p| matches!(p, Pattern::Test(..))) =>
-                    {
-                        let mut test_exprs = Vec::with_capacity(inner_patterns.len());
-                        for sub in inner_patterns {
-                            if let Pattern::Test(sexpr, _) = sub {
-                                let expr = crate::evaluator::from_sexpr(
-                                    sexpr,
-                                    &mut self.symbol_table,
-                                    &self.config,
-                                )
-                                .map_err(|e| {
-                                    LoadError::Compile(format!("test CE translation: {e}"))
-                                })?;
-                                test_exprs.push(expr);
-                            }
-                        }
-                        // Negate the conjunction: not(and(t1, t2, ...))
-                        let conjunction = if test_exprs.len() == 1 {
-                            test_exprs.into_iter().next().unwrap()
-                        } else {
-                            crate::evaluator::RuntimeExpr::Call {
-                                name: "and".to_string(),
-                                args: test_exprs,
-                                span: None,
-                            }
-                        };
-                        let negated = crate::evaluator::RuntimeExpr::Call {
-                            name: "not".to_string(),
-                            args: vec![conjunction],
-                            span: None,
-                        };
-                        test_conditions.push(CompiledTestCondition::Expr(negated));
-                        Ok(true)
-                    }
-                    _ => Ok(false),
-                }
-            }
-            // (exists (test expr)) → rule fires when expr is true
-            Pattern::Exists(patterns, _)
-                if patterns.len() == 1 && matches!(&patterns[0], Pattern::Test(..)) =>
-            {
-                if let Pattern::Test(sexpr, _) = &patterns[0] {
-                    let expr =
-                        crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                            .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                    test_conditions.push(CompiledTestCondition::Expr(expr));
-                }
-                Ok(true)
-            }
-            // (forall (P) (test expr)) where test has no P-local variables:
-            // desugar to just the test as a rule-level condition.
-            // The forall semantics "for all P, expr holds" reduce to "expr holds"
-            // when the test doesn't reference P-local variables.  The condition P
-            // is still checked by the NCC that forall desugars into, but if the
-            // then-clause is a pure test with no pattern dependencies, we handle it
-            // as a rule-level test condition to avoid the NCC needing test support.
-            Pattern::Forall(sub_patterns, _)
-                if sub_patterns.len() == 2 && matches!(&sub_patterns[1], Pattern::Test(..)) =>
-            {
-                // The test CE is the then-clause; just add it as a test condition.
-                // The condition (P) still needs to be checked, but since forall
-                // with a constant test is either always-true or always-false,
-                // adding the test as a rule-level condition is semantically correct.
-                if let Pattern::Test(sexpr, _) = &sub_patterns[1] {
-                    let expr =
-                        crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                            .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                    test_conditions.push(CompiledTestCondition::Expr(expr));
-                }
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
     /// Whether a negated ordered pattern contains an expression that cannot
     /// currently be represented by the negative network.
     fn has_complex_negated_expression(pattern: &Pattern) -> bool {
@@ -4190,9 +4117,44 @@ impl Engine {
     /// Recursively normalize a single pattern, resolving or CEs in nested
     /// contexts. May return multiple patterns if a `Not(And(...Or...))` is
     /// distributed.
+    #[allow(clippy::too_many_lines)] // Keep each CE normalization and its enclosing scope together.
     fn normalize_pattern(pattern: &Pattern) -> Vec<Pattern> {
+        // Pure tests beneath a quantifier have no fact tuple to retain. Collapse
+        // them to a predicate while preserving ordinary OR-CE multiplicity.
+        if let Pattern::Not(_, span) | Pattern::Exists(_, span) = pattern {
+            if let Some(expression) = Self::test_only_pattern_expression(pattern) {
+                return vec![Pattern::Test(expression, *span)];
+            }
+        }
         match pattern {
+            Pattern::Or(children, _) if children.len() == 1 => {
+                Self::normalize_pattern(&children[0])
+            }
+            Pattern::Or(children, span) => {
+                let branches = children
+                    .iter()
+                    .map(|child| {
+                        let mut normalized = Self::normalize_pattern(child);
+                        if normalized.len() == 1 {
+                            normalized.pop().unwrap()
+                        } else {
+                            // Splitting one branch into a conjunction must not
+                            // turn those conjuncts into additional OR branches.
+                            Pattern::And(normalized, *pattern_source_span(child))
+                        }
+                    })
+                    .collect();
+                vec![Pattern::Or(branches, *span)]
+            }
             Pattern::Not(inner, span) => {
+                if let Pattern::Or(branches, _) = inner.as_ref() {
+                    return branches
+                        .iter()
+                        .flat_map(|branch| {
+                            Self::normalize_pattern(&Pattern::Not(Box::new(branch.clone()), *span))
+                        })
+                        .collect();
+                }
                 if let Pattern::And(children, and_span) = inner.as_ref() {
                     // Check if any child is an Or CE
                     let or_idx = children.iter().position(|c| matches!(c, Pattern::Or(..)));
@@ -4235,12 +4197,12 @@ impl Engine {
                             *span,
                         )]
                     } else {
-                        // Multiple patterns from inner normalization —
-                        // wrap each in Not
-                        normalized
-                            .into_iter()
-                            .map(|p| Pattern::Not(Box::new(p), *span))
-                            .collect()
+                        // A normalization result is a conjunction. Preserve
+                        // that conjunction beneath the outer negation.
+                        vec![Pattern::Not(
+                            Box::new(Pattern::And(normalized, *span)),
+                            *span,
+                        )]
                     }
                 }
             }
@@ -4293,6 +4255,44 @@ impl Engine {
             // All other patterns pass through unchanged
             _ => vec![pattern.clone()],
         }
+    }
+
+    /// Turn a fact-free quantified CE into its boolean test. This helper is
+    /// deliberately not applied to ordinary positive OR CEs, whose disjuncts
+    /// retain separate activations even when several branches are true.
+    fn test_only_pattern_expression(pattern: &Pattern) -> Option<SExpr> {
+        let (name, arguments, span) = match pattern {
+            Pattern::Test(expression, _) => return Some(expression.clone()),
+            Pattern::Not(inner, span) => (
+                "not",
+                vec![Self::test_only_pattern_expression(inner)?],
+                *span,
+            ),
+            Pattern::And(children, span) | Pattern::Exists(children, span) => (
+                "and",
+                children
+                    .iter()
+                    .map(Self::test_only_pattern_expression)
+                    .collect::<Option<Vec<_>>>()?,
+                *span,
+            ),
+            Pattern::Or(children, span) => (
+                "or",
+                children
+                    .iter()
+                    .map(Self::test_only_pattern_expression)
+                    .collect::<Option<Vec<_>>>()?,
+                *span,
+            ),
+            _ => return None,
+        };
+        if name != "not" && arguments.len() == 1 {
+            return arguments.into_iter().next();
+        }
+        let mut call = Vec::with_capacity(arguments.len() + 1);
+        call.push(SExpr::Atom(Atom::Symbol(name.to_owned()), span));
+        call.extend(arguments);
+        Some(SExpr::List(call, span))
     }
 
     /// Expand `Pattern::Or` CEs via rule duplication.
@@ -4463,19 +4463,7 @@ impl Engine {
             }
 
             Self::collect_existential_local_variables(pattern, &mut existential_locals);
-
-            // Handle test CEs inside negation and NCC contexts by extracting
-            // them as predicate nodes at their source position.
-            let previous_test_count = test_conditions.len();
-            if self.try_extract_nested_test_ce(pattern, &mut test_conditions)? {
-                for condition_index in previous_test_count..test_conditions.len() {
-                    let condition_index = u32::try_from(condition_index).map_err(|_| {
-                        LoadError::Compile("too many test CEs in one rule".to_string())
-                    })?;
-                    conditions.push(CompilableCondition::Predicate { condition_index });
-                }
-                continue;
-            }
+            self.validate_forall_test_scope(&rule.name, pattern, &exported_variables)?;
 
             // Fallback path for complex negated ordered constraints that cannot
             // be lowered to join/alpha tests cannot remain a firing-time check:
@@ -4483,9 +4471,10 @@ impl Engine {
             // to right-side assertion/retraction. Reject it until it has a real
             // negative-network representation.
             if Self::has_complex_negated_expression(pattern) {
-                return Err(LoadError::Compile(
-                    "complex constraints inside negated patterns are not supported at match time"
-                        .to_string(),
+                return Err(Self::unsupported_pattern(
+                    "not",
+                    pattern_source_span(pattern),
+                    "complex constraints inside negated patterns are not supported at match time",
                 ));
             }
 
@@ -4518,17 +4507,19 @@ impl Engine {
                 CompilableCondition::Pattern(compilable) if compilable.exists
             ) && !generated_tests.is_empty()
             {
-                return Err(LoadError::Compile(
-                    "complex constraints inside existential patterns are not supported at match time"
-                        .to_string(),
+                return Err(Self::unsupported_pattern(
+                    "exists",
+                    pattern_source_span(pattern),
+                    "complex constraints inside existential patterns are not supported at match time",
                 ));
             }
             if matches!(condition, CompilableCondition::Ncc(_))
                 && generated_tests.len() != embedded_generated_tests.len()
             {
-                return Err(LoadError::Compile(
-                    "complex constraints inside NCC patterns are not supported at match time"
-                        .to_string(),
+                return Err(Self::unsupported_pattern(
+                    "not/and",
+                    pattern_source_span(pattern),
+                    "complex constraints inside NCC patterns are not supported at match time",
                 ));
             }
             if let Some(name) = var_name {
@@ -4627,8 +4618,11 @@ impl Engine {
                         let mut subconditions = Vec::with_capacity(inner_patterns.len());
                         for sub in inner_patterns {
                             subconditions.extend(self.translate_subcondition(
-                                sub, generated_tests, internal_slot_var_seed,
-                                test_condition_base, embedded_generated_tests,
+                                sub,
+                                generated_tests,
+                                internal_slot_var_seed,
+                                test_condition_base,
+                                embedded_generated_tests,
                             )?);
                         }
                         Ok(CompilableCondition::Ncc(subconditions))
@@ -4648,16 +4642,26 @@ impl Engine {
                             )
                         } else {
                             let mut conditions = self.translate_quantified_pattern(
-                                doubly_inner, false, true, generated_tests, internal_slot_var_seed,
-                                test_condition_base, embedded_generated_tests,
+                                doubly_inner,
+                                false,
+                                true,
+                                generated_tests,
+                                internal_slot_var_seed,
+                                test_condition_base,
+                                embedded_generated_tests,
                             )?;
                             Ok(conditions.remove(0))
                         }
                     }
                     _ => {
                         let mut conditions = self.translate_quantified_pattern(
-                            inner, true, false, generated_tests, internal_slot_var_seed,
-                            test_condition_base, embedded_generated_tests,
+                            inner,
+                            true,
+                            false,
+                            generated_tests,
+                            internal_slot_var_seed,
+                            test_condition_base,
+                            embedded_generated_tests,
                         )?;
                         Ok(conditions.remove(0))
                     }
@@ -4679,8 +4683,13 @@ impl Engine {
                     )
                 {
                     let mut conditions = self.translate_quantified_pattern(
-                        &sub_patterns[0], false, true, generated_tests, internal_slot_var_seed,
-                        test_condition_base, embedded_generated_tests,
+                        &sub_patterns[0],
+                        false,
+                        true,
+                        generated_tests,
+                        internal_slot_var_seed,
+                        test_condition_base,
+                        embedded_generated_tests,
                     )?;
                     return Ok(conditions.remove(0));
                 }
@@ -4715,9 +4724,9 @@ impl Engine {
                 // while one or more complete tuples exist. Both NCC memories are
                 // keyed by their owner token, so tuple support stays isolated per
                 // outer match and follows only zero/nonzero transitions.
-                Ok(CompilableCondition::Ncc(vec![
-                    CompilableCondition::Ncc(tuple_conditions),
-                ]))
+                Ok(CompilableCondition::Ncc(vec![CompilableCondition::Ncc(
+                    tuple_conditions,
+                )]))
             }
             Pattern::Test(sexpr, _) => {
                 let condition_index = test_condition_base
@@ -4746,8 +4755,13 @@ impl Engine {
                     ));
                 }
 
-                // Validate sub-patterns are simple (no nested CEs).
-                for sub in sub_patterns {
+                let consequent_test = Self::test_only_pattern_expression(&sub_patterns[1]);
+                // The antecedent and fact consequent remain single patterns;
+                // a fact-free consequent is evaluated for each antecedent tuple.
+                for (index, sub) in sub_patterns.iter().enumerate() {
+                    if index == 1 && consequent_test.is_some() {
+                        continue;
+                    }
                     match sub {
                         Pattern::Ordered(_) | Pattern::Template(_) => {}
                         Pattern::Forall(_, inner_span) => {
@@ -4769,13 +4783,51 @@ impl Engine {
 
                 // forall(P, Q) holds while no P lacks a matching Q.
                 let mut conditions = self.translate_quantified_pattern(
-                    &sub_patterns[0], false, false, generated_tests, internal_slot_var_seed,
-                    test_condition_base, embedded_generated_tests,
+                    &sub_patterns[0],
+                    false,
+                    false,
+                    generated_tests,
+                    internal_slot_var_seed,
+                    test_condition_base,
+                    embedded_generated_tests,
                 )?;
-                conditions.extend(self.translate_quantified_pattern(
-                    &sub_patterns[1], true, false, generated_tests, internal_slot_var_seed,
-                    test_condition_base, embedded_generated_tests,
-                )?);
+                if let Some(expression) = consequent_test {
+                    let expression_ast = ferric_rules_parser::interpret_action_expr(&expression)
+                        .map_err(LoadError::Interpret)?;
+                    let test = crate::evaluator::from_action_expr(
+                        &expression_ast,
+                        &mut self.symbol_table,
+                        &self.config,
+                    )
+                    .map_err(|error| Self::compile_error_at(span, &error.to_string()))?;
+                    let local_index = generated_tests.len();
+                    let condition_index = test_condition_base
+                        .checked_add(local_index)
+                        .and_then(|index| u32::try_from(index).ok())
+                        .ok_or_else(|| {
+                            Self::compile_error_at(span, "too many test CEs in one rule")
+                        })?;
+                    generated_tests.push(crate::evaluator::RuntimeExpr::Call {
+                        name: "not".to_owned(),
+                        args: vec![test],
+                        span: Some(crate::evaluator::SourceSpan {
+                            line: expression.span().start.line,
+                            column: expression.span().start.column,
+                        }),
+                    });
+                    embedded_generated_tests.insert(local_index);
+                    conditions.push(CompilableCondition::Predicate { condition_index });
+                } else {
+                    conditions.extend(self.translate_quantified_pattern(
+                        &sub_patterns[1],
+                        true,
+                        false,
+                        generated_tests,
+                        internal_slot_var_seed,
+                        test_condition_base,
+                        embedded_generated_tests,
+                    )?);
+                }
                 Ok(CompilableCondition::Ncc(conditions))
             }
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
@@ -4791,7 +4843,7 @@ impl Engine {
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
                 span,
-                "or CE should have been expanded via rule duplication before reaching translate_condition",
+                "or cannot be used in this nested pattern position",
             )),
             _ => Ok(CompilableCondition::Pattern(self.translate_pattern(
                 pattern,
@@ -4860,9 +4912,10 @@ impl Engine {
         // Preserve the explicitly unsupported general existential-expression
         // boundary; this lowering is for connected field disjunctions.
         if exists && !Self::pattern_has_field_disjunction(pattern) {
-            return Err(LoadError::Compile(
-                "complex constraints inside existential patterns are not supported at match time"
-                    .to_owned(),
+            return Err(Self::unsupported_pattern(
+                "exists",
+                pattern_source_span(pattern),
+                "complex constraints inside existential patterns are not supported at match time",
             ));
         }
         let mut conditions = vec![CompilableCondition::Pattern(compiled)];
@@ -5029,7 +5082,7 @@ impl Engine {
                 Err(Self::unsupported_pattern(
                     "test",
                     span,
-                    "test CE reached translate_pattern unexpectedly (should be handled earlier)",
+                    "test cannot be used in this nested pattern position",
                 ))
             }
             Pattern::Template(template) => {
@@ -5038,22 +5091,23 @@ impl Engine {
                     .resolve_template_reference(&template.template, current_module)
                     .map_err(|msg| Self::compile_error_at(&template.span, &msg))?;
 
-                let registered =
-                    self.template_defs
-                        .get(template_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            Self::compile_error_at(
-                                &template.span,
-                                &format!("template `{}` not found in registry", template.template),
-                            )
-                        })?;
+                let registered = self
+                    .template_defs
+                    .get(template_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Self::compile_error_at(
+                            &template.span,
+                            &format!("template `{}` not found in registry", template.template),
+                        )
+                    })?;
 
                 let mut slot_indices = Vec::with_capacity(template.slot_constraints.len());
                 let mut seen_slots = HashSet::new();
                 for slot_constraint in &template.slot_constraints {
-                    let slot_idx = registered.slot_index(&slot_constraint.slot_name).ok_or_else(
-                        || {
+                    let slot_idx = registered
+                        .slot_index(&slot_constraint.slot_name)
+                        .ok_or_else(|| {
                             Self::compile_error_at(
                                 &slot_constraint.span,
                                 &format!(
@@ -5061,19 +5115,24 @@ impl Engine {
                                     slot_constraint.slot_name, template.template
                                 ),
                             )
-                        },
-                    )?;
+                        })?;
                     if !seen_slots.insert(slot_idx) {
                         return Err(Self::compile_error_at(
                             &slot_constraint.span,
-                            &format!("duplicate slot `{}` in template pattern", slot_constraint.slot_name),
+                            &format!(
+                                "duplicate slot `{}` in template pattern",
+                                slot_constraint.slot_name
+                            ),
                         ));
                     }
                     if registered.slot_types[slot_idx] == SlotType::Single {
                         if slot_constraint.constraints.len() != 1 {
                             return Err(Self::compile_error_at(
                                 &slot_constraint.span,
-                                &format!("single-field slot `{}` requires exactly one field constraint", slot_constraint.slot_name),
+                                &format!(
+                                    "single-field slot `{}` requires exactly one field constraint",
+                                    slot_constraint.slot_name
+                                ),
                             ));
                         }
                         let constraint = &slot_constraint.constraints[0];
@@ -5082,7 +5141,10 @@ impl Engine {
                         {
                             return Err(Self::compile_error_at(
                                 &slot_constraint.span,
-                                &format!("single-field slot `{}` cannot bind a multifield variable", slot_constraint.slot_name),
+                                &format!(
+                                    "single-field slot `{}` cannot bind a multifield variable",
+                                    slot_constraint.slot_name
+                                ),
                             ));
                         }
                     }
@@ -5090,14 +5152,22 @@ impl Engine {
                         self.validate_template_constraint(&registered, slot_idx, constraint)?;
                     }
                     if registered.slot_types[slot_idx] == SlotType::Multi
-                        && !slot_constraint.constraints.iter().any(Self::constraint_is_multifield)
+                        && !slot_constraint
+                            .constraints
+                            .iter()
+                            .any(Self::constraint_is_multifield)
                     {
                         registered.constraints[slot_idx]
                             .validate_cardinality(slot_constraint.constraints.len())
-                            .map_err(|reason| Self::compile_error_at(
-                                &slot_constraint.span,
-                                &format!("[CSTRNCHK1] {reason} for slot `{}` in template `{}`", slot_constraint.slot_name, template.template),
-                            ))?;
+                            .map_err(|reason| {
+                                Self::compile_error_at(
+                                    &slot_constraint.span,
+                                    &format!(
+                                        "[CSTRNCHK1] {reason} for slot `{}` in template `{}`",
+                                        slot_constraint.slot_name, template.template
+                                    ),
+                                )
+                            })?;
                     }
                     slot_indices.push(slot_idx);
                 }
@@ -5125,13 +5195,19 @@ impl Engine {
 
                 // Preserve written slot order: independent multislot splits
                 // form a Cartesian product in that order in CLIPS.
-                for (slot_constraint, slot_idx) in template.slot_constraints.iter().zip(slot_indices) {
+                for (slot_constraint, slot_idx) in
+                    template.slot_constraints.iter().zip(slot_indices)
+                {
                     let is_multi = registered.slot_types[slot_idx] == SlotType::Multi;
                     if needs_sequence {
                         segments.push(if is_multi {
                             SequenceSegment {
                                 source: SequenceSource::TemplateSlot(slot_idx),
-                                fields: slot_constraint.constraints.iter().map(Self::sequence_field).collect(),
+                                fields: slot_constraint
+                                    .constraints
+                                    .iter()
+                                    .map(Self::sequence_field)
+                                    .collect(),
                             }
                         } else {
                             SequenceSegment {
@@ -5141,7 +5217,11 @@ impl Engine {
                         });
                     }
                     for constraint in &slot_constraint.constraints {
-                        let slot = SlotIndex::Template(if needs_sequence { logical_offset } else { slot_idx });
+                        let slot = SlotIndex::Template(if needs_sequence {
+                            logical_offset
+                        } else {
+                            slot_idx
+                        });
                         self.translate_constraint(
                             constraint,
                             slot,
@@ -5177,7 +5257,7 @@ impl Engine {
             Pattern::Forall(_, span) => Err(Self::unsupported_pattern(
                 "forall",
                 span,
-                "forall CE reached translate_pattern unexpectedly (should be handled in translate_condition)",
+                "forall is not supported in this nested pattern position",
             )),
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
@@ -5192,7 +5272,7 @@ impl Engine {
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
                 span,
-                "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
+                "or cannot be used in this nested pattern position",
             )),
         }
     }
@@ -6268,118 +6348,215 @@ impl Engine {
 // Pattern Validation
 // ============================================================================
 
-/// Validate rule patterns before Rete compilation.
+/// Validate source conditional elements before normalization and Rete compilation.
 ///
-/// Checks pattern restrictions:
-/// - E0001: Nesting depth limit (not/exists)
-/// - E0005: Unsupported nesting combinations (exists containing not)
-///
-/// Returns a vector of validation errors. Empty vector means validation passed.
+/// `not`, `exists`, and `forall` each consume one nesting level. Grouping CEs
+/// and fact-address assignments are transparent. Retained nesting/operand limits
+/// report the source construct that violates them, before lowering loses spans.
 fn validate_rule_patterns(
     patterns: &[Pattern],
     max_nesting_depth: usize,
 ) -> Vec<ferric_rules_core::PatternValidationError> {
     let mut errors = Vec::new();
     for pattern in patterns {
-        validate_pattern_recursive(pattern, 0, max_nesting_depth, &mut errors);
+        validate_pattern_recursive(pattern, 0, max_nesting_depth, false, false, &mut errors);
     }
     errors
 }
 
-/// Recursively validate a pattern and its nested children.
-///
-/// # Arguments
-/// * `pattern` - The pattern to validate
-/// * `depth` - Current nesting depth (0 at top level)
-/// * `max_depth` - Maximum allowed nesting depth
-/// * `errors` - Accumulator for validation errors
 fn validate_pattern_recursive(
     pattern: &Pattern,
     depth: usize,
     max_depth: usize,
+    inside_forall: bool,
+    inside_not_or_exists: bool,
     errors: &mut Vec<ferric_rules_core::PatternValidationError>,
 ) {
+    let quantified = matches!(
+        pattern,
+        Pattern::Not(..) | Pattern::Exists(..) | Pattern::Forall(..)
+    );
+    let child_depth = depth + usize::from(quantified);
+    if quantified && child_depth > max_depth {
+        push_nesting_depth_error(
+            errors,
+            pattern_source_span(pattern),
+            child_depth,
+            max_depth,
+            ferric_rules_core::ValidationStage::ReteCompilation,
+        );
+    }
     match pattern {
-        Pattern::Not(inner, span) => {
-            let new_depth = depth + 1;
-            if new_depth > max_depth {
-                push_nesting_depth_error(
+        Pattern::Not(inner, _) => {
+            validate_pattern_recursive(inner, child_depth, max_depth, inside_forall, true, errors);
+        }
+        Pattern::Exists(children, span) => {
+            // Normalization flattens conjunctions and distributes disjunctions.
+            // Enforce the single-negative operand limit through those wrappers,
+            // while allowing a negative member of a genuine multi-CE tuple.
+            if children.len() == 1 && single_exists_negative_operand(&children[0]) {
+                push_pattern_restriction(
                     errors,
                     span,
-                    new_depth,
-                    max_depth,
-                    ferric_rules_core::ValidationStage::ReteCompilation,
+                    ferric_rules_core::PatternViolation::UnsupportedNestingCombination {
+                        description: "exists with a single negated fact condition is not supported; use a supported positive fact or multi-condition exists body".to_owned(),
+                    },
                 );
             }
-            // Continue validating the inner pattern regardless of depth violation
-            validate_pattern_recursive(inner, new_depth, max_depth, errors);
+            for child in children {
+                validate_pattern_recursive(
+                    child,
+                    child_depth,
+                    max_depth,
+                    inside_forall,
+                    true,
+                    errors,
+                );
+            }
         }
-
-        Pattern::Exists(inner_patterns, span) => {
-            let new_depth = depth + 1;
-            if new_depth > max_depth {
-                push_nesting_depth_error(
+        Pattern::Forall(children, span) => {
+            if inside_forall {
+                push_pattern_restriction(
                     errors,
                     span,
-                    new_depth,
-                    max_depth,
-                    ferric_rules_core::ValidationStage::ReteCompilation,
+                    ferric_rules_core::PatternViolation::NestedForall,
                 );
             }
-
-            // Check for unsupported combination: single-pattern exists containing not.
-            // Multi-pattern exists groups compile as a tuple subnetwork, where
-            // mixed branches like `(exists A (not B))` are supported.
-            let enforce_exists_not_guard = inner_patterns.len() == 1;
-            for inner in inner_patterns {
-                if enforce_exists_not_guard && matches!(inner, Pattern::Not(..)) {
-                    let kind = ferric_rules_core::PatternViolation::UnsupportedNestingCombination {
-                        description: "exists containing not is not supported".to_string(),
-                    };
-                    let location = Some(span_to_source_location(span));
-                    let error = ferric_rules_core::PatternValidationError::new(
-                        kind,
-                        location,
-                        ferric_rules_core::ValidationStage::ReteCompilation,
-                    );
-                    errors.push(error);
-                }
-                validate_pattern_recursive(inner, new_depth, max_depth, errors);
+            if inside_not_or_exists {
+                push_pattern_restriction(
+                    errors,
+                    span,
+                    ferric_rules_core::PatternViolation::UnsupportedNestingCombination {
+                        description: "forall inside not or exists is not supported; place forall in a positive rule condition".to_owned(),
+                    },
+                );
+            }
+            validate_forall_operands(children, span, errors);
+            for child in children {
+                validate_pattern_recursive(
+                    child,
+                    child_depth,
+                    max_depth,
+                    true,
+                    inside_not_or_exists,
+                    errors,
+                );
             }
         }
-
         Pattern::Assigned { pattern: inner, .. } => {
-            // Assigned pattern: unwrap and validate the inner pattern
-            validate_pattern_recursive(inner, depth, max_depth, errors);
+            validate_pattern_recursive(
+                inner,
+                depth,
+                max_depth,
+                inside_forall,
+                inside_not_or_exists,
+                errors,
+            );
         }
-
-        Pattern::And(inner_patterns, _)
-        | Pattern::Logical(inner_patterns, _)
-        | Pattern::Or(inner_patterns, _) => {
-            for inner in inner_patterns {
-                validate_pattern_recursive(inner, depth, max_depth, errors);
-            }
-        }
-
-        Pattern::Forall(sub_patterns, span) => {
-            let new_depth = depth + 1;
-            if new_depth > max_depth {
-                push_nesting_depth_error(
-                    errors,
-                    span,
-                    new_depth,
+        Pattern::And(children, _) | Pattern::Logical(children, _) | Pattern::Or(children, _) => {
+            for child in children {
+                validate_pattern_recursive(
+                    child,
+                    depth,
                     max_depth,
-                    ferric_rules_core::ValidationStage::AstInterpretation,
+                    inside_forall,
+                    inside_not_or_exists,
+                    errors,
                 );
             }
-            for sub in sub_patterns {
-                validate_pattern_recursive(sub, new_depth, max_depth, errors);
-            }
         }
+        Pattern::Ordered(..) | Pattern::Template(..) | Pattern::Test(..) => {}
+    }
+}
 
-        Pattern::Ordered(..) | Pattern::Template(..) | Pattern::Test(..) => {
-            // Leaf patterns - nothing to validate at this level
+fn validate_forall_operands(
+    children: &[Pattern],
+    span: &ferric_rules_parser::Span,
+    errors: &mut Vec<ferric_rules_core::PatternValidationError>,
+) {
+    if children.len() != 2 {
+        push_pattern_restriction(
+            errors,
+            span,
+            ferric_rules_core::PatternViolation::UnsupportedNestingCombination {
+                description: format!("forall requires exactly one fact condition and one fact-or-test then-clause; received {} conditional elements", children.len()),
+            },
+        );
+        return;
+    }
+    if !matches!(
+        children[0],
+        Pattern::Ordered(..) | Pattern::Template(..) | Pattern::Forall(..)
+    ) {
+        push_pattern_restriction(
+            errors,
+            pattern_source_span(&children[0]),
+            ferric_rules_core::PatternViolation::ForallConditionNotSinglePattern,
+        );
+    }
+    if !matches!(
+        children[1],
+        Pattern::Ordered(..) | Pattern::Template(..) | Pattern::Forall(..)
+    ) && !is_pure_test_condition(&children[1])
+    {
+        push_pattern_restriction(
+            errors,
+            pattern_source_span(&children[1]),
+            ferric_rules_core::PatternViolation::UnsupportedNestingCombination {
+                description: "forall then-clause must be a single fact pattern or a test-only condition; fact conditions inside not, or, and, or exists are not supported here".to_owned(),
+            },
+        );
+    }
+}
+
+/// Test-only quantified trees lower to a predicate. Logical CEs never qualify:
+/// they remain unsupported and must not disappear during normalization.
+fn is_pure_test_condition(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Test(..) => true,
+        Pattern::Not(inner, _) => is_pure_test_condition(inner),
+        Pattern::And(children, _) | Pattern::Or(children, _) | Pattern::Exists(children, _) => {
+            !children.is_empty() && children.iter().all(is_pure_test_condition)
         }
+        _ => false,
+    }
+}
+
+fn single_exists_negative_operand(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Not(..) => !is_pure_test_condition(pattern),
+        Pattern::And(children, _) if children.len() == 1 => {
+            single_exists_negative_operand(&children[0])
+        }
+        Pattern::Or(children, _) => children.iter().any(single_exists_negative_operand),
+        _ => false,
+    }
+}
+
+fn push_pattern_restriction(
+    errors: &mut Vec<ferric_rules_core::PatternValidationError>,
+    span: &ferric_rules_parser::Span,
+    kind: ferric_rules_core::PatternViolation,
+) {
+    errors.push(ferric_rules_core::PatternValidationError::new(
+        kind,
+        Some(span_to_source_location(span)),
+        ferric_rules_core::ValidationStage::ReteCompilation,
+    ));
+}
+
+fn pattern_source_span(pattern: &Pattern) -> &ferric_rules_parser::Span {
+    match pattern {
+        Pattern::Ordered(pattern) => &pattern.span,
+        Pattern::Template(pattern) => &pattern.span,
+        Pattern::Assigned { span, .. }
+        | Pattern::Not(_, span)
+        | Pattern::Exists(_, span)
+        | Pattern::Forall(_, span)
+        | Pattern::Test(_, span)
+        | Pattern::And(_, span)
+        | Pattern::Or(_, span)
+        | Pattern::Logical(_, span) => span,
     }
 }
 
@@ -8421,5 +8598,130 @@ mod proptests {
             let mut engine = new_utf8_engine();
             let _ = engine.load_str(&source);
         }
+    }
+}
+
+#[cfg(test)]
+mod pattern_restriction_tests {
+    use super::{is_pure_test_condition, validate_rule_patterns};
+    use ferric_rules_parser::{
+        interpret_constructs, parse_sexprs, Construct, FileId, InterpreterConfig, RuleConstruct,
+    };
+
+    fn rule(lhs: &str) -> RuleConstruct {
+        let source = format!("(defrule example\n  {lhs}\n  =>)");
+        let parsed = parse_sexprs(&source, FileId(0));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(interpreted.errors.is_empty(), "{:?}", interpreted.errors);
+        let Construct::Rule(rule) = interpreted.constructs.remove(0) else {
+            panic!("expected rule");
+        };
+        rule
+    }
+
+    #[test]
+    fn retained_conditional_element_limits_are_located_through_grouping_wrappers() {
+        for (lhs, code, detail) in [
+            ("(exists (not (a)))", "E0005", "single negated fact"),
+            ("(exists (and (not (a))))", "E0005", "single negated fact"),
+            (
+                "(exists (or (not (a)) (b)))",
+                "E0005",
+                "single negated fact",
+            ),
+            ("(forall (a) (forall (b) (c)))", "E0003", "cannot be nested"),
+            (
+                "(forall (a) (and (forall (b) (c))))",
+                "E0003",
+                "cannot be nested",
+            ),
+            (
+                "(not (and (a) (forall (b) (c))))",
+                "E0005",
+                "inside not or exists",
+            ),
+            (
+                "(exists (a) (and (forall (b) (c))))",
+                "E0005",
+                "inside not or exists",
+            ),
+            (
+                "(forall (a) (b) (c))",
+                "E0005",
+                "exactly one fact condition",
+            ),
+            ("(forall (exists (a)) (b))", "E0002", "single fact pattern"),
+            ("(forall (a) (not (b)))", "E0005", "then-clause must be"),
+            ("(forall (and (a)) (b))", "E0002", "single fact pattern"),
+        ] {
+            let parsed = rule(lhs);
+            let errors = validate_rule_patterns(&parsed.patterns, 4);
+            let error = errors
+                .iter()
+                .find(|error| error.code == code && error.to_string().contains(detail))
+                .unwrap_or_else(|| panic!("{lhs}: {errors:?}"));
+            let location = error
+                .location
+                .expect("source validation retains a location");
+            assert_eq!(location.line, 2, "{lhs}");
+            assert!(location.column >= 3, "{lhs}");
+            assert!(error
+                .suggestion
+                .as_ref()
+                .is_some_and(|suggestion| !suggestion.is_empty()));
+        }
+    }
+
+    #[test]
+    fn source_quantifier_depth_counts_wrappers_but_not_grouping() {
+        for depth in [4, 5] {
+            let mut lhs = "(a)".to_owned();
+            for _ in 0..depth {
+                lhs = format!("(not (and {lhs}))");
+            }
+            let parsed = rule(&lhs);
+            let errors = validate_rule_patterns(&parsed.patterns, 4);
+            if depth == 4 {
+                assert!(errors.is_empty(), "{errors:?}");
+            } else {
+                assert_eq!(errors.len(), 1);
+                assert_eq!(errors[0].code, "E0001");
+                assert!(errors[0]
+                    .to_string()
+                    .contains("nesting depth 5 exceeds maximum of 4"));
+                assert_eq!(errors[0].location.unwrap().line, 2);
+            }
+        }
+        let parsed = rule("(exists (a) (exists (b) (exists (c) (exists (d) (forall (e) (f))))))");
+        let errors = validate_rule_patterns(&parsed.patterns, 4);
+        assert!(
+            errors.iter().any(|error| error.code == "E0001"),
+            "forall counts in source depth"
+        );
+    }
+
+    #[test]
+    fn supported_test_wrappers_and_multi_condition_exists_pass_validation() {
+        for lhs in [
+            "(forall (a ?x) (test (> ?x 0)))",
+            "(forall (a ?x) (not (test (< ?x 0))))",
+            "(forall (a ?x) (exists (and (test (> ?x 0)) (test (< ?x 5)))))",
+            "(exists (not (test (< 1 0))))",
+            "(exists (a) (not (b)))",
+            "(exists (and (a) (not (b))))",
+            "(forall (a) (b)) (forall (c) (d))",
+            "(and (forall (a) (b)) (or (forall (c) (d)) (e)))",
+        ] {
+            let parsed = rule(lhs);
+            let errors = validate_rule_patterns(&parsed.patterns, 4);
+            assert!(errors.is_empty(), "{lhs}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn logical_wrappers_are_never_classified_as_pure_tests() {
+        let parsed = rule("(exists (logical (test (eq 1 1))))");
+        assert!(!is_pure_test_condition(&parsed.patterns[0]));
     }
 }

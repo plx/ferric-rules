@@ -118,8 +118,9 @@ coverage before adding another execution protocol.
 
 COOL, certainty factors, distributed evaluation, and truth maintenance via
 `logical` are outside the declared target. Simplicity, Complexity, and Random
-strategies remain deferred. Triple-nested negation, `exists (not ...)`, and
-nested forall remain unsupported. Identical negative/NCC join sharing and selected multi-pattern `exists` ties
+strategies remain deferred. More than four nested quantifiers, single-operand
+`exists (not fact-pattern)`, nested forall, and unsupported forall operands
+remain excluded. Identical negative/NCC join sharing and selected multi-pattern `exists` ties
 remain characterized topology gaps.
 Late-installed auto-focus NCC rules also retain characterized differences in
 fresh-subnetwork activation history and deferred-predicate sharing.

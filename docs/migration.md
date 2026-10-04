@@ -216,9 +216,16 @@ Review your CLIPS codebase for features that Ferric does not support:
 - Conflict strategies: `simplicity`, `complexity`, `random`
 
 **Partially supported:**
-- Pattern nesting: single-level `not`, `exists`, `forall`, and NCC are
-  supported. Triple-nested negation, `(exists (not ...))`, and nested
-  `(forall ...)` are not.
+- Pattern nesting: up to four combined `not`/`exists`/`forall` levels are
+  supported, subject to compiled-condition limits. Triple and four-deep
+  negation work. Single-operand `(exists (not fact-pattern))`, nested `forall`,
+  and `forall` under `not` or `exists` remain unsupported. `forall` takes exactly one fact
+  condition and one fact or test-only requirement; other operands are rejected
+  with a source location. Positive `and`/`or` groups accept fact-address
+  bindings, and `(not (or ...))` is supported.
+  Snapshot validation has a separate four-level NCC dependency limit; nested
+  multi-pattern `exists` can load successfully yet exceed that persistence
+  limit. See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
 
 If your rules use only `defrule`, `deftemplate`, `deffacts`, `deffunction`,
 `defglobal`, `defmodule`, `defgeneric`, and `defmethod` with standard
@@ -242,17 +249,17 @@ Fix any reported parse or compilation errors before proceeding.
 
 ## Step 3: Review Rule Patterns and Actions
 
-### Replace nested negation
+### Reduce excessive nesting
+
+For a boolean condition without new variable bindings, redundant negations
+can be simplified:
 
 ```clp
-;; CLIPS (unsupported triple nesting)
-(not (not (not (condition))))
+;; Exceeds Ferric's four-level source limit
+(not (not (not (not (not (condition))))))
 
-;; Ferric: use an intermediate fact
-(defrule detect-condition
-    (condition) => (assert (condition-present)))
-(defrule no-condition
-    (not (condition-present)) => ...)
+;; Same boolean condition within the limit
+(not (condition))
 ```
 
 ### Use if/then/else in actions and callable bodies
@@ -438,7 +445,7 @@ was never populated.
 | `defgeneric` / `defmethod` | Supported (evaluator expressions; no fact mutation/control actions) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
 | `printout` / `format` / `read` / `readline` | Supported |
-| `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |
+| `not` / `exists` / `forall` / `test` | Supported within the four-level source nesting and quantified-operand limits above |
 | Salience | Supported |
 | Focus stack | Supported |
 | Depth / Breadth | Supported |

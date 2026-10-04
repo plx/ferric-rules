@@ -1,0 +1,5 @@
+(deffacts d (a 1) (a 2))
+(defrule all-and (declare (salience 40)) (forall (a ?x) (and (test (> ?x 0)) (test (< ?x 3)))) => (printout t AND crlf))
+(defrule all-or (declare (salience 30)) (forall (a ?x) (or (test (= ?x 1)) (test (= ?x 2)))) => (printout t OR crlf))
+(defrule all-not (declare (salience 20)) (forall (a ?x) (not (test (<= ?x 0)))) => (printout t NOT crlf))
+(defrule all-exists (declare (salience 10)) (forall (a ?x) (exists (test (> ?x 0)))) => (printout t EXISTS crlf))

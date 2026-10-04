@@ -9631,6 +9631,491 @@
           "diagnostics": []
         }
       }
+    },
+    {
+      "path": "patterns/405_assigned_or_issue.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "fact-address",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_and_join.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "fact-address",
+        "join",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_nested_or_and.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "or",
+        "fact-address",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_template_or_ordered.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "deftemplate",
+        "fact-address",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_or_then_join.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "fact-address",
+        "join",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_singleton_or.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "fact-address",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_not_or_issue.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "patterns/405_not_or_outer_join.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "or",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/405_not_or_nested_and.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "or",
+        "and",
+        "ncc",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/405_not_or_retraction.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "or",
+        "retract",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "patterns/405_double_not_or.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_test_issue.clp",
+      "level": "interaction",
+      "covers": [
+        "forall",
+        "test"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_test_counterexample.clp",
+      "level": "interaction",
+      "covers": [
+        "forall",
+        "test"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_test_vacuous.clp",
+      "level": "interaction",
+      "covers": [
+        "forall",
+        "test"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_test_outer_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "forall",
+        "test",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_test_reactivation.clp",
+      "level": "interaction",
+      "covers": [
+        "forall",
+        "test",
+        "assert",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_missing_arrow.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_missing_target.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_multivar_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_stray_arrow.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_group_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_not_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_exists_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_forall_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-address",
+        "conditional-elements"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_not_forall.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "not"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric explicitly rejects forall below not; the supported forall placement is a positive rule condition.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: forall inside not or exists is not supported; place forall in a positive rule condition at 2:17-39 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_forall_three_clauses.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "forall"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric supports exactly one simple fact condition and one fact-or-test then-clause in forall.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: forall requires exactly one fact condition and one fact-or-test then-clause; received 3 conditional elements at 2:12-41 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_forall_not.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "not"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric rejects a fact-bearing negated forall then-clause; the then-clause must be one fact pattern or a test-only condition.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: forall then-clause must be a single fact pattern or a test-only condition; fact conditions inside not, or, and, or exists are not supported here at 2:27-39 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_forall_or.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "forall"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric rejects fact-bearing disjunction in a forall then-clause; the then-clause must be one fact pattern or a test-only condition.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: forall then-clause must be a single fact pattern or a test-only condition; fact conditions inside not, or, and, or exists are not supported here at 2:27-45 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_forall_exists.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "forall"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric rejects fact-bearing exists in a forall then-clause; the then-clause must be one fact pattern or a test-only condition.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: forall then-clause must be a single fact pattern or a test-only condition; fact conditions inside not, or, and, or exists are not supported here at 2:27-42 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_nested_forall.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "forall"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric explicitly rejects forall nested inside another forall.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0003] forall cannot be nested inside another forall at 2:27-52 (Rete compilation) \u2014 suggestion: forall cannot be nested inside another forall"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_exists_not.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "not"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric explicitly rejects exists with one negated fact condition.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: exists with a single negated fact condition is not supported; use a supported positive fact or multi-condition exists body at 2:12-30 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_five_negations.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "not"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric limits combined source not/exists/forall nesting to four levels.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0001] nesting depth 5 exceeds maximum of 4 at 2:32-41 (Rete compilation) \u2014 suggestion: reduce nesting depth to 4 or fewer levels"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_forall_pure_test_trees.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "test",
+        "forall"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_positive_or.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "test",
+        "forall"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_positive_and.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "test",
+        "forall"
+      ]
+    },
+    {
+      "path": "patterns/405_quantifier_test_multiplicity.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "test",
+        "forall"
+      ]
+    },
+    {
+      "path": "patterns/405_four_negations.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_forall_grouped_condition.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "forall"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric requires one simple ordered or template fact as the forall condition, without a grouped condition wrapper.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0002] forall condition must be a single fact pattern at 2:20-32 (Rete compilation) \u2014 suggestion: forall condition must be a single fact pattern"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_exists_forall.clp",
+      "level": "interaction",
+      "covers": [
+        "conditional-elements",
+        "forall"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/405"
+        ],
+        "summary": "Ferric explicitly rejects forall below exists; the supported forall placement is a positive rule condition.",
+        "observed": {
+          "diagnostics": [
+            "pattern validation failed: [E0005] unsupported nesting: forall inside not or exists is not supported; place forall in a positive rule condition at 2:20-42 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/405_positive_or_normalizes_wrapped_branches.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "not",
+        "exists",
+        "and",
+        "test",
+        "activation-order"
+      ]
     }
   ]
 }

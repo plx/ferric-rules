@@ -1,0 +1,7 @@
+
+[RULELHS2] A pattern CE cannot be bound to a pattern-address within a not CE
+
+ERROR:
+(defrule MAIN::r
+   (exists
+        ?f

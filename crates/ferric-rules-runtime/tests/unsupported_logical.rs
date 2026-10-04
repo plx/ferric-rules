@@ -8,7 +8,6 @@ fn logical_is_rejected_in_every_original_tree_position_before_installation() {
         "(or (seed) (logical (seed)))",
         "(not (and (seed) (logical (other))))",
         "(exists (logical (seed)))",
-        "?f <- (logical (seed))",
     ] {
         let mut engine = Engine::new(EngineConfig::default());
         let errors = engine
@@ -26,6 +25,27 @@ fn logical_is_rejected_in_every_original_tree_position_before_installation() {
         #[cfg(debug_assertions)]
         engine.debug_assert_consistency();
     }
+}
+
+#[test]
+fn an_assigned_logical_group_is_rejected_as_an_invalid_fact_binding() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let errors = engine
+        .load_str("(defrule derived\n ?f <- (logical (seed))\n => (assert (dependent)))")
+        .unwrap_err();
+    // CLIPS also requires the assignment target to be a fact pattern. The
+    // parser can now reject this before the unsupported logical-CE check.
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error, LoadError::Interpret(error)
+        if error.message.contains("fact pattern") && error.span.start.line == 2)),
+        "{errors:?}"
+    );
+    assert!(engine.rules().is_empty());
+    engine.assert_ordered("seed", ()).unwrap();
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+    assert!(engine.find_facts("dependent").unwrap().is_empty());
 }
 
 #[test]
