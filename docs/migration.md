@@ -241,9 +241,16 @@ Review your CLIPS codebase for features that Ferric does not support:
   condition and one fact or test-only requirement; other operands are rejected
   with a source location. Positive `and`/`or` groups accept fact-address
   bindings, and `(not (or ...))` is supported.
-  Snapshot validation has a separate four-level NCC dependency limit; nested
-  multi-pattern `exists` can load successfully yet exceed that persistence
-  limit. See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
+  Snapshot validation permits up to eight compiled NCC dependency levels,
+  accommodating the two NCC layers used by multi-pattern `exists` through
+  the four-level source limit. See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
+- Directly negated predicate and return-value constraints: general expressions
+  can be CLIPS-valid but explicitly rejected during load. Supported comparisons
+  and variable-plus-integer offsets are described in the
+  [constraint boundary](compatibility.md#predicate-and-return-value-constraints)
+  retained by [#300](https://github.com/plx/ferric-rules/issues/300). Where
+  appropriate, use the documented fact-plus-`test` NCC form to evaluate a
+  predicate at match time; moving it to the RHS is not equivalent.
 
 If your rules use only `defrule`, `deftemplate`, `deffacts`, `deffunction`,
 `defglobal`, `defmodule`, `defgeneric`, and `defmethod` with standard

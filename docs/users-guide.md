@@ -339,14 +339,25 @@ A few rules of thumb:
 - `forall (P) (Q)` is "for every P, some Q." If there are no P facts, it is
   vacuously true. That usually matches what you want for "all tasks
   complete," but read the logic carefully before wiring it up.
-- Pattern nesting is single-level. Triple negations, `(exists (not ...))`,
-  and nested `forall` are rejected by the compiler. The typical workaround
-  is a helper rule that asserts an intermediate "flag" fact
-  (see [`migration.md`](migration.md) §3).
-- A `(test ...)` clause inside an NCC currently requires every NCC child to
-  be a test; mixing positive patterns with `test` inside `(not (and ...))`
-  is rejected. If you need an inequality test inside an NCC, derive a
-  helper fact that captures the predicate and reference it instead.
+- Up to four combined `not`, `exists`, and `forall` levels are supported on
+  each source path; `and` and `or` add no level. Triple and four-deep negation
+  work. Single-operand `(exists (not fact-pattern))`, nested `forall`, and
+  `forall` inside `not` or `exists` remain unsupported. See the precise
+  [operand and nesting limits](compatibility.md#pattern-nesting-restrictions).
+- Directly negated fields support comparisons and variable-plus-integer
+  offsets, but general predicate and return-value expressions may be
+  CLIPS-valid and still reject at load. For a nonlinear condition, an explicit
+  NCC can combine a fact with a `test` evaluated at match time:
+
+  ```clp
+  (anchor ?min)
+  (not (and (data ?x)
+            (test (> (* ?x ?x) (* ?min ?min)))))
+  ```
+
+  A candidate `data` fact whose square is larger blocks the match. Keep the
+  test inside the conjunction so assertion and retraction update the agenda
+  correctly. See [the supported constraint subset](compatibility.md#predicate-and-return-value-constraints).
 
 ### Parser nesting limit
 

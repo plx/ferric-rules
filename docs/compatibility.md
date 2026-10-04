@@ -83,7 +83,7 @@ Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
 constraint inside a negated ordered pattern, tracked in
 [#300](https://github.com/plx/ferric-rules/issues/300) (see
-[Template Facts](#template-facts)).
+[Predicate and return-value constraints](#predicate-and-return-value-constraints)).
 
 ---
 
@@ -167,11 +167,6 @@ Pre-1.0 migration: template metadata now records slot cardinality. Unversioned
 (legacy raw) engine snapshots are rejected; persist engines with the versioned
 CBOR snapshot envelope described in [Snapshots](snapshots.md), and keep
 application facts/rule source if older data must be rebuilt.
-
-Complex non-linear predicate or return-value constraints inside negated ordered
-patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
-incorrect firing-time fallback; it did not complete that optional language
-feature. The remaining gap is tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
 
 ### Fact Identity
 
@@ -267,6 +262,68 @@ including all commonly used conditional elements and RHS actions.
 | `~` | Negation | `(color ~red)` |
 | `\|` | Disjunction | `(color red\|blue)` |
 | `&` | Conjunction | `(value ?x&~0)` |
+
+### Predicate and return-value constraints
+
+Directly negated fact patterns support a restricted expression subset. General
+predicate (`:`) and return-value (`=`) expressions can be valid CLIPS yet fail
+with a located Ferric load error. This is the explicit boundary retained by
+[#300](https://github.com/plx/ferric-rules/issues/300), not a firing-time filter:
+a rejected rule is not installed and never contributes an activation.
+The restriction applies to ordered fields and template slots.
+
+Literal and bound-variable equality/inequality constraints remain supported.
+A direct predicate comparison must involve the constrained field's variable;
+the other operand may be a literal or a previously bound variable. Integer
+addition and subtraction may reduce each operand to one variable with
+coefficient `+1` and a checked integer offset, or an integer constant. For
+example, these conditions are supported:
+
+```clp
+(anchor ?min)
+(not (data ?x&:(> (+ ?x 1) (+ ?min 2))))
+```
+
+Return-value constraints accept the same variable-plus-integer-offset subset:
+
+```clp
+(anchor ?min)
+(not (data =(+ ?min 1)))
+```
+
+This does not cover all mathematically linear expressions, floating-point
+arithmetic offsets, or Boolean wrappers around comparisons. A comparison
+with a plain float literal is supported. The existing lexeme join form also
+supports a binary comparison of `str-compare` between the current field and
+an earlier pattern's variable against zero.
+
+These direct nonlinear constraints are **CLIPS-valid but unsupported**:
+
+```clp
+;; Predicate constraint: compare the squares of two bound values.
+(anchor ?min)
+(not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
+
+;; Return-value constraint: compare a field with its own square.
+(not (data ?x&=(* ?x ?x)))
+```
+
+For the first example, an explicit negated conjunction can express the check
+at match time using the already supported NCC and `test` conditional elements:
+
+```clp
+(anchor ?min)
+(not (and (data ?x)
+          (test (> (* ?x ?x) (* ?min ?min)))))
+```
+
+Here the test belongs to each candidate `data` fact inside the conjunction.
+A passing candidate blocks the outer match; removing the final blocker creates
+an activation, and a new blocker cancels it before firing. Moving the test to
+the RHS or outside the negated conjunction changes these semantics. Ferric does
+not automatically rewrite direct field expressions into this form. Other
+quantified operand and nesting limits still apply; this example does not
+promise support for every equivalent `not` or `exists` spelling.
 
 ### Conflict Resolution Strategies
 
@@ -371,8 +428,11 @@ query members. `any-factp`, `find-fact` and `find-all-facts` work in RHS
 expressions, deffunctions and methods; the find forms return a multifield of
 [fact addresses](#fact-addresses).
 
-Queries, `if`, and `switch` also work in LHS test CEs and predicate/return-value
-constraints. These expressions observe facts when the matching token reaches
+Queries, `if`, and `switch` also work in LHS test CEs and supported
+predicate/return-value constraints. This expression grammar does not remove the
+[direct-negation restriction](#predicate-and-return-value-constraints) or the
+restrictions on general field expressions in single-pattern `exists`.
+These expressions observe facts when the matching token reaches
 the test; a later change to a queried relation does not independently reevaluate
 an existing token. Queries can compare members with fact addresses bound by
 earlier patterns. Unbound or later-bound variable references in these queries
