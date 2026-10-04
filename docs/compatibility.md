@@ -1272,9 +1272,12 @@ cannot be replaced, including through a helper's `build` call; the original
 definition remains installed.
 
 Each engine owns its random state, and snapshots preserve that state. Seeded
-explicit draws match the pinned glibc-based CLIPS 6.30 reference. Ferric does
-not consume this stream to assign random agenda activation ties: CLIPS code
-that interleaves random draws with activation creation can therefore observe a
+explicit draws match the pinned glibc-based CLIPS 6.30 reference where its
+signed range arithmetic is defined. Ferric supports the full inclusive i64
+range using widened arithmetic. CLIPS 6.30 overflows when the inclusive width
+exceeds `i64::MAX`, and can crash; those ranges are not a conformance claim.
+Ferric does not consume this stream to assign random agenda activation ties:
+CLIPS code that interleaves random draws with activation creation can therefore observe a
 different sequence. This does not add support for the Random conflict strategy.
 `time` is inherently nondeterministic. Reversed `random` bounds produce a
 recoverable `MISCFUN3` notice and return the unbounded draw. A wrong argument
@@ -1354,6 +1357,15 @@ symbols.
 FLOATs print with up to 15 significant digits (CLIPS's `%.15g`), with `.0` on
 integral values: `1.0`, `1e-05`, `1e+15`. Non-finite values print as `nan.0`,
 `inf.0` and `-inf.0`. `str-cat` and `sym-cat` spell FLOATs the same way.
+
+NaN generation and C printing vary across platforms: CLIPS may render
+`(sin 1e309)` as `nan.0` or `-nan.0`. Ferric renders both NaN signs as `nan.0`
+(or `nan` for numeric `format` conversions). The portable corpus checks exact
+`format` padding and `implode$` consistency with the displayed scalar spelling.
+Its direct `printout` non-finite fixture covers positive and negative infinity;
+Rust host-value tests separately check scalar and multifield output for both
+explicit NaN bit signs. Corpus output comparison remains byte-exact, with no
+NaN normalization.
 
 `format` writes its completed string to the named channel and returns the
 same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;

@@ -122,9 +122,13 @@ jobs:
             "$COMPAT_BASE_SHA" "${{ github.run_id }}-${{ github.run_attempt }}-base"
           # Older Rust tests may not produce a verdict sidecar. Keep their
           # results explicitly unverified rather than borrowing head evidence.
-          scripts/corpus-evidence.sh verify /tmp/compat-evidence/base-corpus \
+          # A base corpus failure is retained for comparison; it cannot prevent
+          # a corrected head from proving itself against the strict gate below.
+          if ! scripts/corpus-evidence.sh verify /tmp/compat-evidence/base-corpus \
             "$COMPAT_BASE_SHA" "${{ github.run_id }}-${{ github.run_attempt }}-base" \
-            --allow-unverified
+            --allow-unverified; then
+            echo "::warning::Base corpus verification failed; retained evidence records the failure. Head verification remains required."
+          fi
           cargo build --release -p ferric-rules-cli
           target/release/ferric compat-observe --help | grep -F -- '--scenario'
           candidate_digest="$(sha256sum target/release/ferric | cut -d ' ' -f 1)"

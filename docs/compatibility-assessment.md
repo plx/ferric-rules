@@ -337,11 +337,15 @@ workflow.
 The standalone (push to `main`) and pull-request comparison jobs run the full
 pinned-reference corpus check with 120-second per-call limits, followed by the
 legacy scan → selected harness generation → harness verification → dual-engine
-run → policy-gate lane. These checks are blocking. The comparison workflow uses
-head Python assessment tooling on the base checkout, but never overlays head
+run → policy-gate lane. Standalone and head checks are blocking. The comparison
+workflow uses head Python assessment tooling on the base checkout, but never overlays head
 Rust sources into the base binary. The base corpus summary explicitly records
 the resulting dirty checkout; an older base without a verdict sidecar remains
-unverified rather than borrowing head evidence. Report finalization and artifact
+unverified rather than borrowing head evidence. A failed base corpus run is
+retained and reported while the comparison continues to the strict head gate;
+this lets a corrected head pass without changing the base's evidence. A failed
+base cannot establish a verified before/after fix. Base capture and legacy
+assessment failures still stop the job. Report finalization and artifact
 upload use GitHub Actions `always()` handling, so a missing reference image,
 harness failure, state/output divergence, or policy violation still produces a
 manifest or explicit fallback status plus candidate/reference provenance and
