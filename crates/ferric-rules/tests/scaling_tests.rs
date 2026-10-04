@@ -676,3 +676,70 @@ fn test_scaling_sequence_negative_admission() {
         8.0,
     );
 }
+
+/// With four fixed bound keys and unique list values, placement pruning should
+/// scale with list length. Each direction must still produce exactly six pairs.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_bound_sequence_join() {
+    const N_KEYS: usize = 4;
+    const RULE: &str = "
+        (defrule bound-sequence
+            (key ?a) (key ?b) (lst $? ?a $? ?b $?)
+            => (assert (hit ?a ?b)))";
+
+    fn prepare(length: usize, list_first: bool) -> (Engine, Vec<i64>) {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str(RULE).unwrap();
+        engine.reset().unwrap();
+        let keys = (0..N_KEYS)
+            .map(|index| i64::try_from((index + 1) * length / (N_KEYS + 1)).unwrap())
+            .collect::<Vec<_>>();
+        let list = (0..i64::try_from(length).unwrap()).collect::<Vec<_>>();
+        let incoming = if list_first {
+            engine.assert_ordered("lst", list).unwrap();
+            keys
+        } else {
+            for key in keys {
+                engine.assert_ordered("key", key).unwrap();
+            }
+            list
+        };
+        (engine, incoming)
+    }
+
+    fn complete(mut engine: Engine, incoming: Vec<i64>, list_first: bool) -> Engine {
+        if list_first {
+            for key in incoming {
+                engine.assert_ordered("key", key).unwrap();
+            }
+        } else {
+            engine.assert_ordered("lst", incoming).unwrap();
+        }
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, N_KEYS * (N_KEYS - 1) / 2);
+        assert!(engine.action_diagnostics().is_empty());
+        engine
+    }
+
+    fn measure(length: usize, list_first: bool) -> Duration {
+        measure_op_median(
+            || prepare(length, list_first),
+            |(engine, incoming)| {
+                black_box(complete(engine, incoming, list_first));
+            },
+        )
+    }
+
+    let (small, large) = (2_000, 8_000);
+    for (arrival, list_first) in [("list_arrives", false), ("keys_arrive", true)] {
+        assert_scaling(
+            &format!("bound_sequence_join ({arrival})"),
+            small,
+            large,
+            measure(small, list_first),
+            measure(large, list_first),
+            8.0,
+        );
+    }
+}

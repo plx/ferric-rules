@@ -383,6 +383,106 @@ fn bench_ordered_prefix_index(c: &mut Criterion) {
     group.finish();
 }
 
+const BOUND_SEQUENCE_KEYS: usize = 4;
+const BOUND_SEQUENCE_RULE: &str = "
+    (defrule bound-sequence
+        (key ?a)
+        (key ?b)
+        (lst $? ?a $? ?b $?)
+        => (assert (hit ?a ?b)))";
+
+fn bound_sequence_keys(length: usize) -> [i64; BOUND_SEQUENCE_KEYS] {
+    std::array::from_fn(|index| {
+        i64::try_from((index + 1) * length / (BOUND_SEQUENCE_KEYS + 1)).unwrap()
+    })
+}
+
+/// Build the incoming payload and install the earlier side outside the timer.
+fn prepare_bound_sequence_join(length: usize, list_first: bool) -> (Engine, Vec<i64>) {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine.load_str(BOUND_SEQUENCE_RULE).unwrap();
+    engine.reset().unwrap();
+    let keys = bound_sequence_keys(length);
+    let list = (0..i64::try_from(length).unwrap()).collect::<Vec<_>>();
+    let incoming = if list_first {
+        engine.assert_ordered("lst", list).unwrap();
+        keys.to_vec()
+    } else {
+        for key in keys {
+            engine.assert_ordered("key", key).unwrap();
+        }
+        list
+    };
+    (engine, incoming)
+}
+
+fn complete_bound_sequence_join(engine: &mut Engine, incoming: Vec<i64>, list_first: bool) {
+    if list_first {
+        for key in incoming {
+            engine.assert_ordered("key", key).unwrap();
+        }
+    } else {
+        engine.assert_ordered("lst", incoming).unwrap();
+    }
+}
+
+/// Unique ascending values yield one match for each ordered pair of distinct
+/// keys: exactly K * (K - 1) / 2 = 6, regardless of list length or arrival order.
+fn validate_bound_sequence_join(length: usize, list_first: bool) {
+    let (mut engine, incoming) = prepare_bound_sequence_join(length, list_first);
+    complete_bound_sequence_join(&mut engine, incoming, list_first);
+    support::verify_run(&mut engine, 6);
+    assert!(engine.action_diagnostics().is_empty());
+    let mut actual = engine
+        .find_facts("hit")
+        .unwrap()
+        .into_iter()
+        .map(|(_, fact)| {
+            let Fact::Ordered(fact) = fact else {
+                unreachable!()
+            };
+            assert_eq!(fact.fields.len(), 2);
+            (
+                support::integer(&fact.fields[0]),
+                support::integer(&fact.fields[1]),
+            )
+        })
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+    let keys = bound_sequence_keys(length);
+    let mut expected = Vec::new();
+    for (index, &left) in keys.iter().enumerate() {
+        for &right in &keys[index + 1..] {
+            expected.push((left, right));
+        }
+    }
+    assert_eq!(actual, expected);
+}
+
+/// Bound anchors should reject a placement before exploring later captures.
+/// Time assertion propagation as well as firing, for both join arrival sides.
+fn bench_bound_sequence_join(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bound_sequence_join");
+    group.sample_size(10);
+    for (arrival, list_first) in [("list_arrives", false), ("keys_arrive", true)] {
+        for length in [128, 512, 2_048] {
+            group.bench_with_input(BenchmarkId::new(arrival, length), &length, |b, &length| {
+                validate_bound_sequence_join(length, list_first);
+                b.iter_batched(
+                    || prepare_bound_sequence_join(length, list_first),
+                    |(mut engine, incoming)| {
+                        complete_bound_sequence_join(&mut engine, incoming, list_first);
+                        engine.run(RunLimit::Unlimited).unwrap();
+                        engine
+                    },
+                    BatchSize::SmallInput,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_join_3,
@@ -398,5 +498,6 @@ criterion_group!(
     bench_join_3_run_only,
     bench_payload_joins,
     bench_ordered_prefix_index,
+    bench_bound_sequence_join,
 );
 criterion_main!(benches);
