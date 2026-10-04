@@ -44,6 +44,9 @@ from ferric_tools.compat.oracle import (
 app = typer.Typer(help="Scan CLIPS examples for compatibility assessment.")
 console = Console(stderr=True)
 MANIFEST_VERSION = 4
+# Both versions carry the same structured oracle evidence. Version 4 adds
+# inventory/deduplication metadata; future schemas require explicit review.
+STRUCTURED_ORACLE_MANIFEST_VERSIONS = (3, 4)
 ORACLE_REGISTRY_VERSION = 1
 
 

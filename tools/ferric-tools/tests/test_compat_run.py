@@ -3026,6 +3026,20 @@ def test_clips_reference_script_preserves_unicode_quotes_and_rejects_symlink(
     assert not captured_stdin.exists()
 
 
+@pytest.mark.parametrize(
+    ("version", "protocol"),
+    [(2, 1), (5, 1), (True, 1), (3.0, 1), (4.0, 1), ("4", 1), (4, True), (4, 1.0)],
+)
+def test_runner_rejects_unknown_or_noninteger_manifest_schema(tmp_path, version, protocol):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"version": version, "oracle_protocol_version": protocol, "files": {}})
+    )
+    result = CliRunner().invoke(run_module.app, ["--manifest", str(manifest), "--dry-run"])
+    assert result.exit_code == 1
+    assert "manifest is not structured-oracle schema v3/v4" in result.output
+
+
 def test_declared_malformed_source_is_selected_despite_unknown_scanner_runability(
     tmp_path, monkeypatch
 ):

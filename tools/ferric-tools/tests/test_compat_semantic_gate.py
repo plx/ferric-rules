@@ -9,8 +9,10 @@ import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from ferric_tools._harness import sha256_bytes
+from ferric_tools.compat import scan
 from ferric_tools.compat.clips_oracle import NATIVE_RECORD_PREFIX, parse_probe_output
 from ferric_tools.compat.diagnostics import diagnostic, termination
 from ferric_tools.compat.oracle import (
@@ -504,6 +506,48 @@ def test_equivalent_matrix_entry_passes(tmp_path: Path) -> None:
 
     assert report.failures == ()
     assert report.accepted_deviations == ()
+
+
+def test_current_scanner_manifest_passes_semantic_gate(tmp_path: Path, monkeypatch) -> None:
+    examples_dir, _raw, _declaration, _evaluation, evidence = _fixture_evidence(tmp_path / "tests")
+    manifest_path = tmp_path / "manifest.json"
+    monkeypatch.setattr(scan, "repo_root", lambda: tmp_path)
+    result = CliRunner().invoke(
+        scan.app,
+        ["--examples-dir", str(examples_dir), "--output", str(manifest_path)],
+    )
+    assert result.exit_code == 0, result.output
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["version"] == 4
+    assert manifest["summary"]["physical_paths"] == 1
+    path = "ferric-semantic/fr-rete-001.clp"
+    assert manifest["files"][path]["feature_scan"]["status"] == "valid"
+    # Attach authenticated execution evidence to the real scanner's schema,
+    # retaining its version-4 inventory fields rather than relabeling v3.
+    manifest["reference"] = evidence["reference"]
+    manifest["files"][path].update(evidence["files"][path])
+    manifest["summary"] = scan.build_summary(manifest["files"])
+    report = evaluate_manifest(
+        _policy(ExpectedResult(classification="equivalent")),
+        manifest,
+        examples_dir=examples_dir,
+    )
+    assert report.failures == ()
+    assert report.accepted_deviations == ()
+
+
+@pytest.mark.parametrize("version", [None, True, 2, 3.0, 4.0, "4", 5])
+def test_manifest_rejects_unknown_or_noninteger_schema_versions(
+    tmp_path: Path, version: object
+) -> None:
+    examples_dir, _raw, _declaration, _evaluation, manifest = _fixture_evidence(tmp_path)
+    manifest["version"] = version
+    report = evaluate_manifest(
+        _policy(ExpectedResult(classification="equivalent")),
+        manifest,
+        examples_dir=examples_dir,
+    )
+    assert report.failures == ("manifest must use compatibility schema version 3 or 4",)
 
 
 def test_swapping_one_expected_result_fails(tmp_path: Path) -> None:

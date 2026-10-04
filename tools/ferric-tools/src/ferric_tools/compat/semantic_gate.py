@@ -37,6 +37,7 @@ from ferric_tools.compat.projection import (
     split_generated_harness_output,
 )
 from ferric_tools.compat.run import classify_results, oracle_outcome
+from ferric_tools.compat.scan import STRUCTURED_ORACLE_MANIFEST_VERSIONS
 
 POLICY_SCHEMA_VERSION = 1
 POLICY_SOURCE = "ferric-semantic"
@@ -797,8 +798,11 @@ def evaluate_manifest(
     if type(manifest) is not dict:
         return GateReport(("manifest root must be an object",), ())
     assert isinstance(manifest, dict)
-    if type(manifest.get("version")) is not int or manifest.get("version") != 3:
-        failures.append("manifest must use compatibility schema version 3")
+    if (
+        type(manifest.get("version")) is not int
+        or manifest.get("version") not in STRUCTURED_ORACLE_MANIFEST_VERSIONS
+    ):
+        failures.append("manifest must use compatibility schema version 3 or 4")
     if (
         type(manifest.get("oracle_protocol_version")) is not int
         or manifest.get("oracle_protocol_version") != 1

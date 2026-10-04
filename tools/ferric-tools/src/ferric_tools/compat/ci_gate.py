@@ -35,7 +35,7 @@ from ferric_tools.compat.run import (
     classify_results,
     oracle_outcome,
 )
-from ferric_tools.compat.scan import build_summary
+from ferric_tools.compat.scan import STRUCTURED_ORACLE_MANIFEST_VERSIONS, build_summary
 from ferric_tools.compat.semantic_gate import (
     GateReport,
     SemanticGateError,
@@ -53,7 +53,6 @@ POLICY_SCHEMA_VERSION = 1
 POLICY_SCHEMA = "ferric.compat-ci-policy"
 CANDIDATE_SCHEMA = "ferric.compat-candidate-provenance"
 CANDIDATE_VERSION = 1
-MANIFEST_VERSION = 3
 ORACLE_PROTOCOL_VERSION = 1
 REPORT_SCHEMA = "ferric.compat-ci-gate-report"
 REPORT_VERSION = 1
@@ -737,11 +736,11 @@ def evaluate_manifest(
         failures.append("manifest root must be an object")
         return CIGateReport(tuple(failures), tuple(accepted))
     assert isinstance(manifest, dict)
-    if type(manifest.get("version")) is not int or manifest.get("version") not in (
-        MANIFEST_VERSION,
-        4,
+    if (
+        type(manifest.get("version")) is not int
+        or manifest.get("version") not in STRUCTURED_ORACLE_MANIFEST_VERSIONS
     ):
-        failures.append(f"manifest version must equal {MANIFEST_VERSION} or 4")
+        failures.append("manifest version must equal 3 or 4")
     if (
         type(manifest.get("oracle_protocol_version")) is not int
         or manifest.get("oracle_protocol_version") != ORACLE_PROTOCOL_VERSION

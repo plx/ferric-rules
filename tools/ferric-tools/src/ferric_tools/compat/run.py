@@ -79,7 +79,11 @@ from ferric_tools.compat.projection import (
     project_ferric_observation,
     project_observation_diagnostic,
 )
-from ferric_tools.compat.scan import build_summary
+from ferric_tools.compat.scan import (
+    MANIFEST_VERSION,
+    STRUCTURED_ORACLE_MANIFEST_VERSIONS,
+    build_summary,
+)
 
 app = typer.Typer(help="Run CLIPS compatibility assessment.")
 console = Console(stderr=True)
@@ -1783,7 +1787,7 @@ def _recompute_summary(manifest_data: dict) -> dict[str, int]:
     """Recompute compatibility totals after selection or execution updates."""
     summary = build_summary(manifest_data["files"])
     manifest_data["summary"] = summary
-    manifest_data["version"] = 4
+    manifest_data["version"] = MANIFEST_VERSION
     return summary
 
 
@@ -1836,7 +1840,9 @@ def main(
 
     mdata = load_manifest(manifest_path)
     if (
-        mdata.get("version") not in (3, 4)
+        type(mdata.get("version")) is not int
+        or mdata.get("version") not in STRUCTURED_ORACLE_MANIFEST_VERSIONS
+        or type(mdata.get("oracle_protocol_version")) is not int
         or mdata.get("oracle_protocol_version") != ORACLE_PROTOCOL_VERSION
         or type(mdata.get("files")) is not dict
     ):
