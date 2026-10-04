@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 10")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 11")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 10;
+const SCHEMA_VERSION: u16 = 11;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -258,7 +258,7 @@ struct EngineSnapshotOwned {
 
 impl EngineSnapshotOwned {
     fn into_engine(self) -> Engine {
-        Engine {
+        let mut engine = Engine {
             fact_base: self.fact_base,
             host: crate::host::HostState::new(),
             reset_in_progress: false,
@@ -299,7 +299,17 @@ impl EngineSnapshotOwned {
             processing_predicates: false,
             halted: self.halted,
             input_buffer: self.input_buffer,
+        };
+        // The registry is derived; restoring existing activations must not
+        // synthesize focus notices or alter the saved focus stack.
+        for (index, info) in engine.rule_info.iter().enumerate() {
+            if let (Some(info), Ok(index)) = (info, u32::try_from(index)) {
+                engine
+                    .rete
+                    .set_rule_auto_focus(ferric_rules_core::RuleId(index), info.auto_focus);
+            }
         }
+        engine
     }
 }
 
@@ -1891,11 +1901,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-10 fixture: ordered and template splits,
+    /// Source of the committed schema-11 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-10.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-11.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -2071,8 +2081,18 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_ten_snapshot_resumes_matches_initializers_methods_addresses_and_defaults() {
+    fn committed_schema_ten_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-10.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(10))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_eleven_snapshot_resumes_matches_initializers_methods_addresses_and_defaults(
+    ) {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-11.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         assert_eq!(integer_rows(&engine, "random-first"), [[71_876_166]]);
@@ -2240,7 +2260,7 @@ mod tests {
 
     #[test]
     fn committed_snapshot_preserves_blocker_migration_order() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-10.cbor");
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-11.cbor");
         for format in SerializationFormat::ALL {
             for (relation, prefix) in [
                 ("fixture-blocker", "negative"),
@@ -2267,11 +2287,30 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-10 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_ten_fixture() {
+    fn committed_snapshot_restores_auto_focus_and_resolved_salience() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-11.cbor");
+        let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        assert!(engine.get_focus_stack().is_empty());
+        let main = engine.module_registry.main_module_id();
+        engine
+            .globals
+            .set(main, "fixture-priority", Value::Integer(-12));
+        engine.assert_ordered("fixture-focus", 42_i64).unwrap();
+        assert_eq!(engine.get_focus_stack(), ["MAIN"]);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        assert_eq!(
+            engine.get_output("t"),
+            Some("focus high 42\nfocus low 42\n")
+        );
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-11 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_eleven_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-10.cbor");
+            .join("tests/fixtures/snapshots/schema-11.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

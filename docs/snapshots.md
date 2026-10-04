@@ -25,7 +25,13 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 10. Snapshots preserve the primary blocker and attachment
+The current schema is 11. Snapshots retain each rule's auto-focus flag and its
+resolved definition-time salience. Restoration rebuilds focus subscriptions
+without evaluating the declaration again or pushing modules for pending
+activations. Schema 10 lacks this rule metadata and is rejected with
+`UnsupportedVersion(10)`.
+
+Snapshots preserve the primary blocker and attachment
 chronology of simple negative and NCC matches. Removing a blocker after restoring
 therefore migrates or unblocks matches in the same order as uninterrupted
 execution. Schema 9 lacks this history and is rejected with `UnsupportedVersion(9)`.
@@ -103,7 +109,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`10`) |
+| 8–9 | Little-endian schema version (`11`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

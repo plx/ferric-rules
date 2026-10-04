@@ -1,0 +1,6 @@
+(defglobal ?*calls* = 0)
+(deffunction priority () (bind ?*calls* (+ ?*calls* 1)) 50)
+(defrule branches (declare (salience (priority))) (or (a ?x) (b ?x)) => (printout t branch ?x crlf))
+(deftemplate captured (slot count (default ?*calls*)))
+(deffacts seed (a 1) (b 2) (captured))
+(defrule report (captured (count ?n)) => (printout t "calls:" ?n ":" ?*calls* crlf))

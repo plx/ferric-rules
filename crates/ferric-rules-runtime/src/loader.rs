@@ -1244,24 +1244,36 @@ impl Engine {
                     }
                 }
                 match construct {
-                    Construct::Rule(rule) => {
+                    Construct::Rule(mut rule) => {
                         // Determine the owning module for this rule. If the rule
                         // name is module-qualified (e.g. `MAIN::start`), the
                         // declared module takes precedence over the current module
                         // so that rules like `(defrule MAIN::foo ...)` appearing
                         // inside a `(defmodule REPORT ...)` section still belong
                         // to MAIN for focus-aware dispatch.
-                        let owning_module = if let Ok(qn) = parse_qualified_name(&rule.name) {
-                            if let Some(mod_name) = qn.module_name() {
-                                self.module_registry
-                                    .get_by_name(mod_name)
-                                    .unwrap_or_else(|| self.module_registry.current_module())
-                            } else {
-                                self.module_registry.current_module()
+                        let qualified = match parse_qualified_name(&rule.name) {
+                            Ok(name) => name,
+                            Err(error) => {
+                                errors.push(Self::compile_error_at(&rule.span, &error));
+                                continue;
                             }
+                        };
+                        let owning_module = if let Some(name) = qualified.module_name() {
+                            let Some(module) = self.module_registry.get_by_name(name) else {
+                                errors.push(Self::compile_error_at(
+                                    &rule.span,
+                                    &format!("unknown module `{name}` for rule `{}`", rule.name),
+                                ));
+                                continue;
+                            };
+                            module
                         } else {
                             self.module_registry.current_module()
                         };
+                        if let Err(error) = self.evaluate_rule_salience(&mut rule, owning_module) {
+                            errors.push(error);
+                            continue;
+                        }
                         self.declare_rule_templates(&rule, owning_module);
                         // Query restrictions must exist where the rule is written;
                         // later declarations must not make an invalid query loadable.
@@ -1961,6 +1973,61 @@ impl Engine {
         Ok(())
     }
 
+    /// Resolve salience at its source declaration, before later constructs exist.
+    fn evaluate_rule_salience(
+        &mut self,
+        rule: &mut RuleConstruct,
+        module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
+        let Some(expression) = rule.salience_expression.as_ref() else {
+            return Ok(());
+        };
+        self.declare_expression_templates(expression, module);
+        let runtime = self.prepare_salience_expression(expression, module)?;
+        let bindings = ferric_rules_core::binding::BindingSet::new();
+        let var_map = ferric_rules_core::binding::VarMap::new();
+        let mut locals = crate::evaluator::CallableLocals::default();
+        let value = {
+            let mut context = crate::evaluator::EvalContext {
+                engine: self,
+                current_module: module,
+                global_module: None,
+                bindings: &bindings,
+                var_map: &var_map,
+                callable_locals: Some(&mut locals),
+                call_depth: 0,
+                expression_depth: 0,
+                method_chain: None,
+                compact_fact_bindings: None,
+                allow_engine_effects: true,
+            };
+            crate::evaluator::eval(&mut context, &runtime)
+        };
+        for (channel, text) in self.globals.take_printout_events() {
+            self.router.write(&channel, &text);
+        }
+        let value = value.map_err(|error| {
+            Self::compile_error_at(
+                &rule.span,
+                &format!("rule `{}` salience: {error}", rule.name),
+            )
+        })?;
+        let Value::Integer(value) = value else {
+            return Err(Self::compile_error_at(
+                &rule.span,
+                "[PRNTUTIL10] Salience must evaluate to an integer.",
+            ));
+        };
+        if !(-10_000..=10_000).contains(&value) {
+            return Err(Self::compile_error_at(
+                &rule.span,
+                "[PRNTUTIL9] Salience must be in the range -10000 to 10000.",
+            ));
+        }
+        rule.salience = i32::try_from(value).expect("salience range fits i32");
+        Ok(())
+    }
+
     /// Process a `GlobalConstruct`: evaluate each initial value expression and
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
@@ -2363,7 +2430,7 @@ impl Engine {
         match call.name.as_str() {
             "refresh-agenda" => Err(Self::compile_error_at(
                 &call.span,
-                "refresh-agenda is unsupported: only static salience is supported",
+                "refresh-agenda is unsupported: only definition-time salience is supported",
             )),
             // `(assert (relation ...))`: each argument list represents a fact pattern,
             // so the relation name is data, not a callable. For template facts,
@@ -3188,7 +3255,7 @@ impl Engine {
         if callable == "refresh-agenda" {
             return Err(Self::compile_error_at(
                 span,
-                "refresh-agenda is unsupported: only static salience is supported",
+                "refresh-agenda is unsupported: only definition-time salience is supported",
             ));
         }
         if self.is_declared_expression_callable(callable, current_module) {
@@ -3373,6 +3440,7 @@ impl Engine {
             var_map,
             fact_address_vars: translated.fact_address_vars,
             salience: Salience::new(rule.salience),
+            auto_focus: rule.auto_focus,
             test_conditions: translated.test_conditions,
             runtime_actions,
             activation_layout: std::sync::OnceLock::new(),
@@ -3398,6 +3466,9 @@ impl Engine {
             })
             .unwrap_or_else(|| self.compiler.allocate_rule_id());
 
+        self.rete
+            .set_rule_auto_focus(rule_id, prepared.info.auto_focus);
+
         // Publish executable metadata before network initialization can produce
         // a predicate candidate or terminal activation for this rule.
         crate::engine::rule_index_insert(&mut self.rule_info, rule_id, prepared.info);
@@ -3409,7 +3480,7 @@ impl Engine {
             rule_id,
             prepared.plan,
         );
-        self.drain_pending_predicate_matches();
+        self.drain_network_events();
 
         compile_result
     }
@@ -4109,6 +4180,8 @@ impl Engine {
             span: rule.span,
             comment: rule.comment.clone(),
             salience: rule.salience,
+            salience_expression: rule.salience_expression.clone(),
+            auto_focus: rule.auto_focus,
             patterns,
             actions: rule.actions.clone(),
         }
@@ -4277,6 +4350,8 @@ impl Engine {
                 span: rule.span,
                 comment: rule.comment.clone(),
                 salience: rule.salience,
+                salience_expression: rule.salience_expression.clone(),
+                auto_focus: rule.auto_focus,
                 patterns,
                 actions: rule.actions.clone(),
             })

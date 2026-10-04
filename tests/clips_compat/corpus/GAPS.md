@@ -15,6 +15,14 @@ further pre-existing multi-pattern `exists` case records a different network
 topology for independent supports. Historical issue descriptions below are not a
 substitute for its exact observations.
 
+Two auto-focus cases added with [#398](https://github.com/plx/ferric-rules/issues/398)
+record related late-installation boundaries:
+[fresh NCC history](modules/398_gap_late_ncc_fresh_parent_first.clp) misses a
+transient focus push from earlier fact order, while
+[deferred NCC sharing](modules/398_gap_late_ncc_shared_deferred.clp) pushes focus
+where CLIPS reuses an already blocked predicate subnetwork. Ordinary activation
+hooks and deferred-predicate admission have separate conforming coverage.
+
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.
 

@@ -9290,6 +9290,347 @@
           "diagnostics": []
         }
       }
+    },
+    {
+      "path": "agenda/398_salience_global_expression.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "defglobal",
+        "evaluation-order"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "agenda/398_salience_once_or_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "deffunction",
+        "or",
+        "reset",
+        "default"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "agenda/398_salience_definition_module.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "defglobal",
+        "defmodule",
+        "focus"
+      ]
+    },
+    {
+      "path": "agenda/398_salience_assertion_effect.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "assert",
+        "default",
+        "find-fact",
+        "reset"
+      ]
+    },
+    {
+      "path": "agenda/398_salience_lexical_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "bind",
+        "progn",
+        "loop-for-count",
+        "break"
+      ]
+    },
+    {
+      "path": "agenda/398_salience_float_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_range_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "integer-boundaries"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_late_global_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "defglobal",
+        "source-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_late_function_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "deffunction",
+        "source-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_local_rhs_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "bind",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_return_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_duplicate_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "declarations"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "modules/398_auto_focus_issue.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "assert",
+        "reset"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "modules/398_auto_focus_false.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "focus",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_focus_duplicate_top_deeper.clp",
+      "level": "interaction",
+      "covers": [
+        "focus",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_shared_terminal.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_direct_test.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_test_direct.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_direct_predicate.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_predicate_direct.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_negative_unblock.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_negative_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "not",
+        "reset"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "modules/398_auto_focus_cancel_retains_stack.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "assert",
+        "retract",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_reset_cancel_retains_focus.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "not",
+        "reset",
+        "activation-cancellation"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_online_rule.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "build",
+        "online-rule-installation"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_before_salience.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_repeated_modules.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "assert",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_expression_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "auto-focus",
+        "declarations"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "modules/398_auto_focus_duplicate_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "auto-focus",
+        "declarations"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "modules/398_auto_focus_replaced_false.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "rule-replacement",
+        "focus"
+      ]
+    },
+    {
+      "path": "modules/398_gap_late_ncc_fresh_parent_first.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "activation-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Late-install topology boundary: a fresh blocked NCC installed after all facts exist, with its parent asserted before blocker supports, does not replay the transient historical auto-focus push retained by CLIPS 6.30 incremental reset.",
+        "observed": {
+          "phase": "complete",
+          "output": "before:(MAIN)\nbuilt:TRUE\ninstalled:(MAIN)\nreleased:(WATCH MAIN)\nlate1\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "modules/398_gap_late_ncc_shared_deferred.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "test"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Late-install topology boundary: sharing an already populated NCC whose support contains a deferred test produces a transient auto-focus push while backfilling in Ferric; CLIPS 6.30 retains MAIN because the rule is fully blocked.",
+        "observed": {
+          "phase": "complete",
+          "output": "before:(MAIN)\nbuilt:TRUE\ninstalled:(WATCH MAIN)\nreleased:(WATCH MAIN)\nlate1\n",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }

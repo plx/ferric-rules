@@ -122,14 +122,12 @@ fn rhs_query_actions_keep_their_supported_fact_iteration() {
 }
 
 #[test]
-fn refresh_and_dynamic_salience_cannot_promise_unimplemented_behavior() {
+fn refresh_and_invalid_declarations_remain_rejected() {
     for source in [
         "(defrule keep => (refresh-agenda) (assert (wrong)))",
         "(defrule keep => (assert (wrong (refresh-agenda))))",
-        "(defrule keep (declare (salience (+ 1 2))) => (assert (wrong)))",
         "(defrule keep (declare (salience 4294967296)) => (assert (wrong)))",
         "(defrule keep (declare (salience 10001)) => (assert (wrong)))",
-        "(defrule keep (declare (auto-focus TRUE)) => (assert (wrong)))",
         "(defrule keep (declare (salience 1) (salience 2)) => (assert (wrong)))",
         "(defrule keep (declare (salience 1)) (declare (salience 2)) => (assert (wrong)))",
     ] {

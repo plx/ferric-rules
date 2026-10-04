@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 923
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 955
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -277,9 +277,12 @@ node-sharing boundary.
 
 ### Salience
 
-Rules may declare one static integer salience in -10000 through 10000.
-Higher salience fires first within the
-chosen conflict resolution strategy:
+Rules may declare one integer or expression salience. Expressions evaluate once
+when the rule is defined, in its owning module, using the globals and callables
+available at that point in the source. The result must be an integer in
+-10000 through 10000. Later global changes, activations, and reset do not
+reevaluate it; OR branches share the single resolved value. Higher salience
+fires first within the chosen conflict resolution strategy:
 
 ```clp
 (defrule high-priority
@@ -291,11 +294,33 @@ chosen conflict resolution strategy:
     (go) => (printout t "low" crlf))
 ```
 
-Dynamic salience expressions, salience-evaluation modes, `refresh-agenda`, and
-`auto-focus` declarations are unsupported. Invalid/unsupported declarations
-reject the construct; they never become salience zero. `refresh-agenda` now
-reports an error instead of returning a successful no-op. These are deliberate
-pre-1.0 corrections to previously silent behavior.
+For example, `(declare (salience (+ ?*BASE* 5)))` uses the value of `BASE`
+at definition time. Local bindings in a salience expression have a fresh scope
+and do not bind RHS variables. Evaluation preserves prior expression effects
+and output if a later operation or the final result is invalid; the invalid
+rule is not installed. Failed replacements retain the previous rule.
+
+`(declare (auto-focus TRUE))` pushes the rule's owning module whenever a new
+activation is created, including during reset, assertion, retraction, or online
+rule installation. `FALSE` is the default; only these two literal symbols are
+accepted. Removing an activation does not undo its focus change. Both explicit
+`focus` and auto-focus skip a push when that module is already on top, while a
+module deeper in the stack may appear again. Deferred predicate matches retain
+network traversal order for these focus events. Snapshots preserve the focus
+stack without replaying notices for existing activations.
+
+Late installation of NCC rules has two characterized focus differences:
+fresh subnetworks do not reconstruct every transient activation from the
+historical fact assertion order, and rule-specific deferred predicates do not
+share CLIPS's existing NCC subnetwork. A fresh blocked rule can therefore miss
+a historical focus push, while a blocked rule with a deferred predicate can
+push focus during installation where CLIPS does not. The corpus records both
+observations under #398/#400. Ordinary assertion, reset, and blocker-retraction
+focus behavior is covered separately.
+
+`when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,
+and `refresh-agenda` remain unsupported. Invalid or duplicate declarations
+reject the construct; they never silently become salience zero.
 
 ### Fact-query expressions
 
@@ -1306,7 +1331,7 @@ The following features are explicitly out of scope.
 | Environment commands `load*`, `facts`, `batch*`, `exit`, `ppfact` | Not supported | Drive loading, inspection, batching, and process lifetime from the host |
 | Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
 | Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
-| `set-salience-evaluation` | Not supported | Salience is static; dynamic salience evaluation is unavailable |
+| `set-salience-evaluation` | Not supported | Only definition-time salience evaluation is supported; when-activated/every-cycle modes are unavailable |
 | Reentrant `build` during construct initialization | Explicitly rejected | Invoke it after loading; the pinned reference crashes on these initializer cases |
 | Generic and method redefinition through `build` or source loading | Partial support | Repeated `defgeneric` declarations and an occupied explicit method index are rejected. An implicit method with equivalent restrictions is added with a new index instead of replacing the prior method, unlike CLIPS. New methods with distinct restrictions are supported. |
 | Other absent non-COOL built-ins | Not supported | A name omitted from the supported surface is not implicitly provided; unknown calls report `EXPRNPSR3` |

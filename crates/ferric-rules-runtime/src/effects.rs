@@ -444,6 +444,6 @@ fn retract(engine: &mut Engine, id: FactId) {
         engine.rete.retract_fact(id, &entry.fact, &engine.fact_base);
         engine.fact_base.retract(id);
         engine.host.remove(id);
-        engine.drain_pending_predicate_matches();
+        engine.drain_network_events();
     }
 }

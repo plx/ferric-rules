@@ -1,0 +1,6 @@
+
+[EXPRNPSR3] Missing function declaration for later.
+
+ERROR:
+(defrule MAIN::r
+   (declare (salience (later

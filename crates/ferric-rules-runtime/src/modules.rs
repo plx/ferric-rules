@@ -191,7 +191,9 @@ impl ModuleRegistry {
 
     /// Push a module onto the focus stack.
     pub fn push_focus(&mut self, id: ModuleId) {
-        self.focus_stack.push(id);
+        if self.current_focus() != Some(id) {
+            self.focus_stack.push(id);
+        }
     }
 
     /// Replace the focus stack with a single module.
@@ -785,7 +787,9 @@ mod tests {
                         return false;
                     };
                     reg.push_focus(id);
-                    model.focus_stack.push(id);
+                    if model.focus_stack.last() != Some(&id) {
+                        model.focus_stack.push(id);
+                    }
                     true
                 }
                 Op::PopFocus => {

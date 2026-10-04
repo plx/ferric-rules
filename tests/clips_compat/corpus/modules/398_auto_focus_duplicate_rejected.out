@@ -1,0 +1,6 @@
+
+[PRNTUTIL5] The auto-focus declaration has already been parsed.
+
+ERROR:
+(defrule MAIN::r
+   (declare (auto-focus TRUE) (auto-focus

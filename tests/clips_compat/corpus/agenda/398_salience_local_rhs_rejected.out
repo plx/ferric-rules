@@ -1,0 +1,8 @@
+
+[PRCCODE3] Undefined variable x referenced in RHS of defrule.
+
+ERROR:
+(defrule MAIN::r
+   (declare (salience (bind ?x 5)))
+   =>
+   (printout t ?x crlf))

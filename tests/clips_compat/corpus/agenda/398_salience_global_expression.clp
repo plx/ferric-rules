@@ -1,0 +1,6 @@
+(defglobal ?*HIGH* = 50 ?*BASE* = -10)
+(defrule start (declare (salience 100)) (go) => (bind ?*HIGH* -100) (assert (go2)))
+(defrule low (declare (salience (+ ?*BASE* 5))) (go2) => (printout t low crlf))
+(defrule high (declare (salience ?*HIGH*)) (go2) => (printout t high crlf))
+(defrule mid (go2) => (printout t mid crlf))
+(deffacts f (go))

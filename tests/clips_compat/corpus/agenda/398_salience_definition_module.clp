@@ -1,0 +1,7 @@
+(defmodule A)
+(defglobal ?*s* = 7)
+(defrule A::fixed (declare (salience 5)) => (printout t fixed crlf))
+(defmodule B)
+(defglobal ?*s* = 2)
+(defrule A::dynamic (declare (salience ?*s*)) => (printout t dynamic crlf))
+(defrule MAIN::start => (focus A))

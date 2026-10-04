@@ -95,15 +95,23 @@ and allowed-value source order. Its source adds a partially consumed seeded
 stream and a mixed-type allowed-value list to the previous checkpoint. The
 current schema rejects these unchanged bytes with `UnsupportedVersion(9)`.
 
-`schema-10.cbor` is the current format. Its source, `schema-10.clp`, retains
+`schema-10.cbor` preserves the previous format. Its source, `schema-10.clp`, retains
 simple negative and NCC matches supported by two blockers each. The resume
 test removes the primary blocker, round-trips the migrated state through each
 codec, removes the final blocker, and checks exact firing order. The split,
 method, default, expression-effect, and random-state resume checks also remain.
 All older fixture bytes remain unchanged.
 
-Regenerate schema 10 only after an intentional change to its unreleased layout:
+`schema-11.cbor` is the current format. Its source adds a dormant auto-focus
+rule with salience computed from a global and a lower-priority control rule.
+After restoration, changing that global leaves the stored priority unchanged;
+asserting a new match pushes MAIN even after the previous agenda emptied its
+focus stack. The previous split, blocker migration, initializer, method,
+default, and random-state checks remain. Schema 10 bytes remain unchanged and
+are explicitly rejected.
+
+Regenerate schema 11 only after an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_ten_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_eleven_fixture -- --ignored
 ```
