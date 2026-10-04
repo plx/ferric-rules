@@ -1,10 +1,9 @@
 //! Conflict resolution strategies for the agenda.
 //!
-//! Depth and breadth provide the supported CLIPS ordering contract, with
-//! salience taking precedence over activation chronology. The retained Lex and
-//! Mea variants are experimental Ferric orderings; they do not implement CLIPS
-//! sorted-recency and specificity tie-breaking. Use depth/breadth for portable
-//! rules. Simplicity, complexity and random strategies are not implemented.
+//! Salience takes precedence for every strategy. Depth and breadth compare
+//! activation chronology. LEX compares sorted fact recencies, rule specificity,
+//! then older activations; MEA first compares the initial pattern recency.
+//! Simplicity, complexity and random strategies are not implemented.
 
 /// Conflict resolution strategies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -13,9 +12,9 @@ pub enum ConflictResolutionStrategy {
     #[default]
     Depth,
     Breadth,
-    /// Experimental Ferric ordering, not CLIPS LEX compatibility.
+    /// CLIPS LEX: sorted fact recencies, specificity, then older activations.
     Lex,
-    /// Experimental Ferric ordering, not CLIPS MEA compatibility.
+    /// CLIPS MEA: first-pattern recency, then the LEX comparison.
     Mea,
 }
 

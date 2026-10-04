@@ -11,21 +11,17 @@ Exact CLIPS compatibility claims are limited to the reviewed differential
 policy cases and the granular corpus programs, and are qualified by the known
 gaps below.
 
-## Known Differential Gaps
+## Reviewed Compatibility Evidence
 
-The blocking pinned-CLIPS lane currently retains the following known
-differences as exact, issue-linked deviations. They are not accepted as
-equivalent: the gate fails if their observed fields or semantic fingerprints
-change, and it rejects every unexplained divergence.
-
-| Area | Current difference from pinned CLIPS | Policy cases | Tracking |
-|------|--------------------------------------|--------------|----------|
-| LEX and MEA agenda order | Recency vectors and the MEA tiebreak differ for selected multi-pattern activations. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
+The blocking pinned-CLIPS lane requires equivalent observations for every
+reviewed policy case and rejects unexplained divergences. The LEX and MEA
+`FR-RETE-009` cases now match the canonical recency ordering verified in
+[#412](https://github.com/plx/ferric-rules/issues/412).
 
 The reviewed differential policy covers 57 scenarios: the existing 22 cases
 and 35 distinct rehabilitation scenarios, plus a generated-harness control.
-55 cases are equivalent; the two LEX/MEA cases retain exact known divergences. It does not turn undeclared corpus
-fixtures into compatibility claims; those remain pending or incompatible
+All 57 cases are equivalent. This does not turn undeclared corpus fixtures
+into compatibility claims; those remain pending or incompatible
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
 evidence boundary.
@@ -33,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 995
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1029
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -249,21 +245,28 @@ including all commonly used conditional elements and RHS actions.
 
 ### Conflict Resolution Strategies
 
-Depth and breadth are the supported CLIPS ordering strategies. The host API
-also retains two experimental Ferric orderings for existing consumers:
+The host API supports CLIPS depth, breadth, LEX, and MEA ordering. Salience
+takes precedence in every strategy:
 
 | Strategy | Description |
 |----------|-------------|
 | **Depth** | Most recent activation fires first (default) |
 | **Breadth** | Oldest activation fires first |
-| **LEX** (experimental) | Ferric's pattern-order recency comparison; not CLIPS LEX |
-| **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
+| **LEX** | Sorted fact recencies, then specificity, then older activations |
+| **MEA** | First-pattern recency, then the LEX comparison |
 
-CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
-Their tie order can also differ between the partitions of one ordered fact
-that a multifield pattern matches in several ways.
-Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
-are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
+LEX sorts each activation's fact recencies from newest to oldest. Negated and
+existential conditions contribute absence entries, which are older than every
+real fact. If one recency vector is a prefix of another, the longer vector
+wins. Equal vectors compare rule specificity, then prefer the older activation.
+Specificity counts source patterns and comparisons separately for each expanded
+OR branch; nested function arguments do not add predicate specificity. MEA
+first compares the first outer pattern's recency, including a leading absence,
+then uses the same LEX comparison. These rules also order multiple partitions
+of one multifield fact.
+
+`Simplicity`, `Complexity`, and `Random` are not implemented.
+CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared
 strategy through the host API. Bindings reject unknown enum/name values.
 
@@ -1046,7 +1049,7 @@ its fields have been expanded.
 
 `min` and `max` return the selected operand with its own type, the first on a
 tie: `(max 1 1.0)` is `1`. For a FLOAT, `round` computes `ceil(x - 0.5)` as
-CLIPS does, so `(round -0.49999999999999995)` is `-1`.
+CLIPS does, so `(round -0.49999999999999994)` is `-1`.
 
 Domain errors in `sqrt`, `asin`, `acos`, `acosh`, `atanh`, `log`, `log10`,
 and `**` stop the current run with an `EMATHFUN1` diagnostic. Zero logarithm

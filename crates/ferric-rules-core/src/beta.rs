@@ -431,6 +431,7 @@ pub enum BetaNode {
         parent: NodeId,
         rule: RuleId,
         salience: Salience,
+        complexity: u16,
     },
     /// Negative node: blocks parent tokens when a matching fact exists.
     Negative {
@@ -811,12 +812,22 @@ impl BetaNetwork {
     /// Create a terminal node as a child of the given parent.
     ///
     /// Returns the new terminal node's ID.
-    #[allow(clippy::cast_possible_truncation)] // Node count will never reach u32::MAX in practice.
     pub fn create_terminal_node(
         &mut self,
         parent: NodeId,
         rule: RuleId,
         salience: Salience,
+    ) -> NodeId {
+        self.create_terminal_node_with_complexity(parent, rule, salience, 0)
+    }
+
+    /// Create a terminal with CLIPS unsigned 11-bit rule specificity.
+    pub fn create_terminal_node_with_complexity(
+        &mut self,
+        parent: NodeId,
+        rule: RuleId,
+        salience: Salience,
+        complexity: u16,
     ) -> NodeId {
         let node_id = self.allocate_node_id();
 
@@ -824,6 +835,7 @@ impl BetaNetwork {
             parent,
             rule,
             salience,
+            complexity: complexity & 0x07ff,
         };
 
         self.nodes.insert(node_id, node);
@@ -1755,11 +1767,13 @@ mod tests {
             parent,
             rule: node_rule,
             salience,
+            complexity,
         } = terminal_node
         {
             assert_eq!(*parent, join_id);
             assert_eq!(*node_rule, rule);
             assert_eq!(*salience, Salience::DEFAULT);
+            assert_eq!(*complexity, 0);
         } else {
             panic!("Expected Terminal node");
         }

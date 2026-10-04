@@ -52,7 +52,9 @@ pub mod validation;
 pub mod value;
 
 // Re-export primary types at crate root for convenience.
-pub use agenda::{Activation, ActivationId, ActivationSeq, Agenda, AgendaKey, StrategyOrd};
+pub use agenda::{
+    Activation, ActivationId, ActivationSeq, Agenda, AgendaKey, RecencyTag, StrategyOrd,
+};
 pub use alpha::{
     AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNetwork, AlphaNode, ConstantTest,
     ConstantTestType, SlotIndex,

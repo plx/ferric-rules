@@ -267,6 +267,8 @@ pub(crate) struct CompiledRuleInfo {
     /// Rule salience (stored for informational purposes).
     #[allow(dead_code)] // May be used in future for debugging/logging
     pub salience: Salience,
+    /// CLIPS rule specificity, retained in its unsigned eleven-bit range.
+    pub complexity: u16,
     /// Push the owning module whenever a new activation is created.
     pub auto_focus: bool,
     /// Pre-translated match conditions referenced by predicate-node indexes.
@@ -1249,6 +1251,7 @@ fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
         var_map: rule_info.var_map.clone(),
         fact_address_vars: rule_info.fact_address_vars.clone(),
         salience: rule_info.salience,
+        complexity: rule_info.complexity,
         auto_focus: rule_info.auto_focus,
         test_conditions: Vec::new(),
         runtime_actions: Vec::new(),
@@ -2571,6 +2574,7 @@ mod tests {
             var_map: VarMap::new(),
             fact_address_vars: HashMap::new(),
             salience: Salience::new(0),
+            complexity: 0,
             auto_focus: false,
             test_conditions: Vec::new(),
             runtime_actions: Vec::new(),
@@ -2762,6 +2766,7 @@ mod action_query_validation_tests {
             var_map: VarMap::new(),
             fact_address_vars: HashMap::new(),
             salience: Salience::new(0),
+            complexity: 0,
             auto_focus: false,
             test_conditions: Vec::new(),
             runtime_actions: Vec::new(),

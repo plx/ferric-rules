@@ -195,7 +195,20 @@ def test_rejects_input_replay_without_starting_reference(tmp_path):
         run_reference(tmp_path, {"path": "io/read.clp", "resets": 2}, "unused", 1)
 
 
-def test_reference_container_is_isolated_and_can_read_generated_batch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("strategy", ["depth", "random", "LEX", "lex) (exit", 2, True])
+def test_rejects_unknown_strategy_without_starting_reference(tmp_path, monkeypatch, strategy):
+    def unexpected_run(*args, **kwargs):
+        pytest.fail("invalid strategy must not start a reference process")
+
+    monkeypatch.setattr(corpus.subprocess, "run", unexpected_run)
+    with pytest.raises(ReferenceFailure, match="unknown strategy"):
+        run_reference(tmp_path, {"path": "facts/basic.clp", "strategy": strategy}, "unused", 1)
+
+
+@pytest.mark.parametrize("strategy", [None, "breadth", "lex", "mea"])
+def test_reference_container_is_isolated_and_selects_strategy_before_load(
+    tmp_path, monkeypatch, strategy
+):
     token = "a" * 32
     monkeypatch.setattr(corpus.uuid, "uuid4", lambda: SimpleNamespace(hex=token))
     commands = []
@@ -203,7 +216,14 @@ def test_reference_container_is_isolated_and_can_read_generated_batch(tmp_path, 
 
     def run(command, **kwargs):
         commands.append(command)
-        batch_modes.append((tmp_path / Path(command[-1])).stat().st_mode & 0o777)
+        batch = tmp_path / Path(command[-1])
+        batch_modes.append(batch.stat().st_mode & 0o777)
+        source = batch.read_text()
+        if strategy is None:
+            assert source.startswith('(if (load "')
+            assert "set-strategy" not in source
+        else:
+            assert source.startswith(f'(set-strategy {strategy})\n(if (load "')
         begin = f"CORPUS_BEGIN_{token}"
         end = f"CORPUS_END_{token}"
         framed = framed_run("", index=0).replace("BEGIN", begin).replace("END", end)
@@ -212,7 +232,8 @@ def test_reference_container_is_isolated_and_can_read_generated_batch(tmp_path, 
 
     monkeypatch.setattr(corpus.subprocess, "run", run)
 
-    assert run_reference(tmp_path, {"path": "facts/basic.clp"}, "clips-image", 1) == ""
+    case = {"path": "facts/basic.clp", "strategy": strategy}
+    assert run_reference(tmp_path, case, "clips-image", 1) == ""
     command = commands[0]
     assert command[:4] == ["docker", "run", "--rm", "-i"]
     assert command[command.index("--network") : command.index("--network") + 2] == [

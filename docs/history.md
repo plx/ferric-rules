@@ -66,7 +66,7 @@ planned. Decisions:
   registries and releases, new platform certification, production SLO/soak
   programs, a task scheduler, and speculative Rete redesigns. Unsupported
   constructs (for example `logical` CEs) fail explicitly; LEX/MEA ordering
-  remains experimental.
+  remained experimental at that point.
 - **Threading.** Rust `Engine` became structurally `Send + Sync` (#304), with
   immutable shared values behind `Arc` and exclusive mutation. The C handle
   keeps a serialized-call contract; bindings build on that.

@@ -123,46 +123,20 @@
     },
     {
       "id": "FR-RETE-009",
-      "issue": "https://github.com/plx/ferric-rules/issues/155",
+      "issue": "https://github.com/plx/ferric-rules/issues/412",
       "fixture": "ferric-semantic/fr-rete-009.clp",
       "family": "LEX recency-vector ordering",
       "expected": {
-        "classification": "divergent",
-        "reason": "oracle-effects-mismatch",
-        "mismatches": [
-          { "scope": "engines", "field": "channels.stdout" },
-          { "scope": "engines", "field": "effects" },
-          { "scope": "engines", "field": "facts" },
-          { "scope": "ferric", "field": "channels.stdout" },
-          { "scope": "ferric", "field": "effects" },
-          { "scope": "ferric", "field": "facts" }
-        ],
-        "ferric_fingerprint": "73756ebb852452e8486201145677cbc04cefe1ae0b2d8e68fd000e8aebcd1bbd",
-        "rationale": "Ferric compares matched fact recency in pattern order, producing LY before LX and MY before MX; pinned CLIPS uses canonical descending LEX recency vectors and produces LX before LY and MX before MY.",
-        "since": "0.1.0",
-        "tracking_issue": "https://github.com/plx/ferric-rules/issues/155"
+        "classification": "equivalent"
       }
     },
     {
       "id": "FR-RETE-009-MEA",
-      "issue": "https://github.com/plx/ferric-rules/issues/155",
+      "issue": "https://github.com/plx/ferric-rules/issues/412",
       "fixture": "ferric-semantic/fr-rete-009-mea.clp",
       "family": "MEA recency-vector ordering",
       "expected": {
-        "classification": "divergent",
-        "reason": "oracle-effects-mismatch",
-        "mismatches": [
-          { "scope": "engines", "field": "channels.stdout" },
-          { "scope": "engines", "field": "effects" },
-          { "scope": "engines", "field": "facts" },
-          { "scope": "ferric", "field": "channels.stdout" },
-          { "scope": "ferric", "field": "effects" },
-          { "scope": "ferric", "field": "facts" }
-        ],
-        "ferric_fingerprint": "73756ebb852452e8486201145677cbc04cefe1ae0b2d8e68fd000e8aebcd1bbd",
-        "rationale": "Ferric's pattern-order fallback schedules MY before MX when the MEA first-pattern key is tied; pinned CLIPS applies canonical LEX fallback and fires MX before MY.",
-        "since": "0.1.0",
-        "tracking_issue": "https://github.com/plx/ferric-rules/issues/155"
+        "classification": "equivalent"
       }
     },
     {

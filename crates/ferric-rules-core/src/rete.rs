@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use crate::tracing_support::ferric_span;
 
-use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
+use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda, RecencyTag};
 use crate::alpha::{get_slot_value, AlphaMemory, AlphaMemoryId, AlphaNetwork, SlotIndex};
 use crate::beta::{
     BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId,
@@ -2106,6 +2106,44 @@ impl ReteNetwork {
         self.beta.memory_id_for_node(node_id)
     }
 
+    /// Preserve the outer CE basis without changing positive-only fact binding indices.
+    pub(crate) fn activation_recency(
+        &self,
+        mut token_id: TokenId,
+        facts: &FactBase,
+    ) -> Option<SmallVec<[RecencyTag; 4]>> {
+        let mut recency = SmallVec::new();
+        loop {
+            let token = self.token_store.get(token_id)?;
+            match self.beta.get_node(token.owner_node)? {
+                BetaNode::Join { .. } => {
+                    let timestamp = facts.get(token.fact?)?.timestamp;
+                    recency.push(RecencyTag::from_timestamp(timestamp)?);
+                }
+                BetaNode::Negative { .. } | BetaNode::Ncc { .. } | BetaNode::Exists { .. } => {
+                    recency.push(RecencyTag::ABSENT);
+                }
+                BetaNode::Predicate { parent, .. } => {
+                    // A leading test uses CLIPS' dummy initial basis. Later tests
+                    // filter an existing basis without adding another position.
+                    if *parent == self.beta.root_id() {
+                        recency.push(RecencyTag::ABSENT);
+                    }
+                }
+                BetaNode::Root { .. } => {
+                    if recency.is_empty() {
+                        recency.push(RecencyTag::ABSENT);
+                    }
+                }
+                BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => return None,
+            }
+            let Some(parent) = token.parent else { break };
+            token_id = parent;
+        }
+        recency.reverse();
+        Some(recency)
+    }
+
     /// Propagate a token to child nodes.
     ///
     /// For terminal nodes, creates activations.
@@ -2126,7 +2164,12 @@ impl ReteNetwork {
             };
 
             match child_node {
-                BetaNode::Terminal { rule, salience, .. } => {
+                BetaNode::Terminal {
+                    rule,
+                    salience,
+                    complexity,
+                    ..
+                } => {
                     if self.disabled_rules.contains(rule) {
                         continue;
                     }
@@ -2135,22 +2178,21 @@ impl ReteNetwork {
                         continue;
                     }
 
-                    // Build recency vector: timestamps of facts in pattern order
-                    let all_facts = self.token_store.collect_all_facts(token_id);
-                    let recency: SmallVec<[Timestamp; 4]> = all_facts
+                    let recency = self
+                        .activation_recency(token_id, fact_base)
+                        .expect("live terminal token has a valid outer CE basis");
+                    let timestamp = recency
                         .iter()
-                        .filter_map(|&fid| fact_base.get(fid))
-                        .map(|entry| entry.timestamp)
-                        .collect();
-
-                    // Get timestamp from the most recent fact in the token
-                    let timestamp = recency.iter().max().copied().unwrap_or(Timestamp::new(0));
+                        .filter_map(|tag| tag.timestamp())
+                        .max()
+                        .unwrap_or(Timestamp::ZERO);
 
                     let activation = Activation {
                         id: ActivationId::default(), // Will be set by agenda.add()
                         rule: *rule,
                         token: token_id,
                         salience: *salience,
+                        complexity: *complexity,
                         timestamp,
                         activation_seq: ActivationSeq::ZERO, // Will be set by agenda.add()
                         recency,
@@ -6817,5 +6859,152 @@ mod auto_focus_tests {
             .resolve_predicate_match(next, true, &fixture.facts);
         assert!(fixture.drain_passing().is_empty());
         assert_eq!(fixture.rete.agenda.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod activation_basis_tests {
+    use super::*;
+    use crate::compiler::{CompilableCondition, CompilablePattern, ReteCompiler};
+    use crate::{AlphaEntryType, RuleId, Salience, StringEncoding, Symbol, SymbolTable};
+
+    fn pattern(relation: Symbol, negated: bool, exists: bool) -> CompilableCondition {
+        CompilableCondition::Pattern(CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            sequence: None,
+            variable_slots: vec![],
+            negated_variable_slots: vec![],
+            negated,
+            exists,
+        })
+    }
+
+    fn drain_predicates(rete: &mut ReteNetwork, facts: &FactBase) {
+        while let Some(event) = rete.pop_pending_event() {
+            match event {
+                PendingReteEvent::Predicate(pending) => {
+                    let passed = pending.condition_index != 99;
+                    rete.resolve_predicate_match(pending, passed, facts);
+                }
+                PendingReteEvent::NccLeft(pending) => {
+                    rete.resolve_ncc_left_activation(pending, facts);
+                }
+                PendingReteEvent::AutoFocus(_) => panic!("no auto-focus rules"),
+            }
+        }
+    }
+
+    #[test]
+    fn outer_ce_recency_preserves_absence_and_omits_predicate_and_ncc_internal_facts() {
+        let mut symbols = SymbolTable::new();
+        let item = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let missing = symbols
+            .intern_symbol("missing", StringEncoding::Ascii)
+            .unwrap();
+        let positive = pattern(item, false, false);
+        let negative = pattern(missing, true, false);
+        let exists = pattern(item, false, true);
+        let predicate = CompilableCondition::Predicate { condition_index: 0 };
+        let absent = RecencyTag::ABSENT;
+        let first_fact = RecencyTag::from_timestamp(Timestamp::ZERO).unwrap();
+        let cases = [
+            (vec![], vec![absent]),
+            (vec![positive.clone()], vec![first_fact]),
+            (vec![predicate.clone()], vec![absent]),
+            (
+                vec![predicate.clone(), predicate.clone(), positive.clone()],
+                vec![absent, first_fact],
+            ),
+            (vec![positive.clone(), predicate.clone()], vec![first_fact]),
+            (vec![negative.clone()], vec![absent]),
+            (vec![exists.clone()], vec![absent]),
+            (
+                vec![positive.clone(), negative, exists, predicate],
+                vec![first_fact, absent, absent],
+            ),
+            (
+                vec![CompilableCondition::Ncc(vec![
+                    pattern(missing, false, false),
+                    positive.clone(),
+                ])],
+                vec![absent],
+            ),
+            // forall(P, test) is a negated counterexample subnetwork, not a rule-level test.
+            (
+                vec![CompilableCondition::Ncc(vec![
+                    positive.clone(),
+                    CompilableCondition::Predicate {
+                        condition_index: 99,
+                    },
+                ])],
+                vec![absent],
+            ),
+            // Multi-pattern exists is represented by nested NCCs. Only its outer CE counts.
+            (
+                vec![CompilableCondition::Ncc(vec![CompilableCondition::Ncc(
+                    vec![positive],
+                )])],
+                vec![absent],
+            ),
+        ];
+        for (conditions, expected) in cases {
+            let mut facts = FactBase::new();
+            let first = facts.assert_ordered(item, SmallVec::new());
+            assert_eq!(facts.get(first).unwrap().timestamp, Timestamp::ZERO);
+            let mut rete = ReteNetwork::new();
+            let mut compiler = ReteCompiler::new();
+            let plan = compiler
+                .plan_conditions(Salience::DEFAULT, conditions.clone())
+                .unwrap()
+                .with_complexity(2050);
+            compiler.install_condition_plan(&mut rete, &facts, RuleId(1), plan);
+            drain_predicates(&mut rete, &facts);
+            rete.validate_snapshot(&facts, &symbols).unwrap();
+            assert_eq!(rete.agenda.len(), 1, "{conditions:?}");
+            let activation = rete.agenda.pop().unwrap();
+            assert_eq!(activation.recency.as_slice(), expected, "{conditions:?}");
+            assert_eq!(activation.complexity, 2);
+            // The existing fact-address binding contract still contains only actual facts.
+            let actual_facts = rete.token_store.collect_all_facts(activation.token);
+            assert_eq!(
+                actual_facts.len(),
+                expected
+                    .iter()
+                    .filter(|tag| tag.timestamp().is_some())
+                    .count()
+            );
+        }
+    }
+
+    #[test]
+    fn lex_reassertion_ties_follow_fresh_terminal_activation_chronology() {
+        let mut symbols = SymbolTable::new();
+        let item = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let mut facts = FactBase::new();
+        let old = facts.assert_ordered(item, SmallVec::new());
+        let mut rete = ReteNetwork::with_strategy(crate::ConflictResolutionStrategy::Lex);
+        let mut compiler = ReteCompiler::new();
+        for rule in [1, 2] {
+            let plan = compiler
+                .plan_conditions(Salience::DEFAULT, vec![pattern(item, false, false)])
+                .unwrap()
+                .with_complexity(1);
+            compiler.install_condition_plan(&mut rete, &facts, RuleId(rule), plan);
+        }
+        assert_eq!(rete.agenda.pop().unwrap().rule, RuleId(1));
+        let removed = facts.retract(old).unwrap();
+        rete.retract_fact(old, &removed.fact, &facts);
+        assert!(rete.agenda.is_empty());
+        let new = facts.assert_ordered(item, SmallVec::new());
+        rete.assert_fact(new, &facts.get(new).unwrap().fact, &facts);
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+        // New successors receive the fact first; oldest equal activations now favor rule2.
+        assert_eq!(rete.agenda.pop().unwrap().rule, RuleId(2));
+        assert_eq!(rete.agenda.pop().unwrap().rule, RuleId(1));
     }
 }

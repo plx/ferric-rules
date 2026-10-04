@@ -23,11 +23,12 @@ def test_policy_known_divergences_are_disclosed_in_public_compatibility_docs():
         if case["expected"]["classification"] == "divergent"
     }
 
-    assert divergences
     for path in PUBLIC_COMPATIBILITY_DOCS:
         content = path.read_text(encoding="utf-8")
         _, separator, tail = content.partition("## Known Differential Gaps")
-        assert separator
+        # An entirely equivalent policy needs no gap section. If the section
+        # remains, its table must still contain exactly the active divergences.
+        assert separator or not divergences
         section, _, _ = tail.partition("\n## ")
         table_rows = tuple(line for line in section.splitlines() if line.startswith("|"))
         documented_cases = {

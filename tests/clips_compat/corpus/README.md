@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 995 small programs progress from individual features to
+CLIPS subset. Its 1029 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 975 clean conformance cases, 187 of which
+CLIPS-verified output oracle. There are 1009 clean conformance cases, 187 of which
 reproduce a CLIPS error, and 20 active characterizations of documented
 differences: CLIPS output that is not UTF-8, malformed `format` directives,
 and equal-salience ties involving identical negative/NCC joins or multi-pattern
@@ -65,12 +65,13 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
 - `manifest.json` registers every program exactly once, with `basic`, `boundary`,
   or `interaction` level and coverage tags. `resets: 2` repeats reset/run in the
   same engine; the golden concatenates both runs. This tests restoration of
-  globals, deffacts, refraction, and derived working memory. `strategy:
-  "breadth"` runs the program under the breadth strategy (CLIPS
-  `(set-strategy breadth)`, Ferric `EngineConfig::with_strategy`).
+  globals, deffacts, refraction, and derived working memory. Optional `strategy`
+  selects `"breadth"`, `"lex"`, or `"mea"`; omission selects depth. The reference
+  supplies CLIPS `(set-strategy ...)` before loading, while Ferric uses
+  `EngineConfig::with_strategy`. Source strategy commands remain unsupported.
 - Prefer a single observable distinction per program. Use salience or phase
   facts where side-effect ordering matters, except when the case explicitly
-  tests depth/breadth activation ties. Keep each problematic function or
+  tests conflict-resolution ordering. Keep each problematic function or
   invalid index in its own program so an earlier error cannot conceal it.
 - Mutation cases observe subsequent rule matches or query results. These are
   behavioral programs, not parser-only acceptance tests. General snapshots of

@@ -651,6 +651,9 @@ impl ReteNetwork {
                 );
             }
             match node {
+                BetaNode::Terminal { complexity, .. } => {
+                    require!(*complexity <= 0x07ff, "invalid terminal complexity");
+                }
                 BetaNode::Join {
                     sequence: Some(sequence),
                     alpha_memory,
@@ -946,7 +949,8 @@ impl ReteNetwork {
                     parent,
                     rule,
                     salience,
-                } => Some((*parent, *rule, *salience)),
+                    complexity,
+                } => Some((*parent, *rule, *salience, *complexity)),
                 _ => None,
             })
             .collect();
@@ -960,24 +964,16 @@ impl ReteNetwork {
                 "duplicate rule/token activation"
             );
             work.spend(MAX_BETA_PATH_NODES)?;
-            let expected: smallvec::SmallVec<[crate::fact::Timestamp; 4]> = self
-                .token_store
-                .collect_all_facts(activation.token)
-                .iter()
-                .map(|id| {
-                    facts
-                        .get(*id)
-                        .map(|entry| entry.timestamp)
-                        .ok_or("dangling activation fact")
-                })
-                .collect::<Result<_, _>>()?;
+            let expected = self
+                .activation_recency(activation.token, facts)
+                .ok_or("invalid activation CE basis")?;
             require!(
                 activation.recency == expected
                     && activation.timestamp
                         == expected
                             .iter()
+                            .filter_map(|tag| tag.timestamp())
                             .max()
-                            .copied()
                             .unwrap_or(crate::fact::Timestamp::ZERO),
                 "invalid activation fact recency"
             );
@@ -986,7 +982,12 @@ impl ReteNetwork {
                 "disabled rule has activation"
             );
             require!(
-                terminals.contains(&(token.owner_node, activation.rule, activation.salience)),
+                terminals.contains(&(
+                    token.owner_node,
+                    activation.rule,
+                    activation.salience,
+                    activation.complexity
+                )),
                 "activation does not match a terminal"
             );
         }
@@ -1803,20 +1804,27 @@ impl ReteNetwork {
     #[doc(hidden)]
     pub fn validate_snapshot_rules(
         &self,
-        metadata: impl Fn(RuleId) -> Option<(crate::beta::Salience, usize)>,
+        metadata: impl Fn(RuleId) -> Option<(crate::beta::Salience, u16, usize)>,
     ) -> Result<(), String> {
         for node in self.beta.nodes.values() {
             match node {
-                BetaNode::Terminal { rule, salience, .. } => {
-                    let (expected, _) = metadata(*rule).ok_or("terminal lacks runtime metadata")?;
+                BetaNode::Terminal {
+                    rule,
+                    salience,
+                    complexity,
+                    ..
+                } => {
+                    let (expected, expected_complexity, _) =
+                        metadata(*rule).ok_or("terminal lacks runtime metadata")?;
                     require_eq!(*salience, expected);
+                    require_eq!(*complexity, expected_complexity);
                 }
                 BetaNode::Predicate {
                     rule,
                     condition_index,
                     ..
                 } => {
-                    let (_, conditions) =
+                    let (_, _, conditions) =
                         metadata(*rule).ok_or("predicate lacks runtime metadata")?;
                     require!(
                         (*condition_index as usize) < conditions,
@@ -1928,6 +1936,63 @@ impl crate::compiler::ReteCompiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_checks_ce_recency_and_terminal_complexity_even_without_facts() {
+        let symbols = SymbolTable::new();
+        let facts = FactBase::new();
+        let mut rete = ReteNetwork::new();
+        let mut compiler = crate::ReteCompiler::new();
+        let plan = compiler
+            .plan_conditions(crate::Salience::DEFAULT, vec![])
+            .unwrap()
+            .with_complexity(17);
+        let installed = compiler.install_condition_plan(&mut rete, &facts, RuleId(1), plan);
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+        rete.validate_snapshot_rules(|_| Some((crate::Salience::DEFAULT, 17, 0)))
+            .unwrap();
+        assert!(rete
+            .validate_snapshot_rules(|_| Some((crate::Salience::DEFAULT, 18, 0)))
+            .is_err());
+
+        let original = rete.agenda.pop().unwrap();
+        let mut forged = original.clone();
+        forged.recency.clear();
+        rete.agenda.add(forged);
+        assert!(rete
+            .validate_snapshot(&facts, &symbols)
+            .unwrap_err()
+            .contains("activation fact recency"));
+        rete.agenda.pop();
+        let mut forged = original.clone();
+        forged.recency[0] = crate::RecencyTag::from_timestamp(crate::Timestamp::ZERO).unwrap();
+        rete.agenda.add(forged);
+        assert!(rete
+            .validate_snapshot(&facts, &symbols)
+            .unwrap_err()
+            .contains("activation fact recency"));
+        rete.agenda.pop();
+        let mut forged = original.clone();
+        forged.complexity = 18;
+        rete.agenda.add(forged);
+        assert!(rete
+            .validate_snapshot(&facts, &symbols)
+            .unwrap_err()
+            .contains("does not match a terminal"));
+        rete.agenda.pop();
+        rete.agenda.add(original);
+        if let Some(BetaNode::Terminal { complexity, .. }) =
+            rete.beta.nodes.get_mut(&installed.terminal_node)
+        {
+            *complexity = 2048;
+        } else {
+            panic!("terminal missing");
+        }
+        assert!(rete
+            .validate_snapshot(&facts, &symbols)
+            .unwrap_err()
+            .contains("invalid terminal complexity"));
+    }
 
     #[test]
     fn snapshot_rejects_reordered_negative_supports_after_fact_slot_reuse() {

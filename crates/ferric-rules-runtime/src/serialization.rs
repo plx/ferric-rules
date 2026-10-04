@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 11;
+const SCHEMA_VERSION: u16 = 12;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -1901,11 +1901,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-11 fixture: ordered and template splits,
+    /// Source of the committed schema-12 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-11.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-12.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -2090,9 +2090,18 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_eleven_snapshot_resumes_matches_initializers_methods_addresses_and_defaults(
-    ) {
+    fn committed_schema_eleven_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-11.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(11))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_twelve_snapshot_resumes_matches_initializers_methods_addresses_and_defaults(
+    ) {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         assert_eq!(integer_rows(&engine, "random-first"), [[71_876_166]]);
@@ -2260,7 +2269,7 @@ mod tests {
 
     #[test]
     fn committed_snapshot_preserves_blocker_migration_order() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-11.cbor");
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
         for format in SerializationFormat::ALL {
             for (relation, prefix) in [
                 ("fixture-blocker", "negative"),
@@ -2288,7 +2297,7 @@ mod tests {
 
     #[test]
     fn committed_snapshot_restores_auto_focus_and_resolved_salience() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-11.cbor");
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
         let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         engine.run(RunLimit::Unlimited).unwrap();
         assert!(engine.get_focus_stack().is_empty());
@@ -2306,11 +2315,68 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-11 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_eleven_fixture() {
+    fn committed_snapshot_retains_specificity_and_absent_recency_positions() {
+        use ferric_rules_core::{Agenda, ConflictResolutionStrategy};
+
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
+        for (strategy, expected) in [
+            (
+                ConflictResolutionStrategy::Lex,
+                "absent-first\nspecific\ngeneral\n",
+            ),
+            (
+                ConflictResolutionStrategy::Mea,
+                "specific\ngeneral\nabsent-first\n",
+            ),
+        ] {
+            let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+            assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 8);
+            // The committed checkpoint uses Depth. Reconfigure only the empty
+            // agenda, retaining the restored rules and their stored specificity.
+            engine.config.strategy = strategy;
+            engine.rete.agenda = Agenda::with_strategy(strategy);
+            engine.assert_ordered("fixture-order", 42_i64).unwrap();
+            for &format in SerializationFormat::ALL {
+                let pending = engine.serialize(format).unwrap();
+                let mut restored = Engine::deserialize(&pending, format).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+                assert_eq!(restored.get_output("t"), Some(expected));
+                assert!(restored.action_diagnostics().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn snapshots_reject_inconsistent_and_out_of_range_rule_complexity() {
+        let engine = Engine::with_rules(
+            "(deffacts seed (item 7))
+             (defrule choose (or (item ?) (item ?x&:(> ?x 0))) =>)",
+        )
+        .unwrap();
+        for complexity in [0, 2_048, u16::MAX] {
+            let result = alter_state(&engine, |state| {
+                let info = state["rule_info"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|info| info.is_object())
+                    .unwrap();
+                info["complexity"] = serde_json::json!(complexity);
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(message))
+                    if message.contains("complexity")),
+                "accepted invalid complexity {complexity}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-12 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_twelve_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-11.cbor");
+            .join("tests/fixtures/snapshots/schema-12.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

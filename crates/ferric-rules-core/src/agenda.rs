@@ -48,6 +48,36 @@ impl ActivationSeq {
     }
 }
 
+/// An outer conditional element's recency: absent matches sort below every fact.
+///
+/// Zero represents a negative/existential match or dummy root. Facts use their
+/// assertion timestamp plus one, keeping a fact asserted at timestamp zero distinct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RecencyTag(u64);
+
+impl RecencyTag {
+    pub const ABSENT: Self = Self(0);
+
+    /// Encode a fact timestamp. The fact store never assigns `u64::MAX`.
+    #[must_use]
+    pub const fn from_timestamp(timestamp: Timestamp) -> Option<Self> {
+        match timestamp.get().checked_add(1) {
+            Some(tag) => Some(Self(tag)),
+            None => None,
+        }
+    }
+
+    /// Recover the fact timestamp, or `None` for an absent match.
+    #[must_use]
+    pub const fn timestamp(self) -> Option<Timestamp> {
+        match self.0.checked_sub(1) {
+            Some(timestamp) => Some(Timestamp::new(timestamp)),
+            None => None,
+        }
+    }
+}
+
 fn remove_from_token_index(
     token_index: &mut HashMap<TokenId, SmallVec<[ActivationId; 2]>>,
     token_id: TokenId,
@@ -72,10 +102,12 @@ pub struct Activation {
     pub rule: RuleId,
     pub token: TokenId,
     pub salience: Salience,
+    /// CLIPS unsigned 11-bit rule specificity.
+    pub complexity: u16,
     pub timestamp: Timestamp,
     pub activation_seq: ActivationSeq,
-    /// Recency vector: timestamps of facts in pattern order (for LEX/MEA strategies).
-    pub recency: SmallVec<[Timestamp; 4]>,
+    /// Recency of outer conditional elements in source order, including absent matches.
+    pub recency: SmallVec<[RecencyTag; 4]>,
 }
 
 /// Strategy-specific ordering component for agenda keys.
@@ -87,17 +119,17 @@ pub struct Activation {
 pub enum StrategyOrd {
     Depth(std::cmp::Reverse<ActivationSeq>), // Newest activation first
     Breadth(ActivationSeq),                  // Oldest activation first
-    Lex(std::cmp::Reverse<SmallVec<[Timestamp; 4]>>), // Lexicographic recency (most recent first)
+    Lex(std::cmp::Reverse<SmallVec<[RecencyTag; 4]>>), // Lexicographic recency (most recent first)
     Mea {
-        first_recency: std::cmp::Reverse<Timestamp>,
-        rest_recency: std::cmp::Reverse<SmallVec<[Timestamp; 4]>>,
+        first_recency: std::cmp::Reverse<RecencyTag>,
+        sorted_recency: std::cmp::Reverse<SmallVec<[RecencyTag; 4]>>,
     },
 }
 
 /// The ordering key for agenda activations.
 ///
 /// Provides total ordering across all conflict resolution strategies:
-/// salience > strategy-specific ordering > activation sequence.
+/// salience > strategy-specific ordering > complexity > activation sequence.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AgendaKey {
@@ -105,8 +137,10 @@ pub struct AgendaKey {
     pub salience: std::cmp::Reverse<Salience>,
     /// Strategy-specific ordering component.
     pub strategy_ord: StrategyOrd,
-    /// Higher seq first (Reverse) — final tiebreaker.
-    pub seq: std::cmp::Reverse<ActivationSeq>,
+    /// Higher complexity first after equal LEX/MEA recency.
+    pub complexity: std::cmp::Reverse<u16>,
+    /// Oldest activation first after equal recency and complexity.
+    pub seq: ActivationSeq,
 }
 
 /// The agenda: stores and prioritizes rule activations.
@@ -176,20 +210,22 @@ impl Agenda {
                 StrategyOrd::Depth(std::cmp::Reverse(activation.activation_seq))
             }
             ConflictResolutionStrategy::Breadth => StrategyOrd::Breadth(activation.activation_seq),
-            ConflictResolutionStrategy::Lex => {
-                StrategyOrd::Lex(std::cmp::Reverse(activation.recency.clone()))
-            }
-            ConflictResolutionStrategy::Mea => {
-                let first_recency = activation
-                    .recency
-                    .first()
-                    .copied()
-                    .unwrap_or(Timestamp::ZERO);
-                let rest_recency: SmallVec<[Timestamp; 4]> =
-                    activation.recency.iter().skip(1).copied().collect();
-                StrategyOrd::Mea {
-                    first_recency: std::cmp::Reverse(first_recency),
-                    rest_recency: std::cmp::Reverse(rest_recency),
+            ConflictResolutionStrategy::Lex | ConflictResolutionStrategy::Mea => {
+                let mut sorted_recency = activation.recency.clone();
+                sorted_recency.sort_unstable_by(|left, right| right.cmp(left));
+                if self.strategy == ConflictResolutionStrategy::Lex {
+                    StrategyOrd::Lex(std::cmp::Reverse(sorted_recency))
+                } else {
+                    StrategyOrd::Mea {
+                        first_recency: std::cmp::Reverse(
+                            activation
+                                .recency
+                                .first()
+                                .copied()
+                                .unwrap_or(RecencyTag::ABSENT),
+                        ),
+                        sorted_recency: std::cmp::Reverse(sorted_recency),
+                    }
                 }
             }
         };
@@ -197,7 +233,8 @@ impl Agenda {
         AgendaKey {
             salience: std::cmp::Reverse(activation.salience),
             strategy_ord,
-            seq: std::cmp::Reverse(activation.activation_seq),
+            complexity: std::cmp::Reverse(activation.complexity),
+            seq: activation.activation_seq,
         }
     }
 
@@ -633,13 +670,14 @@ mod tests {
                     token: tokens.insert(()),
                     salience: Salience::DEFAULT,
                     timestamp: Timestamp::new(30 - u64::from(rule)),
+                    complexity: 0,
                     activation_seq: ActivationSeq::ZERO,
                     recency: SmallVec::new(),
                 }));
             }
             agenda.debug_assert_consistency();
             assert_eq!(agenda.next_seq.get(), 3);
-            if strategy != ConflictResolutionStrategy::Breadth {
+            if strategy == ConflictResolutionStrategy::Depth {
                 ids.reverse();
             }
             for id in ids {
@@ -668,6 +706,7 @@ mod tests {
             token,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO, // Will be overwritten
             recency: SmallVec::new(),
         };
@@ -698,6 +737,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -708,6 +748,7 @@ mod tests {
             token: t2,
             salience: Salience::new(10), // Highest
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -718,6 +759,7 @@ mod tests {
             token: t3,
             salience: Salience::new(-5), // Lowest
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -744,6 +786,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -754,6 +797,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200), // Most recent
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -764,6 +808,7 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(150),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -790,6 +835,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -800,6 +846,7 @@ mod tests {
             token: t1,
             salience: Salience::new(5),
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -810,6 +857,7 @@ mod tests {
             token: t2, // Different token
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(150),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -849,6 +897,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -859,6 +908,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300), // Most recent
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -869,6 +919,7 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -893,6 +944,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(400), // Newer fact, oldest activation
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -903,6 +955,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -913,6 +966,7 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -937,11 +991,12 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(100),
-                Timestamp::new(200),
-                Timestamp::new(300)
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(300)).unwrap()
             ], // [100, 200, 300]
         });
 
@@ -951,11 +1006,12 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(400),
-                Timestamp::new(100),
-                Timestamp::new(100)
+                RecencyTag::from_timestamp(Timestamp::new(400)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap()
             ], // [400, ...] wins lexicographically
         });
 
@@ -965,16 +1021,16 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(100),
-                Timestamp::new(300),
-                Timestamp::new(100)
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(300)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap()
             ], // [100, 300, ...]
         });
 
-        // LEX strategy: lexicographic comparison of recency vectors (most recent first per position)
-        // [400, ...] > [100, 300, ...] > [100, 200, ...]
+        // LEX compares sorted vectors: [400,100,100] > [300,200,100] > [300,100,100].
         let popped = agenda.pop().expect("Should have activation");
         assert_eq!(popped.id, id2);
     }
@@ -993,8 +1049,12 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(500)], // First pattern: 100
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap()
+            ], // First pattern: 100
         });
 
         let id2 = agenda.add(Activation {
@@ -1003,8 +1063,12 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(400), Timestamp::new(100)], // First pattern: 400 (highest)
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(400)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap()
+            ], // First pattern: 400 (highest)
         });
 
         let _id3 = agenda.add(Activation {
@@ -1013,8 +1077,12 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(200), Timestamp::new(800)], // First pattern: 200
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(800)).unwrap()
+            ], // First pattern: 200
         });
 
         // MEA strategy: first pattern recency dominates
@@ -1036,11 +1104,12 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(100),
-                Timestamp::new(200),
-                Timestamp::new(300)
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(300)).unwrap()
             ], // First: 100, rest: [200, 300]
         });
 
@@ -1050,11 +1119,12 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(100),
-                Timestamp::new(500),
-                Timestamp::new(100)
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap()
             ], // First: 100, rest: [500, 100] wins
         });
 
@@ -1064,11 +1134,12 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(100),
-                Timestamp::new(300),
-                Timestamp::new(200)
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(300)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
             ], // First: 100, rest: [300, 200]
         });
 
@@ -1090,6 +1161,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(500), // Higher timestamp
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1100,6 +1172,7 @@ mod tests {
             token: t2,
             salience: Salience::new(10), // Higher salience wins
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1121,6 +1194,7 @@ mod tests {
             token: t1,
             salience: Salience::new(5), // Higher salience wins
             timestamp: Timestamp::new(500),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1131,6 +1205,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100), // Lower timestamp (would win in breadth, but salience dominates)
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1152,11 +1227,12 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(500),
-                Timestamp::new(500),
-                Timestamp::new(500)
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap()
             ], // Higher recency vector
         });
 
@@ -1166,11 +1242,12 @@ mod tests {
             token: t2,
             salience: Salience::new(8), // Higher salience wins
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: smallvec::smallvec![
-                Timestamp::new(100),
-                Timestamp::new(100),
-                Timestamp::new(100)
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap()
             ],
         });
 
@@ -1191,8 +1268,12 @@ mod tests {
             token: t1,
             salience: Salience::new(-1),
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(500), Timestamp::new(500)], // Higher first recency
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(500)).unwrap()
+            ], // Higher first recency
         });
 
         let id2 = agenda.add(Activation {
@@ -1201,8 +1282,12 @@ mod tests {
             token: t2,
             salience: Salience::new(3), // Higher salience wins
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(100)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap()
+            ],
         });
 
         let popped = agenda.pop().expect("Should have activation");
@@ -1224,6 +1309,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO, // Will be 0
             recency: SmallVec::new(),
         });
@@ -1234,6 +1320,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO, // Will be 1
             recency: SmallVec::new(),
         });
@@ -1244,6 +1331,7 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO, // Will be 2 (highest seq)
             recency: SmallVec::new(),
         });
@@ -1267,6 +1355,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1277,6 +1366,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1287,6 +1377,7 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1303,14 +1394,18 @@ mod tests {
         let t2 = make_token_id();
         let t3 = make_token_id();
 
-        let _id1 = agenda.add(Activation {
+        let id1 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(1),
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ],
         });
 
         let _id2 = agenda.add(Activation {
@@ -1319,23 +1414,31 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)], // Same recency
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ], // Same recency
         });
 
-        let id3 = agenda.add(Activation {
+        let _id3 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(3),
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)], // Same recency
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ], // Same recency
         });
 
         let popped = agenda.pop().expect("Should have activation");
-        assert_eq!(popped.id, id3);
-        assert_eq!(popped.activation_seq, ActivationSeq::new(2));
+        assert_eq!(popped.id, id1);
+        assert_eq!(popped.activation_seq, ActivationSeq::ZERO);
     }
 
     #[test]
@@ -1345,14 +1448,18 @@ mod tests {
         let t2 = make_token_id();
         let t3 = make_token_id();
 
-        let _id1 = agenda.add(Activation {
+        let id1 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(1),
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ],
         });
 
         let _id2 = agenda.add(Activation {
@@ -1361,23 +1468,31 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)], // Same recency
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ], // Same recency
         });
 
-        let id3 = agenda.add(Activation {
+        let _id3 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(3),
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)], // Same recency
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ], // Same recency
         });
 
         let popped = agenda.pop().expect("Should have activation");
-        assert_eq!(popped.id, id3);
-        assert_eq!(popped.activation_seq, ActivationSeq::new(2));
+        assert_eq!(popped.id, id1);
+        assert_eq!(popped.activation_seq, ActivationSeq::ZERO);
     }
 
     #[test]
@@ -1393,6 +1508,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1403,6 +1519,7 @@ mod tests {
             token: t2,
             salience: Salience::new(10), // highest salience
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1413,6 +1530,7 @@ mod tests {
             token: t3,
             salience: Salience::new(5),
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1435,6 +1553,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1455,6 +1574,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1476,6 +1596,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1485,6 +1606,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200), // Most recent
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1501,6 +1623,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100), // Oldest
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1510,6 +1633,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1532,6 +1656,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1542,6 +1667,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1565,6 +1691,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1575,6 +1702,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1598,8 +1726,12 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ],
         });
 
         let _id2 = agenda.add(Activation {
@@ -1608,8 +1740,12 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(200), Timestamp::new(300)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(300)).unwrap()
+            ],
         });
 
         let removed = agenda.remove_activations_for_token(t1);
@@ -1631,8 +1767,12 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(100)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap()
+            ],
         });
 
         let _id2 = agenda.add(Activation {
@@ -1641,8 +1781,12 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(200),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(200), Timestamp::new(300)],
+            recency: smallvec::smallvec![
+                RecencyTag::from_timestamp(Timestamp::new(200)).unwrap(),
+                RecencyTag::from_timestamp(Timestamp::new(300)).unwrap()
+            ],
         });
 
         let removed = agenda.remove_activations_for_token(t1);
@@ -1665,6 +1809,7 @@ mod tests {
             token: t1,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(10),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1674,6 +1819,7 @@ mod tests {
             token: t2,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(20),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1683,6 +1829,7 @@ mod tests {
             token: t3,
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(30),
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -1767,6 +1914,7 @@ mod proptests {
             token,
             salience,
             timestamp,
+            complexity: 0,
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         }
@@ -1884,7 +2032,7 @@ mod proptests {
                                 scanned.next_seq = ActivationSeq::new(u64::MAX);
                             }
                             let mut activation = make_activation(rule, token, Salience::new(salience), Timestamp::new(timestamp));
-                            activation.recency = SmallVec::from_slice(&[Timestamp::new(timestamp), Timestamp::new(timestamp ^ 7)]);
+                            activation.recency = SmallVec::from_slice(&[RecencyTag::from_timestamp(Timestamp::new(timestamp)).unwrap(), RecencyTag::from_timestamp(Timestamp::new(timestamp ^ 7)).unwrap()]);
                             prop_assert_eq!(indexed.add(activation.clone()), scanned.add(activation));
                         }
                         3 => {
@@ -2042,8 +2190,7 @@ mod proptests {
             prop_assert_eq!(first.timestamp, Timestamp::new(ts_a));
         }
 
-        /// With the same salience and timestamp, the activation added later
-        /// (higher activation_seq) pops first (recency-of-addition tiebreaker).
+        /// Exact ties favor the oldest activation except under Depth.
         #[test]
         fn activation_seq_tiebreaker(sal in -10i32..10, ts in 1u64..1000) {
             let (_map, tokens) = make_token_pool();
@@ -2064,7 +2211,7 @@ mod proptests {
                 let popped = agenda.pop().expect("should have activation");
                 prop_assert_eq!(
                     popped.id,
-                    if strategy == ConflictResolutionStrategy::Breadth { first } else { second },
+                    if strategy == ConflictResolutionStrategy::Depth { second } else { first },
                     "strategy {:?}: creation order must follow the selected strategy",
                     strategy,
                 );
@@ -2215,5 +2362,152 @@ mod proptests {
                 prop_assert_eq!(agenda.strategy(), strategy);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod clips_ordering_tests {
+    use super::*;
+    fn fact(timestamp: u64) -> RecencyTag {
+        RecencyTag::from_timestamp(Timestamp::new(timestamp)).unwrap()
+    }
+
+    fn activation(rule: u32, recency: &[RecencyTag], complexity: u16) -> Activation {
+        Activation {
+            id: ActivationId::default(),
+            rule: RuleId(rule),
+            token: TokenId::default(),
+            salience: Salience::DEFAULT,
+            complexity,
+            timestamp: recency
+                .iter()
+                .filter_map(|tag| tag.timestamp())
+                .max()
+                .unwrap_or(Timestamp::ZERO),
+            activation_seq: ActivationSeq::ZERO,
+            recency: SmallVec::from_slice(recency),
+        }
+    }
+
+    fn drain(agenda: &mut Agenda) -> Vec<u32> {
+        std::iter::from_fn(|| agenda.pop().map(|activation| activation.rule.0)).collect()
+    }
+
+    #[test]
+    fn tags_distinguish_absence_from_first_fact_and_preserve_timestamp_limits() {
+        assert!(RecencyTag::ABSENT < fact(0));
+        assert_eq!(RecencyTag::ABSENT.timestamp(), None);
+        assert_eq!(fact(0).timestamp(), Some(Timestamp::ZERO));
+        assert_eq!(
+            fact(u64::MAX - 1).timestamp(),
+            Some(Timestamp::new(u64::MAX - 1))
+        );
+        assert_eq!(RecencyTag::from_timestamp(Timestamp::new(u64::MAX)), None);
+    }
+
+    #[test]
+    fn lex_sorts_the_entire_basis_and_prefers_a_longer_equal_prefix() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Lex);
+        agenda.add(activation(1, &[fact(8), fact(1)], 2047));
+        agenda.add(activation(2, &[fact(1), fact(9)], 0));
+        agenda.add(activation(3, &[fact(9), fact(1), RecencyTag::ABSENT], 0));
+        assert_eq!(drain(&mut agenda), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn mea_uses_original_first_element_then_the_complete_sorted_basis() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Mea);
+        agenda.add(activation(1, &[RecencyTag::ABSENT, fact(100)], 2047));
+        agenda.add(activation(2, &[fact(0), fact(9), fact(2)], 0));
+        agenda.add(activation(3, &[fact(0), fact(2), fact(10)], 0));
+        agenda.add(activation(
+            4,
+            &[fact(0), fact(10), fact(2), RecencyTag::ABSENT],
+            0,
+        ));
+        assert_eq!(drain(&mut agenda), vec![4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn complexity_precedes_oldest_tie_and_salience_precedes_recency() {
+        for strategy in [
+            ConflictResolutionStrategy::Lex,
+            ConflictResolutionStrategy::Mea,
+        ] {
+            let mut agenda = Agenda::with_strategy(strategy);
+            agenda.add(activation(1, &[fact(1)], 4));
+            agenda.add(activation(2, &[fact(1)], 5));
+            agenda.add(activation(3, &[fact(1)], 5));
+            let mut salient = activation(4, &[RecencyTag::ABSENT], 0);
+            salient.salience = Salience::new(1);
+            agenda.add(salient);
+            assert_eq!(drain(&mut agenda), vec![4, 2, 3, 1]);
+        }
+    }
+
+    #[test]
+    fn depth_and_breadth_ignore_complexity_and_recency() {
+        for (strategy, expected) in [
+            (ConflictResolutionStrategy::Depth, vec![3, 2, 1]),
+            (ConflictResolutionStrategy::Breadth, vec![1, 2, 3]),
+        ] {
+            let mut agenda = Agenda::with_strategy(strategy);
+            agenda.add(activation(1, &[fact(99)], 2047));
+            agenda.add(activation(2, &[fact(3)], 0));
+            agenda.add(activation(3, &[RecencyTag::ABSENT], 4));
+            assert_eq!(drain(&mut agenda), expected);
+        }
+    }
+
+    #[test]
+    fn canceled_and_recreated_match_follows_older_equal_match_even_after_rebase() {
+        for strategy in [
+            ConflictResolutionStrategy::Lex,
+            ConflictResolutionStrategy::Mea,
+        ] {
+            let mut agenda = Agenda::with_strategy(strategy);
+            agenda.add(activation(1, &[fact(1), RecencyTag::ABSENT], 2));
+            agenda.add(activation(2, &[fact(1), RecencyTag::ABSENT], 2));
+            // A focus miss also materializes the derived rule index before mutation.
+            assert!(agenda.pop_matching_rule(|_| false).is_none());
+            agenda.remove_activations_for_rule(RuleId(1));
+            agenda.next_seq = ActivationSeq::new(u64::MAX);
+            agenda.add(activation(1, &[fact(1), RecencyTag::ABSENT], 2));
+            agenda.validate_consistency().unwrap();
+            assert_eq!(
+                agenda
+                    .pop_matching_rule(|rule| rule == RuleId(2))
+                    .unwrap()
+                    .rule,
+                RuleId(2)
+            );
+            assert_eq!(drain(&mut agenda), vec![1]);
+        }
+    }
+
+    #[test]
+    fn recency_and_complexity_survive_rebuilding_under_another_strategy() {
+        let source = [
+            activation(1, &[fact(0), fact(9)], 4),
+            activation(2, &[fact(8), fact(1)], 5),
+            activation(3, &[fact(0), fact(9)], 5),
+        ];
+        let mut depth = Agenda::new();
+        for activation in source {
+            depth.add(activation);
+        }
+        let mut retained: Vec<_> = depth.iter_activations().cloned().collect();
+        retained.sort_by_key(|activation| activation.activation_seq);
+        for (strategy, expected) in [
+            (ConflictResolutionStrategy::Lex, vec![3, 1, 2]),
+            (ConflictResolutionStrategy::Mea, vec![2, 3, 1]),
+        ] {
+            let mut agenda = Agenda::with_strategy(strategy);
+            for activation in &retained {
+                agenda.add(activation.clone());
+            }
+            assert_eq!(drain(&mut agenda), expected);
+        }
+        assert_eq!(retained[0].recency.as_slice(), &[fact(0), fact(9)]);
     }
 }

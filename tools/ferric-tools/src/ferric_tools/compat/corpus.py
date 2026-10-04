@@ -244,7 +244,7 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         raise ReferenceFailure("recoverable_random_notices requires a successful run")
     source = batch_source(f"tests/clips_compat/corpus/{case['path']}", begin, end, resets, error)
     strategy = case.get("strategy")
-    if strategy not in (None, "breadth"):
+    if strategy not in (None, "breadth", "lex", "mea"):
         raise ReferenceFailure(f"unknown strategy: {strategy!r}")
     if strategy:
         source = f"(set-strategy {strategy})\n{source}"

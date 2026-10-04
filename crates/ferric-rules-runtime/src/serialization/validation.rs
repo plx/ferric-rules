@@ -158,7 +158,7 @@ impl Engine {
             self.rule_info
                 .get(id.0 as usize)
                 .and_then(Option::as_ref)
-                .map(|info| (info.salience, info.test_conditions.len()))
+                .map(|info| (info.salience, info.complexity, info.test_conditions.len()))
         })?;
         ensure(
             live_rules == terminal_rules.len(),
