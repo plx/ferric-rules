@@ -11010,6 +11010,155 @@
         "scope"
       ],
       "error": "load"
+    },
+    {
+      "path": "patterns/417_issue_bound_keys_count.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "anonymous-captures"
+      ]
+    },
+    {
+      "path": "patterns/417_duplicate_placements_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "capture-order",
+        "duplicates"
+      ]
+    },
+    {
+      "path": "patterns/417_duplicate_placements_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "capture-order",
+        "duplicates"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/417_empty_anonymous_captures.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "anonymous-captures",
+        "empty-captures"
+      ]
+    },
+    {
+      "path": "patterns/417_typed_parent_keys.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "typed-equality"
+      ]
+    },
+    {
+      "path": "patterns/417_bound_multifield_capture.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "multifield-join",
+        "empty-captures",
+        "duplicates"
+      ]
+    },
+    {
+      "path": "patterns/417_template_segments_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "template-multislot",
+        "capture-order"
+      ]
+    },
+    {
+      "path": "patterns/417_template_segments_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "template-multislot",
+        "capture-order"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/417_parent_and_same_fact_dependencies.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "same-fact-equality",
+        "field-disjunction"
+      ]
+    },
+    {
+      "path": "patterns/417_both_arrival_orders.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "assert",
+        "retract",
+        "arrival-order",
+        "capture-order"
+      ]
+    },
+    {
+      "path": "patterns/417_negative_support_lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "negative",
+        "assert",
+        "retract",
+        "blocker-lifecycle"
+      ]
+    },
+    {
+      "path": "patterns/417_exists_support_lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "exists",
+        "assert",
+        "retract",
+        "blocker-lifecycle"
+      ]
+    },
+    {
+      "path": "patterns/417_ncc_support_lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "ncc",
+        "assert",
+        "retract",
+        "blocker-lifecycle"
+      ]
+    },
+    {
+      "path": "patterns/417_rejected_prefixes_complete.clp",
+      "level": "interaction",
+      "covers": [
+        "multifield",
+        "bound-variable-join",
+        "no-match",
+        "anonymous-captures"
+      ]
     }
   ]
 }

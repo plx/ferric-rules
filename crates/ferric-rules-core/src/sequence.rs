@@ -252,6 +252,22 @@ impl SequencePattern {
         fact: &'a Fact,
         visit: &mut impl FnMut(SplitEvent<'_, 'a>) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
+        self.search_with_prefix(fact, &mut |_, _, _| true, visit)
+    }
+
+    /// Search with an additional predicate over each newly placed prefix.
+    ///
+    /// The filter runs after the plan's ready constant tests, immediately before
+    /// another capture choice or a complete match. `checked` is the number of
+    /// leading fields checked in the parent prefix; fields through
+    /// `split.placed_fields()` are now available. A complete split must also
+    /// check selectors beyond its width, preserving invalid-selector rejection.
+    pub(crate) fn search_with_prefix<'a, B>(
+        &'a self,
+        fact: &'a Fact,
+        prefix: &mut impl FnMut(&SplitView<'a>, usize, bool) -> bool,
+        visit: &mut impl FnMut(SplitEvent<'_, 'a>) -> ControlFlow<B>,
+    ) -> ControlFlow<B> {
         let mut sources = SmallVec::<[(&'a [Value], usize); 2]>::new();
         for segment in &self.segments {
             let Some(values) = segment_values(segment.source, fact) else {
@@ -268,6 +284,7 @@ impl SequencePattern {
         let width = self.logical_width();
         let mut search = SplitSearch {
             plan: self,
+            prefix,
             needs: self.tests.iter().map(test_extent).collect(),
             sources,
             split: SplitView {
@@ -395,8 +412,9 @@ fn segment_extra(fields: &[SequenceField], values: &[Value]) -> Option<usize> {
     (extra == 0 || singles < fields.len()).then_some(extra)
 }
 
-struct SplitSearch<'p, 'a> {
+struct SplitSearch<'p, 'a, F> {
     plan: &'p SequencePattern,
+    prefix: F,
     /// Each segment's values and the length its captures share.
     sources: SmallVec<[(&'a [Value], usize); 2]>,
     /// Per test, how many leading logical fields must be placed to run it.
@@ -404,13 +422,17 @@ struct SplitSearch<'p, 'a> {
     split: SplitView<'a>,
 }
 
-impl<'a> SplitSearch<'_, 'a> {
+impl<'a, F> SplitSearch<'_, 'a, F>
+where
+    F: FnMut(&SplitView<'a>, usize, bool) -> bool,
+{
     /// Run the tests that became ready since `checked` fields were placed.
     /// A complete split runs every remaining test, so a selector past the
     /// projection still runs, and fails, there.
-    fn ready_tests_pass(&self, checked: usize, complete: bool) -> bool {
+    fn ready_tests_pass(&mut self, checked: usize, complete: bool) -> bool {
         let placed = self.split.fields.len();
-        self.plan
+        let constants_pass = self
+            .plan
             .tests
             .iter()
             .zip(&self.needs)
@@ -418,7 +440,8 @@ impl<'a> SplitSearch<'_, 'a> {
                 need <= checked
                     || (need > placed && !complete)
                     || evaluate_field_test(test, |slot| self.split.get(slot))
-            })
+            });
+        constants_pass && (self.prefix)(&self.split, checked, complete)
     }
 
     /// Place the fields from `field` of `segment` on, at physical `offset`,
@@ -511,6 +534,11 @@ pub(crate) struct SplitView<'a> {
 }
 
 impl SplitView<'_> {
+    /// Number of leading logical fields available to a prefix predicate.
+    pub(crate) fn placed_fields(&self) -> usize {
+        self.fields.len()
+    }
+
     /// The value of a logical field, as the projected fact would hold it.
     #[must_use]
     pub fn get(&self, slot: SlotIndex) -> Option<&Value> {

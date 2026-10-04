@@ -1,0 +1,5 @@
+(defglobal ?*count* = 0)
+(deffacts d (key s1) (key s4) (key s7) (key s10)
+ (lst s0 s1 s2 s3 s4 s5 s6 s7 s8 s9 s10 s11))
+(defrule pair (key ?a) (key ?b) (lst $? ?a $? ?b $?) => (bind ?*count* (+ ?*count* 1)))
+(defrule done (declare (salience -10)) => (printout t "count " ?*count* crlf))

@@ -1,0 +1,7 @@
+(deftemplate row (slot id) (multislot left) (multislot right))
+(deffacts d (first a) (second b)
+ (row (id good) (left a x a) (right b b))
+ (row (id rejected) (left missing missing) (right b b b)))
+(defrule observe (first ?a) (second ?b)
+ (row (left $?lp ?a $?ls) (right $?rp ?b $?rs) (id ?id))
+ => (printout t ?id ":" (length$ ?lp) ":" (length$ ?ls) ":" (length$ ?rp) ":" (length$ ?rs) crlf))
