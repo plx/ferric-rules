@@ -1,0 +1,6 @@
+
+[CSTRNPSR1] The type attribute conflicts with the range attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (type FLOAT) (range 1 3))

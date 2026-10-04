@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 738
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 796
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -129,8 +129,9 @@ unconstrained. Ambiguous splits in multiple multislots produce every valid
 combination, in written slot-constraint order. Single-valued slots require one
 field constraint and cannot bind a named multifield capture.
 
-RHS assertions resolve declared templates in the rule's module, evaluate named
-slots, fill defaults, and propagate template matches. Multislots splice supplied
+RHS assertions resolve declared templates in the rule's module, evaluate supplied
+values and missing dynamic defaults in template slot declaration order, and
+propagate template matches. Multislots splice supplied
 multifield values; both `?items` and `$?items` read the same bound value. Invalid
 slot names, repeated slots and statically invalid cardinality reject the rule
 before installation. A dynamic single-slot cardinality error stops that RHS
@@ -409,7 +410,9 @@ the next activation.
 
 ## 16.3 Deftemplates
 
-Ferric supports `deftemplate` with the same syntax as CLIPS.
+Ferric supports named single slots and multislots, primitive type restrictions,
+allowed-value lists, numeric ranges, cardinality bounds, and static or dynamic
+defaults.
 
 ```clp
 (deftemplate person
@@ -420,9 +423,54 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 
 ### Slots
 
-- **slot**: Single-valued field. May specify a `(default <value>)`.
-- **multislot**: Multi-valued field. Defaults to an empty multifield if no
-  default is specified.
+- **slot**: Single-valued field. A multifield result is invalid even when it
+  contains exactly one value.
+- **multislot**: Multi-valued field. Supplied and default expressions splice
+  multifield results before cardinality is checked.
+
+The supported constraint attributes are `type`, `allowed-symbols`,
+`allowed-strings`, `allowed-lexemes`, `allowed-integers`, `allowed-floats`,
+`allowed-numbers`, `allowed-values`, `range`, and multislot `cardinality`.
+Category-specific lists restrict their named value kinds; other kinds remain
+permitted unless `type` excludes them. Membership distinguishes integers from
+floats and positive from negative floating zero. `allowed-values` also covers
+instance-name literals; fact addresses are outside its literal whitelist.
+Overlapping attributes, incompatible types, reversed bounds, and invalid
+literal values are rejected. `?VARIABLE` removes the corresponding value or
+bound restriction, while duplicate and overlapping attributes remain invalid.
+
+`(default <expression> ...)` evaluates once when the template is registered.
+`(default-dynamic <expression> ...)` evaluates whenever an assertion omits that
+slot. Supplying a slot suppresses its dynamic default; `modify` and `duplicate`
+preserve unmodified source values. Function calls in a dynamic default resolve
+in the template's definition module, while a direct global reference uses the
+assertion's current module. A global read inside a called function follows that
+function's module. Ordinary local variable reads are invalid in defaults;
+lexical loop and fact-query bindings are supported. Direct `return` expressions
+in defaults are rejected; a called function may return normally. A static void
+default is invalid, while a dynamic scalar void result fills the slot with `nil`.
+
+Without an explicit default, or with `(default ?DERIVE)`, Ferric derives a value
+from the constraints. Allowed lists retain their order within a value kind;
+primitive type priority selects symbols before strings, integers, and floats.
+Numeric ranges prefer the lower finite endpoint, then the upper endpoint.
+Multislot defaults repeat the derived element up to the minimum cardinality,
+or are empty when the minimum is zero. `(default ?NONE)` requires the caller to
+supply the slot.
+Derived multislot allocation is limited to one million fields and 32 MiB;
+larger requested defaults fail before allocation.
+
+Ferric always validates constraints before publishing a fact, including values
+computed at runtime and host assertions. CLIPS 6.30 disables dynamic checking
+by default, so it can accept computed violations that Ferric rejects. Ferric
+also keeps derived defaults valid in two CLIPS edge cases: a `NUMBER` range
+with fractional endpoints selects an in-range integer or float, and an
+untyped `allowed-values` list containing only instance names derives an allowed
+instance name. CLIPS may instead derive an out-of-range truncated integer or
+`nil`, respectively.
+
+`allowed-classes`, `allowed-instance-names`, and the `deftemplate-slot-*`
+introspection functions remain unsupported.
 
 ### Behavioral Notes
 
@@ -1562,14 +1610,15 @@ ferric run --json rules.clp 2> diagnostics.json
 Standard output (stdout) contains the rule engine's normal output. All
 diagnostics are emitted to stderr.
 
-### Template type declarations
+### Template constraints
 
 Primitive template slot unions (`SYMBOL`, `STRING`, `INTEGER`, `FLOAT`,
 `NUMBER`, `LEXEME`, `INSTANCE-NAME`, `FACT-ADDRESS`, `EXTERNAL-ADDRESS`) are
-retained and checked. Default values,
-seed facts, and literal rule assertions are validated before their construct is
-installed; runtime values and host template assertions are always validated.
+retained and checked, together with allowed-value lists, numeric ranges, and
+multislot cardinality. Default values, seed facts, literal rule assertions, and
+literal pattern restrictions are validated before their construct is installed;
+runtime values and host template assertions are always validated.
 Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects
-runtime values that violate a declared slot type. See
+runtime values that violate a declared slot constraint. See
 [the migration notes](migration.md#primitive-template-slot-types) for default
 priority, external token handling, and explicit unsupported optional attributes.

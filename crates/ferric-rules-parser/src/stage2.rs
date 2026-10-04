@@ -11,6 +11,8 @@ use crate::span::Span;
 use std::collections::HashSet;
 use std::fmt;
 
+mod slot_attributes;
+
 // ============================================================================
 // Pattern types for rule LHS
 // ============================================================================
@@ -282,6 +284,7 @@ pub struct SlotDefinition {
     pub slot_type: SlotType,
     /// Canonical primitive type union; None means unconstrained.
     pub allowed_types: Option<Vec<SlotValueType>>,
+    pub constraints: SlotConstraints,
     pub default: Option<DefaultValue>,
     pub span: Span,
 }
@@ -307,6 +310,46 @@ pub enum SlotValueType {
     ExternalAddress,
 }
 
+/// Additional constraints applied to individual fields and multislot lengths.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SlotConstraints {
+    /// Canonical kind order, preserving source value order within each kind.
+    /// Missing kinds are unrestricted; an empty entry forbids that kind.
+    pub allowed_values: Vec<AllowedValueSet>,
+    pub range: Option<NumericRange>,
+    pub cardinality: Option<Cardinality>,
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AllowedValueSet {
+    pub kind: SlotValueType,
+    pub values: Vec<LiteralValue>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NumericBound {
+    Integer(i64),
+    Float(f64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NumericRange {
+    /// None represents the corresponding unbounded ?VARIABLE endpoint.
+    pub min: Option<NumericBound>,
+    pub max: Option<NumericBound>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Cardinality {
+    pub min: u64,
+    pub max: Option<u64>,
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DefaultValue {
@@ -318,6 +361,10 @@ pub enum DefaultValue {
     Value(LiteralValue),
     /// All literal fields of an explicit multifield default, including empty.
     Values(Vec<LiteralValue>),
+    /// Evaluate expressions once, when the template is registered.
+    Expressions(Vec<ActionExpr>),
+    /// Evaluate expressions whenever this slot is omitted from an assertion.
+    Dynamic(Vec<ActionExpr>),
 }
 
 // ============================================================================
@@ -2992,53 +3039,17 @@ fn interpret_slot_definition(expr: &SExpr) -> Result<SlotDefinition, InterpretEr
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", list[name_idx].span()))?
         .to_string();
 
-    let mut default = None;
-    let mut allowed_types = None;
-    let mut saw_type = false;
-    for option_expr in &list[name_idx + 1..] {
-        let option = option_expr
-            .as_list()
-            .ok_or_else(|| InterpretError::expected("slot attribute list", option_expr.span()))?;
-        match option.first().and_then(SExpr::as_symbol) {
-            Some("default") => {
-                if default.is_some() {
-                    return Err(InterpretError::invalid("duplicate default attribute", option_expr.span()));
-                }
-                let values = &option[1..];
-                let parsed = if values.len() == 1 {
-                    interpret_default_value(&values[0])?
-                } else {
-                    let mut fields = Vec::new();
-                    for value in values {
-                        match interpret_default_value(value)? {
-                            DefaultValue::Value(value) => fields.push(value),
-                            DefaultValue::Values(values) => fields.extend(values),
-                            _ => return Err(InterpretError::invalid("?NONE and ?DERIVE must be the entire default", option_expr.span())),
-                        }
-                    }
-                    DefaultValue::Values(fields)
-                };
-                if slot_type == SlotType::Single && matches!(&parsed, DefaultValue::Values(_)) {
-                    return Err(InterpretError::invalid("single-field default requires one scalar value", option_expr.span()));
-                }
-                default = Some(parsed);
-            }
-            Some("type") => {
-                if std::mem::replace(&mut saw_type, true) {
-                    return Err(InterpretError::invalid("duplicate type attribute", option_expr.span()));
-                }
-                allowed_types = interpret_slot_types(&option[1..], option_expr.span())?;
-            }
-            Some(attribute) => return Err(InterpretError::invalid(
-                &format!("unsupported slot attribute `{attribute}`; supported attributes are type and literal default"), option_expr.span())),
-            None => return Err(InterpretError::expected("slot attribute name", option_expr.span())),
-        }
-    }
+    let slot_attributes::Attributes {
+        allowed_types,
+        constraints,
+        default,
+    } = slot_attributes::interpret_attributes(&list[name_idx + 1..], slot_type)?;
 
     Ok(SlotDefinition {
         name,
         slot_type,
         allowed_types,
+        constraints,
         default,
         span: expr.span(),
     })
@@ -3078,77 +3089,6 @@ fn interpret_slot_types(
     types.sort_unstable();
     types.dedup();
     Ok(Some(types))
-}
-
-/// Interpret a default value specification.
-fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError> {
-    // Check for special symbols ?NONE and ?DERIVE
-    if let Some(Atom::SingleVar(name)) = expr.as_atom() {
-        if name.eq_ignore_ascii_case("NONE") {
-            return Ok(DefaultValue::None);
-        } else if name.eq_ignore_ascii_case("DERIVE") {
-            return Ok(DefaultValue::Derive);
-        }
-    }
-
-    if let Some(list) = expr.as_list() {
-        if list.first().and_then(SExpr::as_symbol) != Some("create$") {
-            return Err(InterpretError::invalid(
-                "unsupported default expression; use literal values or ?DERIVE",
-                expr.span(),
-            ));
-        }
-        let mut fields = Vec::new();
-        for value in &list[1..] {
-            match interpret_default_value(value)? {
-                DefaultValue::Value(value) => fields.push(value),
-                DefaultValue::Values(values) => fields.extend(values),
-                _ => {
-                    return Err(InterpretError::invalid(
-                        "create$ default requires literal fields",
-                        value.span(),
-                    ))
-                }
-            }
-        }
-        return Ok(DefaultValue::Values(fields));
-    }
-
-    // Otherwise, treat as a literal value
-    let atom = expr
-        .as_atom()
-        .ok_or_else(|| InterpretError::expected("default value", expr.span()))?;
-
-    let literal = match atom {
-        Atom::Integer(n) => LiteralValue {
-            value: LiteralKind::Integer(*n),
-            span: expr.span(),
-        },
-        Atom::Float(f) => LiteralValue {
-            value: LiteralKind::Float(*f),
-            span: expr.span(),
-        },
-        Atom::String(s) => LiteralValue {
-            value: LiteralKind::String(s.clone()),
-            span: expr.span(),
-        },
-        Atom::Symbol(s) => LiteralValue {
-            value: LiteralKind::Symbol(s.clone()),
-            span: expr.span(),
-        },
-        Atom::InstanceName(name) => LiteralValue {
-            value: LiteralKind::InstanceName(name.clone()),
-            span: expr.span(),
-        },
-        _ => {
-            return Err(InterpretError::invalid(
-                "invalid default value type",
-                expr.span(),
-            ))
-        }
-    };
-
-    Ok(DefaultValue::Value(literal))
 }
 
 // ============================================================================

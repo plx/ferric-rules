@@ -1,0 +1,8 @@
+
+[CSTRNCHK1] A literal slot value found in the assert command
+does not match the allowed values for slot x.
+
+ERROR:
+(defrule MAIN::bad
+   =>
+   (assert (p (x "no")

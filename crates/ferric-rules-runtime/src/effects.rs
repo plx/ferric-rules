@@ -210,7 +210,7 @@ fn apply_slots(
     span: Option<&SourceSpan>,
 ) -> Result<(), EvalError> {
     let overrides = template
-        .slot_overrides(overrides)
+        .slot_overrides(overrides, &ctx.engine.symbol_table)
         .map_err(|error| failure(name, error, span))?;
     for (index, call) in overrides {
         slots[index] = match template.slot_types[index] {
@@ -357,8 +357,28 @@ fn eval_assert(
         {
             Ok(id) => {
                 let definition = ctx.engine.template_defs[id].clone();
-                let mut slots = definition.defaults.clone();
-                apply_slots(ctx, name, &definition, &mut slots, &pattern.args, span)?;
+                let validated = definition
+                    .slot_overrides(&pattern.args, &ctx.engine.symbol_table)
+                    .map_err(|error| failure(name, error, span))?;
+                let overrides = validated
+                    .into_iter()
+                    .map(|(index, slot)| {
+                        let fields = slot
+                            .args
+                            .iter()
+                            .map(|field| {
+                                evaluator::from_action_expr(
+                                    field,
+                                    &mut ctx.engine.symbol_table,
+                                    &ctx.engine.config,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok((index, fields))
+                    })
+                    .collect::<Result<Vec<_>, EvalError>>()?;
+                let slots = crate::template_defaults::evaluate_slots(ctx, &definition, &overrides)
+                    .map_err(|error| error.error)?;
                 Fact::Template(TemplateFact {
                     template_id: id,
                     slots: slots.into_boxed_slice(),

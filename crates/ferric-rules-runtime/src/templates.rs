@@ -4,9 +4,20 @@
 //! metadata for a `deftemplate` construct after it has been registered with the
 //! engine. Both `loader.rs` and `actions.rs` need access to this type.
 
-use ferric_rules_core::Value;
+use ferric_rules_core::{SymbolTable, Value};
 use ferric_rules_parser::{ActionExpr, FunctionCall, LiteralKind, SlotType, SlotValueType};
 use rustc_hash::FxHashMap as HashMap;
+
+use crate::evaluator::RuntimeExpr;
+use crate::modules::ModuleId;
+pub(crate) use crate::slot_constraints::RuntimeSlotConstraints;
+
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct DynamicSlotDefault {
+    pub module: ModuleId,
+    pub expressions: Vec<RuntimeExpr>,
+}
 
 /// Runtime representation of a registered template.
 ///
@@ -24,6 +35,7 @@ pub(crate) struct RegisteredTemplate {
     pub slot_types: Vec<SlotType>,
     /// Canonical primitive type union for each slot; None is unconstrained.
     pub allowed_types: Vec<Option<Vec<SlotValueType>>>,
+    pub constraints: Vec<RuntimeSlotConstraints>,
     /// Slot name → positional index mapping.
     #[cfg_attr(
         feature = "serde",
@@ -32,6 +44,8 @@ pub(crate) struct RegisteredTemplate {
     pub slot_index: HashMap<String, usize>,
     /// Default values for each slot position (`Value::Void` marks `?NONE`).
     pub defaults: Vec<Value>,
+    /// A dynamic expression replaces the corresponding Void placeholder in defaults.
+    pub dynamic_defaults: Vec<Option<DynamicSlotDefault>>,
 }
 
 impl RegisteredTemplate {
@@ -44,6 +58,7 @@ impl RegisteredTemplate {
     pub fn slot_overrides<'a>(
         &self,
         overrides: &'a [ActionExpr],
+        symbols: &SymbolTable,
     ) -> Result<Vec<(usize, &'a FunctionCall)>, String> {
         let mut seen = vec![false; self.slot_names.len()];
         overrides
@@ -70,9 +85,7 @@ impl RegisteredTemplate {
                         call.name, self.name
                     ));
                 }
-                for arg in &call.args {
-                    self.validate_literal_expression(index, arg)?;
-                }
+                self.validate_literal_expressions(index, &call.args, symbols)?;
                 Ok((index, call))
             })
             .collect()
@@ -85,6 +98,38 @@ impl RegisteredTemplate {
             && self.slot_names == other.slot_names
             && self.slot_types == other.slot_types
             && self.allowed_types == other.allowed_types
+            && self.constraints == other.constraints
+    }
+
+    pub fn requires_value(&self, index: usize) -> bool {
+        matches!(self.defaults[index], Value::Void) && self.dynamic_defaults[index].is_none()
+    }
+
+    /// Validate a complete supplied slot, checking length only when every field is known.
+    pub fn validate_literal_expressions(
+        &self,
+        index: usize,
+        expressions: &[ActionExpr],
+        symbols: &SymbolTable,
+    ) -> Result<(), String> {
+        for expression in expressions {
+            self.validate_literal_expression(index, expression, symbols)?;
+        }
+        if self.slot_types[index] == SlotType::Multi {
+            if let Some(length) = literal_field_count(expressions) {
+                self.constraints[index]
+                    .validate_cardinality(length)
+                    .map_err(|reason| self.constraint_error(index, &reason))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn constraint_error(&self, index: usize, reason: &str) -> String {
+        format!(
+            "{reason} for slot `{}` in template `{}`",
+            self.slot_names[index], self.name
+        )
     }
 
     /// Check only provably literal fields; expression results are checked at run time.
@@ -92,12 +137,13 @@ impl RegisteredTemplate {
         &self,
         index: usize,
         expression: &ActionExpr,
+        symbols: &SymbolTable,
     ) -> Result<(), String> {
         match expression {
-            ActionExpr::Literal(literal) => self.validate_literal(index, &literal.value),
+            ActionExpr::Literal(literal) => self.validate_literal(index, &literal.value, symbols),
             ActionExpr::FunctionCall(call) if call.name == "create$" => {
                 for arg in &call.args {
-                    self.validate_literal_expression(index, arg)?;
+                    self.validate_literal_expression(index, arg, symbols)?;
                 }
                 Ok(())
             }
@@ -105,7 +151,12 @@ impl RegisteredTemplate {
         }
     }
 
-    pub fn validate_literal(&self, index: usize, literal: &LiteralKind) -> Result<(), String> {
+    pub fn validate_literal(
+        &self,
+        index: usize,
+        literal: &LiteralKind,
+        symbols: &SymbolTable,
+    ) -> Result<(), String> {
         let kind = match literal {
             LiteralKind::Symbol(_) => SlotValueType::Symbol,
             LiteralKind::String(_) => SlotValueType::String,
@@ -113,7 +164,10 @@ impl RegisteredTemplate {
             LiteralKind::Float(_) => SlotValueType::Float,
             LiteralKind::InstanceName(_) => SlotValueType::InstanceName,
         };
-        self.validate_kind(index, kind)
+        self.validate_kind(index, kind)?;
+        self.constraints[index]
+            .validate_literal(literal, symbols)
+            .map_err(|reason| self.constraint_error(index, &reason))
     }
 
     fn validate_kind(&self, index: usize, kind: SlotValueType) -> Result<(), String> {
@@ -127,6 +181,20 @@ impl RegisteredTemplate {
             ));
         }
         Ok(())
+    }
+
+    /// Validate one field without treating it as a complete multislot value.
+    pub(crate) fn validate_field(&self, index: usize, field: &Value) -> Result<(), String> {
+        let Some(kind) = crate::slot_constraints::value_kind(field) else {
+            if matches!(field, Value::Multifield(_)) && self.allowed_types[index].is_none() {
+                return Ok(());
+            }
+            return Err(self.constraint_error(index, "value does not match allowed types"));
+        };
+        self.validate_kind(index, kind)?;
+        self.constraints[index]
+            .validate_field(field)
+            .map_err(|reason| self.constraint_error(index, &reason))
     }
 
     pub fn validate_slot(&self, index: usize, value: &Value) -> Result<(), String> {
@@ -152,24 +220,13 @@ impl RegisteredTemplate {
                 ))
             }
         };
+        if self.slot_types[index] == SlotType::Multi {
+            self.constraints[index]
+                .validate_cardinality(fields.len())
+                .map_err(|reason| self.constraint_error(index, &reason))?;
+        }
         for field in fields {
-            let kind = match field {
-                Value::Symbol(_) => SlotValueType::Symbol,
-                Value::String(_) => SlotValueType::String,
-                Value::Integer(_) => SlotValueType::Integer,
-                Value::Float(_) => SlotValueType::Float,
-                Value::InstanceName(_) => SlotValueType::InstanceName,
-                Value::FactAddress(_) => SlotValueType::FactAddress,
-                Value::ExternalAddress(_) => SlotValueType::ExternalAddress,
-                Value::Multifield(_) if self.allowed_types[index].is_none() => continue,
-                Value::Multifield(_) | Value::Void => {
-                    return Err(format!(
-                        "value does not match allowed types for slot `{}` in template `{}`",
-                        self.slot_names[index], self.name
-                    ))
-                }
-            };
-            self.validate_kind(index, kind)?;
+            self.validate_field(index, field)?;
         }
         Ok(())
     }
@@ -188,9 +245,23 @@ impl RegisteredTemplate {
     }
 }
 
+fn literal_field_count(expressions: &[ActionExpr]) -> Option<usize> {
+    expressions.iter().try_fold(0_usize, |count, expression| {
+        let length = match expression {
+            ActionExpr::Literal(_) => 1,
+            ActionExpr::FunctionCall(call) if call.name == "create$" => {
+                literal_field_count(&call.args)?
+            }
+            _ => return None,
+        };
+        count.checked_add(length)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferric_rules_parser::{interpret_action_expr, parse_sexprs, Cardinality, FileId};
     use proptest::prelude::*;
 
     /// Build a well-formed `RegisteredTemplate` from a list of unique slot names.
@@ -205,10 +276,86 @@ mod tests {
             name: name.to_string(),
             slot_types: vec![SlotType::Single; slot_names.len()],
             allowed_types: vec![None; slot_names.len()],
+            constraints: vec![RuntimeSlotConstraints::default(); slot_names.len()],
+            dynamic_defaults: vec![None; slot_names.len()],
             slot_names,
             slot_index,
             defaults,
         }
+    }
+
+    fn expressions(source: &str) -> Vec<ActionExpr> {
+        let parsed = parse_sexprs(source, FileId(0));
+        assert!(parsed.errors.is_empty());
+        parsed
+            .exprs
+            .iter()
+            .map(|expression| interpret_action_expr(expression).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn literal_cardinality_checks_the_whole_slot_not_create_fragments() {
+        let mut template = make_template("sample", vec!["items".to_owned()]);
+        template.slot_types[0] = SlotType::Multi;
+        template.constraints[0].cardinality = Some(Cardinality {
+            min: 2,
+            max: Some(2),
+        });
+        let symbols = SymbolTable::new();
+        let fields = expressions("(create$ a) (create$ b)");
+        assert!(template
+            .validate_literal_expression(0, &fields[0], &symbols)
+            .is_ok());
+        assert!(template
+            .validate_literal_expressions(0, &fields, &symbols)
+            .is_ok());
+        assert!(template
+            .validate_literal_expressions(0, &fields[..1], &symbols)
+            .is_err());
+        assert!(template
+            .validate_literal_expressions(0, &expressions("(create$ a (create$ b c))"), &symbols)
+            .is_err());
+        assert!(template
+            .validate_literal_expressions(0, &expressions("(create$ a ?later)"), &symbols)
+            .is_ok());
+    }
+
+    #[test]
+    fn unknown_field_count_does_not_skip_known_literal_value_checks() {
+        let mut template = make_template("sample", vec!["items".to_owned()]);
+        template.slot_types[0] = SlotType::Multi;
+        template.allowed_types[0] = Some(vec![SlotValueType::Integer]);
+        template.constraints[0].cardinality = Some(Cardinality {
+            min: 2,
+            max: Some(2),
+        });
+        assert!(template
+            .validate_literal_expressions(0, &expressions("?later wrong"), &SymbolTable::new())
+            .is_err());
+    }
+
+    #[test]
+    fn dynamic_default_void_placeholder_is_not_a_required_slot() {
+        let mut template = make_template("sample", vec!["value".to_owned()]);
+        assert!(template.requires_value(0));
+        template.dynamic_defaults[0] = Some(DynamicSlotDefault {
+            module: ModuleId(0),
+            expressions: vec![RuntimeExpr::Literal(Value::Integer(1))],
+        });
+        assert!(!template.requires_value(0));
+    }
+
+    #[test]
+    fn complete_owned_fact_shape_includes_value_constraints() {
+        let first = make_template("sample", vec!["value".to_owned()]);
+        let mut second = first.clone();
+        assert!(first.same_shape(&second));
+        second.constraints[0].range = Some(ferric_rules_parser::NumericRange {
+            min: Some(ferric_rules_parser::NumericBound::Integer(2)),
+            max: None,
+        });
+        assert!(!first.same_shape(&second));
     }
 
     proptest! {

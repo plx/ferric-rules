@@ -393,6 +393,9 @@ pub struct EvalContext<'a> {
     pub(crate) expression_depth: usize,
     /// Lexical module, preserved when reset changes the engine's focus.
     pub current_module: crate::modules::ModuleId,
+    /// Dynamic defaults bind callable names at definition but read direct globals
+    /// in the assertion caller. Ordinary callable boundaries clear this override.
+    pub(crate) global_module: Option<crate::modules::ModuleId>,
     pub method_chain: Option<MethodChain>,
     pub(crate) compact_fact_bindings: Option<&'a CompactFactBindings>,
     /// Engine mutation is forbidden during matching, including nested callables.
@@ -469,19 +472,28 @@ fn sorted_dedup_modules(
     modules
 }
 
+fn global_lookup_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
+    ctx.global_module.unwrap_or(ctx.current_module)
+}
+
 fn visible_modules_for_construct(
     ctx: &EvalContext<'_>,
     modules: &[crate::modules::ModuleId],
     construct_type: &str,
     local_name: &str,
 ) -> Vec<crate::modules::ModuleId> {
+    let lookup_module = if construct_type == "defglobal" {
+        global_lookup_module(ctx)
+    } else {
+        ctx.current_module
+    };
     sorted_dedup_modules(
         modules
             .iter()
             .copied()
             .filter(|module_id| {
                 ctx.engine.module_registry.is_construct_visible(
-                    ctx.current_module,
+                    lookup_module,
                     *module_id,
                     construct_type,
                     local_name,
@@ -512,7 +524,14 @@ fn resolve_visible_owner_module(
         [] => Err(EvalError::NotVisible {
             name: display_name.to_string(),
             construct_type: construct_type.to_string(),
-            from_module: module_label(ctx, ctx.current_module),
+            from_module: module_label(
+                ctx,
+                if construct_type == "defglobal" {
+                    global_lookup_module(ctx)
+                } else {
+                    ctx.current_module
+                },
+            ),
             owning_module: module_label(ctx, all_modules[0]),
             span,
         }),
@@ -688,7 +707,12 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             if is_module_qualified(name) {
                 return resolve_qualified_global(ctx, name, span.clone());
             }
-            if let Some(value) = ctx.engine.globals.get(ctx.current_module, name).cloned() {
+            if let Some(value) = ctx
+                .engine
+                .globals
+                .get(global_lookup_module(ctx), name)
+                .cloned()
+            {
                 return Ok(value);
             }
 
@@ -926,6 +950,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         iter_bindings.set(var_id, ValueRef::new(Value::Integer(counter)));
                     }
                     let mut iter_ctx = EvalContext {
+                        global_module: ctx.global_module,
                         bindings: &iter_bindings,
                         var_map: &iter_var_map,
                         callable_locals: ctx.callable_locals.as_deref_mut(),
@@ -1030,6 +1055,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         iter_bindings.set(idx_var_id, ValueRef::new(Value::Integer(one_based)));
 
                         let mut iter_ctx = EvalContext {
+                            global_module: ctx.global_module,
                             bindings: &iter_bindings,
                             var_map: &iter_var_map,
                             callable_locals: ctx.callable_locals.as_deref_mut(),
@@ -1278,6 +1304,7 @@ fn with_expression_query_candidate<T>(
         None,
         |ctx| {
             let mut child = EvalContext {
+                global_module: ctx.global_module,
                 engine: ctx.engine,
                 bindings: &bindings,
                 var_map: &var_map,
@@ -1538,7 +1565,7 @@ fn resolve_qualified_global(
     }
 
     if !ctx.engine.module_registry.is_construct_visible(
-        ctx.current_module,
+        global_lookup_module(ctx),
         target_module_id,
         "defglobal",
         local_name,
@@ -1546,7 +1573,7 @@ fn resolve_qualified_global(
         return Err(EvalError::NotVisible {
             name: format!("?*{raw_name}*"),
             construct_type: "defglobal".to_string(),
-            from_module: module_label(ctx, ctx.current_module),
+            from_module: module_label(ctx, global_lookup_module(ctx)),
             owning_module: module_name.to_string(),
             span,
         });
@@ -1590,6 +1617,7 @@ fn execute_callable_body(
     let mut callable_locals = CallableLocals::default();
     // Execute body expressions in an inner frame that inherits shared runtime state.
     let mut inner_ctx = EvalContext {
+        global_module: None,
         bindings,
         var_map,
         callable_locals: Some(&mut callable_locals),
@@ -1924,6 +1952,7 @@ fn method_queries_match(
     }
     let mut locals = CallableLocals::default();
     let mut query_ctx = EvalContext {
+        global_module: None,
         bindings,
         var_map,
         callable_locals: Some(&mut locals),
@@ -3149,7 +3178,7 @@ fn dispatch_bind(
                     });
                 }
                 if !ctx.engine.module_registry.is_construct_visible(
-                    ctx.current_module,
+                    global_lookup_module(ctx),
                     module_id,
                     "defglobal",
                     local_name,
@@ -3157,14 +3186,18 @@ fn dispatch_bind(
                     return Err(EvalError::NotVisible {
                         name: format!("?*{name}*"),
                         construct_type: "defglobal".to_string(),
-                        from_module: module_label(ctx, ctx.current_module),
+                        from_module: module_label(ctx, global_lookup_module(ctx)),
                         owning_module: module_name.to_string(),
                         span: span.cloned(),
                     });
                 }
                 module_id
-            } else if ctx.engine.globals.contains(ctx.current_module, &name) {
-                ctx.current_module
+            } else if ctx
+                .engine
+                .globals
+                .contains(global_lookup_module(ctx), &name)
+            {
+                global_lookup_module(ctx)
             } else {
                 let all_modules = sorted_dedup_modules(ctx.engine.globals.modules_for_name(&name));
                 if all_modules.is_empty() {
@@ -3180,7 +3213,7 @@ fn dispatch_bind(
                         return Err(EvalError::NotVisible {
                             name: format!("?*{name}*"),
                             construct_type: "defglobal".to_string(),
-                            from_module: module_label(ctx, ctx.current_module),
+                            from_module: module_label(ctx, global_lookup_module(ctx)),
                             owning_module: module_label(ctx, all_modules[0]),
                             span: span.cloned(),
                         })
@@ -6740,6 +6773,7 @@ mod tests {
         let (mut engine, vm, bs) = test_ctx();
         let main_id = engine.module_registry.main_module_id();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -6845,6 +6879,7 @@ mod tests {
         bindings.set(variable, ValueRef::new(Value::Integer(42)));
         let current_module = engine.module_registry.main_module_id();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bindings,
             var_map: &var_map,
             callable_locals,
@@ -8554,6 +8589,7 @@ mod tests {
         bs.set(var_id, ValueRef::new(Value::Integer(99)));
 
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8592,6 +8628,7 @@ mod tests {
         let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
 
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8636,6 +8673,7 @@ mod tests {
         let runtime = from_action_expr(&action, &mut engine.symbol_table, &engine.config).unwrap();
 
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8668,6 +8706,7 @@ mod tests {
             Value::Integer(42),
         );
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8703,6 +8742,7 @@ mod tests {
             Value::Integer(0),
         );
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8738,6 +8778,7 @@ mod tests {
     fn bind_with_literal_target_returns_type_error() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8801,6 +8842,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), make_double_func());
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8840,6 +8882,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8863,6 +8906,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), make_double_func());
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8897,6 +8941,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8937,6 +8982,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -8988,6 +9034,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9041,6 +9088,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), func);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9090,6 +9138,7 @@ mod tests {
             .functions
             .register(engine.module_registry.main_module_id(), quadruple);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9261,6 +9310,7 @@ mod tests {
     fn eval_gt_true() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9281,6 +9331,7 @@ mod tests {
     fn eval_lt_false() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9301,6 +9352,7 @@ mod tests {
     fn eval_eq_numeric_true() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9321,6 +9373,7 @@ mod tests {
     fn eval_neq_numeric() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9341,6 +9394,7 @@ mod tests {
     fn eval_gte_equal() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9361,6 +9415,7 @@ mod tests {
     fn eval_lte_less() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9385,6 +9440,7 @@ mod tests {
     fn eval_eq_same_integers() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9405,6 +9461,7 @@ mod tests {
     fn eval_neq_different_types() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9431,6 +9488,7 @@ mod tests {
         let (mut engine, vm, bs) = test_ctx();
         let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9459,6 +9517,7 @@ mod tests {
         let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let false_sym = clips_false(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9487,6 +9546,7 @@ mod tests {
         let false_sym = clips_false(&mut engine.symbol_table, StringEncoding::Utf8);
         let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9514,6 +9574,7 @@ mod tests {
         let (mut engine, vm, bs) = test_ctx();
         let false_sym = clips_false(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9535,6 +9596,7 @@ mod tests {
         let (mut engine, vm, bs) = test_ctx();
         let true_sym = clips_true(&mut engine.symbol_table, StringEncoding::Utf8);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9585,6 +9647,7 @@ mod tests {
     fn eval_integerp_true() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9605,6 +9668,7 @@ mod tests {
     fn eval_integerp_false_on_float() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9625,6 +9689,7 @@ mod tests {
     fn eval_floatp_true() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9645,6 +9710,7 @@ mod tests {
     fn eval_numberp_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9665,6 +9731,7 @@ mod tests {
     fn eval_numberp_float() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9689,6 +9756,7 @@ mod tests {
             .intern_symbol("foo", StringEncoding::Utf8)
             .unwrap();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9710,6 +9778,7 @@ mod tests {
         let fs = FerricString::new("hello", StringEncoding::Utf8).unwrap();
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9738,6 +9807,7 @@ mod tests {
             .intern_symbol("hello", StringEncoding::Utf8)
             .unwrap();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9759,6 +9829,7 @@ mod tests {
         let fs = FerricString::new("hi", StringEncoding::Utf8).unwrap();
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9779,6 +9850,7 @@ mod tests {
     fn eval_lexemep_false_for_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9811,6 +9883,7 @@ mod tests {
         let mf = Multifield::new();
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9834,6 +9907,7 @@ mod tests {
     fn eval_multifieldp_false_for_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9864,6 +9938,7 @@ mod tests {
     fn eval_evenp_true_for_even_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9884,6 +9959,7 @@ mod tests {
     fn eval_evenp_true_for_zero() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9904,6 +9980,7 @@ mod tests {
     fn eval_evenp_false_for_odd_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9940,6 +10017,7 @@ mod tests {
     fn eval_oddp_true_for_odd_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9960,6 +10038,7 @@ mod tests {
     fn eval_oddp_false_for_zero() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -9980,6 +10059,7 @@ mod tests {
     fn eval_oddp_false_for_even_integer() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10038,6 +10118,7 @@ mod tests {
             .intern_symbol("foo", StringEncoding::Utf8)
             .unwrap();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10084,6 +10165,7 @@ mod tests {
             .intern_symbol("bar", StringEncoding::Utf8)
             .unwrap();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10141,6 +10223,7 @@ mod tests {
             .intern_symbol("foo", StringEncoding::Utf8)
             .unwrap();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10551,6 +10634,7 @@ mod tests {
         // sym-cat with string args: the symbol's name should be the concatenation.
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10577,6 +10661,7 @@ mod tests {
     fn sym_cat_zero_args_returns_empty_symbol() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10603,6 +10688,7 @@ mod tests {
     fn gensym_generates_incrementing_symbols() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10647,6 +10733,7 @@ mod tests {
     fn setgen_sets_next_generated_symbol() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -10742,6 +10829,7 @@ mod tests {
 
         {
             let mut ctx = EvalContext {
+                global_module: None,
                 bindings: &bs,
                 var_map: &vm,
                 callable_locals: None,
@@ -10804,6 +10892,7 @@ mod tests {
     fn load_returns_false_symbol_for_placeholder_path() {
         let (mut engine, vm, bs) = test_ctx();
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11344,6 +11433,7 @@ mod tests {
         let mf = mf_lit(vec![Value::Integer(10), Value::Integer(20)]);
         let expr = call("member$", vec![int(99), mf]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11365,6 +11455,7 @@ mod tests {
         let mf = mf_lit(vec![]);
         let expr = call("member$", vec![int(1), mf]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11407,6 +11498,7 @@ mod tests {
         let mf = mf_lit(vec![Value::Integer(3), Value::Integer(4)]);
         let expr = call("member", vec![int(9), mf]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11434,6 +11526,7 @@ mod tests {
         ]);
         let expr = call("subsetp", vec![mf1, mf2]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11457,6 +11550,7 @@ mod tests {
         let mf2 = mf_lit(vec![Value::Integer(1), Value::Integer(2)]);
         let expr = call("subsetp", vec![mf1, mf2]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11484,6 +11578,7 @@ mod tests {
         ]);
         let expr = call("subsetp", vec![mf1, mf2]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11507,6 +11602,7 @@ mod tests {
         let mf2 = mf_lit(vec![]);
         let expr = call("subsetp", vec![mf1, mf2]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11534,6 +11630,7 @@ mod tests {
         ]);
         let expr = call("subsetp", vec![mf1, mf2]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11557,6 +11654,7 @@ mod tests {
         let mf2 = mf_lit(vec![]);
         let expr = call("subsetp", vec![mf1, mf2]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11603,6 +11701,7 @@ mod tests {
         let inner_expr = call("create$", vec![int(1), int(2)]);
         let expr = call("multifieldp", vec![inner_expr]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -11787,6 +11886,7 @@ mod tests {
         ));
         let expr = call("format", vec![nil_sym, fmt, arg]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12002,6 +12102,7 @@ mod tests {
         engine.input_buffer.push_back("42".to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12024,6 +12125,7 @@ mod tests {
         engine.input_buffer.push_back("2.5".to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12046,6 +12148,7 @@ mod tests {
         engine.input_buffer.push_back("hello".to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12073,6 +12176,7 @@ mod tests {
         engine.input_buffer = std::collections::VecDeque::new();
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12099,6 +12203,7 @@ mod tests {
         engine.input_buffer.push_back(r#""hello""#.to_string());
         let expr = call("read", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12128,6 +12233,7 @@ mod tests {
         engine.input_buffer.push_back("hello world".to_string());
         let expr = call("readline", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12152,6 +12258,7 @@ mod tests {
         engine.input_buffer = std::collections::VecDeque::new();
         let expr = call("readline", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12178,6 +12285,7 @@ mod tests {
         engine.input_buffer.push_back("second line".to_string());
         let expr = call("readline", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12236,6 +12344,7 @@ mod tests {
         let main_id = engine.module_registry.main_module_id();
         let expr = call("get-focus", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,
@@ -12273,6 +12382,7 @@ mod tests {
         let main_id = engine.module_registry.main_module_id();
         let expr = call("get-focus-stack", vec![]);
         let mut ctx = EvalContext {
+            global_module: None,
             bindings: &bs,
             var_map: &vm,
             callable_locals: None,

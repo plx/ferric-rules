@@ -7,7 +7,8 @@ use ferric_rules_core::{AlphaEntryType, RuleId, TemplateId};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
 
 use crate::engine::{rule_index_get, Engine};
-use crate::fact_initializer::PreparedFact;
+use crate::evaluator::RuntimeExpr;
+use crate::fact_initializer::{PreparedFact, RuntimeExpressions};
 use crate::modules::ModuleId;
 
 impl Engine {
@@ -20,17 +21,18 @@ impl Engine {
             || self.registered_deffacts.iter().any(|definition| {
                 definition.facts.iter().any(|fact| {
                     matches!(fact, PreparedFact::Template { template_id, .. } if *template_id == id)
-                        || fact.all_expressions().any(|expression| match expression {
-                            crate::evaluator::RuntimeExpr::QueryAction { bindings, .. } => {
-                                bindings.iter().any(|(_, name)| {
-                                    self.template_name_is(name, definition.module, id)
-                                })
-                            }
-                            crate::evaluator::RuntimeExpr::EffectCall { call } => {
-                                self.call_uses_template(call, definition.module, id)
-                            }
-                            _ => false,
+                        || fact.all_expressions().any(|expression| {
+                            self.runtime_expression_uses_template(expression, definition.module, id)
                         })
+                })
+            })
+            || self.template_defs.values().any(|template| {
+                template.dynamic_defaults.iter().flatten().any(|default| {
+                    default.expressions.iter().any(|expression| {
+                        RuntimeExpressions::new(expression).any(|expression| {
+                            self.runtime_expression_uses_template(expression, default.module, id)
+                        })
+                    })
                 })
             })
         {
@@ -65,6 +67,21 @@ impl Engine {
 
     pub(crate) fn template_name_is(&self, name: &str, module: ModuleId, id: TemplateId) -> bool {
         self.resolve_template_id(name, module).ok() == Some(id)
+    }
+
+    fn runtime_expression_uses_template(
+        &self,
+        expression: &RuntimeExpr,
+        module: ModuleId,
+        id: TemplateId,
+    ) -> bool {
+        match expression {
+            RuntimeExpr::QueryAction { bindings, .. } => bindings
+                .iter()
+                .any(|(_, name)| self.template_name_is(name, module, id)),
+            RuntimeExpr::EffectCall { call } => self.call_uses_template(call, module, id),
+            _ => false,
+        }
     }
 
     pub(crate) fn rule_uses_template(

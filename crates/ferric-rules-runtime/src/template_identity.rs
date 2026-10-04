@@ -5,7 +5,8 @@
 //! previously loaded RHS forms using a newly installed template.
 
 use crate::engine::Engine;
-use crate::fact_initializer::PreparedFact;
+use crate::evaluator::RuntimeExpr;
+use crate::fact_initializer::{PreparedFact, RuntimeExpressions};
 use crate::modules::ModuleId;
 use ferric_rules_core::{AlphaEntryType, Fact};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
@@ -21,6 +22,21 @@ impl Engine {
                 matches!(entry, AlphaEntryType::OrderedRelation(symbol) if self.resolve_core_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
             })
             || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(|fact| matches!(fact, PreparedFact::Ordered { relation, .. } if self.resolve_core_symbol(*relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name))))
+            || self.template_defs.values().any(|template| {
+                template.dynamic_defaults.iter().flatten().any(|default| {
+                    default.expressions.iter().any(|expression| {
+                        RuntimeExpressions::new(expression).any(|expression| match expression {
+                            RuntimeExpr::QueryAction { bindings, .. } => bindings
+                                .iter()
+                                .any(|(_, raw)| self.ordered_name_is(raw, default.module, name)),
+                            RuntimeExpr::EffectCall { call } => {
+                                self.call_uses_ordered_name(call, default.module, name)
+                            }
+                            _ => false,
+                        })
+                    })
+                })
+            })
         {
             return true;
         }
@@ -95,7 +111,7 @@ impl Engine {
     fn call_uses_ordered_name(&self, call: &FunctionCall, module: ModuleId, name: &str) -> bool {
         (call.name == "assert" && call.args.iter().any(|expr| {
             matches!(expr, ActionExpr::FunctionCall(fact) if self.ordered_name_is(&fact.name, module, name))
-        })) || call.args.iter().any(|expr| self.expr_uses_ordered_name(expr, module, name))
+        })) || crate::effects::evaluated_arguments(self, module, call).iter().any(|expr| self.expr_uses_ordered_name(expr, module, name))
     }
 
     fn expr_uses_ordered_name(&self, expr: &ActionExpr, module: ModuleId, name: &str) -> bool {

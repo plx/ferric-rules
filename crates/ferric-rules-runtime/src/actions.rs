@@ -130,6 +130,7 @@ impl ActionEvalEnv {
     ) -> crate::evaluator::EvalContext<'ctx> {
         let engine = &mut *context.engine;
         crate::evaluator::EvalContext {
+            global_module: None,
             engine,
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
@@ -223,6 +224,7 @@ impl ActionEvalEnv {
     ) -> Result<Value, ActionError> {
         let engine = &mut *context.engine;
         let mut ctx = crate::evaluator::EvalContext {
+            global_module: None,
             engine,
             bindings,
             var_map,

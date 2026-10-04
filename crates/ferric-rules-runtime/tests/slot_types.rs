@@ -204,11 +204,9 @@ fn instance_name_slots_accept_typed_defaults_and_values_but_reject_symbols() {
 #[test]
 fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
     for attribute in [
-        "(range 1 10)",
-        "(allowed-values 1 2)",
         "(cardinality 1 2)",
-        "(default-dynamic (+ 1 2))",
-        "(default (+ 1 2))",
+        "(allowed-classes Widget)",
+        "(allowed-instance-names [widget])",
         "(type)",
         "(type INTEGER) (type FLOAT)",
     ] {

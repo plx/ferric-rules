@@ -137,9 +137,11 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 7
+## Pre-1.0 snapshot schema 8
 
-Snapshots are written with schema 7. Schema 6 snapshots are rejected with
+Snapshots are written with schema 8. Schema 7 snapshots are rejected with
+`UnsupportedVersion(7)` because template constraints and dynamic default
+expressions now persist in registered template metadata. Schema 6 snapshots are rejected with
 `UnsupportedVersion(6)` because executable effects and immediate lifecycle
 semantics change restored behavior, and cleared fact chronology is now
 persisted. Schema 5 snapshots are rejected with
@@ -436,35 +438,46 @@ was never populated.
 | `if` / `then` / `else` | Supported in rule RHS actions and callable bodies; direct use in `test` CEs is unsupported |
 | Certainty factors | Not supported |
 
-## Primitive template slot types
+## Template constraints and computed defaults
 
-Ferric now retains `(type ...)` declarations for `SYMBOL`, `STRING`, `INTEGER`,
-`FLOAT`, `NUMBER`, `LEXEME`, and `EXTERNAL-ADDRESS`. Type lists form a union;
-`NUMBER` means integer or float, and `LEXEME` means symbol or string. Omitted
-constraints and `(type ?VARIABLE)` permit any supported value kind. Each field
-of a constrained multislot must satisfy its declared union.
+Parser `SlotDefinition` struct literals now require a `constraints` field;
+use `SlotConstraints::default()` when unconstrained. `DefaultValue` has new
+`Expressions(Vec<ActionExpr>)` and `Dynamic(Vec<ActionExpr>)` variants;
+exhaustive consumers must handle them without treating dynamic expressions
+as definition-time values.
 
-Defaults follow CLIPS' primitive preference: symbol `nil`, empty string,
-integer `0`, then float `0.0`, independent of the type list's spelling order.
-Multislot defaults are empty unless specified. Literal multifield defaults,
-including literal `create$` forms, retain every field. External-address slots
-require `(default ?NONE)`; Ferric does not manufacture host identity tokens.
+Ferric retains primitive `(type ...)` unions, `allowed-symbols`,
+`allowed-strings`, `allowed-lexemes`, `allowed-integers`, `allowed-floats`,
+`allowed-numbers`, `allowed-values`, numeric `range`, and multislot
+`cardinality`. Category-specific allowed lists constrain only their value
+kinds; `(allowed-integers 1)` still permits symbols unless a type restriction
+excludes them. Integer and float allowed values remain distinct. Conflicting
+facets fail at load time. Class constraints (`allowed-classes` and
+`allowed-instance-names`) remain unsupported.
 
-Invalid literal assertions reject a rule before installation or replacement.
-Defaults and named deffacts are checked before registration. Runtime assertions,
-`modify`, `duplicate`, and host template assertions also validate types before
-changing facts. This runtime checking is intentionally stricter than CLIPS
-6.30's default `FALSE` dynamic-constraint setting: applications must supply
-values matching their declarations. A failed `modify` leaves the original fact
-intact; a failed RHS action produces an action diagnostic and stops that RHS.
+Static `(default ...)` expressions evaluate once during template definition.
+`(default-dynamic ...)` evaluates for each omitted slot on each assertion,
+including host assertions and `load-facts`. Supplied values skip defaults;
+`modify` and `duplicate` retain omitted values. Dynamic defaults resolve
+callables in the template's module and direct global references in the
+assertion caller's module. Slot evaluation follows declaration order.
+`?DERIVE` selects a constraint-valid value; multislot minimum cardinality can
+produce a nonempty default. `?NONE` requires an explicit value. Automatically
+expanded defaults are limited to 1,000,000 fields and 32 MiB estimated storage.
 
-Previously ignored `range`, `allowed-*`, `cardinality`, `default-dynamic`, and
-other optional slot attributes now produce an explicit unsupported error.
-Arbitrary computed defaults are also unsupported; use literal defaults or
-`?DERIVE`, and calculate dynamic values before assertion. `FACT-ADDRESS` and
-instance type declarations are rejected because the supported value model has
-no corresponding tagged value. These restrictions do not add CLIPS class
-constraints, general static type inference, or dynamic constraint toggles.
+Known invalid literal assertions, LHS constraints and defaults reject the
+construct before installation. Runtime assertions, `modify`, `duplicate`,
+and host template assertions validate complete values before publishing the
+fact. This remains intentionally stricter than CLIPS 6.30's default `FALSE`
+dynamic-constraint setting. A failed `modify` leaves the original fact intact;
+a failed RHS action produces a diagnostic and stops that RHS. Effects from
+expressions evaluated before an error remain visible.
+
+`FACT-ADDRESS` and `INSTANCE-NAME` values and constraints are supported;
+external-address slots still require `(default ?NONE)` or an explicit valid
+value because Ferric does not manufacture host identity tokens. For the few
+CLIPS 6.30 derivation cases that produce a value violating their own constraint,
+Ferric chooses a valid default; see [compatibility.md](compatibility.md).
 
 ## September 2026 embedding API changes
 
@@ -473,7 +486,7 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 7); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 8); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see

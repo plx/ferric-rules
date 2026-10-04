@@ -1,0 +1,6 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for allowed-symbols attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-symbols )

@@ -633,13 +633,13 @@ impl Engine {
         let def = self
             .template_defs
             .get(tid)
+            .cloned()
             .ok_or_else(|| EngineError::TemplateNotFound(template_name.to_string()))?;
 
-        // Start with default values for all slots.
-        let mut slots = def.defaults.clone().into_boxed_slice();
+        let mut overrides = Vec::with_capacity(slot_names.len());
 
         // Validate every override before mutating working memory.
-        let mut seen = vec![false; slots.len()];
+        let mut seen = vec![false; def.slot_names.len()];
         for (name, value) in slot_names.iter().zip(slot_values) {
             let idx = def
                 .slot_index(name)
@@ -661,7 +661,7 @@ impl Engine {
             if matches!(value, Value::Void) {
                 return Err(invalid("a void value cannot be stored in a fact"));
             }
-            slots[idx] = match (def.slot_types[idx], value) {
+            let value = match (def.slot_types[idx], value) {
                 (ferric_rules_parser::SlotType::Single, Value::Multifield(_)) => {
                     return Err(invalid("a single-field slot requires one scalar value"));
                 }
@@ -671,15 +671,18 @@ impl Engine {
                 }
                 (_, scalar) => scalar,
             };
+            def.validate_slot(idx, &value)
+                .map_err(|reason| invalid(&reason))?;
+            overrides.push((idx, vec![crate::evaluator::RuntimeExpr::Literal(value)]));
         }
-        for (index, value) in slots.iter().enumerate() {
-            def.validate_slot(index, value)
-                .map_err(|reason| EngineError::InvalidSlotValue {
-                    template: template_name.to_owned(),
-                    slot: def.slot_names[index].clone(),
-                    reason,
-                })?;
-        }
+        let slots = self
+            .evaluate_template_defaults(&def, &overrides, self.module_registry.current_module())
+            .map_err(|error| EngineError::InvalidSlotValue {
+                template: template_name.to_owned(),
+                slot: def.slot_names[error.index].clone(),
+                reason: error.error.to_string(),
+            })?
+            .into_boxed_slice();
 
         let fact = Fact::Template(TemplateFact {
             template_id: tid,

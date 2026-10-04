@@ -1,0 +1,13 @@
+(deffunction value ()
+ (printout t "callee;")
+ (return 7)
+ (printout t "unreachable;"))
+(deftemplate sample
+ (slot empty (default-dynamic (printout t "void;")))
+ (slot value (default-dynamic (value))))
+(deffunction make ()
+ (printout t "before;")
+ (bind ?f (assert (sample)))
+ (printout t "after:" (fact-slot-value ?f empty) ":" (fact-slot-value ?f value) crlf)
+ alive)
+(defrule run => (printout t "result:" (make) crlf))

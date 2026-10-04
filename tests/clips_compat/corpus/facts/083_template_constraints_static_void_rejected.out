@@ -1,0 +1,7 @@
+
+[CSTRNCHK1] An expression found in the default attribute
+does not match the allowed types for slot x.
+
+ERROR:
+(deftemplate MAIN::sample
+   (slot x (default (printout nil "ignored")))

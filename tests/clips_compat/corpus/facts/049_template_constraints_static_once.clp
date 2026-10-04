@@ -1,0 +1,6 @@
+(defglobal ?*n* = 0)
+(deffunction tick () (bind ?*n* (+ ?*n* 1)) ?*n*)
+(deftemplate first (slot x (default (tick))))
+(deftemplate second (slot x (default (tick))))
+(deffacts seed (first) (second))
+(defrule show (first (x ?a)) (second (x ?b)) => (printout t ?a ":" ?b ":reset=" ?*n* crlf))

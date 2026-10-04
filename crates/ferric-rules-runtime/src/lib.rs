@@ -59,7 +59,9 @@ mod query_validation;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;
+pub(crate) mod slot_constraints;
 mod source_limits;
+mod template_defaults;
 mod template_identity;
 mod template_reload;
 pub(crate) mod templates;

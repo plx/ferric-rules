@@ -52,7 +52,6 @@ pub(crate) struct RuntimeExpressions<'a> {
 }
 
 impl<'a> RuntimeExpressions<'a> {
-    #[cfg(feature = "serde")]
     pub(crate) fn new(root: &'a RuntimeExpr) -> Self {
         Self {
             pending: vec![root],
@@ -325,6 +324,44 @@ impl Engine {
         }
     }
 
+    pub(crate) fn prepare_default_expressions(
+        &mut self,
+        expressions: &[ActionExpr],
+        module: ModuleId,
+    ) -> Result<Vec<RuntimeExpr>, LoadError> {
+        let mut locals = HashSet::new();
+        expressions
+            .iter()
+            .map(|expression| {
+                self.validate_source_default_control(expression, module)?;
+                self.prepare_field(expression, module, &mut locals, false)
+            })
+            .collect()
+    }
+
+    fn validate_source_default_control(
+        &self,
+        root: &ActionExpr,
+        module: ModuleId,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![root];
+        while let Some(expression) = pending.pop() {
+            match expression {
+                ActionExpr::FunctionCall(call) => {
+                    if call.name == "return" {
+                        return Err(invalid_at(
+                            call.span,
+                            "[PRCDRPSR2] The return function is not valid in a template default.",
+                        ));
+                    }
+                    pending.extend(crate::effects::evaluated_arguments(self, module, call));
+                }
+                expression => expression.push_children(&mut pending),
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_field(
         &mut self,
         expression: &ActionExpr,
@@ -388,11 +425,11 @@ impl Engine {
             .map(ActionExpr::FunctionCall)
             .collect();
         let validated = template
-            .slot_overrides(&overrides)
+            .slot_overrides(&overrides, &self.symbol_table)
             .map_err(LoadError::Compile)?;
         let assigned: HashSet<_> = validated.iter().map(|(index, _)| *index).collect();
         for (index, default) in template.defaults.iter().enumerate() {
-            if !assigned.contains(&index) {
+            if !assigned.contains(&index) && template.dynamic_defaults[index].is_none() {
                 template
                     .validate_slot(index, default)
                     .map_err(LoadError::Compile)?;
@@ -463,6 +500,7 @@ impl Engine {
         let bindings = ferric_rules_core::binding::BindingSet::new();
         let var_map = ferric_rules_core::binding::VarMap::new();
         let mut ctx = crate::evaluator::EvalContext {
+            global_module: None,
             current_module: module,
             engine: self,
             bindings: &bindings,
@@ -492,18 +530,8 @@ impl Engine {
             })),
             PreparedFact::Template { template_id, slots } => {
                 let template = template.expect("template resolved above");
-                let mut values = template.defaults.clone();
-                for (index, fields) in slots {
-                    values[*index] = match template.slot_types[*index] {
-                        SlotType::Single => evaluator::eval(&mut ctx, &fields[0])
-                            .map_err(|error| error.to_string())?,
-                        SlotType::Multi => Value::Multifield(Box::new(
-                            evaluate_fields(&mut ctx, fields)?.into_iter().collect(),
-                        )),
-                    };
-                    template.validate_slot(*index, &values[*index])?;
-                }
-                template.validate_slots(&values)?;
+                let values = crate::template_defaults::evaluate_slots(&mut ctx, &template, slots)
+                    .map_err(|error| error.error.to_string())?;
                 Ok(Fact::Template(TemplateFact {
                     template_id: *template_id,
                     slots: values.into_boxed_slice(),

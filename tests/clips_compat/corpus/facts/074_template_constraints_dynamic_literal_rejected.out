@@ -1,0 +1,7 @@
+
+[CSTRNCHK1] An expression found in the default-dynamic attribute
+does not match the allowed values for slot x.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-symbols red) (default-dynamic blue))
