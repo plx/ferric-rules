@@ -6,9 +6,8 @@ classifying each file by detected features and ferric compatibility.
 
 from __future__ import annotations
 
-import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated
 
 import typer
@@ -22,10 +21,16 @@ from ferric_tools._clips_parser import (
     UNSUPPORTED_IO,
     scan_features,
 )
-from ferric_tools._harness import HarnessPlan, attach_harness_contracts, sha256_bytes
+from ferric_tools._harness import (
+    HarnessContractError,
+    HarnessPlan,
+    attach_harness_contracts,
+    sha256_bytes,
+)
 from ferric_tools._manifest import save_manifest, utc_now_iso
 from ferric_tools._paths import examples_dir as default_examples_dir
 from ferric_tools._paths import repo_root
+from ferric_tools.compat.assessment import ASSESSMENT_CATEGORIES, assessment_view
 from ferric_tools.compat.oracle import (
     ORACLE_PROTOCOL_VERSION,
     SCENARIO_DECLARATION_VERSION,
@@ -38,7 +43,7 @@ from ferric_tools.compat.oracle import (
 
 app = typer.Typer(help="Scan CLIPS examples for compatibility assessment.")
 console = Console(stderr=True)
-MANIFEST_VERSION = 3
+MANIFEST_VERSION = 4
 ORACLE_REGISTRY_VERSION = 1
 
 
@@ -68,7 +73,7 @@ def _load_oracle_registry(path: Path) -> dict[str, dict]:
         raise OracleRegistryError(f"cannot read oracle registry {path}: {error}") from error
     if type(raw) is not dict or set(raw) != {"version", "fixtures"}:
         raise OracleRegistryError("oracle registry must contain exactly 'version' and 'fixtures'")
-    if raw["version"] != ORACLE_REGISTRY_VERSION:
+    if type(raw["version"]) is not int or raw["version"] != ORACLE_REGISTRY_VERSION:
         raise OracleRegistryError(f"unsupported oracle registry version: {raw['version']!r}")
     fixtures = raw["fixtures"]
     if type(fixtures) is not dict:
@@ -82,6 +87,9 @@ def _load_oracle_registry(path: Path) -> dict[str, dict]:
         normalized = Path(raw_path)
         if (
             normalized.is_absolute()
+            or PureWindowsPath(raw_path).drive
+            or "\\" in raw_path
+            or any(ord(character) < 32 or ord(character) == 127 for character in raw_path)
             or normalized.as_posix() != raw_path
             or any(part in {"", ".", ".."} for part in normalized.parts)
         ):
@@ -190,9 +198,9 @@ def _attach_oracle_declarations(
     examples_path: Path,
     root: Path,
     harness_plans: dict[str, HarnessPlan],
+    declarations: dict[str, dict],
 ) -> None:
     """Validate tracked declarations and attach them to generated entries."""
-    declarations = _load_oracle_registry(examples_path / "compat-oracles.json")
     unknown_paths = sorted(set(declarations) - set(files))
     if unknown_paths:
         raise OracleRegistryError(
@@ -202,7 +210,7 @@ def _attach_oracle_declarations(
     for rel_path, entry in files.items():
         source_path = examples_path / rel_path
         declaration = declarations.get(rel_path)
-        if declaration is not None and declaration.get("version") == SCENARIO_DECLARATION_VERSION:
+        if declaration is not None:
             source_bytes = _read_scenario_source(
                 source_path,
                 examples_path=examples_path,
@@ -236,7 +244,9 @@ def _attach_oracle_declarations(
         else:
             composed_sha256 = source_sha256
             harness = entry.get("harness")
-            if harness is not None:
+            if entry.get("runability") == "library":
+                if harness is None:
+                    raise OracleRegistryError(f"{rel_path}: declared library has no harness plan")
                 plan = harness_plans.get(rel_path)
                 if plan is None or plan.metadata != harness:
                     raise OracleRegistryError(
@@ -295,39 +305,39 @@ def classify_file(path: Path, features: list[str], unsupported: list[str]) -> tu
     suffix = path.suffix.lower()
 
     if suffix == ".bat":
-        return "incompatible", "test-suite-batch", "batch"
+        return "unassessed", "test-suite-batch", "batch"
 
     cool_features = [f for f in unsupported if f in COOL_CONSTRUCTS]
     if cool_features:
-        return "incompatible", "unsupported-form", "standalone"
+        return "unassessed", "unsupported-form", "standalone"
 
     control_features = [f for f in unsupported if f in UNSUPPORTED_CONTROL]
     if control_features:
-        return "incompatible", "unsupported-control", "standalone"
+        return "unassessed", "unsupported-control", "standalone"
 
     io_features = [f for f in unsupported if f in UNSUPPORTED_IO]
     if io_features:
-        return "incompatible", "unsupported-io", "standalone"
+        return "unassessed", "unsupported-io", "standalone"
 
     interactive_features = [f for f in unsupported if f in INTERACTIVE_IO]
     if interactive_features:
-        return "incompatible", "interactive", "interactive"
+        return "unassessed", "interactive", "interactive"
 
     loading_features = [f for f in unsupported if f in LOADING_COMMANDS]
     if loading_features:
-        return "incompatible", "unsupported-command", "batch"
+        return "unassessed", "unsupported-command", "batch"
 
     if "defrule" not in features:
-        return "pending", "library-only", "library"
+        return "unassessed", "library-only", "library"
 
-    return "pending", "testable", "standalone"
+    return "unassessed", "testable", "standalone"
 
 
 def _read_error_entry(source: str, error: OSError | UnicodeDecodeError) -> dict:
     """Return the fail-closed manifest entry for unreadable UTF-8 source."""
     return {
         "source": source,
-        "classification": "incompatible",
+        "classification": "unassessed",
         "reason": "read-error",
         "runability": "unknown",
         "features": [],
@@ -369,7 +379,7 @@ def scan_examples(
         unsupported = list(feature_scan.unsupported_feature_names)
         if feature_scan.issues:
             classification, reason, runability = (
-                "incompatible",
+                "unassessed",
                 "malformed-source",
                 "unknown",
             )
@@ -395,54 +405,74 @@ def scan_examples(
         else:
             root = repo_root()
     output_dir = harness_dir or root / "tests" / "harnesses"
+    declarations = _load_oracle_registry(examples_path / "compat-oracles.json")
+    eligible_keys = {
+        key
+        for key, declaration in declarations.items()
+        if declaration.get("version") == 1 and files.get(key, {}).get("runability") == "library"
+    }
     harness_plans = attach_harness_contracts(
         files,
         examples_dir=examples_path,
         output_dir=output_dir,
         root=root,
+        eligible_keys=eligible_keys,
     )
     _attach_oracle_declarations(
         files,
         examples_path=examples_path,
         root=root,
         harness_plans=harness_plans,
+        declarations=declarations,
     )
+    canonicalize_unassessed(files, examples_path)
     return files
 
 
-def dedup_batch_files(files: dict, examples_path: Path) -> int:
-    """Detect duplicate .bat files via content hashing."""
-    hash_to_paths: dict[str, str] = {}
+def canonicalize_unassessed(files: dict[str, dict], examples_path: Path) -> int:
+    """Collapse byte-identical unassessed inventory; never share oracle identities.
 
-    for rel_path, info in sorted(files.items()):
-        if info["reason"] != "test-suite-batch":
+    Physical sources remain in place for relative loading and bundle provenance.
+    Bytes, suffix and source readability must agree before rows are collapsed.
+    """
+    groups: dict[tuple[str, bytes], str] = {}
+    removed = 0
+    for rel_path, info in sorted(list(files.items())):
+        if info.get("oracle") is not None:
             continue
-        filepath = examples_path / rel_path
         try:
-            content = filepath.read_bytes()
-            digest = hashlib.sha256(content).hexdigest()
+            content = (examples_path / rel_path).read_bytes()
         except OSError:
             continue
-
-        if digest not in hash_to_paths:
-            hash_to_paths[digest] = rel_path
+        key = (Path(rel_path).suffix.lower(), content)
+        alias = {"path": rel_path, "source": info.get("source", "")}
+        if key in groups:
+            files[groups[key]]["aliases"].append(alias)
+            del files[rel_path]
+            removed += 1
         else:
-            canonical = hash_to_paths[digest]
-            info["classification"] = "incompatible"
-            info["reason"] = "duplicate-batch"
-            info["duplicate_of"] = canonical
-
-    return sum(1 for info in files.values() if info.get("duplicate_of"))
+            groups[key] = rel_path
+            info.update(
+                content_sha256=sha256_bytes(content),
+                canonical_path=rel_path,
+                aliases=[alias],
+            )
+    return removed
 
 
 def build_summary(files: dict) -> dict:
-    """Compute summary counts from the files dict."""
-    counts = {"total": 0, "equivalent": 0, "divergent": 0, "incompatible": 0, "pending": 0}
+    """Count canonical rows separately from their retained physical source paths."""
+    counts = {"total": len(files), **dict.fromkeys(ASSESSMENT_CATEGORIES, 0)}
     for info in files.values():
-        counts["total"] += 1
-        cls = info["classification"]
-        if cls in counts:
-            counts[cls] += 1
+        counts[assessment_view(info)["classification"]] += 1
+    counts["physical_paths"] = sum(len(info.get("aliases", [None])) for info in files.values())
+    counts["unique_contents"] = len(
+        {
+            (Path(path).suffix.lower(), info.get("source_sha256") or path)
+            for path, info in files.items()
+        }
+    )
+    counts["duplicate_aliases"] = counts["physical_paths"] - len(files)
     return counts
 
 
@@ -473,10 +503,9 @@ def main(
             root=root,
             harness_dir=root / "tests" / "harnesses",
         )
-    except OracleRegistryError as error:
+    except (OracleRegistryError, HarnessContractError) as error:
         console.print(f"[red]error:[/] {error}")
         raise typer.Exit(1) from error
-    dup_count = dedup_batch_files(files, examples_path)
     summary = build_summary(files)
 
     manifest = {
@@ -490,24 +519,12 @@ def main(
     save_manifest(output_path, manifest)
 
     print(f"\nManifest written to {output_path}")
-    print("\nSummary:")
-    print(f"  Total files:    {summary['total']}")
-    print(f"  Pending (testable): {summary['pending']}")
-    print(f"  Incompatible:   {summary['incompatible']}")
-    print(f"  Equivalent:     {summary['equivalent']}")
-    print(f"  Divergent:      {summary['divergent']}")
-    if dup_count:
-        print(f"  Duplicate .bat:  {dup_count}")
-
-    reason_counts: dict[str, int] = {}
-    for info in files.values():
-        if info["classification"] == "incompatible":
-            reason = info["reason"]
-            reason_counts[reason] = reason_counts.get(reason, 0) + 1
-    if reason_counts:
-        print("\n  Incompatible breakdown:")
-        for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
-            print(f"    {reason:25s}: {count}")
+    print("\nInventory summary (no execution claims):")
+    print(f"  Physical paths:       {summary['physical_paths']}")
+    print(f"  Canonical rows:       {summary['total']}")
+    print(f"  Retained aliases:     {summary['duplicate_aliases']}")
+    print(f"  Unassessed:           {summary['unassessed']}")
+    print(f"  Oracle declarations:  {sum('oracle' in entry for entry in files.values())}")
 
 
 if __name__ == "__main__":

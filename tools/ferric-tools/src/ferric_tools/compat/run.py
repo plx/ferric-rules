@@ -48,6 +48,7 @@ from ferric_tools._paths import (
     repo_root,
 )
 from ferric_tools._subprocess import parallel_run
+from ferric_tools.compat.assessment import assessment_view
 from ferric_tools.compat.clips_oracle import (
     ClipsOracleProtocolError,
     build_probe_operations,
@@ -78,6 +79,7 @@ from ferric_tools.compat.projection import (
     project_ferric_observation,
     project_observation_diagnostic,
 )
+from ferric_tools.compat.scan import build_summary
 
 app = typer.Typer(help="Run CLIPS compatibility assessment.")
 console = Console(stderr=True)
@@ -1779,19 +1781,9 @@ def _resolve_harness(
 
 def _recompute_summary(manifest_data: dict) -> dict[str, int]:
     """Recompute compatibility totals after selection or execution updates."""
-    summary = {
-        "total": 0,
-        "equivalent": 0,
-        "divergent": 0,
-        "incompatible": 0,
-        "pending": 0,
-    }
-    for info in manifest_data["files"].values():
-        summary["total"] += 1
-        classification = info.get("classification")
-        if classification in summary:
-            summary[classification] += 1
+    summary = build_summary(manifest_data["files"])
     manifest_data["summary"] = summary
+    manifest_data["version"] = 4
     return summary
 
 
@@ -1844,12 +1836,12 @@ def main(
 
     mdata = load_manifest(manifest_path)
     if (
-        mdata.get("version") != 3
+        mdata.get("version") not in (3, 4)
         or mdata.get("oracle_protocol_version") != ORACLE_PROTOCOL_VERSION
         or type(mdata.get("files")) is not dict
     ):
         console.print(
-            "[red]error:[/] manifest is not structured-oracle schema v3; "
+            "[red]error:[/] manifest is not structured-oracle schema v3/v4; "
             "run ferric-compat-scan first"
         )
         raise typer.Exit(1)
@@ -1863,65 +1855,50 @@ def main(
     invalid_selected: list[tuple[str, str]] = []
     file_was_found = False
     for rel_path, info in mdata["files"].items():
+        if file and rel_path != file:
+            continue
+        if file:
+            file_was_found = True
+        if source and info["source"] != source:
+            continue
+        declaration = info.get("oracle")
+        if declaration is None:
+            missing_selected.append(rel_path)
+            if not dry_run:
+                info["classification"] = "unassessed"
+                info["oracle_evidence"] = _missing_oracle_evidence()
+                info.pop("raw_classification", None)
+                info.pop("raw_reason", None)
+                info["ferric"] = None
+                info["clips"] = None
+            continue
+
+        # Oracle declarations take precedence over static scanner dispositions.
+        category = assessment_view(info)["classification"]
+        if not file and not all_files:
+            if only_divergent:
+                if category != "divergent":
+                    continue
+            elif category not in ("unassessed", "evidence-failure"):
+                continue
         runability = info.get("runability")
         if runability not in VALID_RUNABILITY:
-            console.print(
-                f"[red]error:[/] {rel_path}: invalid or missing runability: {runability!r}"
-            )
+            console.print(f"[red]error:[/] {rel_path}: invalid or missing oracle runability")
             raise typer.Exit(1)
         if "harness" in info and runability != "library":
             console.print(
                 f"[red]error:[/] {rel_path}: harness contract requires library runability"
             )
             raise typer.Exit(1)
-
-        if file:
-            if rel_path != file:
-                continue
-            file_was_found = True
-            if runability == "unknown":
-                console.print(
-                    f"[red]error:[/] {rel_path}: cannot explicitly run a file "
-                    "with unknown runability"
-                )
-                raise typer.Exit(1)
-        elif only_pending:
-            if info["classification"] != "pending":
-                continue
-        elif only_divergent:
-            if info["classification"] != "divergent":
-                continue
-        elif all_files:
-            if (  # noqa: SIM102
-                info["reason"] not in ("testable", "ferric-only-clean", "library-only")
-                and info["classification"] != "pending"
-            ):
-                if info["classification"] == "incompatible" and info["reason"] != "testable":
-                    continue
-        else:
-            if info["classification"] != "pending":
-                continue
-
-        if source and info["source"] != source:
-            continue
-
-        declaration = info.get("oracle")
-        if declaration is None:
-            missing_selected.append(rel_path)
-            if not dry_run:
-                info["classification"] = "pending"
-                info["reason"] = "oracle-missing"
-                info["oracle_evidence"] = _missing_oracle_evidence()
-                info["ferric"] = None
-                info["clips"] = None
-            continue
         if type(declaration) is not dict:
             message = "oracle declaration must be an object"
             invalid_selected.append((rel_path, message))
             if not dry_run:
-                info["classification"] = "pending"
+                info["classification"] = "evidence-failure"
                 info["reason"] = "oracle-invalid:declaration"
                 info["oracle_evidence"] = _invalid_preflight_evidence(message)
+                info.pop("raw_classification", None)
+                info.pop("raw_reason", None)
                 info["ferric"] = None
                 info["clips"] = None
             continue
@@ -1946,13 +1923,10 @@ def main(
                 raise typer.Exit(1) from error
 
             if resolved_harness is None:
-                if file:
-                    skip_reason = info["harness"].get("skip_reason", "not executable")
-                    console.print(
-                        f"[red]error:[/] {rel_path}: harness is not executable ({skip_reason})"
-                    )
-                    raise typer.Exit(1)
-                continue
+                console.print(
+                    f"[red]error:[/] {rel_path}: declared oracle harness is not executable"
+                )
+                raise typer.Exit(1)
 
             target = resolved_harness.path
             if previous := harness_targets.get(target):
@@ -1974,9 +1948,11 @@ def main(
                 message = str(error)
                 invalid_selected.append((rel_path, message))
                 if not dry_run:
-                    info["classification"] = "pending"
+                    info["classification"] = "evidence-failure"
                     info["reason"] = "oracle-invalid:source"
                     info["oracle_evidence"] = _invalid_preflight_evidence(message)
+                    info.pop("raw_classification", None)
+                    info.pop("raw_reason", None)
                     info["ferric"] = None
                     info["clips"] = None
                 continue
@@ -1993,7 +1969,8 @@ def main(
             _recompute_summary(mdata)
             save_manifest(manifest_path, mdata)
         console.print(
-            f"[red]error:[/] {file}: no structured oracle declaration; the fixture remains pending"
+            f"[red]error:[/] {file}: no structured oracle declaration; "
+            "the fixture remains unassessed"
         )
         if not dry_run:
             console.print(f"Manifest updated: {manifest_path}")
@@ -2014,7 +1991,7 @@ def main(
             save_manifest(manifest_path, mdata)
             print(
                 f"No oracle-backed files to run; "
-                f"{len(missing_selected)} selected file(s) remain pending."
+                f"{len(missing_selected)} selected file(s) remain unassessed."
             )
             print(f"Manifest updated: {manifest_path}")
         else:
@@ -2026,7 +2003,7 @@ def main(
 
     print(f"Files to run: {len(files_to_run)}")
     if missing_selected:
-        print(f"Pending without oracle: {len(missing_selected)}")
+        print(f"Unassessed without oracle: {len(missing_selected)}")
     print(f"Timeout: {timeout}s per engine")
     print(f"Workers: {workers}")
     print()
@@ -2062,9 +2039,23 @@ def main(
         raise typer.Exit(1)
     if candidate is not None:
         mdata["candidate"] = candidate
-        # Persist candidate identity before the Docker/reference boundary so a
-        # missing or broken reference still leaves an attributable artifact.
-        save_manifest(manifest_path, mdata)
+    # A new attempt invalidates retained results before any startup or worker
+    # failure can occur. Declarations and source/harness identities survive;
+    # observations, metrics, projections and prior verdicts do not.
+    for rel_path, _ in files_to_run:
+        entry = mdata["files"][rel_path]
+        entry["classification"] = "evidence-failure"
+        entry["reason"] = "execution-incomplete"
+        entry["oracle_evidence"] = _invalid_preflight_evidence(
+            "selected execution has not completed"
+        )
+        entry["ferric"] = None
+        entry["clips"] = None
+        entry.pop("raw_classification", None)
+        entry.pop("raw_reason", None)
+    mdata.pop("reference", None)
+    _recompute_summary(mdata)
+    save_manifest(manifest_path, mdata)
     if skip_clips:
         console.print(
             "[red]error:[/] --skip-clips cannot produce structured compatibility evidence"
@@ -2152,6 +2143,9 @@ def main(
             entry["classification"] = classification
             entry["reason"] = reason
             entry["oracle_evidence"] = ferric_result["oracle_evidence"]
+            entry["raw_classification"] = classification
+            entry["raw_reason"] = reason
+            entry.update(assessment_view(entry))
 
     # Recompute summary
     _recompute_summary(mdata)
@@ -2161,10 +2155,11 @@ def main(
     print(f"\nManifest updated: {manifest_path}")
     print("\nResults:")
 
-    run_summary = {"equivalent": 0, "divergent": 0, "incompatible": 0, "pending": 0}
-    for _, (_, _, cls, _reason) in results.items():
-        if cls in run_summary:
-            run_summary[cls] += 1
+    run_summary = build_summary({path: mdata["files"][path] for path in results})
+    run_summary = {
+        key: run_summary[key]
+        for key in ("equivalent", "divergent", "unassessed", "evidence-failure")
+    }
 
     for cls, count in sorted(run_summary.items()):
         if count > 0:
@@ -2229,7 +2224,7 @@ def main(
         )
         raise typer.Exit(1)
 
-    if invalid or invalid_runtime:
+    if invalid or invalid_runtime or run_summary["evidence-failure"]:
         raise typer.Exit(1)
 
 

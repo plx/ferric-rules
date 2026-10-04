@@ -74,15 +74,22 @@ to `ferric-rules`; its import name can remain `ferric`.
   CLIPS programs with exact CLIPS 6.30 output goldens, run by
   `crates/ferric-rules/tests/compat_corpus/` (`just compat-corpus`).
   Known differences are active characterizations; `GAPS.md` links the issues.
-  `just compat-corpus-reference` rechecks the goldens against the CLIPS
-  Docker image.
+  `just compat-corpus-reference` rechecks the goldens against the pinned CLIPS
+  Docker image. `just compat-corpus-evidence OUTPUT` captures revision-bound
+  Ferric/reference results; reports lead with declared counts and verification
+  status rather than inferring success from corpus size.
 - `tests/examples/` — third-party CLIPS projects (provenance in `SOURCES.md`)
   and the semantic differential lane: `ferric-semantic/`, `ferric-oracle/`,
   and the reviewed policies `compat-semantic-policy.json` and
   `compat-ci-policy.json` (`just compat-semantic-lane`,
-  `just assess-compatibility`).
-- `tests/harnesses/`, `tests/generated/` — run harnesses and tool-generated
-  segments/expectations for the `.bat`-derived examples.
+  `just assess-compatibility`). The schema-v4 inventory retains 1,264 physical
+  source paths as 642 canonical rows with 622 aliases and 58 separate oracle
+  identities. Static findings and no-oracle files remain unassessed; imported
+  bundle paths are preserved. Selected version-1 oracle library harnesses are
+  generated and checked inside `.ferric-compat/`; version-2 scenarios use their
+  own plans. Schema-v3 execution manifests remain supported.
+- `tests/generated/` — tool-generated segments/expectations for `.bat` inputs;
+  their presence does not establish executed compatibility.
 - `crates/ferric-rules/tests/scaling_tests.rs` — thirteen `#[ignore]`
   complexity-class checks run by `just scaling-check`.
 

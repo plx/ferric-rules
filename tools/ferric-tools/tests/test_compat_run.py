@@ -1864,10 +1864,14 @@ def test_runner_persists_missing_oracle_state_without_engine_preflight(
         "total": 1,
         "equivalent": 0,
         "divergent": 0,
-        "incompatible": 0,
-        "pending": 1,
+        "unassessed": 1,
+        "evidence-failure": 0,
+        "physical_paths": 1,
+        "unique_contents": 1,
+        "duplicate_aliases": 0,
     }
-    assert persisted["files"]["fixture.clp"]["reason"] == "oracle-missing"
+    assert persisted["files"]["fixture.clp"]["reason"] == "testable"
+    assert persisted["files"]["fixture.clp"]["classification"] == "unassessed"
     assert persisted["files"]["fixture.clp"]["oracle_evidence"]["status"] == "missing"
     assert persisted["files"]["fixture.clp"]["ferric"] is None
     assert persisted["files"]["fixture.clp"]["clips"] is None
@@ -1995,9 +1999,11 @@ def test_runner_persists_candidate_before_missing_reference_image_failure(
     }
 
 
+@pytest.mark.parametrize("prior_success", [False, True])
 def test_runner_rejects_malformed_worker_result_and_persists_preflight_evidence(
     tmp_path,
     monkeypatch,
+    prior_success,
 ):
     root = tmp_path / "repo"
     examples = root / "tests" / "examples"
@@ -2023,6 +2029,25 @@ def test_runner_rejects_malformed_worker_result_and_persists_preflight_evidence(
             "oracle": _oracle_declaration(digest),
         }
     }
+    if prior_success:
+        files["fixture.clp"].update(
+            classification="equivalent",
+            reason="oracle-v1-match",
+            raw_classification="equivalent",
+            raw_reason="previous-success",
+            oracle_evidence={
+                "status": "valid",
+                "version": 1,
+                "declaration": True,
+                "reached": True,
+                "completed": True,
+                "effect": True,
+                "normalizations": [],
+                "violations": [],
+            },
+            ferric={"canonical_observation": {}, "duration_ms": 42},
+            clips={"canonical_observation": {}, "duration_ms": 43},
+        )
     manifest_path = examples / "compat-manifest.json"
     save_manifest(
         manifest_path,
@@ -2055,6 +2080,7 @@ def test_runner_rejects_malformed_worker_result_and_persists_preflight_evidence(
     result = CliRunner().invoke(
         run_module.app,
         [
+            "--all",
             "--manifest",
             str(manifest_path),
             "--ferric-bin",
@@ -2075,10 +2101,15 @@ def test_runner_rejects_malformed_worker_result_and_persists_preflight_evidence(
     assert persisted["candidate"]["binary_sha256"] == sha256_bytes(b"candidate-binary")
     assert persisted["reference"] == _reference_provenance()
     assert persisted["files"]["fixture.clp"]["ferric"] is None
-    assert persisted["summary"] == build_summary(files)
+    assert persisted["summary"]["equivalent"] == 0
+    assert persisted["summary"]["evidence-failure"] == 1
+    assert persisted["files"]["fixture.clp"]["clips"] is None
+    assert persisted["files"]["fixture.clp"]["reason"] == "execution-incomplete"
+    assert persisted["files"]["fixture.clp"]["oracle_evidence"]["status"] == "invalid"
+    assert "raw_reason" not in persisted["files"]["fixture.clp"]
 
 
-def test_runner_rejects_explicit_unknown_runability_before_oracle_or_engine_preflight(
+def test_runner_rejects_unassessed_malformed_source_without_oracle_or_engine_preflight(
     tmp_path,
     monkeypatch,
 ):
@@ -2114,7 +2145,7 @@ def test_runner_rejects_explicit_unknown_runability_before_oracle_or_engine_pref
     )
 
     assert result.exit_code == 1
-    assert "cannot explicitly run a file with unknown runability" in result.output
+    assert "no structured oracle declaration" in result.output
     assert load_manifest(manifest_path)["files"]["malformed.clp"]["reason"] == ("malformed-source")
 
 
@@ -2169,9 +2200,9 @@ def test_runner_persists_explicit_missing_oracle_before_nonzero_exit(
     persisted = load_manifest(manifest_path)
     persisted_entry = persisted["files"]["fixture.clp"]
     assert persisted["summary"]["equivalent"] == 0
-    assert persisted["summary"]["pending"] == 1
-    assert persisted_entry["classification"] == "pending"
-    assert persisted_entry["reason"] == "oracle-missing"
+    assert persisted["summary"]["unassessed"] == 1
+    assert persisted_entry["classification"] == "unassessed"
+    assert persisted_entry["reason"] == "exact-match"  # Retained raw legacy reason.
     assert persisted_entry["oracle_evidence"] == run_module._missing_oracle_evidence()
     assert persisted_entry["ferric"] is None
     assert persisted_entry["clips"] is None
@@ -2204,6 +2235,8 @@ def test_runner_persists_malformed_declaration_before_nonzero_exit(
                     "source": "",
                     "classification": "equivalent",
                     "reason": "exact-match",
+                    "raw_classification": "equivalent",
+                    "raw_reason": "previous-success",
                     "runability": "standalone",
                     "features": ["defrule"],
                     "unsupported_features": [],
@@ -2229,9 +2262,10 @@ def test_runner_persists_malformed_declaration_before_nonzero_exit(
     persisted = load_manifest(manifest_path)
     persisted_entry = persisted["files"]["fixture.clp"]
     assert persisted["summary"]["equivalent"] == 0
-    assert persisted["summary"]["pending"] == 1
-    assert persisted_entry["classification"] == "pending"
+    assert persisted["summary"]["evidence-failure"] == 1
+    assert persisted_entry["classification"] == "evidence-failure"
     assert persisted_entry["reason"] == "oracle-invalid:declaration"
+    assert "raw_reason" not in persisted_entry
     assert persisted_entry["oracle_evidence"]["status"] == "invalid"
     assert persisted_entry["oracle_evidence"]["violations"] == [
         "oracle declaration must be an object"
@@ -2289,7 +2323,7 @@ def test_runner_persists_missing_source_as_invalid_before_engine_preflight(
     assert "gone.clp source cannot be resolved" in result.output
     persisted = load_manifest(manifest_path)
     persisted_entry = persisted["files"]["gone.clp"]
-    assert persisted_entry["classification"] == "pending"
+    assert persisted_entry["classification"] == "evidence-failure"
     assert persisted_entry["reason"] == "oracle-invalid:source"
     assert persisted_entry["oracle_evidence"]["status"] == "invalid"
     assert persisted_entry["oracle_evidence"]["declaration"] is False
@@ -2407,7 +2441,7 @@ def test_runner_persists_invalid_evidence_before_nonzero_exit(
     persisted = load_manifest(manifest_path)
     assert persisted["reference"] == _reference_provenance()
     persisted_entry = persisted["files"]["fixture.clp"]
-    assert persisted_entry["classification"] == "pending"
+    assert persisted_entry["classification"] == "evidence-failure"
     assert persisted_entry["reason"] == reason
     assert persisted_entry["oracle_evidence"] == evidence
 
@@ -2990,3 +3024,46 @@ def test_clips_reference_script_preserves_unicode_quotes_and_rejects_symlink(
     assert "file path must not be a symlink" in escaped_result.stderr
     assert not captured_args.exists()
     assert not captured_stdin.exists()
+
+
+def test_declared_malformed_source_is_selected_despite_unknown_scanner_runability(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+    source = examples / "partial.clp"
+    source.write_text("(defrule compute => (assert (result 42)))\n)\n")
+    declaration = _oracle_declaration(sha256_bytes(source.read_bytes()))
+    declaration["expectations"]["diagnostic"] = {
+        "phase": "parse",
+        "category": "syntax-error",
+        "continued": True,
+    }
+    (examples / "compat-oracles.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "fixtures": {"partial.clp": declaration},
+            }
+        )
+    )
+    files = scan_examples(examples, root=root)
+    assert files["partial.clp"]["runability"] == "unknown"
+    manifest = examples / "compat-manifest.json"
+    save_manifest(
+        manifest,
+        {
+            "version": 4,
+            "oracle_protocol_version": 1,
+            "files": files,
+            "summary": build_summary(files),
+        },
+    )
+    monkeypatch.setattr(run_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "default_examples_dir", lambda: examples)
+    result = CliRunner().invoke(run_module.app, ["--manifest", str(manifest), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "Files to run: 1" in result.output
+    assert "partial.clp" in result.output
+    assert load_manifest(manifest)["files"]["partial.clp"]["ferric"] is None

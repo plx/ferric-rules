@@ -20,9 +20,11 @@ from ferric_tools._harness import (
     has_any_constructs,
     has_external_deps,
     resolve_harness_contract,
+    sha256_bytes,
 )
 from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
+from ferric_tools.compat.scan import OracleRegistryError, scan_examples
 
 __all__ = [
     "compute_harness_path",
@@ -115,17 +117,43 @@ def main(
     manifest = copy.deepcopy(load_manifest(manifest_path))
     files = manifest.get("files", {})
     try:
+        # Re-read the tracked registry and every bound source before any write.
+        # Manifest flags alone must never authorize generation or hide a stale oracle.
+        current = scan_examples(examples_path, root=root, harness_dir=out_dir)
+        declared = {key: entry["oracle"] for key, entry in current.items() if "oracle" in entry}
+        supplied = {key: entry["oracle"] for key, entry in files.items() if "oracle" in entry}
+        if supplied != declared:
+            raise HarnessContractError(
+                "manifest oracle declarations differ from the current registry"
+            )
+        eligible_keys = {key for key, entry in current.items() if "harness" in entry}
+        for key in eligible_keys:
+            if files[key].get("runability") != "library":
+                raise HarnessContractError(f"{key}: declared library runability is stale")
         plans = build_harness_plans(
-            files,
+            current,
             examples_dir=examples_path,
             output_dir=out_dir,
             root=root,
+            eligible_keys=eligible_keys,
         )
-    except HarnessContractError as error:
+        for key, plan in plans.items():
+            declaration = declared[key]
+            if (
+                sha256_bytes(plan.source_bytes) != declaration["source_sha256"]
+                or plan.harness_bytes is None
+                or sha256_bytes(plan.source_bytes + b"\n" + plan.harness_bytes)
+                != declaration["composed_sha256"]
+            ):
+                raise HarnessContractError(f"{key}: oracle source/composed digest is stale")
+        for key, plan in plans.items():
+            if plan.source_path.read_bytes() != plan.source_bytes:
+                raise HarnessContractError(f"{key}: source changed before harness generation")
+    except (HarnessContractError, OracleRegistryError) as error:
         console.print(f"[red]error:[/] {error}")
         raise typer.Exit(1) from error
 
-    print(f"Found {len(plans)} library-only files in manifest.")
+    print(f"Found {len(plans)} oracle-backed library harnesses.")
 
     if check:
         try:
@@ -135,6 +163,11 @@ def main(
             raise typer.Exit(1) from error
         print(f"Verified {verified} executable harnesses.")
         return
+
+    for key, entry in files.items():
+        if key not in plans:
+            entry.pop("harness", None)
+            entry.pop("harness_skip", None)
 
     stats = {
         "generated": 0,

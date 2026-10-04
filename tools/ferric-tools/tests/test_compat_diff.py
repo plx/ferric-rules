@@ -547,644 +547,122 @@ def test_local_assessment_recipe_runs_the_complete_blocking_lane():
 # ---------------------------------------------------------------------------
 
 
-def test_compute_diff_improvement_detected():
-    # When a file moves from "divergent" (rank 1) to "equivalent" (rank 0)
-    # it must appear in real_improvements, not regressions.
-    base = _manifest({"foo.clp": _file_entry("divergent")})
-    head = _manifest({"foo.clp": _file_entry("equivalent", oracle=_oracle())})
-
-    _base_counts, _head_counts, regressions, real_improvements, _reason_changes = compute_diff(
-        base, head
-    )
-
-    assert len(real_improvements) == 1
-    assert real_improvements[0][0] == "foo.clp"
-    assert len(regressions) == 0
-
-
-def test_compute_diff_regression_detected():
-    # When a file moves from "equivalent" to "divergent" it is a regression.
-    base = _manifest({"bar.clp": _file_entry("equivalent")})
-    head = _manifest({"bar.clp": _file_entry("divergent")})
-
-    _base_counts, _head_counts, regressions, real_improvements, _reason_changes = compute_diff(
-        base, head
-    )
-
-    assert len(regressions) == 1
-    assert regressions[0][0] == "bar.clp"
-    assert len(real_improvements) == 0
-
-
-def test_compute_diff_no_changes_when_manifests_identical():
-    # Identical manifests produce no regressions, no improvements, no reason
-    # changes, and identical counts.
-    entry = _file_entry("pending", "testable")
-    base = _manifest({"a.clp": entry, "b.clp": entry})
-    head = _manifest({"a.clp": entry, "b.clp": entry})
-
-    base_counts, head_counts, regressions, real_improvements, reason_changes = compute_diff(
-        base, head
-    )
-
-    assert regressions == []
-    assert real_improvements == []
-    assert reason_changes == []
-    assert base_counts == head_counts
-
-
-def test_compute_diff_reason_change_within_same_classification():
-    # When the classification stays the same but the reason text changes, the
-    # entry must land in reason_changes (not real_improvements or regressions).
-    base = _manifest({"c.clp": _file_entry("divergent", "old-reason")})
-    head = _manifest({"c.clp": _file_entry("divergent", "new-reason")})
-
-    _bc, _hc, regressions, real_improvements, reason_changes = compute_diff(base, head)
-
-    assert len(reason_changes) == 1
-    assert reason_changes[0][0] == "c.clp"
-    assert len(regressions) == 0
-    assert len(real_improvements) == 0
-
-
-def test_compute_diff_exposes_phase_change_with_unchanged_classification_and_reason():
-    base_entry = _file_entry("divergent", "diagnostic-phase-mismatch")
-    base_entry["ferric"] = _engine_result("load", "construct-error", continued=False)
-    base_entry["clips"] = _engine_result("run", "evaluation-error", continued=False)
-    head_entry = _file_entry("divergent", "diagnostic-phase-mismatch")
-    head_entry["ferric"] = _engine_result("run", "evaluation-error", continued=False)
-    head_entry["clips"] = _engine_result("load", "construct-error", continued=False)
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(
-        _manifest({"phase.clp": base_entry}),
-        _manifest({"phase.clp": head_entry}),
-    )
-
-    assert regressions == []
-    assert improvements == []
-    assert len(reason_changes) == 1
-    assert "ferric=load/construct-error" in reason_changes[0][2]
-    assert "ferric=run/evaluation-error" in reason_changes[0][4]
-
-
-def test_compute_diff_exposes_diagnostics_when_classification_changes():
-    base_entry = _file_entry("pending", "diagnostic-invalid")
-    base_entry["ferric"] = _engine_result("load", "construct-error", continued=False)
-    base_entry["clips"] = _engine_result("run", "evaluation-error", continued=False)
-    head_entry = _file_entry("divergent", "diagnostic-phase-mismatch")
-    head_entry["ferric"] = _engine_result("run", "evaluation-error", continued=False)
-    head_entry["clips"] = _engine_result("load", "construct-error", continued=False)
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(
-        _manifest({"phase.clp": base_entry}),
-        _manifest({"phase.clp": head_entry}),
-    )
-
-    assert improvements == [
-        (
-            "phase.clp",
-            "pending",
-            base_entry["reason"] + "; diagnostics: "
-            "ferric=load/construct-error/continued:false;termination:exit(1), "
-            "clips=run/evaluation-error/continued:false;termination:exit(1)",
-            "divergent",
-            head_entry["reason"] + "; diagnostics: "
-            "ferric=run/evaluation-error/continued:false;termination:exit(1), "
-            "clips=load/construct-error/continued:false;termination:exit(1)",
-        )
-    ]
-    assert regressions == []
-    assert reason_changes == []
-
-
-def test_compute_diff_counts_reflect_head_manifest():
-    # head_counts should count classifications from the head manifest, not base.
-    base = _manifest({"x.clp": _file_entry("pending")})
-    head = _manifest({"x.clp": _file_entry("equivalent")})
-
-    _bc, head_counts, _r, _i, _rc = compute_diff(base, head)
-
-    assert head_counts["equivalent"] == 1
-    assert head_counts["pending"] == 0
-
-
-def test_compute_diff_keeps_ordinary_additions_and_removals_neutral():
-    base = _manifest({"old.clp": _file_entry("pending")})
-    head = _manifest({"new.clp": _file_entry("pending")})
-
-    _bc, _hc, regressions, real_improvements, _rc = compute_diff(base, head)
-
-    assert regressions == []
-    assert real_improvements == []
-
-
-def test_compute_diff_flags_newly_added_unverified_equivalent_with_absent_base_tuple():
-    base = _manifest({})
-    head = _manifest({"new.clp": _file_entry("equivalent", "oracle-v1-match")})
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert regressions == [
-        (
-            "new.clp",
-            "absent",
-            "not present",
-            "equivalent",
-            "oracle-v1-match; oracle regression: unverified equivalent claim",
-        )
-    ]
-
-
-def test_compute_diff_rejects_unchanged_legacy_equivalent_in_v3_head():
-    entry = _file_entry("equivalent", "empty-match")
-    base = {"version": 2, "files": {"legacy.clp": entry}}
-    head = {"version": 3, "files": {"legacy.clp": entry}}
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert regressions == [
-        (
-            "legacy.clp",
-            "equivalent",
-            "empty-match",
-            "equivalent",
-            "empty-match; oracle regression: unverified equivalent claim",
-        )
-    ]
-
-
-def test_compute_diff_keeps_newly_added_verified_equivalent_neutral():
-    base = _manifest({})
-    head = _manifest({"new.clp": _file_entry("equivalent", oracle=_oracle())})
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert improvements == []
-    assert reason_changes == []
-
-
-def test_compute_diff_flags_removed_valid_oracle_fixture_with_absent_head_tuple():
-    base = _manifest({"removed.clp": _file_entry("divergent", "oracle-mismatch", oracle=_oracle())})
-    head = _manifest({})
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert regressions == [
-        (
-            "removed.clp",
-            "divergent",
-            "oracle-mismatch",
-            "absent",
-            "not present; oracle regression: valid oracle-backed fixture removed",
-        )
-    ]
-
-
-def test_compute_diff_oracle_completion_loss_is_regression_with_same_classification():
-    base = _manifest({"covered.clp": _file_entry("equivalent", oracle=_oracle())})
-    head = _manifest(
-        {
-            "covered.clp": _file_entry(
-                "equivalent",
-                oracle=_oracle(completed=False),
-            )
-        }
-    )
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert len(regressions) == 1
-    assert regressions[0][0] == "covered.clp"
-    assert "completed true\u2192false" in regressions[0][4]
-
-
-def test_compute_diff_valid_equivalent_becoming_missing_is_regression():
-    base = _manifest({"covered.clp": _file_entry("equivalent", oracle=_oracle())})
-    head = _manifest(
-        {
-            "covered.clp": _file_entry(
-                "equivalent",
-                oracle=_missing_oracle(),
-            )
-        }
-    )
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert len(regressions) == 1
-    assert "status valid\u2192invalid" in regressions[0][4]
-    assert "unverified equivalent claim" in regressions[0][4]
-
-
-def test_compute_diff_refuses_new_equivalent_claim_without_valid_evidence():
-    base = _manifest({"claim.clp": _file_entry("divergent")})
-    head = _manifest({"claim.clp": _file_entry("equivalent")})
-
-    _bc, _hc, regressions, improvements, _reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert len(regressions) == 1
-    assert "unverified equivalent claim" in regressions[0][4]
-
-
-def test_compute_diff_refuses_new_equivalent_claim_with_false_validity_flags():
-    base = _manifest({"claim.clp": _file_entry("divergent")})
-    head = _manifest(
-        {
-            "claim.clp": _file_entry(
-                "equivalent",
-                oracle=_oracle(
-                    declaration=False,
-                    reached=False,
-                    completed=False,
-                    effect=False,
-                ),
-            )
-        }
-    )
-
-    _bc, _hc, regressions, improvements, _reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert len(regressions) == 1
-    assert "unverified equivalent claim" in regressions[0][4]
-
-
-def test_compute_diff_refuses_new_equivalent_claim_with_unsupported_evidence_version():
-    base = _manifest({"claim.clp": _file_entry("divergent")})
-    head = _manifest(
-        {
-            "claim.clp": _file_entry(
-                "equivalent",
-                oracle=_oracle(version=3),
-            )
-        }
-    )
-
-    _bc, _hc, regressions, improvements, _reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert len(regressions) == 1
-    assert "unverified equivalent claim" in regressions[0][4]
+def _executed(classification="equivalent", *, version=1):
+    entry = _file_entry(classification, "oracle-match", oracle=_oracle(version=version))
+    entry["oracle"] = {
+        "version": version,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+        "nonce": "0" * 32,
+        "expectations": {"facts": []},
+    }
+    for engine in ("ferric", "clips"):
+        entry[engine] = {"canonical_observation": {"run": {"halt_reason": "agenda-empty"}}}
+    return entry
 
 
 @pytest.mark.parametrize("version", [1, 2])
-def test_compute_diff_accepts_supported_verified_equivalent_versions(version):
-    base = _manifest({"claim.clp": _file_entry("divergent")})
-    head = _manifest(
-        {
-            "claim.clp": _file_entry(
-                "equivalent",
-                oracle=_oracle(version=version),
-            )
-        }
+def test_only_executed_divergence_to_equivalence_is_an_improvement(version):
+    base = _manifest({"case.clp": _executed("divergent", version=version)})
+    head = _manifest({"case.clp": _executed("equivalent", version=version)})
+    bc, hc, regressions, improvements, changes = compute_diff(base, head)
+    assert bc["divergent"] == hc["equivalent"] == 1
+    assert [item[0] for item in improvements] == ["case.clp"]
+    assert regressions == changes == []
+
+
+@pytest.mark.parametrize(
+    "classification", ["incompatible", "pending", "divergent", "equivalent", "unassessed"]
+)
+def test_unexecuted_legacy_labels_are_neutral_inventory(classification):
+    base = _manifest({"case.clp": _file_entry(classification, "scanner-feature")})
+    head = {"version": 4, "files": {"case.clp": _file_entry("unassessed", "oracle-missing")}}
+    bc, hc, regressions, improvements, changes = compute_diff(base, head)
+    assert bc["unassessed"] == hc["unassessed"] == 1
+    assert regressions == improvements == []
+    assert changes
+
+
+def test_new_oracle_execution_is_coverage_not_a_fixed_divergence():
+    base = _manifest({"case.clp": _file_entry("divergent", "legacy-timeout")})
+    head = _manifest({"case.clp": _executed()})
+    _, hc, regressions, improvements, changes = compute_diff(base, head)
+    assert hc["equivalent"] == 1
+    assert regressions == improvements == []
+    assert changes[0][0] == "case.clp"
+
+
+def test_additions_and_removals_are_separate_from_improvements():
+    base = _manifest({"old.clp": _executed("divergent")})
+    head = _manifest({"new.clp": _executed()})
+    _, _, regressions, improvements, changes = compute_diff(base, head)
+    assert regressions == improvements == []
+    assert {row[0] for row in changes} == {"old.clp", "new.clp"}
+
+
+@pytest.mark.parametrize(
+    "damage", ["completion", "version", "missing-reference", "projection-error", "invalid"]
+)
+def test_invalid_or_lost_executed_evidence_remains_a_regression(damage):
+    base = _manifest({"case.clp": _executed()})
+    bad = _executed()
+    if damage == "completion":
+        bad["oracle_evidence"]["completed"] = False
+    elif damage == "version":
+        bad["oracle_evidence"]["version"] = 99
+    elif damage == "missing-reference":
+        bad["clips"] = None
+    elif damage == "projection-error":
+        bad["ferric"]["projection_error"] = "broken protocol"
+    else:
+        bad["oracle_evidence"]["status"] = "invalid"
+    _, hc, regressions, improvements, _ = compute_diff(base, _manifest({"case.clp": bad}))
+    assert hc["evidence-failure"] == 1
+    assert len(regressions) == 1
+    assert improvements == []
+
+
+def test_equivalence_to_valid_divergence_is_regression():
+    _, _, regressions, improvements, _ = compute_diff(
+        _manifest({"case.clp": _executed()}),
+        _manifest({"case.clp": _executed("divergent")}),
     )
-
-    _bc, _hc, regressions, improvements, _reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert len(improvements) == 1
-
-
-def test_compute_diff_schema_migration_reason_change_is_neutral():
-    base = {
-        "version": 2,
-        "files": {
-            "migrated.clp": _file_entry(
-                "divergent",
-                "legacy-output-mismatch",
-                oracle=_oracle(version=1),
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "migrated.clp": _file_entry(
-                "divergent",
-                "oracle-state-mismatch",
-                oracle=_oracle(version=1),
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert improvements == []
-    assert len(reason_changes) == 1
-    assert reason_changes[0][0] == "migrated.clp"
-
-
-def test_compute_diff_legacy_equivalent_oracle_migration_is_neutral():
-    base = {
-        "version": 2,
-        "files": {
-            "legacy.clp": _file_entry(
-                "equivalent",
-                "exact-match",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "legacy.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-                oracle=_missing_oracle(),
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert improvements == []
-    assert reason_changes == []
-
-
-def test_compute_diff_legacy_migration_without_explicit_missing_evidence_is_regression():
-    base = {
-        "version": 2,
-        "files": {
-            "legacy.clp": _file_entry(
-                "equivalent",
-                "exact-match",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "legacy.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
     assert len(regressions) == 1
-    assert regressions[0][0] == "legacy.clp"
-
-
-def test_compute_diff_legacy_migration_requires_all_missing_coverage_flags_false():
-    noncanonical_missing = _missing_oracle()
-    noncanonical_missing["effect"] = True
-    base = {
-        "version": 2,
-        "files": {
-            "legacy.clp": _file_entry(
-                "equivalent",
-                "exact-match",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "legacy.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-                oracle=noncanonical_missing,
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
     assert improvements == []
-    assert reason_changes == []
-    assert len(regressions) == 1
-    assert regressions[0][0] == "legacy.clp"
 
 
-def test_compute_diff_legacy_divergent_oracle_migration_is_neutral():
-    base = {
-        "version": 2,
-        "files": {
-            "legacy.clp": _file_entry(
-                "divergent",
-                "output-mismatch",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "legacy.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-                oracle=_missing_oracle(),
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert improvements == []
-    assert reason_changes == []
-
-
-def test_compute_diff_legacy_runtime_incompatible_oracle_migration_is_neutral():
-    base = {
-        "version": 2,
-        "files": {
-            "legacy.clp": _file_entry(
-                "incompatible",
-                "both-error",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "legacy.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-                oracle=_missing_oracle(),
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert improvements == []
-    assert reason_changes == []
-
-
-def test_compute_diff_legacy_pending_reason_migration_is_neutral():
-    base = {
-        "version": 2,
-        "files": {
-            "library.clp": _file_entry(
-                "pending",
-                "library-only",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "library.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert regressions == []
-    assert improvements == []
-    assert reason_changes == [
-        (
-            "library.clp",
-            "pending",
-            "library-only",
-            "pending",
-            "oracle-missing",
-        )
-    ]
-
-
-def test_compute_diff_static_incompatible_oracle_reset_is_a_regression():
-    base = {
-        "version": 2,
-        "files": {
-            "static.clp": _file_entry(
-                "incompatible",
-                "unsupported-form",
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "static.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-                oracle=_missing_oracle(),
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert len(regressions) == 1
-    assert regressions[0][0] == "static.clp"
-
-
-def test_compute_diff_v3_oracle_coverage_loss_remains_a_regression():
-    base = {
-        "version": 3,
-        "files": {
-            "covered.clp": _file_entry(
-                "equivalent",
-                "oracle-equivalent",
-                oracle=_oracle(),
-            )
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "covered.clp": _file_entry(
-                "pending",
-                "oracle-missing",
-                oracle=_missing_oracle(),
-            )
-        },
-    }
-
-    _bc, _hc, regressions, improvements, reason_changes = compute_diff(base, head)
-
-    assert improvements == []
-    assert reason_changes == []
-    assert len(regressions) == 1
-    assert regressions[0][0] == "covered.clp"
-    assert "oracle regression" in regressions[0][4]
-
-
-def test_write_tsv_labels_legacy_oracle_demotion_as_schema_migration(tmp_path):
-    base = {
-        "version": 2,
-        "files": {
-            "legacy.clp": {
-                **_file_entry("equivalent", "exact-match"),
-                "source": "fixtures",
-            }
-        },
-    }
-    head = {
-        "version": 3,
-        "files": {
-            "legacy.clp": {
-                **_file_entry("pending", "oracle-missing", oracle=_missing_oracle()),
-                "source": "fixtures",
-            }
-        },
-    }
-    output = tmp_path / "diff.tsv"
-
-    write_tsv(base, head, str(output))
-
-    with output.open(newline="", encoding="utf-8") as stream:
-        rows = list(csv.DictReader(stream, delimiter="\t"))
-    assert rows[0]["change"] == "schema-migration"
-    assert rows[0]["oracle_regression"] == ""
-
-
-def test_write_tsv_marks_oracle_coverage_loss_as_regression(tmp_path):
-    base = _manifest(
-        {
-            "covered.clp": {
-                **_file_entry("equivalent", oracle=_oracle(normalizations=["fact-ids"])),
-                "source": "fixtures",
-            }
-        }
+def test_diagnostic_changes_remain_visible_without_semantic_claims():
+    before = _file_entry("divergent", "diagnostic-phase-mismatch")
+    after = _file_entry("divergent", "diagnostic-phase-mismatch")
+    before["ferric"] = _engine_result("load", "construct-error", continued=False)
+    after["ferric"] = _engine_result("run", "evaluation-error", continued=False)
+    _, _, regressions, improvements, changes = compute_diff(
+        _manifest({"case.clp": before}),
+        _manifest({"case.clp": after}),
     )
-    head = _manifest(
-        {
-            "covered.clp": {
-                **_file_entry(
-                    "equivalent",
-                    oracle=_oracle(completed=False, normalizations=["fact-ids"]),
-                ),
-                "source": "fixtures",
-            }
-        }
+    assert regressions == improvements == []
+    assert "ferric=load/construct-error" in changes[0][2]
+    assert "ferric=run/evaluation-error" in changes[0][4]
+
+
+def test_identical_executed_manifests_have_no_changes():
+    manifest = _manifest({"case.clp": _executed()})
+    bc, hc, regressions, improvements, changes = compute_diff(manifest, manifest)
+    assert bc == hc
+    assert regressions == improvements == changes == []
+
+
+def test_tsv_never_labels_static_inventory_change_as_improvement(tmp_path):
+    output = tmp_path / "change.tsv"
+    write_tsv(
+        _manifest({"case.clp": _file_entry("incompatible", "unsupported")}),
+        _manifest({"case.clp": _file_entry("pending", "testable")}),
+        str(output),
     )
-    output = tmp_path / "diff.tsv"
-
-    write_tsv(base, head, str(output))
-
-    with output.open(newline="", encoding="utf-8") as stream:
-        rows = list(csv.DictReader(stream, delimiter="\t"))
-    assert rows[0]["change"] == "regression"
-    assert rows[0]["base_oracle_status"] == "valid"
-    assert rows[0]["head_oracle_status"] == "invalid"
-    assert rows[0]["head_oracle_normalizations"] == "fact-ids"
-    assert "completed true\u2192false" in rows[0]["oracle_regression"]
+    with output.open() as stream:
+        row = next(csv.DictReader(stream, delimiter="\t"))
+    assert row["base_classification"] == row["head_classification"] == "unassessed"
+    assert row["change"] == "inventory-or-coverage-change"
 
 
 def test_write_tsv_includes_diagnostic_and_termination_evidence(tmp_path):
@@ -1213,7 +691,7 @@ def test_write_tsv_includes_diagnostic_and_termination_evidence(tmp_path):
 
     with output.open(newline="", encoding="utf-8") as stream:
         row = next(csv.DictReader(stream, delimiter="\t"))
-    assert row["change"] == "reason-changed"
+    assert row["change"] == "inventory-or-coverage-change"
     assert row["base_ferric_diagnostic_phase"] == "load"
     assert row["head_ferric_diagnostic_phase"] == "run"
     assert row["head_clips_diagnostic_category"] == "signal"
@@ -1300,3 +778,35 @@ def test_format_markdown_exposes_oracle_coverage_and_normalizations():
     assert "| selected | 0 | 1 | +1 |" in output
     assert "Versions \u2014 base: (none); head: 1: 1" in output
     assert "Normalizations \u2014 base: (none); head: fact-ids: 1" in output
+
+
+@pytest.mark.parametrize("change", ["source", "harness", "expectations", "missing"])
+def test_changed_legacy_oracle_identity_is_not_an_engine_improvement(change):
+    before = _executed("divergent")
+    after = _executed()
+    if change == "source":
+        after["source_sha256"] = "c" * 64
+    elif change == "harness":
+        after["oracle"]["composed_sha256"] = "c" * 64
+    elif change == "expectations":
+        after["oracle"]["expectations"]["facts"] = ["new expected fact"]
+    else:
+        del after["oracle"]
+    _, _, regressions, improvements, changes = compute_diff(
+        _manifest({"case.clp": before}),
+        _manifest({"case.clp": after}),
+    )
+    assert regressions == improvements == []
+    assert "source/oracle identity changed or unavailable" in changes[0][4]
+
+
+def test_execution_nonce_and_feature_prose_do_not_change_legacy_oracle_identity():
+    before = _executed("divergent")
+    after = _executed()
+    after["oracle"].update(nonce="1" * 32, feature="edited documentation")
+    _, _, regressions, improvements, _ = compute_diff(
+        _manifest({"case.clp": before}),
+        _manifest({"case.clp": after}),
+    )
+    assert len(improvements) == 1
+    assert regressions == []

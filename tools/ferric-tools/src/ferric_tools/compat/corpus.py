@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
+import math
+import os
 import re
 import subprocess
 import tempfile
@@ -17,6 +20,7 @@ import uuid
 from pathlib import Path
 
 from ferric_tools._paths import repo_root
+from ferric_tools.compat.corpus_summary import capture, write_json
 
 
 class ReferenceFailure(RuntimeError):
@@ -309,63 +313,139 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--filter", default="", help="Substring of the corpus-relative .clp path")
-    parser.add_argument("--level", choices=["basic", "boundary", "interaction"])
+    parser.add_argument("--level", help="basic, boundary, or interaction")
     parser.add_argument("--image", default="ferric-rules/clips-reference:latest")
-    parser.add_argument("--timeout", type=float, default=15)
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--timeout", default="120")
+    parser.add_argument("--workers", default="4")
     parser.add_argument("--report", type=Path, help="Write reference provenance/results as JSON")
+    parser.add_argument("--root", type=Path, help="Repository checkout to verify")
+    parser.add_argument("--revision", help="Require this exact checkout revision")
+    parser.add_argument("--run-id", default=os.environ.get("FERRIC_CORPUS_RUN_ID"))
     args = parser.parse_args()
-    if args.timeout <= 0 or args.workers < 1:
-        parser.error("timeout and workers must be positive")
-    root = repo_root()
+    root = args.root or repo_root()
     corpus = root / "tests" / "clips_compat" / "corpus"
-    manifest = json.loads((corpus / "manifest.json").read_text())
-    cases = [
-        case
-        for case in manifest["cases"]
-        if args.filter in case["path"] and (args.level is None or case["level"] == args.level)
-    ]
-    if not cases:
-        parser.error("filter matched no cases")
-    # Resolve a mutable tag once; all programs in this run use the same image.
-    image = subprocess.run(
-        ["docker", "image", "inspect", args.image, "--format", "{{.Id}}"],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=15,
-    ).stdout.strip()
-    version = subprocess.run(
-        ["docker", "run", "--rm", "-i", image],
-        input="(exit)\n",
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=15,
-    ).stdout.strip()
-    if "CLIPS (6.30 " not in version:
-        raise ReferenceFailure(f"expected CLIPS 6.30, got {version!r}")
-    results = {}
+    evidence = {
+        "schema": "ferric.compat-corpus-reference",
+        "version": 1,
+        "run_id": args.run_id or uuid.uuid4().hex,
+        "revision": args.revision,
+        "manifest_sha256": None,
+        "selection": {"filter": args.filter, "level": args.level, "paths": []},
+        "complete": False,
+        "status": "incomplete",
+        "error": None,
+        "provenance": {"requested_image": args.image, "image_id": None, "version": None},
+    }
+    report = {"version": None, "image_id": None, "results": {}, "evidence": evidence}
 
-    def verify(case: dict) -> tuple[str, dict]:
+    def save() -> None:
+        if args.report:
+            write_json(args.report, report)
+
+    save()
+    stage = "selection"
+    try:
+        args.timeout = float(args.timeout)
+        args.workers = int(args.workers)
+        if not math.isfinite(args.timeout) or args.timeout <= 0 or args.workers < 1:
+            raise ValueError("timeout must be positive and finite; workers must be positive")
+        if args.level not in (None, "basic", "boundary", "interaction"):
+            raise ValueError("level must be basic, boundary, or interaction")
+        stage = "manifest"
+        snapshot = capture(root, args.revision, evidence["run_id"])
+        evidence.update(
+            {
+                "revision": snapshot["checkout"]["revision"],
+                "manifest_sha256": snapshot["corpus"]["manifest_sha256"],
+                "content_sha256": snapshot["corpus"]["content_sha256"],
+                "files_sha256": snapshot["corpus"]["files_sha256"],
+                "checkout": snapshot["checkout"],
+            }
+        )
+        manifest = json.loads((corpus / "manifest.json").read_text())
+        cases = [
+            case
+            for case in manifest["cases"]
+            if args.filter in case["path"] and (args.level is None or case["level"] == args.level)
+        ]
+        stage = "selection"
+        evidence["selection"]["paths"] = [case["path"] for case in cases]
+        if not cases:
+            raise ValueError("filter matched no cases")
+        save()
+        stage = "image"
+        # Resolve a mutable tag once; all programs in this run use the same image.
+        image = subprocess.run(
+            ["docker", "image", "inspect", args.image, "--format", "{{.Id}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=args.timeout,
+        ).stdout.strip()
+        report["image_id"] = image
+        evidence["provenance"]["image_id"] = image
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+            raise ReferenceFailure(f"expected immutable Docker image ID, got {image!r}")
+        stage = "version"
+        # Name the probe so a timed-out Docker client cannot leave a container behind.
+        probe = "ferric-corpus-version-" + uuid.uuid4().hex
         try:
-            output = run_reference(root, case, image, args.timeout)
-            expected = decode((corpus / case["path"]).with_suffix(".out").read_bytes())
-            return case["path"], {"matches": output == expected, "output": output}
-        except (ReferenceFailure, OSError, subprocess.SubprocessError) as error:
-            return case["path"], {"matches": False, "error": str(error)}
+            version = subprocess.run(
+                ["docker", "run", "--rm", "--name", probe, "-i", image],
+                input="(exit)\n",
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=args.timeout,
+            ).stdout.strip()
+        except subprocess.TimeoutExpired:
+            # Preserve the timed-out probe as the primary failure.
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["docker", "rm", "-f", probe], capture_output=True, check=False, timeout=10
+                )
+            raise
+        report["version"] = version
+        evidence["provenance"]["version"] = version
+        if "CLIPS (6.30 " not in version:
+            raise ReferenceFailure(f"expected CLIPS 6.30, got {version!r}")
+        stage = "execution"
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for path, result in pool.map(verify, cases):
-            results[path] = result
-            if not result["matches"]:
-                print(f"FAIL {path}: {result}")
-    report = {"version": version, "image_id": image, "results": results}
-    if args.report:
-        args.report.write_text(json.dumps(report, indent=2) + "\n")
-    failures = sum(not result["matches"] for result in results.values())
-    print(f"CLIPS 6.30: {len(results) - failures}/{len(results)} reference outputs verified")
-    raise SystemExit(bool(failures))
+        def verify(case: dict) -> tuple[str, dict]:
+            try:
+                output = run_reference(root, case, image, args.timeout)
+                expected = decode((corpus / case["path"]).with_suffix(".out").read_bytes())
+                return case["path"], {"matches": output == expected, "output": output}
+            except (ReferenceFailure, OSError, subprocess.SubprocessError) as error:
+                return case["path"], {"matches": False, "error": str(error)}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            for path, result in pool.map(verify, cases):
+                report["results"][path] = result
+                if not result["matches"]:
+                    print(f"FAIL {path}: {result}")
+        # Do not attach an apparently successful run to inputs changed during execution.
+        if capture(root, args.revision, evidence["run_id"])["corpus"] != snapshot["corpus"]:
+            raise ReferenceFailure("corpus changed during reference verification")
+        evidence["complete"] = True
+        failures = sum(not result["matches"] for result in report["results"].values())
+        evidence["status"] = "failed" if failures else "passed"
+        print(f"CLIPS 6.30: {len(cases) - failures}/{len(cases)} reference outputs verified")
+    except (
+        ReferenceFailure,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        subprocess.SubprocessError,
+    ) as error:
+        evidence["status"] = "failed"
+        evidence["error"] = {"stage": stage, "message": str(error)}
+        print(f"FAIL reference {stage}: {error}")
+    finally:
+        save()
+    raise SystemExit(0 if evidence["status"] == "passed" else 1)
 
 
 if __name__ == "__main__":

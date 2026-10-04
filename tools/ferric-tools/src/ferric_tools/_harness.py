@@ -317,14 +317,15 @@ def build_harness_plans(
     examples_dir: Path,
     output_dir: Path,
     root: Path,
+    eligible_keys: set[str],
 ) -> dict[str, HarnessPlan]:
-    """Build and validate all library harness plans before any writes occur."""
+    """Plan only explicitly selected oracle libraries, without writing outputs."""
     plans: dict[str, HarnessPlan] = {}
     targets: dict[Path, str] = {}
 
-    for manifest_key, entry in sorted(files.items()):
-        if entry.get("runability") != "library":
-            continue
+    for manifest_key in sorted(eligible_keys):
+        if manifest_key not in files or files[manifest_key].get("runability") != "library":
+            raise HarnessContractError(f"{manifest_key}: selected harness is not a library")
 
         plan = build_harness_plan(
             manifest_key,
@@ -350,14 +351,19 @@ def attach_harness_contracts(
     examples_dir: Path,
     output_dir: Path,
     root: Path,
+    eligible_keys: set[str],
 ) -> dict[str, HarnessPlan]:
-    """Attach deterministic harness metadata to every library entry."""
+    """Attach contracts only for selected oracle libraries; clear obsolete metadata."""
     plans = build_harness_plans(
         files,
         examples_dir=examples_dir,
         output_dir=output_dir,
         root=root,
+        eligible_keys=eligible_keys,
     )
+    for entry in files.values():
+        entry.pop("harness", None)
+        entry.pop("harness_skip", None)
     for manifest_key, plan in plans.items():
         files[manifest_key]["harness"] = dict(plan.metadata)
         files[manifest_key].pop("harness_skip", None)

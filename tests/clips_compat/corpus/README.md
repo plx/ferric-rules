@@ -36,6 +36,9 @@ just compat-corpus-reference
 just compat-corpus-reference --filter queries/ --report /tmp/clips-reference.json
 just compat-corpus-reference --level boundary
 
+# Capture declarations and verify both full runs with retained evidence.
+just compat-corpus-evidence /tmp/ferric-corpus-evidence
+
 # Capture Ferric observations for diagnosis (does not update expectations).
 FERRIC_CORPUS_REPORT=/tmp/ferric-corpus.json just compat-corpus -- --nocapture
 ```
@@ -50,6 +53,20 @@ and [Ferric regression suite](../../../crates/ferric-rules/tests/ferric_semantic
 provide complementary coverage and retain their own execution protocols.
 The reference command requires Docker and CLIPS 6.30; it fails instead of falling
 back to a Ferric-only run. Goldens are never regenerated automatically.
+
+Standalone and PR reports lead with this corpus's declared case, conformance,
+and gap counts. Verification is reported separately using the selected paths,
+verdicts, command exit status, source/input/golden identity, and reference image
+from that run. Filtered, missing, stale, and failed evidence cannot establish a
+full verified result. The Rust observation map remains available for diagnosis;
+an observation file by itself is not a passing verdict.
+
+A gap becoming conformant changes the headline count. Reports distinguish that
+declaration change from added coverage, removed cases, or changed scenarios and
+goldens; verified before/after claims require matching execution evidence for
+both revisions. Snapshot and late-rule replays remain separate tests, not extra
+source cases. Main CI and the comparison workflow run the full reference check
+and retain failure artifacts as well as successful results.
 
 ## Corpus contract
 
@@ -68,7 +85,8 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   globals, deffacts, refraction, and derived working memory. Optional `strategy`
   selects `"breadth"`, `"lex"`, or `"mea"`; omission selects depth. The reference
   supplies CLIPS `(set-strategy ...)` before loading, while Ferric uses
-  `EngineConfig::with_strategy`. Source strategy commands remain unsupported.
+  `EngineConfig::with_strategy`. Programs may also use supported source strategy
+  commands to change the strategy during execution.
 - Prefer a single observable distinction per program. Use salience or phase
   facts where side-effect ordering matters, except when the case explicitly
   tests conflict-resolution ordering. Keep each problematic function or
@@ -137,14 +155,16 @@ The issue index also preserves discoveries that subsequent engine changes fix.
 
 ## Oracle provenance and safety
 
-All current `.out` files were executed on CLIPS **6.30 (3/17/15)** using the local
-`ferric-rules/clips-reference:latest` image. The image ID is recorded in the
-manifest. It identifies this local build, not a portable registry digest.
-`compat-corpus-reference` resolves its supplied image tag to an immutable local
-ID once per run and records that ID and the actual version in an optional report.
+The goldens target CLIPS **6.30 (3/17/15)**. The manifest's `reference` block
+records historical collection metadata; it does not prove that a current run
+completed. `compat-corpus-reference` resolves its supplied image tag to an
+immutable local ID once per run and records that ID, the actual version, case
+selection, and completed or failed results in its report. A local image ID is
+not a portable registry digest.
 
 Every program gets a separate Docker container, a read-only source mount, a
-15-second default deadline, and a 1,000-firing bound. Timed-out containers are
+120-second default deadline, and a 1,000-firing bound. Image and version probes
+use the same configured deadline. Timed-out containers are
 removed explicitly. Load success, complete output/statistics frames, diagnostics,
 and the firing bound are all checked before accepting output. During source
 loading, the specific warnings for redefining the built-in MAIN module or a

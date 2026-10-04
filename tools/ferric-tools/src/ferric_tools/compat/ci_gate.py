@@ -35,6 +35,7 @@ from ferric_tools.compat.run import (
     classify_results,
     oracle_outcome,
 )
+from ferric_tools.compat.scan import build_summary
 from ferric_tools.compat.semantic_gate import (
     GateReport,
     SemanticGateError,
@@ -59,7 +60,9 @@ REPORT_VERSION = 1
 SUMMARY_FIELD_ORDER = ("total", "equivalent", "divergent", "incompatible", "pending")
 SUMMARY_FIELDS = frozenset(SUMMARY_FIELD_ORDER)
 COMPLETED_CLASSIFICATIONS = frozenset({"equivalent", "divergent"})
-ALL_CLASSIFICATIONS = frozenset({"equivalent", "divergent", "incompatible", "pending"})
+ALL_CLASSIFICATIONS = frozenset(
+    {"equivalent", "divergent", "incompatible", "pending", "unassessed", "evidence-failure"}
+)
 _COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -393,7 +396,24 @@ def _summary_failures(manifest: dict[str, object]) -> tuple[list[str], dict[str,
         if type(classification) is not str or classification not in ALL_CLASSIFICATIONS:
             failures.append(f"{path}: classification is missing or unsupported")
             continue
-        counts[classification] += 1
+        counts[classification] = counts.get(classification, 0) + 1
+
+    if manifest.get("version") == 4:
+        try:
+            expected = build_summary(files)
+        except (TypeError, ValueError, KeyError, AttributeError) as error:
+            failures.append(f"malformed inventory metadata: {error}")
+            return failures, files
+        raw_summary = manifest.get("summary")
+        if (
+            not isinstance(raw_summary, dict)
+            or any(type(value) is not int or value < 0 for value in raw_summary.values())
+            or raw_summary != expected
+        ):
+            failures.append(f"manifest summary is stale (expected {expected}, got {raw_summary})")
+        if not files:
+            failures.append("compatibility manifest contains zero files")
+        return failures, files
 
     raw_summary = manifest.get("summary")
     if type(raw_summary) is not dict or set(raw_summary) != SUMMARY_FIELDS:
@@ -717,8 +737,11 @@ def evaluate_manifest(
         failures.append("manifest root must be an object")
         return CIGateReport(tuple(failures), tuple(accepted))
     assert isinstance(manifest, dict)
-    if type(manifest.get("version")) is not int or manifest.get("version") != MANIFEST_VERSION:
-        failures.append(f"manifest version must equal {MANIFEST_VERSION}")
+    if type(manifest.get("version")) is not int or manifest.get("version") not in (
+        MANIFEST_VERSION,
+        4,
+    ):
+        failures.append(f"manifest version must equal {MANIFEST_VERSION} or 4")
     if (
         type(manifest.get("oracle_protocol_version")) is not int
         or manifest.get("oracle_protocol_version") != ORACLE_PROTOCOL_VERSION

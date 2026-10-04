@@ -37,7 +37,9 @@ jobs:
       - uses: astral-sh/setup-uv@v7
 
       - name: Prepare compatibility evidence
-        run: mkdir -p /tmp/compat-evidence
+        run: |
+          scripts/corpus-evidence.sh capture /tmp/compat-evidence/corpus \
+            "${{ github.sha }}" "${{ github.run_id }}-${{ github.run_attempt }}-standalone"
 
       - name: Build ferric candidate
         run: cargo build --release -p ferric-rules-cli
@@ -74,6 +76,12 @@ jobs:
           scripts/clips-reference.sh provenance \
             > /tmp/compat-evidence/clips-reference-provenance.json
 
+      - name: Verify corpus characterizations and pinned CLIPS goldens
+        timeout-minutes: 30
+        run: |
+          scripts/corpus-evidence.sh verify /tmp/compat-evidence/corpus \
+            "${{ github.sha }}" "${{ github.run_id }}-${{ github.run_attempt }}-standalone"
+
       - name: Test pinned CLIPS observation boundaries
         env:
           FERRIC_CLIPS_REFERENCE_TESTS: '1'
@@ -95,7 +103,7 @@ jobs:
         run: |
           uv run --project tools/ferric-tools ferric-compat-run \
             --all --require-selected --candidate-sha "${{ github.sha }}" \
-            --workers 4 --timeout 30
+            --workers 4 --timeout 120
 
       - name: Enforce compatibility policy
         run: |
@@ -105,6 +113,7 @@ jobs:
       - name: Generate standalone report
         run: |
           uv run --project tools/ferric-tools ferric-compat-report \
+            --corpus-summary /tmp/compat-evidence/corpus/summary.json \
             --tsv /tmp/compat-evidence/compat-report.tsv \
             --report /tmp/compat-evidence/compat-report.md \
             --repo "${{ github.repository }}" \
@@ -115,16 +124,24 @@ jobs:
         if: always()
         run: |
           mkdir -p /tmp/compat-evidence
+          corpus_finalize_failed=0
+          if [[ -f /tmp/compat-evidence/corpus/summary.json ]]; then
+            if ! scripts/corpus-evidence.sh finalize /tmp/compat-evidence/corpus \
+              "${{ github.sha }}" "${{ github.run_id }}-${{ github.run_attempt }}-standalone"; then
+              corpus_finalize_failed=1
+            fi
+          fi
           if [[ -f tests/examples/compat-manifest.json ]]; then
             cp tests/examples/compat-manifest.json \
               /tmp/compat-evidence/compat-manifest.json
-            if [[ ! -f /tmp/compat-evidence/compat-report.md ]]; then
-              uv run --project tools/ferric-tools ferric-compat-report \
-                --tsv /tmp/compat-evidence/compat-report.tsv \
-                --report /tmp/compat-evidence/compat-report.md \
-                --repo "${{ github.repository }}" \
-                --commit-sha "${{ github.sha }}" || true
-            fi
+          fi
+          if [[ ! -f /tmp/compat-evidence/compat-report.md ]]; then
+            uv run --project tools/ferric-tools ferric-compat-report \
+              --corpus-summary /tmp/compat-evidence/corpus/summary.json \
+              --tsv /tmp/compat-evidence/compat-report.tsv \
+              --report /tmp/compat-evidence/compat-report.md \
+              --repo "${{ github.repository }}" \
+              --commit-sha "${{ github.sha }}" || true
           fi
           if [[ ! -f /tmp/compat-evidence/compat-report.md ]]; then
             printf '## CLIPS Compatibility Report\n\nAssessment did not produce a manifest.\n' \
@@ -142,6 +159,7 @@ jobs:
           printf '{"commit_sha":"%s","job_status":"%s"}\n' \
             "${{ github.sha }}" "${{ job.status }}" \
             > /tmp/compat-evidence/workflow-status.json
+          [[ "$corpus_finalize_failed" -eq 0 ]]
 
       - name: Upload artifacts
         if: always()

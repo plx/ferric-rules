@@ -21,7 +21,7 @@ reviewed policy case and rejects unexplained divergences. The LEX and MEA
 The reviewed differential policy covers 57 scenarios: the existing 22 cases
 and 35 distinct rehabilitation scenarios, plus a generated-harness control.
 All 57 cases are equivalent. This does not turn undeclared corpus fixtures
-into compatibility claims; those remain pending or incompatible
+into compatibility claims; those remain unassessed
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
 evidence boundary.
@@ -37,8 +37,12 @@ JSON one, unless it holds a non-finite float). When its deffacts precede its
 rules, it must also print the same lines with the rules loaded after `reset`,
 in any order, since CLIPS orders those activations differently. A program that
 CLIPS rejects must fail in Ferric at the same stage (load or run).
-`just compat-corpus-reference` rechecks every golden against a CLIPS 6.30
-Docker image.
+`just compat-corpus-reference` rechecks every golden against the pinned CLIPS
+6.30 Docker image. The standalone and PR comparison reports lead with the
+manifest's 1095 cases, 1075 conformance cases (including 205 expected errors),
+and 20 known gaps. They separately show whether matching Ferric and reference
+runs verified that revision; a manifest declaration or historical verification
+stamp alone is not a passed run. Main CI verifies the goldens automatically.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either

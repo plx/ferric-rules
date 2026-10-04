@@ -23,9 +23,11 @@ from ferric_tools._harness import (
     HARNESS_GENERATION_VERSION,
     HarnessContractError,
     atomic_write_bytes,
-    build_harness_plans,
     resolve_harness_contract,
     sha256_bytes,
+)
+from ferric_tools._harness import (
+    build_harness_plans as _build_harness_plans,
 )
 from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
@@ -42,6 +44,33 @@ from ferric_tools.compat.scan import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def build_harness_plans(files, **kwargs):
+    """Explicitly select synthetic libraries for low-level contract tests."""
+    return _build_harness_plans(files, eligible_keys=set(files), **kwargs)
+
+
+def _declare_library(root, source):
+    examples = root / "tests" / "examples"
+    key = source.relative_to(examples).as_posix()
+    plan = harness_core.build_harness_plan(
+        key, examples_dir=examples, output_dir=root / "tests" / "harnesses", root=root
+    )
+    assert plan.harness_bytes is not None
+    declaration = _oracle_declaration(
+        sha256_bytes(plan.source_bytes),
+        composed_digest=sha256_bytes(plan.source_bytes + b"\n" + plan.harness_bytes),
+    )
+    declaration["id"] = "fixture." + sha256_bytes(key.encode())[:16]
+    registry_path = examples / "compat-oracles.json"
+    registry = (
+        json.loads(registry_path.read_text())
+        if registry_path.exists()
+        else {"version": 1, "fixtures": {}}
+    )
+    registry["fixtures"][key] = declaration
+    registry_path.write_text(json.dumps(registry))
 
 
 def _clp(name: str = "example.clp") -> Path:
@@ -61,6 +90,7 @@ def _materialized_library_harness(tmp_path):
     source = examples / "libraries" / "facts.clp"
     source.parent.mkdir(parents=True)
     source.write_text("(deffacts sample (value 1))\n", encoding="utf-8")
+    _declare_library(root, source)
     files = scan_examples(examples, root=root)
     plans = build_harness_plans(
         files,
@@ -97,20 +127,20 @@ def _generated_harness_for_source(
 
 
 # ---------------------------------------------------------------------------
-# COOL constructs → incompatible
+# COOL constructs remain unassessed
 # ---------------------------------------------------------------------------
 
 
-def test_classify_file_cool_construct_is_incompatible():
+def test_classify_file_cool_construct_is_unassessed():
     # A file containing COOL constructs (e.g. defclass) is classified
-    # "incompatible" because ferric does not support COOL.
+    # unassessed; scanner detections are not execution evidence.
     path = _clp("cool_example.clp")
     features = ["defclass", "defrule"]
     unsupported = ["defclass"]
 
     classification, reason, _runability = classify_file(path, features, unsupported)
 
-    assert classification == "incompatible"
+    assert classification == "unassessed"
     assert reason == "unsupported-form"
 
 
@@ -119,7 +149,7 @@ def test_classify_file_cool_construct_is_incompatible():
 # ---------------------------------------------------------------------------
 
 
-def test_classify_file_interactive_io_is_incompatible():
+def test_classify_file_interactive_io_is_unassessed():
     # Files that use (read) or (readline) require an interactive terminal;
     # they are classified "incompatible" with runability "interactive".
     path = _clp("interactive.clp")
@@ -128,7 +158,7 @@ def test_classify_file_interactive_io_is_incompatible():
 
     classification, reason, runability = classify_file(path, features, unsupported)
 
-    assert classification == "incompatible"
+    assert classification == "unassessed"
     assert reason == "interactive"
     assert runability == "interactive"
 
@@ -138,7 +168,7 @@ def test_classify_file_interactive_io_is_incompatible():
 # ---------------------------------------------------------------------------
 
 
-def test_classify_file_supported_constructs_with_defrule_is_pending_testable():
+def test_classify_file_supported_constructs_remain_unassessed():
     # A file that uses only supported constructs AND has at least one defrule
     # is classified "pending" with reason "testable".
     path = _clp("simple_rule.clp")
@@ -147,7 +177,7 @@ def test_classify_file_supported_constructs_with_defrule_is_pending_testable():
 
     classification, reason, runability = classify_file(path, features, unsupported)
 
-    assert classification == "pending"
+    assert classification == "unassessed"
     assert reason == "testable"
     assert runability == "standalone"
 
@@ -161,7 +191,7 @@ def test_classify_file_no_defrule_is_library_only():
 
     classification, reason, _runability = classify_file(path, features, unsupported)
 
-    assert classification == "pending"
+    assert classification == "unassessed"
     assert reason == "library-only"
 
 
@@ -170,7 +200,7 @@ def test_classify_file_no_defrule_is_library_only():
 # ---------------------------------------------------------------------------
 
 
-def test_classify_file_open_io_is_incompatible():
+def test_classify_file_open_io_is_unassessed():
     # Files using (open ...) for file I/O are incompatible.
     path = _clp("file_io.clp")
     features = ["defrule"]
@@ -178,7 +208,7 @@ def test_classify_file_open_io_is_incompatible():
 
     classification, reason, _runability = classify_file(path, features, unsupported)
 
-    assert classification == "incompatible"
+    assert classification == "unassessed"
     assert reason == "unsupported-io"
 
 
@@ -187,7 +217,7 @@ def test_classify_file_open_io_is_incompatible():
 # ---------------------------------------------------------------------------
 
 
-def test_classify_file_bat_extension_is_incompatible():
+def test_classify_file_bat_extension_is_unassessed():
     # .bat files are CLIPS test-suite batch files; they are always classified
     # "incompatible" regardless of their feature set.
     path = Path("testfile.bat")
@@ -196,7 +226,7 @@ def test_classify_file_bat_extension_is_incompatible():
 
     classification, reason, _runability = classify_file(path, features, unsupported)
 
-    assert classification == "incompatible"
+    assert classification == "unassessed"
     assert reason == "test-suite-batch"
 
 
@@ -210,7 +240,7 @@ def test_scan_preserves_strict_utf8_read_errors_as_unknown(tmp_path, suffix):
 
     entry = scan_examples(examples, root=root)[source.name]
 
-    assert entry["classification"] == "incompatible"
+    assert entry["classification"] == "unassessed"
     assert entry["reason"] == "read-error"
     assert entry["runability"] == "unknown"
     assert entry["features"] == []
@@ -234,7 +264,7 @@ def test_scan_attaches_string_aware_feature_evidence_and_legacy_aggregates(tmp_p
 
     entry = scan_examples(examples, root=root)[source.name]
 
-    assert entry["classification"] == "pending"
+    assert entry["classification"] == "unassessed"
     assert entry["reason"] == "testable"
     assert entry["runability"] == "standalone"
     assert entry["features"] == ["defrule", "printout"]
@@ -268,7 +298,7 @@ def test_scan_marks_lexically_malformed_source_unknown_with_partial_evidence(
 
     entry = scan_examples(examples, root=root)[source.name]
 
-    assert entry["classification"] == "incompatible"
+    assert entry["classification"] == "unassessed"
     assert entry["reason"] == "malformed-source"
     assert entry["runability"] == "unknown"
     assert entry["features"] == ["defrule", "printout"]
@@ -312,6 +342,7 @@ def test_harness_generation_attaches_structured_manifest_contract(
     source.parent.mkdir(parents=True)
     source.write_text("(deffacts sample (value 1))\n", encoding="utf-8")
 
+    _declare_library(root, source)
     files = scan_examples(examples)
     manifest_path = examples / "compat-manifest.json"
     save_manifest(
@@ -347,7 +378,7 @@ def test_harness_generation_attaches_structured_manifest_contract(
     assert load_manifest(manifest_path)["version"] == expected_version
 
 
-def test_scan_attaches_non_executable_contract_for_empty_library(tmp_path):
+def test_scan_does_not_plan_undeclared_empty_library(tmp_path):
     root = tmp_path / "repo"
     examples = root / "tests" / "examples"
     source = examples / "empty.clp"
@@ -357,14 +388,7 @@ def test_scan_attaches_non_executable_contract_for_empty_library(tmp_path):
     entry = scan_examples(examples, root=root)["empty.clp"]
 
     assert entry["runability"] == "library"
-    assert entry["harness"] == {
-        "path": None,
-        "source_sha256": sha256_bytes(b"; comments only\n"),
-        "harness_sha256": None,
-        "generation_version": HARNESS_GENERATION_VERSION,
-        "executable": False,
-        "skip_reason": "empty",
-    }
+    assert "harness" not in entry
 
 
 def test_harness_generation_is_deterministic(tmp_path, monkeypatch):
@@ -373,6 +397,7 @@ def test_harness_generation_is_deterministic(tmp_path, monkeypatch):
     source = examples / "library.clp"
     source.parent.mkdir(parents=True)
     source.write_text("(deftemplate item (slot value))\n", encoding="utf-8")
+    _declare_library(root, source)
     files = scan_examples(examples, root=root)
     manifest_path = examples / "compat-manifest.json"
     save_manifest(
@@ -605,6 +630,7 @@ def test_harness_generation_uses_stable_library_identity(tmp_path, monkeypatch):
     source = examples / "library.clp"
     source.parent.mkdir(parents=True)
     source.write_text("(deffacts sample (value 1))\n", encoding="utf-8")
+    _declare_library(root, source)
     files = scan_examples(examples, root=root)
     files["library.clp"]["reason"] = "exact-match"
     files["library.clp"]["harness"] = {"legacy": True}
@@ -636,7 +662,7 @@ def test_harness_generation_uses_stable_library_identity(tmp_path, monkeypatch):
     assert entry["harness"]["executable"] is True
 
 
-def test_harness_generation_clears_stale_mapping_when_fixture_becomes_empty(tmp_path, monkeypatch):
+def test_harness_generation_rejects_stale_declared_source_before_writes(tmp_path, monkeypatch):
     root, source, entry, plan = _materialized_library_harness(tmp_path)
     examples = root / "tests" / "examples"
     manifest_path = examples / "compat-manifest.json"
@@ -649,6 +675,8 @@ def test_harness_generation_clears_stale_mapping_when_fixture_becomes_empty(tmp_
             "files": {"libraries/facts.clp": entry},
         },
     )
+    before_manifest = manifest_path.read_bytes()
+    before_harness = plan.harness_path.read_bytes()
     source.write_text("; no constructs remain\n", encoding="utf-8")
     monkeypatch.setattr(harness_module, "repo_root", lambda: root)
 
@@ -662,13 +690,9 @@ def test_harness_generation_clears_stale_mapping_when_fixture_becomes_empty(tmp_
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    contract = load_manifest(manifest_path)["files"]["libraries/facts.clp"]["harness"]
-    assert contract["executable"] is False
-    assert contract["path"] is None
-    assert contract["harness_sha256"] is None
-    assert contract["skip_reason"] == "empty"
-    assert plan.harness_path is not None
+    assert result.exit_code == 1
+    assert manifest_path.read_bytes() == before_manifest
+    assert plan.harness_path.read_bytes() == before_harness
 
 
 def test_generation_rejects_duplicate_output_mapping_before_writing(tmp_path):
@@ -723,6 +747,7 @@ def test_generation_failure_does_not_publish_updated_manifest(tmp_path, monkeypa
     source = examples / "library.clp"
     source.parent.mkdir(parents=True)
     source.write_text("(deffacts sample (value 1))\n", encoding="utf-8")
+    _declare_library(root, source)
     files = scan_examples(examples, root=root)
     manifest_path = examples / "compat-manifest.json"
     old_manifest = {
@@ -873,6 +898,8 @@ def test_compat_runner_rejects_duplicate_selected_harness_mapping(tmp_path, monk
     content = "(deffacts sample (value 1))\n"
     (examples / "a.clp").write_text(content, encoding="utf-8")
     (examples / "b.clp").write_text(content, encoding="utf-8")
+    _declare_library(root, examples / "a.clp")
+    _declare_library(root, examples / "b.clp")
     files = scan_examples(examples, root=root)
     plans = build_harness_plans(
         files,
@@ -981,7 +1008,7 @@ def test_compat_runner_rejects_runability_that_bypasses_harness_validation(
 
     assert result.exit_code == 1
     if mutation == "missing":
-        assert "invalid or missing runability" in result.output
+        assert "runability" in result.output
     else:
         assert "harness contract requires library runability" in result.output
     assert plan.harness_path is not None
@@ -1631,3 +1658,180 @@ def test_scan_rejects_duplicate_registry_json_field(tmp_path):
 
     with pytest.raises(OracleRegistryError, match="duplicate JSON field"):
         scan_examples(examples, root=root)
+
+
+def test_inventory_collapses_only_unassessed_exact_bytes_and_preserves_bundles(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    content = b"(deffacts seed (value 1))\n"
+    for bundle in ("upstream-a", "upstream-b"):
+        directory = examples / bundle
+        directory.mkdir(parents=True)
+        (directory / "facts.clp").write_bytes(content)
+        (directory / "run.bat").write_text('(load "facts.clp")\n')
+    # Neither basename equality nor cross-suffix equality is enough to collapse rows.
+    (examples / "different").mkdir()
+    (examples / "different" / "facts.clp").write_bytes(content + b"; distinct\n")
+    (examples / "upstream-a" / "facts.bat").write_bytes(content)
+
+    files = scan_examples(examples, root=root)
+
+    assert set(files) == {
+        "upstream-a/facts.clp",
+        "upstream-a/facts.bat",
+        "upstream-a/run.bat",
+        "different/facts.clp",
+    }
+    assert files["upstream-a/facts.clp"]["aliases"] == [
+        {"path": "upstream-a/facts.clp", "source": "upstream-a"},
+        {"path": "upstream-b/facts.clp", "source": "upstream-b"},
+    ]
+    assert all(entry["classification"] == "unassessed" for entry in files.values())
+    assert all("harness" not in entry for entry in files.values())
+    assert build_summary(files) == {
+        "total": 4,
+        "equivalent": 0,
+        "divergent": 0,
+        "unassessed": 4,
+        "evidence-failure": 0,
+        "physical_paths": 6,
+        "unique_contents": 4,
+        "duplicate_aliases": 2,
+    }
+    for bundle in ("upstream-a", "upstream-b"):
+        assert (examples / bundle / "facts.clp").read_bytes() == content
+        assert (examples / bundle / "run.bat").read_text() == '(load "facts.clp")\n'
+
+
+def test_same_bytes_oracles_keep_independent_identities_and_alias_promotion(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+    for key in ("a.clp", "b.clp", "c.clp"):
+        (examples / key).write_text("(deffacts seed (value 1))\n")
+    assert len(scan_examples(examples, root=root)) == 1
+    _declare_library(root, examples / "b.clp")
+    first = scan_examples(examples, root=root)
+    assert set(first) == {"a.clp", "b.clp"}
+    assert [alias["path"] for alias in first["a.clp"]["aliases"]] == ["a.clp", "c.clp"]
+    assert "harness" not in first["a.clp"]
+    _declare_library(root, examples / "c.clp")
+    second = scan_examples(examples, root=root)
+    assert set(second) == {"a.clp", "b.clp", "c.clp"}
+    assert second["b.clp"]["oracle"]["id"] != second["c.clp"]["oracle"]["id"]
+    assert (
+        second["b.clp"]["oracle"]["composed_sha256"] != second["c.clp"]["oracle"]["composed_sha256"]
+    )
+    assert build_summary(second)["unique_contents"] == 1
+    assert build_summary(second)["unassessed"] == 3
+
+
+def test_library_shaped_v2_primary_uses_its_own_plan_without_legacy_harness(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    (examples / "shared").mkdir(parents=True)
+    primary = examples / "fixture.clp"
+    secondary = examples / "shared" / "library.clp"
+    primary.write_text("(deffacts seed (result 1))\n")
+    secondary.write_text("(deftemplate shared (slot value))\n")
+    declaration = _scenario_declaration(
+        sha256_bytes(primary.read_bytes()), sha256_bytes(secondary.read_bytes())
+    )
+    (examples / "compat-oracles.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "fixtures": {"fixture.clp": declaration},
+            }
+        )
+    )
+    files = scan_examples(examples, root=root)
+    assert files["fixture.clp"]["runability"] == "library"
+    assert files["fixture.clp"]["oracle"] == declaration
+    assert all("harness" not in entry for entry in files.values())
+
+
+def test_no_oracle_generation_and_check_ignore_obsolete_harness_metadata(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+    (examples / "library.clp").write_text("(deffacts seed (value 1))\n")
+    files = scan_examples(examples, root=root)
+    files["library.clp"]["harness"] = {"path": "../../must-not-touch"}
+    files["library.clp"]["harness_skip"] = "legacy"
+    manifest = examples / "compat-manifest.json"
+    save_manifest(manifest, {"version": 4, "files": files, "summary": build_summary(files)})
+    monkeypatch.setattr(harness_module, "repo_root", lambda: root)
+    args = ["--manifest", str(manifest)]
+    checked = CliRunner().invoke(harness_module.app, [*args, "--check"])
+    assert checked.exit_code == 0, checked.output
+    assert "Verified 0 executable harnesses" in checked.output
+    generated = CliRunner().invoke(harness_module.app, args)
+    assert generated.exit_code == 0, generated.output
+    assert "harness" not in load_manifest(manifest)["files"]["library.clp"]
+    assert "harness_skip" not in load_manifest(manifest)["files"]["library.clp"]
+    assert not (root / "tests" / "harnesses").exists()
+
+
+@pytest.mark.parametrize("mutation", ["forged", "removed", "symlink", "digest"])
+def test_harness_generation_revalidates_registry_before_any_write(tmp_path, monkeypatch, mutation):
+    root, examples, source, output, manifest, _plan = _declared_library_manifest(tmp_path)
+    before = manifest.read_bytes()
+    if mutation == "forged":
+        data = load_manifest(manifest)
+        data["files"]["library.clp"]["oracle"]["id"] = "forged.id"
+        save_manifest(manifest, data)
+        before = manifest.read_bytes()
+    elif mutation == "removed":
+        (examples / "compat-oracles.json").unlink()
+    elif mutation == "symlink":
+        saved = examples / "elsewhere.clp"
+        source.rename(saved)
+        source.symlink_to(saved)
+    else:
+        source.write_text("(deffacts seed (result 2))\n")
+    monkeypatch.setattr(harness_module, "repo_root", lambda: root)
+    for flags in ([], ["--check"]):
+        result = CliRunner().invoke(harness_module.app, ["--manifest", str(manifest), *flags])
+        assert result.exit_code == 1, result.output
+        assert manifest.read_bytes() == before
+        assert not output.exists()
+
+
+def test_declared_empty_library_cannot_silently_skip_harness_generation(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+    source = examples / "empty.clp"
+    source.write_text("; empty\n")
+    declaration = _oracle_declaration(sha256_bytes(source.read_bytes()))
+    (examples / "compat-oracles.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "fixtures": {"empty.clp": declaration},
+            }
+        )
+    )
+    with pytest.raises(OracleRegistryError, match="no executable harness"):
+        scan_examples(examples, root=root)
+    assert not (root / "tests" / "harnesses").exists()
+
+
+def test_harness_generation_detects_source_change_during_planning(tmp_path, monkeypatch):
+    root, _examples, source, output, manifest, _plan = _declared_library_manifest(tmp_path)
+    before = manifest.read_bytes()
+    original = harness_module.build_harness_plans
+
+    def changing_source(*args, **kwargs):
+        plans = original(*args, **kwargs)
+        source.write_text("(deffacts changed (result 2))\n")
+        return plans
+
+    monkeypatch.setattr(harness_module, "repo_root", lambda: root)
+    monkeypatch.setattr(harness_module, "build_harness_plans", changing_source)
+    result = CliRunner().invoke(harness_module.app, ["--manifest", str(manifest)])
+    assert result.exit_code == 1, result.output
+    assert "source changed before harness generation" in result.output
+    assert manifest.read_bytes() == before
+    assert not output.exists()

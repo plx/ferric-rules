@@ -9,6 +9,7 @@ use ferric_rules::runtime::{
     Engine, EngineConfig, HaltReason, RunLimit, SerializationError, SerializationFormat,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -705,14 +706,21 @@ impl Program {
 
 #[test]
 fn characterize_corpus() {
+    let mut status = CorpusStatus::start();
     let mut failures = Vec::new();
     let mut report = serde_json::Map::new();
     let (mut passing, mut gaps) = (0, 0);
-    for program in selected_programs() {
+    let programs = selected_programs();
+    status.select(&programs);
+    for program in programs {
         let case = &program.case;
         let actual = program.observe(NORMAL).unwrap();
         report.insert(case.path.clone(), serde_json::to_value(&actual).unwrap());
         let matches = conforms(case.error, &program.expected, &actual, true);
+        status.record(
+            &case.path,
+            verdict(matches, case.gap.as_ref().map(|gap| actual == gap.observed)),
+        );
         if let Some(gap) = &case.gap {
             gaps += 1;
             if matches {
@@ -741,11 +749,144 @@ fn characterize_corpus() {
             ));
         }
     }
+    let serialized = serde_json::to_vec_pretty(&report).unwrap();
     if let Ok(path) = std::env::var("FERRIC_CORPUS_REPORT") {
-        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+        std::fs::write(path, &serialized).unwrap();
     }
+    status.value["observations_sha256"] = format!("{:x}", Sha256::digest(serialized)).into();
+    status.finish();
     eprintln!("corpus: {passing} conformance cases, {gaps} characterized gaps");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Keep the historical raw observation report separate from verdict metadata.
+struct CorpusStatus {
+    path: Option<PathBuf>,
+    value: serde_json::Value,
+}
+
+impl CorpusStatus {
+    fn start() -> Self {
+        let mut status = Self {
+            path: std::env::var_os("FERRIC_CORPUS_STATUS").map(PathBuf::from),
+            value: serde_json::json!({
+                "schema": "ferric.compat-corpus-status", "version": 1,
+                "run_id": std::env::var("FERRIC_CORPUS_RUN_ID").ok(),
+                "revision": null, "manifest_sha256": null, "scope": "characterization",
+                "selection": {
+                    "filter": std::env::var("FERRIC_CORPUS_FILTER").unwrap_or_default(),
+                    "level": std::env::var("FERRIC_CORPUS_LEVEL").ok().filter(|s| !s.is_empty()),
+                    "paths": [],
+                },
+                "complete": false, "status": "incomplete", "results": {}, "failures": [],
+            }),
+        };
+        // An early manifest/read/selection panic leaves an explicitly incomplete file.
+        status.write();
+        if status.path.is_some() {
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .expect("read corpus candidate revision");
+            assert!(output.status.success(), "read corpus candidate revision");
+            let revision = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+            status.value["revision"] = revision.clone().into();
+            let bytes = std::fs::read(corpus_root().join("manifest.json")).unwrap();
+            status.value["manifest_sha256"] = format!("{:x}", Sha256::digest(bytes)).into();
+            let mut files = serde_json::Map::new();
+            for case in manifest().cases {
+                for extension in ["clp", "out", "in"] {
+                    let relative = Path::new(&case.path).with_extension(extension);
+                    let file = corpus_root().join(&relative);
+                    let hash = if extension != "in" || file.exists() {
+                        let bytes = std::fs::read(file).unwrap();
+                        serde_json::Value::String(format!("{:x}", Sha256::digest(bytes)))
+                    } else {
+                        serde_json::Value::Null
+                    };
+                    files.insert(relative.to_str().unwrap().replace('\\', "/"), hash);
+                }
+            }
+            status.value["files_sha256"] =
+                format!("{:x}", Sha256::digest(serde_json::to_vec(&files).unwrap())).into();
+            status.write();
+            if let Ok(expected) = std::env::var("FERRIC_CORPUS_REVISION") {
+                assert_eq!(
+                    revision, expected,
+                    "corpus checkout differs from requested revision"
+                );
+            }
+        }
+        status
+    }
+
+    fn select(&mut self, programs: &[Program]) {
+        self.value["selection"]["paths"] = programs
+            .iter()
+            .map(|program| serde_json::Value::String(program.case.path.clone()))
+            .collect();
+        self.write();
+    }
+
+    fn record(&mut self, path: &str, result: serde_json::Value) {
+        if result["accepted"] == false {
+            self.value["failures"]
+                .as_array_mut()
+                .unwrap()
+                .push(path.into());
+        }
+        self.value["results"][path] = result;
+    }
+
+    fn finish(&mut self) {
+        self.value["complete"] = true.into();
+        self.value["status"] = if self.value["failures"].as_array().unwrap().is_empty() {
+            "passed"
+        } else {
+            "failed"
+        }
+        .into();
+        self.write();
+    }
+
+    fn write(&self) {
+        if let Some(path) = &self.path {
+            let temporary = path.with_extension("status.tmp");
+            std::fs::write(&temporary, serde_json::to_vec_pretty(&self.value).unwrap()).unwrap();
+            std::fs::rename(temporary, path).unwrap();
+        }
+    }
+}
+
+fn verdict(conforms: bool, unchanged_gap: Option<bool>) -> serde_json::Value {
+    let verdict = match (conforms, unchanged_gap) {
+        (true, None) => "conformance",
+        (false, None) => "mismatch",
+        (true, Some(_)) => "unexpected_fix",
+        (false, Some(true)) => "known_gap",
+        (false, Some(false)) => "gap_changed",
+    };
+    serde_json::json!({
+        "verdict": verdict, "conforms": conforms,
+        "accepted": matches!(verdict, "conformance" | "known_gap"),
+    })
+}
+
+#[test]
+fn corpus_status_distinguishes_conformance_from_accepted_gaps() {
+    for (conforms, gap, expected, accepted) in [
+        (true, None, "conformance", true),
+        (false, None, "mismatch", false),
+        (true, Some(false), "unexpected_fix", false),
+        (false, Some(true), "known_gap", true),
+        (false, Some(false), "gap_changed", false),
+    ] {
+        let result = verdict(conforms, gap);
+        assert_eq!(result["verdict"], expected);
+        assert_eq!(result["conforms"], conforms);
+        assert_eq!(result["accepted"], accepted);
+    }
 }
 
 /// Replay every conforming program in the given modes. A program that does
