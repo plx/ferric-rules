@@ -624,8 +624,8 @@ engine.assert_ordered("prompt-line", ())?;
 engine.run(RunLimit::Unlimited)?;
 ```
 
-`format` works as an evaluator-only function in ferric: it returns a
-string. To actually print it, pipe it through `printout`:
+`format` writes to its logical name and returns the formatted string.
+Use `nil` to return the string without writing it, as in this `printout`:
 
 <!-- example: 10-io-channels/rules/io.clp -->
 ```clips
@@ -850,7 +850,8 @@ A non-exhaustive list worth internalizing:
 
 - **`=` is numeric; `eq` is type-sensitive.** `(= 1 1.0)` is `TRUE`;
   `(eq 1 1.0)` is `FALSE`. Use `eq` for symbol/string compares.
-- **`format` returns a string.** Wrap it in `printout` to actually write.
+- **`format` writes and returns a string.** Use `nil` as its logical name
+  when only the returned string is needed.
 - **`run` from a rule RHS is a no-op.** Don't try to trigger another run
   mid-firing; use focus/salience instead.
 - **`reset` and `clear` from RHS are deferred.** They set a flag that is

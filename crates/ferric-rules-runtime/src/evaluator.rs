@@ -5720,9 +5720,10 @@ fn builtin_rules(
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
-fn printout_channel_name(
+fn output_channel_name(
     value: &Value,
     symbol_table: &SymbolTable,
+    function: &str,
     span: Option<&SourceSpan>,
 ) -> Result<String, EvalError> {
     match value {
@@ -5731,11 +5732,15 @@ fn printout_channel_name(
             .unwrap_or("???")
             .to_string()),
         Value::String(s) => Ok(s.as_str().to_string()),
+        Value::InstanceName(name) => Ok(symbol_table
+            .resolve_symbol_str(name.as_symbol())
+            .unwrap_or("???")
+            .to_string()),
         Value::Integer(n) => Ok(n.to_string()),
         Value::Float(f) => Ok(f.to_string()),
         other => Err(EvalError::TypeError {
-            function: "printout".to_string(),
-            expected: "SYMBOL, STRING, INTEGER, or FLOAT channel".to_string(),
+            function: function.to_string(),
+            expected: "SYMBOL, STRING, INSTANCE-NAME, INTEGER, or FLOAT channel".to_string(),
             actual: generic_value_type_name(other).to_string(),
             span: span.cloned(),
         }),
@@ -5753,15 +5758,20 @@ fn builtin_printout(
 ) -> Result<Value, EvalError> {
     check_arity_min("printout", args, 1, span)?;
     let channel_value = eval_inner(ctx, &args[0])?;
-    let channel = printout_channel_name(&channel_value, ctx.symbol_table, span)?;
-
-    let mut output = String::new();
-    for expr in &args[1..] {
-        let value = eval_inner(ctx, expr)?;
-        crate::value_print::append_printout_value(&value, ctx.symbol_table, &mut output);
+    let channel = output_channel_name(&channel_value, ctx.symbol_table, "printout", span)?;
+    if channel == "nil" {
+        return Ok(Value::Void);
     }
 
-    ctx.globals.push_printout_event(channel, output);
+    for expr in &args[1..] {
+        let value = eval_inner(ctx, expr)?;
+        let mut output = String::new();
+        crate::value_print::append_printout_value(&value, ctx.symbol_table, &mut output);
+        // Queue each completed argument before evaluating the next one, so
+        // nested output and errors preserve the already-written prefix.
+        ctx.globals.push_printout_event(channel.clone(), output);
+    }
+
     Ok(Value::Void)
 }
 
@@ -5769,10 +5779,11 @@ fn builtin_printout(
 ///
 /// `(format <channel> <control> <arg>*)`
 ///
-/// Returns the formatted STRING. The channel is evaluated but nothing is
-/// written to it. As in CLIPS, the whole control string is checked and the
-/// argument count must match its directives before any argument is
-/// evaluated. See [`crate::formatting`] for the directives.
+/// Returns the formatted STRING and writes it to the evaluated channel unless
+/// its logical name is `nil`. As in CLIPS, the whole control string is checked
+/// and the argument count must match its directives before any argument is
+/// evaluated. The completed output is queued only after formatting succeeds.
+/// See [`crate::formatting`] for the directives.
 fn builtin_format(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -5781,7 +5792,8 @@ fn builtin_format(
     use crate::formatting::Piece;
 
     check_arity_min("format", args, 2, span)?;
-    let _channel = eval_inner(ctx, &args[0])?;
+    let channel_value = eval_inner(ctx, &args[0])?;
+    let channel = output_channel_name(&channel_value, ctx.symbol_table, "format", span)?;
     let control = match eval_inner(ctx, &args[1])? {
         Value::String(s) => s,
         other => {
@@ -5839,6 +5851,9 @@ fn builtin_format(
             span: span.cloned(),
         }
     })?;
+    if channel != "nil" {
+        ctx.globals.push_printout_event(channel, output);
+    }
     Ok(Value::String(fs))
 }
 
@@ -6614,6 +6629,12 @@ mod tests {
 
     /// Helper to evaluate a `RuntimeExpr` with default context.
     fn eval_expr(expr: &RuntimeExpr) -> Result<Value, EvalError> {
+        eval_expr_with_output(expr).0
+    }
+
+    fn eval_expr_with_output(
+        expr: &RuntimeExpr,
+    ) -> (Result<Value, EvalError>, Vec<(String, String)>) {
         let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
         let main_id = mr.main_module_id();
         let mut ctx = EvalContext {
@@ -6640,7 +6661,8 @@ mod tests {
             initial_fact_id: None,
             template_defs: None,
         };
-        eval(&mut ctx, expr)
+        let result = eval(&mut ctx, expr);
+        (result, gs.take_printout_events())
     }
 
     fn encoded_address(id: ferric_rules_core::FactId) -> Value {
@@ -10745,9 +10767,9 @@ mod tests {
         }
 
         let events = gs.take_printout_events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "t");
-        assert_eq!(events[0].1, "v=\t7\n");
+        assert!(events.iter().all(|(channel, _)| channel == "t"));
+        let output: String = events.into_iter().map(|(_, text)| text).collect();
+        assert_eq!(output, "v=\t7\n");
     }
 
     #[test]
@@ -11731,6 +11753,153 @@ mod tests {
     // format tests
     // -----------------------------------------------------------------------
 
+    fn logical_name_forms(name: &str) -> [RuntimeExpr; 3] {
+        let symbol = call("sym-cat", vec![str_lit(name)]);
+        [
+            str_lit(name),
+            symbol.clone(),
+            call("symbol-to-instance-name", vec![symbol]),
+        ]
+    }
+
+    #[test]
+    fn format_routes_and_returns_the_same_completed_string() {
+        for name in ["t", "stdout", "wtrace", "application"] {
+            for channel in logical_name_forms(name) {
+                let (result, events) = eval_expr_with_output(&call(
+                    "format",
+                    vec![channel, str_lit("value=%d%n"), int(42)],
+                ));
+                let Value::String(value) = result.unwrap() else {
+                    panic!("format must return a string");
+                };
+                assert_eq!(value.as_str(), "value=42\n");
+                assert_eq!(events, [(name.to_owned(), "value=42\n".to_owned())]);
+            }
+        }
+        for (channel, expected) in [(int(23), "23"), (float(2.5), "2.5")] {
+            let (result, events) =
+                eval_expr_with_output(&call("format", vec![channel, str_lit("number")]));
+            assert!(result.is_ok());
+            assert_eq!(events, [(expected.to_owned(), "number".to_owned())]);
+        }
+    }
+
+    #[test]
+    fn nil_format_evaluates_operands_without_routing_its_result() {
+        for channel in logical_name_forms("nil") {
+            let (result, events) = eval_expr_with_output(&call(
+                "format",
+                vec![
+                    channel,
+                    str_lit("outer:%s"),
+                    call("format", vec![str_lit("t"), str_lit("inner")]),
+                ],
+            ));
+            let Value::String(value) = result.unwrap() else {
+                panic!("format nil must return a string");
+            };
+            assert_eq!(value.as_str(), "outer:inner");
+            assert_eq!(events, [("t".to_owned(), "inner".to_owned())]);
+        }
+    }
+
+    #[test]
+    fn nil_printout_does_not_evaluate_operands() {
+        for channel in logical_name_forms("nil") {
+            let (result, events) = eval_expr_with_output(&call(
+                "printout",
+                vec![
+                    channel,
+                    call("format", vec![str_lit("t"), str_lit("unreached")]),
+                    call("+", vec![int(1), str_lit("invalid")]),
+                ],
+            ));
+            assert!(matches!(result, Ok(Value::Void)));
+            assert!(events.is_empty());
+        }
+    }
+
+    #[test]
+    fn printout_preserves_nested_format_output_order() {
+        let (result, events) = eval_expr_with_output(&call(
+            "printout",
+            vec![
+                str_lit("t"),
+                str_lit("a "),
+                call("format", vec![str_lit("t"), str_lit("b%n")]),
+                str_lit("c\n"),
+            ],
+        ));
+        assert!(matches!(result, Ok(Value::Void)));
+        assert!(events.iter().all(|(channel, _)| channel == "t"));
+        let output: String = events.into_iter().map(|(_, text)| text).collect();
+        assert_eq!(output, "a b\nb\nc\n");
+    }
+
+    #[test]
+    fn printout_preserves_prefix_and_nested_output_when_a_later_operand_fails() {
+        let (result, events) = eval_expr_with_output(&call(
+            "printout",
+            vec![
+                str_lit("t"),
+                str_lit("prefix "),
+                call(
+                    "+",
+                    vec![
+                        int(1),
+                        call("format", vec![str_lit("t"), str_lit("nested")]),
+                    ],
+                ),
+                str_lit("unreached"),
+            ],
+        ));
+        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+        assert_eq!(
+            events,
+            [
+                ("t".to_owned(), "prefix ".to_owned()),
+                ("t".to_owned(), "nested".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_format_keeps_operand_side_effects_but_writes_no_partial_result() {
+        let (result, events) = eval_expr_with_output(&call(
+            "format",
+            vec![
+                str_lit("t"),
+                str_lit("prefix:%s:%d"),
+                call("format", vec![str_lit("t"), str_lit("nested")]),
+                str_lit("invalid"),
+            ],
+        ));
+        assert!(matches!(
+            result,
+            Err(EvalError::TypeError { function, .. }) if function == "format"
+        ));
+        assert_eq!(events, [("t".to_owned(), "nested".to_owned())]);
+    }
+
+    #[test]
+    fn format_validates_channel_control_and_arity_before_operand_side_effects() {
+        let operand = call("format", vec![str_lit("t"), str_lit("unreached")]);
+        for (channel, control) in [
+            (RuntimeExpr::Literal(Value::Void), "%s"),
+            (str_lit("t"), "%q"),
+            (str_lit("t"), "%s %s"),
+        ] {
+            let (result, events) = eval_expr_with_output(&call(
+                "format",
+                vec![channel, str_lit(control), operand.clone()],
+            ));
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("format"), "{error}");
+            assert!(events.is_empty());
+        }
+    }
+
     #[test]
     fn test_format_basic_string() {
         // (format nil "hello %s" "world") => "hello world"
@@ -11783,7 +11952,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("count: %d", ferric_rules_core::StringEncoding::Utf8)
                         .unwrap(),
@@ -11804,7 +11973,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("val: %f", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11824,7 +11993,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("%.2f", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11844,7 +12013,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("%10d", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11864,7 +12033,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("%-10d", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11884,7 +12053,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("a%nb", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11903,7 +12072,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("100%%", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11922,7 +12091,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("%s is %d", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),
@@ -11945,7 +12114,7 @@ mod tests {
         let result = eval_expr(&call(
             "format",
             vec![
-                RuntimeExpr::Literal(Value::Void),
+                str_lit("nil"),
                 RuntimeExpr::Literal(Value::String(
                     FerricString::new("%e", ferric_rules_core::StringEncoding::Utf8).unwrap(),
                 )),

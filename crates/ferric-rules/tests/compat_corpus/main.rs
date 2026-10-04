@@ -132,8 +132,7 @@ fn golden(bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
     if error == Some(ErrorPhase::Run) {
         output = output
             .split_inclusive(|&byte| byte == b'\n')
-            .filter(|line| !is_diagnostic(line))
-            .flatten()
+            .flat_map(|line| &line[..diagnostic_offset(line).unwrap_or(line.len())])
             .copied()
             .collect();
     }
@@ -142,6 +141,30 @@ fn golden(bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
         output,
         notices: [warnings, errors].concat(),
     }
+}
+
+/// CLIPS may append an error to a partially printed line. Keep the program's
+/// prefix, but discard the diagnostic and its newline when comparing output.
+fn diagnostic_offset(line: &[u8]) -> Option<usize> {
+    // These are the runtime diagnostics in the pinned corpus. Extend this list
+    // only with a newly verified CLIPS error; arbitrary bracketed text is output.
+    const PREFIXES: &[&[u8]] = &[
+        b"[ARGACCES4] ",
+        b"[ARGACCES5] ",
+        b"[PRCCODE4] ",
+        b"[PRCCODE5] ",
+        b"[PRNTUTIL7] ",
+        b"[TMPLTDEF1] ",
+        b"[GENRCEXE1] ",
+        b"[INSFUN3] ",
+    ];
+    line.iter().enumerate().find_map(|(offset, &byte)| {
+        (byte == b'['
+            && PREFIXES
+                .iter()
+                .any(|prefix| line[offset..].starts_with(prefix)))
+        .then_some(offset)
+    })
 }
 
 /// A CLIPS diagnostic line: `[CODE123] message`.
@@ -412,7 +435,7 @@ fn manifest_covers_every_program() {
             golden(&expected, None)
                 .output
                 .split(|&byte| byte == b'\n')
-                .any(is_diagnostic),
+                .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
             "only a golden with a CLIPS diagnostic has an error phase: {}",
             case.path
         );
@@ -594,4 +617,43 @@ fn replay_with_rules_loaded_after_reset() {
         })
         .collect();
     replay(&modes);
+}
+
+#[test]
+fn golden_run_error_preserves_exact_partial_output() {
+    let expected = golden(
+        b"ready\nprefix \xff [ARGACCES5] invalid operand\n\
+          [PRCCODE4] Execution halted.\n",
+        Some(ErrorPhase::Run),
+    );
+    assert_eq!(expected.output, b"ready\nprefix \xff ");
+    assert!(expected.notices.is_empty());
+}
+
+#[test]
+fn golden_run_error_preserves_non_diagnostic_bracket_text() {
+    let output = b"[USER123] literal\nprefix [USER123] literal\n[USER123]\n\
+        [lower1] literal\n[CODE] literal\n[CODE1]\tliteral\n";
+    let expected = golden(output, Some(ErrorPhase::Run));
+    assert_eq!(expected.output, output);
+    assert!(expected.notices.is_empty());
+}
+
+#[test]
+fn golden_preserves_diagnostics_outside_run_error_cases() {
+    let output = b"prefix [ARGACCES5] invalid operand\n[PRCCODE4] Execution halted.\n";
+    for phase in [None, Some(ErrorPhase::Load)] {
+        let expected = golden(output, phase);
+        assert_eq!(expected.output, output);
+        assert!(expected.notices.is_empty());
+    }
+}
+
+#[test]
+fn golden_run_error_retains_scanner_notices_separately() {
+    let notice = NOTICES[0].1;
+    let output = format!("prefix {notice}tail [ARGACCES5] invalid operand\n");
+    let expected = golden(output.as_bytes(), Some(ErrorPhase::Run));
+    assert_eq!(expected.output, b"prefix tail ");
+    assert_eq!(expected.notices, notice.as_bytes());
 }

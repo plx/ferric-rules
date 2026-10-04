@@ -58,6 +58,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 
 | Feature | Corpus status |
 |---|---|
+| Format and printout output | `format t` writes and returns its string; nested format/printout/deffunction calls preserve argument evaluation order. Runtime errors preserve partial output, and `format nil` suppresses only its own write. |
 | Source numeric scanner | Delimiter-bounded numeric candidates cover trailing/leading decimal points, signed zero, exponents, numeric-looking symbols, incomplete exponents, source integer clamping, compact constraint connectives, and CR-only comments. Nonoverflow cases compare source values with `explode$`; general symbol tokenization remains outside this coverage. |
 | Brackets in symbols | No dedicated granular program yet; existing lexer tests cover this separately. |
 | Connective constraints | Literal, variable, predicate, and return-value disjunctions cover overlapping alternatives, leading bindings, joins, negation, exists, forall, and ordered/template sequence fields. More complex nested expressions remain incomplete. |

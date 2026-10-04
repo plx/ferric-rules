@@ -1,0 +1,11 @@
+rhs n=42
+both abc
+t-return: [both abc
+]
+in-deffunction x=5
+after f
+a b
+b
+c
+x G
+1 y

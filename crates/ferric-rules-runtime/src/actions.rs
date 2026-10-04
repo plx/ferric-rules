@@ -2420,7 +2420,13 @@ fn execute_printout(
         }
     };
 
-    // Evaluate and format remaining arguments.
+    // CLIPS suppresses both output and operand evaluation for the nil router.
+    if channel == "nil" {
+        return Ok(());
+    }
+
+    // Write each argument before evaluating the next, so nested output and
+    // errors retain the output order and any successfully written prefix.
     let mut output = String::new();
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
@@ -2430,9 +2436,9 @@ fn execute_printout(
             &context.engine.symbol_table,
             &mut output,
         );
+        context.engine.router.write(&channel, &output);
+        output.clear();
     }
-
-    context.engine.router.write(&channel, &output);
     Ok(())
 }
 
@@ -2459,9 +2465,10 @@ fn execute_println(
             &context.engine.symbol_table,
             &mut output,
         );
+        context.engine.router.write("t", &output);
+        output.clear();
     }
-    output.push('\n');
-    context.engine.router.write("t", &output);
+    context.engine.router.write("t", "\n");
     Ok(())
 }
 

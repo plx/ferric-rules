@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 635 small programs progress from individual features to
+CLIPS subset. Its 643 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 631 clean conformance cases, 59 of which
+CLIPS-verified output oracle. There are 639 clean conformance cases, 62 of which
 reproduce a CLIPS error, and 4 active characterizations of documented
 differences: CLIPS output that is not UTF-8, and malformed `format` directives.
 
@@ -79,7 +79,9 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   CLIPS rejects the program, the golden is its load diagnostic, and Ferric must
   reject the program at load. With `error: "run"` CLIPS halts on a run-time
   error; Ferric must report an error and print the golden without its
-  `[CODE123]` lines. Ferric's own diagnostic text is never compared.
+  `[CODE123]` diagnostics. If a diagnostic follows partially printed output on
+  the same line, the program prefix is preserved without the diagnostic
+  newline. Ferric's own diagnostic text is never compared.
 - The exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error
   routers, interleaved with `t` in the oracle; the runner removes them from the

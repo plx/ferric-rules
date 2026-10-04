@@ -5150,7 +5150,7 @@
         "summary": "Documented divergence: CLIPS hands malformed directives such as %5-3d to printf, which echoes them; Ferric reports a format error",
         "observed": {
           "phase": "complete",
-          "output": "a:[7    ]\nb:[7    ]\n",
+          "output": "a:[7    ]\nb:[7    ]\nc:[",
           "diagnostics": [
             "expression evaluation error: unsupported operation `format`: unsupported format directive `%5-3d` at line 4:19"
           ]
@@ -6282,6 +6282,84 @@
         "instance-name",
         "lowcase",
         "upcase"
+      ]
+    },
+    {
+      "path": "stdlib/236_format_output_issue_repro.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "stdlib/237_format_output_nested_printout.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "stdlib/238_format_output_nested_arguments.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "stdlib/239_format_output_printout_error_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "evaluation-error"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/240_format_output_nested_function_error_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "evaluation-error"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/241_format_output_argument_error_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "evaluation-error"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "stdlib/242_format_output_nil_nested_effects.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "stdlib/243_format_output_function_return.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction"
       ]
     }
   ]

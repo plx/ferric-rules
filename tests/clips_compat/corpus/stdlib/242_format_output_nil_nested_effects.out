@@ -1,0 +1,4 @@
+prefix inner
+outer[inner
+] suffix
+returned: [silent 7]
