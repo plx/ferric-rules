@@ -2,6 +2,7 @@
 
 use super::{Engine, SerializationError};
 use crate::evaluator::RuntimeExpr;
+use crate::fact_initializer::PreparedFact;
 use ferric_rules_core::{Fact, SequenceSource, Value};
 use ferric_rules_parser::{ActionExpr, SlotType};
 
@@ -192,7 +193,7 @@ impl Engine {
                 "duplicate named deffacts definition",
             )?;
             for fact in &definition.facts {
-                self.validate_snapshot_fact(fact)?;
+                self.validate_snapshot_initializer(fact)?;
             }
         }
         if let Some(id) = self.initial_fact_id {
@@ -352,6 +353,57 @@ impl Engine {
         };
         for value in values {
             self.symbol_table.validate_snapshot_value(value)?;
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_initializer(&self, fact: &PreparedFact) -> Result<(), String> {
+        match fact {
+            PreparedFact::Ordered { relation, .. } => {
+                self.symbol_table
+                    .validate_snapshot_value(&Value::Symbol(*relation))?;
+            }
+            PreparedFact::Template { template_id, slots } => {
+                let template = self
+                    .template_defs
+                    .get(*template_id)
+                    .ok_or("fact initializer has dangling template")?;
+                let mut seen = rustc_hash::FxHashSet::default();
+                for (index, expressions) in slots {
+                    let kind = template
+                        .slot_types
+                        .get(*index)
+                        .ok_or("fact initializer has invalid slot index")?;
+                    ensure(seen.insert(*index), "fact initializer has duplicate slot")?;
+                    ensure(
+                        *kind != SlotType::Single || expressions.len() == 1,
+                        "single-field initializer requires exactly one expression",
+                    )?;
+                    for expression in expressions {
+                        if let RuntimeExpr::Literal(value) = expression {
+                            match kind {
+                                SlotType::Single => template.validate_slot(*index, value)?,
+                                SlotType::Multi => {
+                                    let fields = match value {
+                                        Value::Multifield(fields) => fields.clone(),
+                                        Value::Void => Box::default(),
+                                        value => Box::new(std::iter::once(value.clone()).collect()),
+                                    };
+                                    template.validate_slot(*index, &Value::Multifield(fields))?;
+                                }
+                            }
+                        }
+                    }
+                }
+                for (index, default) in template.defaults.iter().enumerate() {
+                    if !seen.contains(&index) {
+                        template.validate_slot(index, default)?;
+                    }
+                }
+            }
+        }
+        for expression in fact.expressions() {
+            self.validate_expression(expression)?;
         }
         Ok(())
     }

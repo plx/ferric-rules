@@ -14,6 +14,13 @@ existing application facts unchanged until the next reset. `LoadResult` no
 longer reports deffacts seeds as newly asserted facts. Explicit `assert` and
 `load-facts` continue to add facts immediately.
 
+Top-level `assert` now evaluates field expressions and globals, including
+through string-assert binding APIs. Invalid fields cause an error rather than
+being dropped. Deffacts retain their expressions and evaluate them at each
+reset after global initialization; globals defined later and callable
+replacements affect those values. Loading a deffacts definition has no expression side
+effects. `load-facts` accepts literal data only.
+
 A definition is identified by module and local name. Successful replacement
 moves it to the end of that module's definition order; reset visits modules
 in creation order, then their definitions in order. `undeffacts` removes
@@ -68,9 +75,12 @@ multislot pattern holds a sequence of field constraints. In the core,
 `CompilablePattern` has a new `sequence` field, so struct literals need it
 (`sequence: None` for a pattern without multifield fields).
 
-## Pre-1.0 snapshot schema 3
+## Pre-1.0 snapshot schema 4
 
-Snapshots are written with schema 3. Schema 2 snapshots are rejected with
+Snapshots are written with schema 4. Schema 3 snapshots are rejected with
+`UnsupportedVersion(3)` because deffacts now preserve field initializers and
+evaluate them at reset rather than retaining values computed during loading.
+Schema 2 snapshots are rejected with
 `UnsupportedVersion(2)`: their compiled graphs could expand field-level `|`
 constraints into rule variants with incorrect matching and firing behavior.
 Schema 1 snapshots remain rejected with `UnsupportedVersion(1)` because their
@@ -400,9 +410,9 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 3); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 4); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1 and schema-2 snapshots are rejected explicitly. Export durable
+  unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.

@@ -15,16 +15,15 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
-    ConditionCompilationPlan, ConstantTest, ConstantTestType, Fact, FactId, FerricString,
-    InstanceName, JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment,
-    SequenceSource, SlotIndex, TemplateFact, Value,
+    ConditionCompilationPlan, ConstantTest, ConstantTestType, FactId, FerricString, InstanceName,
+    JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment, SequenceSource,
+    SlotIndex, Value,
 };
 use ferric_rules_parser::{
-    interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
-    FactValue, FileId, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
-    InterpretError, InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct,
-    OrderedFactBody, OrderedPattern, ParseError, Pattern, RuleConstruct, SExpr, SlotType, Span,
-    TemplateConstruct, TemplateFactBody,
+    interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody, FileId,
+    FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct, InterpretError,
+    InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct, OrderedPattern, ParseError,
+    Pattern, RuleConstruct, SExpr, SlotType, Span, TemplateConstruct,
 };
 
 use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
@@ -252,6 +251,7 @@ struct PreparedRuleInstallation {
 struct RuleRhsScope<'a> {
     exported: &'a HashSet<String>,
     existential: &'a HashSet<String>,
+    allow_local_reads: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -736,12 +736,13 @@ impl Engine {
                         match owning_module {
                             Ok(module) => {
                                 for fact in &facts.facts {
-                                    if let FactBody::Ordered(fact) = fact {
-                                        if self.resolve_template_id(&fact.relation, module).is_err()
-                                        {
-                                            pending_ordered_fact_names
-                                                .insert(Self::template_local_name(&fact.relation));
-                                        }
+                                    let relation = match fact {
+                                        FactBody::Ordered(fact) => &fact.relation,
+                                        FactBody::Template(fact) => &fact.template,
+                                    };
+                                    if self.resolve_template_id(relation, module).is_err() {
+                                        pending_ordered_fact_names
+                                            .insert(Self::template_local_name(relation));
                                     }
                                 }
                                 deffacts_constructs.push((facts, module));
@@ -1055,7 +1056,7 @@ impl Engine {
     fn process_deffacts_construct(
         &mut self,
         definition: &ferric_rules_parser::FactsConstruct,
-        result: &mut LoadResult,
+        _result: &mut LoadResult,
     ) -> Result<(), LoadError> {
         let name = parse_qualified_name(&definition.name).map_err(LoadError::Compile)?;
         let module = self.module_registry.current_module();
@@ -1069,7 +1070,7 @@ impl Engine {
         let facts = match definition
             .facts
             .iter()
-            .map(|body| self.build_fact_body(body, result))
+            .map(|body| self.prepare_fact_body(body, false))
             .collect::<Result<Vec<_>, _>>()
         {
             Ok(facts) => facts,
@@ -1089,17 +1090,6 @@ impl Engine {
         Ok(())
     }
 
-    fn build_fact_body(
-        &mut self,
-        body: &FactBody,
-        result: &mut LoadResult,
-    ) -> Result<Fact, LoadError> {
-        match body {
-            FactBody::Ordered(ordered) => self.build_ordered_fact_body(ordered, result),
-            FactBody::Template(template) => self.build_template_fact_body(template, result),
-        }
-    }
-
     /// Reuse source fact validation without publishing a temporary definition.
     pub(crate) fn load_facts_str(&mut self, contents: &str) -> Result<usize, LoadError> {
         crate::source_limits::check_source_size(contents.len())?;
@@ -1113,11 +1103,13 @@ impl Engine {
             return Err(LoadError::Interpret(error));
         }
         let mut count = 0;
-        let mut result = LoadResult::default();
         for construct in interpreted.constructs {
             if let Construct::Facts(definition) = construct {
                 for body in definition.facts {
-                    let fact = self.build_fact_body(&body, &mut result)?;
+                    let prepared = self.prepare_fact_body(&body, true)?;
+                    let fact = self
+                        .evaluate_prepared_fact(&prepared, self.module_registry.current_module())
+                        .map_err(LoadError::Compile)?;
                     self.assert_fact_internal(fact)?;
                     count += 1;
                 }
@@ -1182,160 +1174,6 @@ impl Engine {
     ) -> Result<ferric_rules_core::TemplateId, TemplateLookupError> {
         self.template_resolver()
             .resolve_id(raw_name, current_module)
-    }
-
-    /// Process an ordered fact body.
-    fn build_ordered_fact_body(
-        &mut self,
-        ordered: &OrderedFactBody,
-        result: &mut LoadResult,
-    ) -> Result<Fact, LoadError> {
-        let current_module = self.module_registry.current_module();
-        if let Ok(template_id) = self.resolve_template_id(&ordered.relation, current_module) {
-            if !ordered.values.is_empty() {
-                return Err(LoadError::Compile(format!(
-                    "template `{}` requires named slot values",
-                    ordered.relation
-                )));
-            }
-            let registered = &self.template_defs[template_id];
-            registered
-                .validate_slots(&registered.defaults)
-                .map_err(LoadError::Compile)?;
-            let slots = registered.defaults.clone().into_boxed_slice();
-            return Ok(Fact::Template(TemplateFact { template_id, slots }));
-        }
-        let mut fields = Vec::new();
-        for fact_value in &ordered.values {
-            let value = self
-                .fact_value_to_value(fact_value, result)
-                .ok_or_else(|| {
-                    LoadError::Compile(format!(
-                        "invalid value in deffacts relation `{}`",
-                        ordered.relation
-                    ))
-                })?;
-            match value {
-                Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
-                Value::Void => {}
-                other => fields.push(other),
-            }
-        }
-
-        Ok(Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation: self.compile_symbol(&ordered.relation)?,
-            fields: fields.into(),
-        }))
-    }
-
-    /// Process a template fact body.
-    fn build_template_fact_body(
-        &mut self,
-        template: &TemplateFactBody,
-        result: &mut LoadResult,
-    ) -> Result<Fact, LoadError> {
-        let current_module = self.module_registry.current_module();
-        let template_id = match self.resolve_template_reference(&template.template, current_module)
-        {
-            Ok(template_id) => template_id,
-            Err(msg) => {
-                if Self::is_ambiguous_empty_template_fact(template) {
-                    // Ambiguous parse shape: `(foo (clear))` can mean ordered fact
-                    // with one field `clear` rather than template slot syntax.
-                    // If no visible template exists, fall back to ordered-fact
-                    // interpretation to match CLIPS behavior in drtest10-15.
-                    let mut fields = Vec::with_capacity(template.slot_values.len());
-                    for slot_val in &template.slot_values {
-                        let sym = self
-                            .symbol_table
-                            .intern_symbol(&slot_val.name, self.config.string_encoding)
-                            .map_err(|e| {
-                                LoadError::Compile(format!(
-                                    "deffacts ordered fallback symbol `{}`: {e}",
-                                    slot_val.name
-                                ))
-                            })?;
-                        fields.push(Value::Symbol(sym));
-                    }
-                    return Ok(Fact::Ordered(ferric_rules_core::OrderedFact {
-                        relation: self.compile_symbol(&template.template)?,
-                        fields: fields.into(),
-                    }));
-                }
-                return Err(LoadError::Compile(format!("{msg} in deffacts")));
-            }
-        };
-
-        let registered = self
-            .template_defs
-            .get(template_id)
-            .cloned()
-            .ok_or_else(|| {
-                LoadError::Compile(format!(
-                    "template `{}` not found in registry",
-                    template.template
-                ))
-            })?;
-
-        // Start with defaults.
-        let mut slots: Vec<Value> = registered.defaults.clone();
-
-        let mut seen = HashSet::new();
-        for slot in &template.slot_values {
-            let index = registered.slot_index(&slot.name).ok_or_else(|| {
-                LoadError::Compile(format!(
-                    "unknown slot `{}` in template `{}`",
-                    slot.name, template.template
-                ))
-            })?;
-            if !seen.insert(index) {
-                return Err(LoadError::Compile(format!(
-                    "duplicate slot `{}` in template `{}`",
-                    slot.name, template.template
-                )));
-            }
-            let mut fields = Vec::new();
-            for field in &slot.values {
-                let value = self.fact_value_to_value(field, result).ok_or_else(|| {
-                    LoadError::Compile(format!(
-                        "invalid value for slot `{}` in template `{}`",
-                        slot.name, template.template
-                    ))
-                })?;
-                match value {
-                    Value::Multifield(values) => fields.extend(values.as_slice().iter().cloned()),
-                    Value::Void => {}
-                    value => fields.push(value),
-                }
-            }
-            slots[index] = match registered.slot_types[index] {
-                ferric_rules_parser::SlotType::Single if fields.len() == 1 => fields.pop().unwrap(),
-                ferric_rules_parser::SlotType::Single => {
-                    return Err(LoadError::Compile(format!(
-                        "single-field slot `{}` in template `{}` requires exactly one value",
-                        slot.name, template.template
-                    )))
-                }
-                ferric_rules_parser::SlotType::Multi => {
-                    Value::Multifield(Box::new(fields.into_iter().collect()))
-                }
-            };
-        }
-        registered
-            .validate_slots(&slots)
-            .map_err(LoadError::Compile)?;
-        Ok(Fact::Template(TemplateFact {
-            template_id,
-            slots: slots.into_boxed_slice(),
-        }))
-    }
-
-    fn is_ambiguous_empty_template_fact(template: &TemplateFactBody) -> bool {
-        !template.slot_values.is_empty()
-            && template
-                .slot_values
-                .iter()
-                .all(|slot| slot.values.is_empty())
     }
 
     fn ordered_template_conflict(template: &TemplateConstruct) -> LoadError {
@@ -1592,93 +1430,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Convert a `FactValue` to an engine Value.
-    fn fact_value_to_value(
-        &mut self,
-        fact_value: &FactValue,
-        result: &mut LoadResult,
-    ) -> Option<Value> {
-        match fact_value {
-            FactValue::Literal(lit) => {
-                self.literal_to_value(&lit.value, lit.span.start.line, result)
-            }
-            FactValue::Variable(_name, span) => {
-                Self::warn_at_line(
-                    result,
-                    span.start.line,
-                    "variables in deffacts not supported, skipping",
-                );
-                None
-            }
-            FactValue::GlobalVariable(name, span) => {
-                let runtime_expr = match crate::evaluator::from_action_expr(
-                    &ActionExpr::GlobalVariable(name.clone(), *span),
-                    &mut self.symbol_table,
-                    &self.config,
-                ) {
-                    Ok(expr) => expr,
-                    Err(error) => {
-                        Self::warn_with_detail(
-                            result,
-                            span.start.line,
-                            "global variable in deffacts could not be translated, skipping",
-                            &error,
-                        );
-                        return None;
-                    }
-                };
-
-                let value = {
-                    let empty_bindings = ferric_rules_core::binding::BindingSet::new();
-                    let empty_var_map = ferric_rules_core::binding::VarMap::new();
-                    let mut ctx = crate::evaluator::EvalContext {
-                        bindings: &empty_bindings,
-                        var_map: &empty_var_map,
-                        symbol_table: &mut self.symbol_table,
-                        config: &self.config,
-                        functions: &self.functions,
-                        globals: &mut self.globals,
-                        generics: &self.generics,
-                        call_depth: 0,
-                        expression_depth: 0,
-                        callable_locals: None,
-                        current_module: self.module_registry.current_module(),
-                        module_registry: &self.module_registry,
-                        function_modules: &self.function_modules,
-                        global_modules: &self.global_modules,
-                        generic_modules: &self.generic_modules,
-                        method_chain: None,
-                        input_buffer: None,
-                        fact_base: None,
-                        initial_fact_id: None,
-                        template_defs: None,
-                        compact_fact_bindings: None,
-                        template_resolver: None,
-                    };
-                    crate::evaluator::eval(&mut ctx, &runtime_expr)
-                };
-
-                match value {
-                    Ok(value) => Some(value),
-                    Err(error) => {
-                        Self::warn_with_detail(
-                            result,
-                            span.start.line,
-                            "global variable in deffacts could not be resolved, skipping",
-                            &error,
-                        );
-                        None
-                    }
-                }
-            }
-            FactValue::EmptyMultifield(_) => {
-                // Empty multislot: `(slot-name)` → empty multifield value.
-                // Represented as Void (the default for unset multislots).
-                Some(Value::Void)
-            }
-        }
-    }
-
     /// Convert a `LiteralKind` to an engine Value.
     fn literal_to_value(
         &mut self,
@@ -1699,172 +1450,36 @@ impl Engine {
     ///
     /// Each sub-list after `assert` is treated as a fact to assert.
     fn process_assert(&mut self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
+        if args.is_empty() {
+            return Err(LoadError::InvalidAssert(
+                "assert requires at least one fact".to_owned(),
+            ));
+        }
+        let mut local_names = HashSet::new();
+        let mut locals = crate::evaluator::CallableLocals::default();
         for fact_expr in args {
-            let fact_id = self.process_assert_fact(fact_expr, result)?;
+            let fact_id = self.process_assert_fact(fact_expr, &mut local_names, &mut locals)?;
             result.asserted_facts.push(self.host.export(fact_id));
         }
         Ok(())
     }
 
-    /// Process a single fact within an assert form.
+    /// Prepare and evaluate each fact completely before publishing it.
     fn process_assert_fact(
         &mut self,
         fact_expr: &SExpr,
-        result: &mut LoadResult,
+        local_names: &mut HashSet<String>,
+        locals: &mut crate::evaluator::CallableLocals,
     ) -> Result<FactId, LoadError> {
-        let fact_list = fact_expr
-            .as_list()
-            .ok_or_else(|| LoadError::InvalidAssert("expected list for fact".to_string()))?;
-
-        if fact_list.is_empty() {
-            return Err(LoadError::InvalidAssert("empty fact list".to_string()));
-        }
-
-        // First element is the relation name
-        let relation = fact_list[0].as_symbol().ok_or_else(|| {
-            LoadError::InvalidAssert("fact relation must be a symbol".to_string())
-        })?;
-
-        // Check if this is a known template — if so, parse slot syntax.
-        let current_module = self.module_registry.current_module();
-        if let Ok(template_id) = self.resolve_template_id(relation, current_module) {
-            return self.process_assert_template_fact(
-                template_id,
-                relation,
-                &fact_list[1..],
-                result,
-            );
-        }
-
-        // Ordered fact: remaining elements are field values.
-        let mut fields = Vec::new();
-        for field_expr in &fact_list[1..] {
-            match self.atom_to_value(field_expr, result) {
-                Some(value) => fields.push(value),
-                None => {
-                    // Skip unsupported values with a warning
-                    Self::warn_at_line(
-                        result,
-                        field_expr.span().start.line,
-                        "skipping unsupported field value",
-                    );
-                }
-            }
-        }
-
-        let relation = self
-            .symbol_table
-            .intern_symbol(relation, self.config.string_encoding)
-            .map_err(|error| LoadError::Engine(error.into()))?;
-        Ok(self
-            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-                relation,
-                fields: fields.into_iter().collect(),
-            }))?
-            .fact_id())
-    }
-
-    /// Process a template fact within an assert form.
-    ///
-    /// Each remaining element supplies the complete value sequence of one slot.
-    fn process_assert_template_fact(
-        &mut self,
-        template_id: ferric_rules_core::TemplateId,
-        template_name: &str,
-        slot_exprs: &[SExpr],
-        result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
-        let registered = self
-            .template_defs
-            .get(template_id)
-            .cloned()
-            .ok_or_else(|| {
-                LoadError::Compile(format!("template `{template_name}` not found in registry"))
-            })?;
-
-        // Start with defaults.
-        let mut slots: Vec<Value> = registered.defaults.clone();
-        let mut seen = HashSet::new();
-
-        for slot_expr in slot_exprs {
-            let slot_list = slot_expr.as_list().ok_or_else(|| {
-                LoadError::InvalidAssert(format!(
-                    "expected slot list in template fact `{template_name}`"
-                ))
-            })?;
-            if slot_list.is_empty() {
-                return Err(LoadError::InvalidAssert(
-                    "empty template slot list".to_string(),
-                ));
-            }
-            let slot_name = slot_list[0].as_symbol().ok_or_else(|| {
-                LoadError::InvalidAssert(format!(
-                    "expected slot name symbol in template `{template_name}`"
-                ))
-            })?;
-            let slot_idx = registered.slot_index(slot_name).ok_or_else(|| {
-                LoadError::Compile(format!(
-                    "unknown slot `{slot_name}` in template `{template_name}`"
-                ))
-            })?;
-            if !seen.insert(slot_idx) {
-                return Err(LoadError::InvalidAssert(format!(
-                    "duplicate slot `{slot_name}` in template `{template_name}`"
-                )));
-            }
-
-            let mut fields = slot_list[1..]
-                .iter()
-                .map(|expression| {
-                    self.atom_to_value(expression, result).ok_or_else(|| {
-                        LoadError::InvalidAssert(format!(
-                            "expected literal value for slot `{slot_name}` in template `{template_name}`"
-                        ))
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            slots[slot_idx] = match registered.slot_types[slot_idx] {
-                SlotType::Single if fields.len() == 1 => fields.pop().unwrap(),
-                SlotType::Single => {
-                    return Err(LoadError::InvalidAssert(format!(
-                        "single-field slot `{slot_name}` requires exactly one value"
-                    )));
-                }
-                SlotType::Multi => Value::Multifield(Box::new(fields.into_iter().collect())),
-            };
-        }
-
-        registered
-            .validate_slots(&slots)
-            .map_err(LoadError::Compile)?;
-
-        // Assert as a proper template fact.
-        Ok(self
-            .assert_fact_internal(Fact::Template(TemplateFact {
-                template_id,
-                slots: slots.into_boxed_slice(),
-            }))?
-            .fact_id())
-    }
-
-    /// Convert an S-expression atom to a Value.
-    ///
-    /// Returns `None` for unsupported atom types (variables, connectives).
-    fn atom_to_value(&mut self, expr: &SExpr, result: &mut LoadResult) -> Option<Value> {
-        let atom = expr.as_atom()?;
-        let line = expr.span().start.line;
-
-        match atom {
-            Atom::Integer(n) => Some(Value::Integer(*n)),
-            Atom::Float(f) => Some(Value::Float(*f)),
-            Atom::String(s) => self.warned_string_value(s, line, result),
-            Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
-            Atom::InstanceName(s) => self.warned_instance_name_value(s, line, result),
-            // Variables and connectives are not valid fact values
-            Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
-                None
-            }
-        }
+        let prepared = self.prepare_assertion(fact_expr, local_names)?;
+        let fact = self
+            .evaluate_prepared_fact_with_locals(
+                &prepared,
+                self.module_registry.current_module(),
+                locals,
+            )
+            .map_err(LoadError::InvalidAssert)?;
+        Ok(self.assert_fact_internal(fact)?.fact_id())
     }
 
     fn warned_string_value(
@@ -2195,7 +1810,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines)] // Mirrors every structured expression and its query scope.
-    fn validate_action_expr_as_expression(
+    pub(crate) fn validate_action_expr_as_expression(
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
@@ -2611,7 +2226,7 @@ impl Engine {
 
     /// Validate query declarations inside callable/global expressions without
     /// changing the existing declaration policy for ordinary function calls.
-    fn validate_expression_query_declarations(
+    pub(crate) fn validate_expression_query_declarations(
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
@@ -3159,6 +2774,7 @@ impl Engine {
         let scope = RuleRhsScope {
             exported: exported_variables,
             existential: existential_locals,
+            allow_local_reads: true,
         };
 
         let mut rhs_locals = HashSet::new();
@@ -3166,6 +2782,20 @@ impl Engine {
             Self::validate_rule_rhs_call(&rule.name, &action.call, &scope, &mut rhs_locals)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_fact_initializer_bindings(
+        expression: &ActionExpr,
+        locals: &mut HashSet<String>,
+        allow_local_reads: bool,
+    ) -> Result<(), LoadError> {
+        let empty = HashSet::new();
+        let scope = RuleRhsScope {
+            exported: &empty,
+            existential: &empty,
+            allow_local_reads,
+        };
+        Self::validate_rule_rhs_expr("fact initializer", expression, &scope, locals)
     }
 
     fn existential_scope_variable_name(name: &str) -> &str {
@@ -3197,7 +2827,9 @@ impl Engine {
                 for value in call.args.iter().skip(1) {
                     Self::validate_rule_rhs_expr(rule_name, value, scope, rhs_locals)?;
                 }
-                rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
+                if scope.allow_local_reads {
+                    rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
+                }
                 return Ok(());
             }
         }
@@ -5569,10 +5201,6 @@ impl Engine {
         ))
     }
 
-    fn warn_at_line(result: &mut LoadResult, line: u32, message: &str) {
-        result.warnings.push(format!("{message} at line {line}"));
-    }
-
     fn warn_with_detail(
         result: &mut LoadResult,
         line: u32,
@@ -7380,79 +7008,55 @@ mod tests {
     }
 
     #[test]
-    fn load_deffacts_ambiguous_empty_slot_form_falls_back_to_ordered_fact() {
+    fn load_deffacts_ambiguous_empty_slot_form_evaluates_ordered_expression() {
         let mut engine = new_utf8_engine();
         let result = load_ok(
             &mut engine,
-            r"
-            (deffacts startup
-                (foo bar)
-                (foo (clear)))
-            ",
+            "(deffunction field () clear) (deffacts startup (foo bar) (foo (field)))",
         );
-        engine.reset().unwrap();
-
         assert!(result.asserted_facts.is_empty());
-
-        let fact_id = engine.find_facts("foo").unwrap()[1].0;
-        let entry = engine
-            .fact_base
-            .get(engine.host.resolve(fact_id).unwrap())
-            .expect("asserted fact should exist");
-        match &entry.fact {
-            ferric_rules_core::Fact::Ordered(ordered) => {
-                let relation = engine
-                    .resolve_core_symbol(ordered.relation)
-                    .expect("relation symbol should resolve");
-                assert_eq!(relation, "foo");
-                assert_eq!(ordered.fields.len(), 1);
-                let Value::Symbol(field_sym) = ordered.fields[0] else {
-                    panic!("expected symbol field, got {:?}", ordered.fields[0]);
-                };
-                let field = engine
-                    .resolve_core_symbol(field_sym)
-                    .expect("field symbol should resolve");
-                assert_eq!(field, "clear");
-            }
-            Fact::Template(template) => {
-                panic!("expected ordered fact fallback, got template fact {template:?}")
-            }
-        }
+        engine.reset().unwrap();
+        let facts = engine.find_facts("foo").unwrap();
+        let Fact::Ordered(fact) = facts[1].1 else {
+            panic!("expected ordered fact")
+        };
+        let [Value::Symbol(value)] = fact.fields.as_slice() else {
+            panic!("expected one symbol")
+        };
+        assert_eq!(engine.resolve_core_symbol(*value), Some("clear"));
     }
 
     #[test]
-    fn load_deffacts_unknown_template_with_explicit_slot_value_still_errors() {
+    fn load_deffacts_unknown_ordered_field_function_errors() {
         let mut engine = new_utf8_engine();
         let errors = load_err(&mut engine, "(deffacts startup (ghost (slot1 value)))");
 
         assert!(
             errors
                 .iter()
-                .any(|e| matches!(e, LoadError::Compile(msg) if msg.contains("unknown template"))),
-            "expected unknown-template error, got: {errors:?}"
+                .any(|e| matches!(e, LoadError::Compile(msg) if msg.contains("Missing function declaration for slot1"))),
+            "expected unknown-function error, got: {errors:?}"
         );
     }
 
     #[test]
-    fn load_nested_fact_produces_warning() {
+    fn load_nested_unknown_function_rejects_the_whole_fact() {
         let mut engine = new_utf8_engine();
         let source = r#"(assert (person (name "John") (age 30)))"#;
-        let result = load_ok(&mut engine, source);
-
-        // The nested lists will be skipped with warnings
-        assert_eq!(result.asserted_facts.len(), 1);
-        assert!(!result.warnings.is_empty());
+        let errors = load_err(&mut engine, source);
+        assert!(errors[0]
+            .to_string()
+            .contains("Missing function declaration for name"));
+        assert!(engine.find_facts("person").unwrap().is_empty());
     }
 
     #[test]
-    fn load_encoding_error_produces_warning() {
+    fn load_encoding_error_rejects_the_whole_fact() {
         let mut engine = Engine::new(EngineConfig::ascii());
         let source = "(assert (person \"héllo\"))";
-        let result = load_ok(&mut engine, source);
-
-        // The invalid string should produce a warning and be skipped
-        assert_eq!(result.asserted_facts.len(), 1);
-        assert!(!result.warnings.is_empty());
+        let errors = load_err(&mut engine, source);
+        assert!(errors[0].to_string().contains("encoding error"));
+        assert!(engine.find_facts("person").unwrap().is_empty());
     }
 
     #[test]

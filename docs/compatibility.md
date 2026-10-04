@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 643
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 656
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -94,6 +94,14 @@ Ordered facts are positional sequences of values:
 (assert (color red))
 (assert (data 10 20 30))
 ```
+
+Top-level assertions in source, the REPL, and string-assert binding APIs
+evaluate expressions and globals, just as rule actions do. For example,
+`(assert (data (+ 1 2) (create$ a b)))` asserts `(data 3 a b)`. An invalid
+field reports an error instead of being silently omitted. Ordered fields and
+multislots splice multifield results; single slots reject them even when the
+multifield contains exactly one value. `load-facts` accepts literal fact data
+only, and stops at an invalid fact while retaining earlier valid facts.
 
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
@@ -427,6 +435,11 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
   deffacts in a specific module context.
 - On each `(reset)`, existing user facts are retracted and deffacts are
   reasserted.
+- Field expressions and globals are evaluated on every reset, after globals
+  are restored, in the definition's module. Loading a definition does not
+  execute its expressions. A global may be defined after the deffacts, and
+  replacing a called function affects the next reset. Local variables and
+  unknown calls are rejected during loading.
 
 ---
 

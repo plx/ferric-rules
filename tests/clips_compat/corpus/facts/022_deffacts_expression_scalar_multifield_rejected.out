@@ -1,0 +1,6 @@
+
+[TMPLTDEF2] The single field slot n can only contain a single field value.
+
+ERROR:
+(deffacts MAIN::seed
+   (item (n (create$ 1)

@@ -229,6 +229,111 @@
       ]
     },
     {
+      "path": "facts/017_deffacts_expression_ordered.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "defglobal",
+        "create$"
+      ]
+    },
+    {
+      "path": "facts/018_deffacts_expression_template.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "defglobal",
+        "create$"
+      ]
+    },
+    {
+      "path": "facts/019_deffacts_expression_empty_multifields.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "create$",
+        "length$"
+      ]
+    },
+    {
+      "path": "facts/020_deffacts_expression_unknown_function_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/021_deffacts_expression_local_variable_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/022_deffacts_expression_scalar_multifield_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "create$"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/023_deffacts_expression_nested_local_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/024_deffacts_expression_late_global.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "defglobal",
+        "variable-scope"
+      ]
+    },
+    {
+      "path": "facts/025_deffacts_expression_bound_local_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "bind",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/026_deffacts_expression_lexical_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "bind",
+        "loop-for-count",
+        "variable-scope"
+      ]
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [
@@ -795,6 +900,40 @@
       "level": "interaction",
       "covers": [
         "reset",
+        "defglobal"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-gensym.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "reset",
+        "gensym*"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-function-redefinition.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "reset",
+        "deffunction"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-evaluation-order.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "reset",
+        "deffunction",
         "defglobal"
       ],
       "resets": 2

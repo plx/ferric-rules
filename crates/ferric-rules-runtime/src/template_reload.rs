@@ -3,10 +3,11 @@
 //! These checks run only during loading. References are read from existing
 //! state instead of maintaining another serialized reference-count registry.
 
-use ferric_rules_core::{AlphaEntryType, Fact, RuleId, TemplateId};
+use ferric_rules_core::{AlphaEntryType, RuleId, TemplateId};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
 
 use crate::engine::{rule_index_get, Engine};
+use crate::fact_initializer::PreparedFact;
 use crate::modules::ModuleId;
 
 impl Engine {
@@ -16,11 +17,15 @@ impl Engine {
                 .rete
                 .alpha
                 .contains_entry(&AlphaEntryType::Template(id))
-            || self
-                .registered_deffacts
-                .iter()
-                .flat_map(|definition| &definition.facts)
-                .any(|fact| matches!(fact, Fact::Template(template) if template.template_id == id))
+            || self.registered_deffacts.iter().any(|definition| {
+                definition.facts.iter().any(|fact| {
+                    matches!(fact, PreparedFact::Template { template_id, .. } if *template_id == id)
+                        || fact.all_expressions().any(|expression| {
+                            matches!(expression, crate::evaluator::RuntimeExpr::QueryAction { bindings, .. }
+                                if bindings.iter().any(|(_, name)| self.template_name_is(name, definition.module, id)))
+                        })
+                })
+            })
         {
             return true;
         }
