@@ -55,20 +55,6 @@ pub(crate) struct TemplateResolver<'a> {
 }
 
 impl TemplateResolver<'_> {
-    /// CLIPS query restrictions use visible unqualified deftemplate names.
-    pub(crate) fn resolve_query_reference(
-        &self,
-        raw_name: &str,
-        current_module: crate::modules::ModuleId,
-    ) -> Result<ferric_rules_core::TemplateId, String> {
-        if raw_name.contains("::") {
-            return Err(format!(
-                "qualified template `{raw_name}` is unsupported in fact queries"
-            ));
-        }
-        self.resolve_reference(raw_name, current_module)
-    }
-
     pub(crate) fn resolve_reference(
         &self,
         raw_name: &str,
@@ -1136,6 +1122,8 @@ impl Engine {
         // Separate top-level (assert ...) forms from constructs; asserts are
         // processed directly after the constructs load.
         let mut assert_forms = Vec::new();
+        let mut checked_asserts = HashSet::new();
+        let mut invalid_asserts = HashSet::new();
         let mut construct_forms = Vec::new();
 
         for expr in parse_result.exprs {
@@ -1234,9 +1222,17 @@ impl Engine {
                     .peek()
                     .is_some_and(|expr| expr.span().start.offset < offset)
                 {
-                    if let Ok(expression) = ferric_rules_parser::interpret_action_expr(
-                        declaration_asserts.next().expect("peeked assertion"),
-                    ) {
+                    let assertion = declaration_asserts.next().expect("peeked assertion");
+                    checked_asserts.insert(assertion.span().start.offset);
+                    if let Ok(expression) = ferric_rules_parser::interpret_action_expr(assertion) {
+                        if let Err(error) = self.declare_expression_query_order(
+                            std::iter::once(&expression),
+                            self.module_registry.current_module(),
+                        ) {
+                            invalid_asserts.insert(assertion.span().start.offset);
+                            errors.push(error);
+                            continue;
+                        }
                         self.declare_expression_templates(
                             &expression,
                             self.module_registry.current_module(),
@@ -1274,6 +1270,10 @@ impl Engine {
                             errors.push(error);
                             continue;
                         }
+                        if let Err(error) = self.declare_rule_query_order(&rule, owning_module) {
+                            errors.push(error);
+                            continue;
+                        }
                         self.declare_rule_templates(&rule, owning_module);
                         // Query restrictions must exist where the rule is written;
                         // later declarations must not make an invalid query loadable.
@@ -1294,6 +1294,30 @@ impl Engine {
                         rules_with_module.push((rule, owning_module));
                     }
                     Construct::Template(template) => {
+                        let owning_module = match self.template_definition_identity(&template) {
+                            Ok((module, _)) => module,
+                            Err(error) => {
+                                errors.push(error);
+                                continue;
+                            }
+                        };
+                        let expressions = template
+                            .slots
+                            .iter()
+                            .filter_map(|slot| match &slot.default {
+                                Some(
+                                    ferric_rules_parser::DefaultValue::Expressions(expressions)
+                                    | ferric_rules_parser::DefaultValue::Dynamic(expressions),
+                                ) => Some(expressions),
+                                _ => None,
+                            })
+                            .flatten();
+                        if let Err(error) =
+                            self.declare_expression_query_order(expressions, owning_module)
+                        {
+                            errors.push(error);
+                            continue;
+                        }
                         for slot in &template.slots {
                             if let Some(
                                 ferric_rules_parser::DefaultValue::Expressions(expressions)
@@ -1301,10 +1325,7 @@ impl Engine {
                             ) = &slot.default
                             {
                                 for expression in expressions {
-                                    self.declare_expression_templates(
-                                        expression,
-                                        self.module_registry.current_module(),
-                                    );
+                                    self.declare_expression_templates(expression, owning_module);
                                 }
                             }
                         }
@@ -1372,6 +1393,12 @@ impl Engine {
                         };
                         match owning_module {
                             Ok(module) => {
+                                if let Err(error) =
+                                    self.declare_facts_query_order(&facts.facts, module)
+                                {
+                                    errors.push(error);
+                                    continue;
+                                }
                                 for fact in &facts.facts {
                                     let relation = match fact {
                                         FactBody::Ordered(fact) => &fact.relation,
@@ -1390,6 +1417,12 @@ impl Engine {
                     }
                     Construct::Function(func) => {
                         let declaration_module = self.module_registry.current_module();
+                        if let Err(error) =
+                            self.declare_expression_query_order(&func.body, declaration_module)
+                        {
+                            errors.push(error);
+                            continue;
+                        }
                         for expression in &func.body {
                             self.declare_expression_templates(expression, declaration_module);
                         }
@@ -1442,6 +1475,13 @@ impl Engine {
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
+                        if let Err(error) = self.declare_expression_query_order(
+                            global.globals.iter().map(|definition| &definition.value),
+                            self.module_registry.current_module(),
+                        ) {
+                            errors.push(error);
+                            continue;
+                        }
                         for definition in &global.globals {
                             self.declare_expression_templates(
                                 &definition.value,
@@ -1483,6 +1523,18 @@ impl Engine {
                     }
                     Construct::Method(method) => {
                         let declaration_module = self.module_registry.current_module();
+                        if let Err(error) = self.declare_expression_query_order(
+                            method
+                                .parameters
+                                .iter()
+                                .filter_map(|parameter| parameter.query.as_ref())
+                                .chain(method.wildcard_query.as_ref())
+                                .chain(&method.body),
+                            declaration_module,
+                        ) {
+                            errors.push(error);
+                            continue;
+                        }
                         for expression in &method.body {
                             self.declare_expression_templates(expression, declaration_module);
                         }
@@ -1549,7 +1601,16 @@ impl Engine {
             }
 
             for expr in declaration_asserts {
+                checked_asserts.insert(expr.span().start.offset);
                 if let Ok(expression) = ferric_rules_parser::interpret_action_expr(expr) {
+                    if let Err(error) = self.declare_expression_query_order(
+                        std::iter::once(&expression),
+                        self.module_registry.current_module(),
+                    ) {
+                        invalid_asserts.insert(expr.span().start.offset);
+                        errors.push(error);
+                        continue;
+                    }
                     self.declare_expression_templates(
                         &expression,
                         self.module_registry.current_module(),
@@ -1596,6 +1657,20 @@ impl Engine {
         self.source_load_depth -= 1;
         // Process assert forms AFTER rules are compiled so facts flow through rete
         for expr in &assert_forms {
+            if invalid_asserts.contains(&expr.span().start.offset) {
+                continue;
+            }
+            if !checked_asserts.contains(&expr.span().start.offset) {
+                if let Ok(expression) = ferric_rules_parser::interpret_action_expr(expr) {
+                    if let Err(error) = self.declare_expression_query_order(
+                        std::iter::once(&expression),
+                        self.module_registry.current_module(),
+                    ) {
+                        errors.push(error);
+                        continue;
+                    }
+                }
+            }
             if let Some(list) = expr.as_list() {
                 if let Err(e) = self.process_assert(&list[1..], &mut result) {
                     errors.push(e);
@@ -1738,7 +1813,7 @@ impl Engine {
         index
     }
 
-    fn template_resolver(&self) -> TemplateResolver<'_> {
+    pub(crate) fn template_resolver(&self) -> TemplateResolver<'_> {
         TemplateResolver {
             template_local_ids: &self.template_local_ids,
             template_modules: &self.template_modules,
@@ -1982,6 +2057,7 @@ impl Engine {
         let Some(expression) = rule.salience_expression.as_ref() else {
             return Ok(());
         };
+        self.declare_expression_query_order(std::iter::once(expression), module)?;
         self.declare_expression_templates(expression, module);
         let runtime = self.prepare_salience_expression(expression, module)?;
         let bindings = ferric_rules_core::binding::BindingSet::new();
@@ -2387,6 +2463,7 @@ impl Engine {
             let expression = ferric_rules_parser::interpret_action_expr(expression)
                 .map_err(LoadError::Interpret)?;
             self.validate_sequence_expansion(&expression, module, true, false)?;
+            self.validate_expression_query_declarations(&expression, module, None)?;
             let mut pending = vec![&expression];
             while let Some(expression) = pending.pop() {
                 if let ActionExpr::FunctionCall(call) = expression {
@@ -2707,8 +2784,16 @@ impl Engine {
             } => {
                 self.validate_query_declaration(name, bindings, body, span, current_module)?;
                 self.validate_query_predicate_bindings(query, current_module)?;
+                for restriction in bindings.iter().flat_map(|binding| &binding.restrictions) {
+                    self.validate_action_expr_as_expression(
+                        restriction,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
+                }
                 let mut nested_members = query_members.clone();
-                nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
+                nested_members.extend(bindings.iter().map(|binding| binding.variable.clone()));
                 self.validate_action_expr_as_expression(
                     query,
                     current_module,
@@ -2893,8 +2978,16 @@ impl Engine {
                 }
                 self.validate_query_declaration(name, bindings, body, span, current_module)?;
                 self.validate_query_predicate_bindings(query, current_module)?;
+                for restriction in bindings.iter().flat_map(|binding| &binding.restrictions) {
+                    self.validate_action_expr_as_expression(
+                        restriction,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
+                }
                 let mut nested_members = query_members.clone();
-                nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
+                nested_members.extend(bindings.iter().map(|binding| binding.variable.clone()));
                 self.validate_action_expr_as_expression(
                     query,
                     current_module,
@@ -2961,7 +3054,7 @@ impl Engine {
     fn validate_query_declaration(
         &self,
         name: &str,
-        bindings: &[(String, String)],
+        bindings: &[ferric_rules_parser::QueryBinding],
         body: &[ActionExpr],
         span: &Span,
         current_module: crate::modules::ModuleId,
@@ -2979,16 +3072,31 @@ impl Engine {
             ));
         }
         let mut names = HashSet::new();
-        for (member, template) in bindings {
-            if member.is_empty() || !names.insert(member) {
+        for binding in bindings {
+            if !crate::evaluator::valid_query_member(&binding.variable)
+                || !names.insert(&binding.variable)
+                || binding.restrictions.is_empty()
+            {
                 return Err(Self::compile_error_at(
                     span,
                     "fact queries require distinct named single-field members",
                 ));
             }
-            self.template_resolver()
-                .resolve_query_reference(template, current_module)
-                .map_err(|message| Self::compile_error_at(span, &message))?;
+            for restriction in &binding.restrictions {
+                if let ActionExpr::Literal(literal) = restriction {
+                    if let LiteralKind::Symbol(template) = &literal.value {
+                        self.query_reference(template, current_module)
+                            .map_err(|message| Self::compile_error_at(&literal.span, &message))?;
+                    }
+                }
+                crate::query_validation::validate_restriction_members(
+                    restriction,
+                    bindings,
+                    self,
+                    current_module,
+                )
+                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+            }
         }
         Ok(())
     }
@@ -3099,10 +3207,12 @@ impl Engine {
                         body.extend(actions);
                     }
                     ActionExpr::QueryAction {
+                        bindings,
                         query,
                         body: actions,
                         ..
                     } => {
+                        operands.extend(bindings.iter().flat_map(|binding| &binding.restrictions));
                         operands.push(query);
                         body.extend(actions);
                     }
@@ -3578,6 +3688,127 @@ impl Engine {
         }
     }
 
+    /// Query predicates use the bindings available at their source CE, with
+    /// each quantified subnetwork retaining its own local binding scope.
+    fn validate_lhs_pattern_queries(
+        &self,
+        pattern: &Pattern,
+        ordinary: &mut HashSet<String>,
+        compact: &mut HashSet<String>,
+    ) -> Result<(), LoadError> {
+        let mut constraints = Vec::new();
+        match pattern {
+            Pattern::Ordered(fact) => {
+                constraints.extend(&fact.constraints);
+            }
+            Pattern::Template(fact) => {
+                constraints.extend(
+                    fact.slot_constraints
+                        .iter()
+                        .flat_map(|slot| &slot.constraints),
+                );
+            }
+            Pattern::Assigned {
+                variable, pattern, ..
+            } => {
+                ordinary.insert(variable.clone());
+                self.validate_lhs_pattern_queries(pattern, ordinary, compact)?;
+            }
+            Pattern::And(children, _) | Pattern::Logical(children, _) => {
+                for child in children {
+                    self.validate_lhs_pattern_queries(child, ordinary, compact)?;
+                }
+            }
+            Pattern::Not(inner, _) => {
+                self.validate_lhs_pattern_queries(
+                    inner,
+                    &mut ordinary.clone(),
+                    &mut compact.clone(),
+                )?;
+            }
+            Pattern::Exists(children, _) | Pattern::Forall(children, _) => {
+                let mut ordinary = ordinary.clone();
+                let mut compact = compact.clone();
+                for child in children {
+                    self.validate_lhs_pattern_queries(child, &mut ordinary, &mut compact)?;
+                }
+            }
+            Pattern::Or(children, _) => {
+                for child in children {
+                    self.validate_lhs_pattern_queries(
+                        child,
+                        &mut ordinary.clone(),
+                        &mut compact.clone(),
+                    )?;
+                }
+            }
+            Pattern::Test(expression, _) => {
+                self.validate_lhs_query_expression(expression, ordinary, compact)?;
+            }
+        }
+        for constraint in constraints {
+            self.validate_lhs_constraint_queries(constraint, ordinary, compact, true)?;
+        }
+        Ok(())
+    }
+
+    fn validate_lhs_constraint_queries(
+        &self,
+        constraint: &Constraint,
+        ordinary: &mut HashSet<String>,
+        compact: &HashSet<String>,
+        binding_allowed: bool,
+    ) -> Result<(), LoadError> {
+        match constraint {
+            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _)
+                if binding_allowed =>
+            {
+                ordinary.insert(name.clone());
+            }
+            Constraint::Predicate(expression, _) | Constraint::ReturnValue(expression, _) => {
+                self.validate_lhs_query_expression(expression, ordinary, compact)?;
+            }
+            Constraint::Not(inner, _) => {
+                self.validate_lhs_constraint_queries(inner, ordinary, compact, false)?;
+            }
+            Constraint::And(children, _) => {
+                for child in children {
+                    self.validate_lhs_constraint_queries(
+                        child,
+                        ordinary,
+                        compact,
+                        binding_allowed,
+                    )?;
+                }
+            }
+            Constraint::Or(children, _) => {
+                for child in children {
+                    self.validate_lhs_constraint_queries(child, ordinary, compact, false)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn validate_lhs_query_expression(
+        &self,
+        expression: &SExpr,
+        ordinary: &HashSet<String>,
+        compact: &HashSet<String>,
+    ) -> Result<(), LoadError> {
+        let expression =
+            ferric_rules_parser::interpret_action_expr(expression).map_err(LoadError::Interpret)?;
+        crate::query_validation::validate_lhs_query_scopes(
+            &expression,
+            ordinary.clone(),
+            compact,
+            self,
+            self.module_registry.current_module(),
+        )
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))
+    }
+
     /// Alternatives test existing variables; they cannot introduce bindings.
     fn validate_disjunction_bindings(
         pattern: &Pattern,
@@ -3730,40 +3961,37 @@ impl Engine {
         )
     }
 
-    fn first_restricted_sexpr_variable(
-        expr: &SExpr,
-        restricted: &HashSet<String>,
-    ) -> Option<String> {
-        match expr {
-            SExpr::Atom(Atom::SingleVar(name) | Atom::MultiVar(name), _) => {
-                restricted.contains(name).then(|| name.clone())
-            }
-            SExpr::Atom(_, _) => None,
-            SExpr::List(items, _) => items
-                .iter()
-                .find_map(|item| Self::first_restricted_sexpr_variable(item, restricted)),
-        }
-    }
-
     fn validate_existential_test_scope(
+        &self,
         rule_name: &str,
         expr: &SExpr,
         existential_locals: &HashSet<String>,
         exported_variables: &HashSet<String>,
     ) -> Result<(), LoadError> {
-        let restricted: HashSet<String> = existential_locals
-            .difference(exported_variables)
-            .cloned()
-            .collect();
-        if let Some(variable) = Self::first_restricted_sexpr_variable(expr, &restricted) {
-            return Err(Self::compile_error_at(
-                &expr.span(),
-                &format!(
-                    "rule `{rule_name}` variable ?{variable} is not exported by existential conditional element"
-                ),
-            ));
+        let expression =
+            ferric_rules_parser::interpret_action_expr(expr).map_err(LoadError::Interpret)?;
+        // Keep the existing policy for ordinary test variables, but apply the
+        // existential boundary with typed lexical scopes. Query/loop members
+        // may legitimately shadow a variable hidden by a previous quantifier.
+        let mut available = exported_variables.clone();
+        let mut pending = vec![&expression];
+        while let Some(expression) = pending.pop() {
+            if let ActionExpr::Variable(name, _) = expression {
+                let name = Self::existential_scope_variable_name(name);
+                if !existential_locals.contains(name) {
+                    available.insert(name.to_owned());
+                }
+            }
+            expression.push_children(&mut pending);
         }
-        Ok(())
+        let scope = RuleRhsScope {
+            engine: self,
+            module: self.module_registry.current_module(),
+            exported: &available,
+            existential: existential_locals,
+            allow_local_reads: true,
+        };
+        Self::validate_rule_rhs_expr(rule_name, &expression, &scope, &mut HashSet::new())
     }
 
     fn validate_rule_rhs_scope(
@@ -3954,14 +4182,17 @@ impl Engine {
                 body,
                 ..
             } => {
+                for restriction in bindings.iter().flat_map(|binding| &binding.restrictions) {
+                    Self::validate_rule_rhs_expr(rule_name, restriction, scope, rhs_locals)?;
+                }
                 let mut query_locals = rhs_locals.clone();
-                query_locals.extend(bindings.iter().map(|(name, _)| name.clone()));
+                query_locals.extend(bindings.iter().map(|binding| binding.variable.clone()));
                 Self::validate_rule_rhs_expr(rule_name, query, scope, &mut query_locals)?;
                 for action in body {
                     Self::validate_rule_rhs_expr(rule_name, action, scope, &mut query_locals)?;
                 }
-                for (name, _) in bindings {
-                    query_locals.remove(name);
+                for binding in bindings {
+                    query_locals.remove(&binding.variable);
                 }
                 rhs_locals.extend(query_locals);
                 Ok(())
@@ -4431,6 +4662,11 @@ impl Engine {
         for pattern in &rule.patterns {
             Self::validate_disjunction_bindings(pattern, &mut bound)?;
         }
+        let mut query_ordinary = HashSet::new();
+        let mut query_compact = HashSet::new();
+        for pattern in &rule.patterns {
+            self.validate_lhs_pattern_queries(pattern, &mut query_ordinary, &mut query_compact)?;
+        }
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
         let mut test_conditions: Vec<CompiledTestCondition> = Vec::new();
@@ -4452,15 +4688,13 @@ impl Engine {
             // retained in rule metadata and referenced by predicate nodes at
             // their source position in the beta network.
             if let Pattern::Test(sexpr, _span) = pattern {
-                Self::validate_existential_test_scope(
+                self.validate_existential_test_scope(
                     &rule.name,
                     sexpr,
                     &existential_locals,
                     &exported_variables,
                 )?;
-                let runtime_expr =
-                    crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
+                let runtime_expr = self.compile_match_expression(sexpr, "test CE translation")?;
                 Self::push_test_predicate(
                     &mut conditions,
                     &mut test_conditions,
@@ -4742,9 +4976,7 @@ impl Engine {
                     .ok_or_else(|| {
                         LoadError::Compile("too many test CEs in one rule".to_string())
                     })?;
-                let runtime_expr =
-                    crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
-                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
+                let runtime_expr = self.compile_match_expression(sexpr, "test CE translation")?;
                 embedded_generated_tests.insert(generated_tests.len());
                 generated_tests.push(runtime_expr);
                 Ok(CompilableCondition::Predicate { condition_index })
@@ -5559,10 +5791,7 @@ impl Engine {
                     return Ok(());
                 }
                 let runtime_expr =
-                    crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
-                        .map_err(|e| {
-                            LoadError::Compile(format!("predicate constraint translation: {e}"))
-                        })?;
+                    self.compile_match_expression(expr, "predicate constraint translation")?;
                 generated_tests.push(runtime_expr);
             }
             Constraint::ReturnValue(expr, span) => {
@@ -5584,10 +5813,7 @@ impl Engine {
                     ));
                 }
                 let runtime_expr =
-                    crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
-                        .map_err(|e| {
-                            LoadError::Compile(format!("return-value constraint translation: {e}"))
-                        })?;
+                    self.compile_match_expression(expr, "return-value constraint translation")?;
                 let slot_var_name = self.ensure_slot_runtime_variable(
                     slot,
                     variable_slots,
@@ -5609,6 +5835,21 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// LHS expressions share the typed procedural grammar used by RHS expressions.
+    /// Evaluation still uses the match-time context, which forbids engine effects.
+    fn compile_match_expression(
+        &mut self,
+        expression: &SExpr,
+        context: &str,
+    ) -> Result<crate::evaluator::RuntimeExpr, LoadError> {
+        let expression_ast =
+            ferric_rules_parser::interpret_action_expr(expression).map_err(LoadError::Interpret)?;
+        crate::evaluator::from_action_expr(&expression_ast, &mut self.symbol_table, &self.config)
+            .map_err(|error| {
+                Self::compile_error_at(&expression.span(), &format!("{context}: {error}"))
+            })
     }
 
     /// A connected constraint is a Boolean expression over one field. Variables
@@ -5670,11 +5911,7 @@ impl Engine {
                 )
             }
             Constraint::Predicate(expr, _) | Constraint::ReturnValue(expr, _) => {
-                let value =
-                    crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
-                        .map_err(|error| {
-                            LoadError::Compile(format!("field constraint: {error}"))
-                        })?;
+                let value = self.compile_match_expression(expr, "field constraint")?;
                 if matches!(constraint, Constraint::ReturnValue(..)) {
                     call("eq", vec![field(), value])
                 } else {
@@ -6315,7 +6552,7 @@ impl Engine {
             .push(format!("{message} at line {line}: {detail}"));
     }
 
-    fn compile_error_at(span: &ferric_rules_parser::Span, detail: &str) -> LoadError {
+    pub(crate) fn compile_error_at(span: &ferric_rules_parser::Span, detail: &str) -> LoadError {
         LoadError::Compile(format!(
             "{detail} at line {}, column {}",
             span.start.line, span.start.column

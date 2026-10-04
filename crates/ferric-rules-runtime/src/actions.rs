@@ -485,8 +485,8 @@ pub(crate) fn evaluate_test_condition(
     result
 }
 
-/// Bind pattern fact addresses (`?f <- (...)`) into an activation's own token
-/// copy, so RHS expressions read them through the ordinary binding frame.
+/// Bind pattern fact addresses (`?f <- (...)`) into a match or activation token
+/// copy, so expressions read them through the ordinary binding frame.
 /// A same-named pattern variable keeps precedence.
 #[allow(clippy::too_many_arguments)] // Captures engine identity alongside activation bindings.
 pub(crate) fn bind_fact_addresses(
@@ -1446,7 +1446,35 @@ fn execute_query_action(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     name: &str,
-    bindings: &[(String, String)],
+    bindings: &[crate::evaluator::RuntimeQueryBinding],
+    query: &crate::evaluator::RuntimeExpr,
+    body: &[(ActionExpr, Option<Box<crate::evaluator::RuntimeExpr>>)],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<(), ActionError> {
+    let retained = context.engine.active_query_targets.len();
+    let result = execute_query_action_inner(
+        token,
+        rule_info,
+        name,
+        bindings,
+        query,
+        body,
+        context,
+        eval_env,
+        collected_facts,
+    );
+    context.engine.active_query_targets.truncate(retained);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_query_action_inner(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    name: &str,
+    bindings: &[crate::evaluator::RuntimeQueryBinding],
     query: &crate::evaluator::RuntimeExpr,
     body: &[(ActionExpr, Option<Box<crate::evaluator::RuntimeExpr>>)],
     context: &mut ActionExecutionContext<'_>,
@@ -1472,7 +1500,14 @@ fn execute_query_action(
         0,
     )
     .map_err(ActionError::from)?;
-    let mut cursor = ActionQueryCursor::new(bindings, context.engine, context.current_module)?;
+    let members = crate::query_targets::prepare_query_members(bindings, |expression, span| {
+        let value = eval_env.eval_runtime_expr(token, rule_info, expression, context)?;
+        context
+            .engine
+            .retain_query_targets(&value, context.current_module, span)
+            .map_err(ActionError::from)
+    })?;
+    let mut cursor = ActionQueryCursor::new(members, context.engine)?;
     let mut selected = Vec::new();
     while let Some(candidate) = cursor.next(context.engine, name)? {
         let result = with_query_candidate(
@@ -2728,7 +2763,26 @@ mod action_query_validation_tests {
         let span = Span::new(Position::new(), Position::new(), FileId(0));
         RuntimeExpr::QueryAction {
             name: name.into(),
-            bindings,
+            bindings: bindings
+                .into_iter()
+                .map(
+                    |(variable, template)| crate::evaluator::RuntimeQueryBinding {
+                        variable,
+                        restrictions: vec![RuntimeExpr::Call {
+                            name: "sym-cat".into(),
+                            args: vec![RuntimeExpr::Literal(Value::String(
+                                ferric_rules_core::FerricString::new(
+                                    &template,
+                                    ferric_rules_core::StringEncoding::Utf8,
+                                )
+                                .unwrap(),
+                            ))],
+                            span: None,
+                        }],
+                        span: None,
+                    },
+                )
+                .collect(),
             query: Box::new(predicate),
             body: vec![(
                 ActionExpr::FunctionCall(FunctionCall {

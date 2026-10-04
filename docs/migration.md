@@ -137,9 +137,20 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 12
+## Pre-1.0 snapshot schema 13
 
-Snapshots are written with schema 12. Schema 11 snapshots are rejected with
+Parser `ActionExpr::QueryAction::bindings` now stores `Vec<QueryBinding>` instead
+of member/template string pairs. Each binding has `variable`, `restrictions`,
+and `span` fields; `restrictions` contains source-ordered `ActionExpr` values.
+Runtime `RuntimeExpr::QueryAction` uses the corresponding `RuntimeQueryBinding`
+with compiled restriction expressions. Update direct AST construction and
+pattern matching to handle multiple expressions per member.
+
+Snapshots are written with schema 13. Schema 12 snapshots are rejected with
+`UnsupportedVersion(12)` because query members now store restriction expressions
+instead of a single template name. Dynamic targets resolve when a query executes;
+restoring the expressions does not evaluate them or resume an active query.
+Schema 11 snapshots are rejected with
 `UnsupportedVersion(11)` because LEX/MEA activations now retain absent-CE recency
 positions and rule complexity, with CLIPS-compatible ordering keys. Rule
 complexity is computed at definition and restored without reevaluating rules.
@@ -507,7 +518,7 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 12); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 13); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see

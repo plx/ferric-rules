@@ -285,6 +285,7 @@ fn diagnostic_offset(line: &[u8]) -> Option<usize> {
         b"[STRNGFUN2] ",
         b"[EXPRNPSR3] ",
         b"[PRCDRPSR2] ",
+        b"[PRNTUTIL1] Unable to find deftemplate ",
         b"[PRNTUTIL2] ",
         b"[PRCCODE4] ",
         b"[PRCCODE5] ",
@@ -839,6 +840,26 @@ fn golden_run_error_preserves_non_diagnostic_bracket_text() {
     let expected = golden(output, Some(ErrorPhase::Run), false, false, false);
     assert_eq!(expected.output, output);
     assert!(expected.notices.is_empty());
+}
+
+#[test]
+fn golden_query_target_errors_preserve_prefix_and_other_prntutil1_messages() {
+    let output = b"before[PRNTUTIL1] Unable to find deftemplate missing in function any-factp.\n\n\
+        [PRNTUTIL2] Syntax Error:  Check appropriate syntax for fact-set query class restrictions.\n\
+        [PRCCODE4] Execution halted during the actions of defrule query.\n";
+    assert_eq!(
+        golden(output, Some(ErrorPhase::Run), false, false, false).output,
+        b"before"
+    );
+    let literal = b"[PRNTUTIL1] literal\nprefix [PRNTUTIL1] Unable to find fact f-9.\n\
+        [PRNTUTIL1] Unable to find deftemplate\n";
+    assert_eq!(
+        golden(literal, Some(ErrorPhase::Run), false, false, false).output,
+        literal
+    );
+    for phase in [None, Some(ErrorPhase::Load)] {
+        assert_eq!(golden(output, phase, false, false, false).output, output);
+    }
 }
 
 #[test]

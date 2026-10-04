@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 12;
+const SCHEMA_VERSION: u16 = 13;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -265,6 +265,7 @@ impl EngineSnapshotOwned {
             source_load_depth: 0,
             active_rules: Vec::new(),
             active_callables: Vec::new(),
+            active_query_targets: Vec::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,
@@ -1901,11 +1902,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-12 fixture: ordered and template splits,
+    /// Source of the committed schema-13 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-12.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-13.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -2099,9 +2100,18 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_twelve_snapshot_resumes_matches_initializers_methods_addresses_and_defaults(
-    ) {
+    fn committed_schema_twelve_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(12))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_thirteen_snapshot_resumes_matches_initializers_methods_addresses_and_defaults(
+    ) {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-13.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         assert_eq!(integer_rows(&engine, "random-first"), [[71_876_166]]);
@@ -2269,7 +2279,7 @@ mod tests {
 
     #[test]
     fn committed_snapshot_preserves_blocker_migration_order() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-13.cbor");
         for format in SerializationFormat::ALL {
             for (relation, prefix) in [
                 ("fixture-blocker", "negative"),
@@ -2297,7 +2307,7 @@ mod tests {
 
     #[test]
     fn committed_snapshot_restores_auto_focus_and_resolved_salience() {
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-13.cbor");
         let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         engine.run(RunLimit::Unlimited).unwrap();
         assert!(engine.get_focus_stack().is_empty());
@@ -2318,7 +2328,7 @@ mod tests {
     fn committed_snapshot_retains_specificity_and_absent_recency_positions() {
         use ferric_rules_core::{Agenda, ConflictResolutionStrategy};
 
-        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-12.cbor");
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-13.cbor");
         for (strategy, expected) in [
             (
                 ConflictResolutionStrategy::Lex,
@@ -2372,11 +2382,126 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-12 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_twelve_fixture() {
+    fn committed_snapshot_resumes_dynamic_queries_and_typed_lhs_without_evaluation_on_restore() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-13.cbor");
+        for &format in SerializationFormat::ALL {
+            let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+            assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 8);
+            engine.assert_ordered("fixture-query-trigger", ()).unwrap();
+            let pending = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&pending, format).unwrap();
+            assert!(restored.active_query_targets.is_empty());
+            assert!(matches!(
+                restored.get_global("fixture-query-calls"),
+                Some(Value::Integer(0))
+            ));
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(restored.get_output("t"), Some("query 3\n"));
+            assert!(matches!(
+                restored.get_global("fixture-query-calls"),
+                Some(Value::Integer(1))
+            ));
+            assert!(restored.active_query_targets.is_empty());
+            restored
+                .load_str(
+                    "(deffunction fixture-query-targets ()
+                       (create$ fixture-query-row fixture-query-row fixture-query-record))",
+                )
+                .unwrap();
+            let trigger = restored.find_facts("fixture-query-trigger").unwrap()[0].0;
+            restored.retract(trigger).unwrap();
+            restored
+                .assert_ordered("fixture-query-trigger", ())
+                .unwrap();
+            let pending = restored.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&pending, format).unwrap();
+            restored.clear_output_channel("t");
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(restored.get_output("t"), Some("query 5\n"));
+            assert!(restored.action_diagnostics().is_empty());
+            assert!(restored.active_query_targets.is_empty());
+        }
+    }
+
+    #[test]
+    fn snapshots_validate_query_member_shape_restrictions_and_static_targets() {
+        fn query(value: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+            match value {
+                serde_json::Value::Object(entries) => {
+                    if entries.contains_key("QueryAction") {
+                        entries.get_mut("QueryAction")
+                    } else {
+                        entries.values_mut().find_map(query)
+                    }
+                }
+                serde_json::Value::Array(entries) => entries.iter_mut().find_map(query),
+                _ => None,
+            }
+        }
+
+        let engine = Engine::with_rules(
+            "(deftemplate p (slot x))
+             (defrule check (go) (test (any-factp ((?f p) (?g p)) TRUE)) =>)",
+        )
+        .unwrap();
+        for corruption in 0..7 {
+            let result = alter_state(&engine, |state| {
+                let rule = state["rule_info"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|rule| rule.is_object())
+                    .unwrap();
+                let query = query(&mut rule["test_conditions"]).unwrap();
+                match corruption {
+                    0 => query["name"] = serde_json::json!("unknown-query"),
+                    1 => query["bindings"] = serde_json::json!([]),
+                    2 => query["bindings"][0]["variable"] = serde_json::json!(""),
+                    3 => {
+                        query["bindings"][1]["variable"] = query["bindings"][0]["variable"].clone();
+                    }
+                    4 => query["bindings"][0]["restrictions"] = serde_json::json!([]),
+                    // TRUE is a live symbol, but has no template declaration.
+                    5 => query["bindings"][0]["restrictions"][0] = query["query"].clone(),
+                    _ => {
+                        let mut expression = query["bindings"][0]["restrictions"][0].clone();
+                        for _ in 0..17 {
+                            expression = serde_json::json!({"Call": {
+                                "name": "create$", "args": [expression], "span": null
+                            }});
+                        }
+                        query["bindings"][0]["restrictions"][0] = expression;
+                    }
+                }
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "accepted query corruption {corruption}: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn snapshots_preserve_query_restriction_type_errors_for_runtime() {
+        let engine =
+            Engine::with_rules("(defrule check (go) (test (any-factp ((?f 7)) TRUE)) =>)").unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            restored.assert_ordered("go", ()).unwrap();
+            assert_eq!(restored.agenda_len(), 0);
+            assert!(!restored.action_diagnostics().is_empty());
+            assert!(restored.active_query_targets.is_empty());
+        }
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-13 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_thirteen_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-12.cbor");
+            .join("tests/fixtures/snapshots/schema-13.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

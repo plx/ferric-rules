@@ -143,15 +143,15 @@ impl Engine {
             .map_err(|(_, message)| message)?;
             for action in &info.actions {
                 for argument in &action.call.args {
-                    validate_action(argument)?;
+                    self.validate_snapshot_action(argument, module)?;
                 }
             }
             for expr in info.runtime_actions.iter().flatten() {
-                self.validate_expression(expr)?;
+                self.validate_expression(expr, module)?;
             }
             for condition in &info.test_conditions {
                 let crate::actions::CompiledTestCondition::Expr(expr) = condition;
-                self.validate_expression(expr)?;
+                self.validate_expression(expr, module)?;
             }
         }
         self.rete.validate_snapshot_rules(|id| {
@@ -230,7 +230,7 @@ impl Engine {
                         "dynamic default has a static default value",
                     )?;
                     for expression in &default.expressions {
-                        self.validate_expression(expression)?;
+                        self.validate_expression(expression, default.module)?;
                         self.validate_snapshot_default_control(expression, default.module)?;
                     }
                     Self::validate_snapshot_slot_expressions(
@@ -290,7 +290,7 @@ impl Engine {
                 "duplicate named deffacts definition",
             )?;
             for fact in &definition.facts {
-                self.validate_snapshot_initializer(fact)?;
+                self.validate_snapshot_initializer(fact, definition.module)?;
             }
         }
         if let Some(id) = self.initial_fact_id {
@@ -350,7 +350,7 @@ impl Engine {
                     "function missing from owner index",
                 )?;
                 for expr in &function.body {
-                    validate_action(expr)?;
+                    self.validate_snapshot_action(expr, *module)?;
                 }
                 crate::callable_validation::validate_breaks_with_templates(
                     &function.body,
@@ -410,7 +410,7 @@ impl Engine {
                         .chain(method.parameter_queries.iter().flatten())
                         .chain(method.wildcard_query.as_ref())
                     {
-                        validate_action(expr)?;
+                        self.validate_snapshot_action(expr, *module)?;
                     }
                     self.validate_method_queries(
                         &method
@@ -501,7 +501,11 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_snapshot_initializer(&self, fact: &PreparedFact) -> Result<(), String> {
+    fn validate_snapshot_initializer(
+        &self,
+        fact: &PreparedFact,
+        module: crate::modules::ModuleId,
+    ) -> Result<(), String> {
         match fact {
             PreparedFact::Ordered { relation, .. } => {
                 self.validate_snapshot_value(&Value::Symbol(*relation))?;
@@ -528,7 +532,7 @@ impl Engine {
             }
         }
         for expression in fact.expressions() {
-            self.validate_expression(expression)?;
+            self.validate_expression(expression, module)?;
         }
         Ok(())
     }
@@ -630,7 +634,37 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_expression(&self, root: &RuntimeExpr) -> Result<(), String> {
+    fn validate_snapshot_action(
+        &self,
+        root: &ActionExpr,
+        module: crate::modules::ModuleId,
+    ) -> Result<(), String> {
+        validate_action(root)?;
+        let mut pending = vec![root];
+        while let Some(expression) = pending.pop() {
+            if let ActionExpr::QueryAction { bindings, .. } = expression {
+                for binding in bindings {
+                    for restriction in &binding.restrictions {
+                        if let ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                            value: ferric_rules_parser::LiteralKind::Symbol(name),
+                            ..
+                        }) = restriction
+                        {
+                            self.query_reference(name, module)?;
+                        }
+                    }
+                }
+            }
+            expression.push_children(&mut pending);
+        }
+        Ok(())
+    }
+
+    fn validate_expression(
+        &self,
+        root: &RuntimeExpr,
+        module: crate::modules::ModuleId,
+    ) -> Result<(), String> {
         let mut pending = vec![(root, 0)];
         while let Some((expr, depth)) = pending.pop() {
             ensure(depth < 16, "snapshot expression-depth limit is 16")?;
@@ -643,6 +677,7 @@ impl Engine {
                     )?;
                     for argument in &call.args {
                         validate_action_at_depth(argument, depth + 1)?;
+                        self.validate_snapshot_action(argument, module)?;
                     }
                 }
                 RuntimeExpr::Literal(value) => self.validate_snapshot_value(value)?,
@@ -677,7 +712,32 @@ impl Engine {
                     pending.push((list_expr, depth + 1));
                     branches.push(body);
                 }
-                RuntimeExpr::QueryAction { query, body, .. } => {
+                RuntimeExpr::QueryAction {
+                    name,
+                    bindings,
+                    query,
+                    body,
+                    ..
+                } => {
+                    validate_query_shape(
+                        name,
+                        bindings
+                            .iter()
+                            .map(|binding| (binding.variable.as_str(), binding.restrictions.len())),
+                        body.len(),
+                    )?;
+                    for binding in bindings {
+                        for restriction in &binding.restrictions {
+                            if let RuntimeExpr::Literal(Value::Symbol(symbol)) = restriction {
+                                let name = self
+                                    .symbol_table
+                                    .resolve_symbol_str(*symbol)
+                                    .ok_or("dangling query restriction symbol")?;
+                                self.query_reference(name, module)?;
+                            }
+                            pending.push((restriction, depth + 1));
+                        }
+                    }
                     pending.push((query, depth + 1));
                     branches.push(body);
                 }
@@ -698,9 +758,8 @@ impl Engine {
             for branch in branches {
                 for (action, runtime) in branch {
                     validate_action_at_depth(action, depth + 1)?;
-                    if let Some(runtime) = runtime {
-                        pending.push((runtime, depth + 1));
-                    }
+                    self.validate_snapshot_action(action, module)?;
+                    pending.extend(runtime.iter().map(|runtime| (runtime.as_ref(), depth + 1)));
                 }
             }
         }
@@ -717,8 +776,56 @@ fn validate_action_at_depth(root: &ActionExpr, initial_depth: usize) -> Result<(
     let mut children = Vec::new();
     while let Some((expression, depth)) = pending.pop() {
         ensure(depth < 16, "snapshot expression-depth limit is 16")?;
+        if let ActionExpr::QueryAction {
+            name,
+            bindings,
+            body,
+            ..
+        } = expression
+        {
+            validate_query_shape(
+                name,
+                bindings
+                    .iter()
+                    .map(|binding| (binding.variable.as_str(), binding.restrictions.len())),
+                body.len(),
+            )?;
+        }
         expression.push_children(&mut children);
         pending.extend(children.drain(..).map(|child| (child, depth + 1)));
     }
     Ok(())
+}
+
+fn validate_query_shape<'a>(
+    name: &str,
+    bindings: impl Iterator<Item = (&'a str, usize)>,
+    body_len: usize,
+) -> Result<(), String> {
+    ensure(
+        matches!(
+            name,
+            "any-factp"
+                | "find-fact"
+                | "find-all-facts"
+                | "do-for-fact"
+                | "do-for-all-facts"
+                | "delayed-do-for-all-facts"
+        ),
+        "invalid fact-query name",
+    )?;
+    ensure(
+        body_len == 0 || !matches!(name, "any-factp" | "find-fact" | "find-all-facts"),
+        "result query has body expressions",
+    )?;
+    let mut names = rustc_hash::FxHashSet::default();
+    for (variable, restrictions) in bindings {
+        ensure(
+            crate::evaluator::valid_query_member(variable),
+            "invalid query member",
+        )?;
+        ensure(names.insert(variable), "duplicate query member")?;
+        ensure(restrictions != 0, "query member has no restrictions")?;
+    }
+    ensure(!names.is_empty(), "query has no members")
 }

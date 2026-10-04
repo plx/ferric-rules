@@ -1,0 +1,8 @@
+any=TRUE
+find=(<Fact-1>)
+all=(<Fact-1> <Fact-2>)
+one=(1)
+every=(1)
+every=(2 3)
+delayed=(1)
+delayed=(2 3)

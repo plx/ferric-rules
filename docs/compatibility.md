@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1029
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1081
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -328,8 +328,14 @@ reject the construct; they never silently become salience zero.
 ### Fact-query expressions
 
 `do-for-fact`, `do-for-all-facts` and `delayed-do-for-all-facts` work in RHS
-actions, expressions, deffunctions, and methods. They visit
-live facts in assertion order, the last member varying fastest. An immediate
+actions, expressions, deffunctions, and methods. Each member accepts one or
+more restriction expressions naming visible, unqualified deftemplates or
+previously declared ordered relations. A symbol literal resolves at load time;
+other expressions evaluate once when the query starts and must return a symbol
+or a nonempty multifield of symbols. Restrictions evaluate in source order
+before traversal, including for an empty query or an early `any-factp` result.
+Alternatives retain their order and duplicates. Each alternative visits live
+facts in assertion order, with the last member varying fastest. An immediate
 query sees facts its bodies assert and skips facts they retract;
 `delayed-do-for-all-facts` selects every tuple before it runs a body, and its
 members keep their slot values after a body retracts them. Predicates and
@@ -338,18 +344,38 @@ query members. `any-factp`, `find-fact` and `find-all-facts` work in RHS
 expressions, deffunctions and methods; the find forms return a multifield of
 [fact addresses](#fact-addresses).
 
+Queries, `if`, and `switch` also work in LHS test CEs and predicate/return-value
+constraints. These expressions observe facts when the matching token reaches
+the test; a later change to a queried relation does not independently reevaluate
+an existing token. Queries can compare members with fact addresses bound by
+earlier patterns. Unbound or later-bound variable references in these queries
+are load errors. Match-time expressions cannot mutate the engine.
+
 Each visited query member costs one iteration of the action-loop budget
 (`EngineConfig::max_action_loop_iterations`), as does each delayed body.
 `halt` in a query body lets the current call and RHS finish. `reset` takes
 effect immediately and the current body continues, retaining its locals and
 member slot values. Its old fact addresses become stale. Immediate traversal
-stops when reset invalidates its remaining candidates; a delayed query still
-visits the tuples it captured before reset. A query returns its last body
+stops reading the current alternative's old fact list, then visits later
+alternatives against the reset facts. Outer query members retain their selected
+payloads while inner alternatives advance. A delayed query still visits the
+tuples it captured before reset. A query returns its last body
 value, `FALSE` if no body ran, or no value after `break`.
 
-Each query member names one visible, unqualified deftemplate. Multiple-template
-restrictions and direct queries in global initializers remain unsupported.
-Binding a query member or a local in a query predicate is a load error.
+Literal names follow source declaration order, including within one rule or
+function. An ordered assertion declares its relation before its initializer
+expressions. Dynamic names use the current callable's definition module and
+remain fixed for that query invocation. Resolved targets remain in use until
+the query finishes, even if its body retracts every matching fact.
+
+Query members are scoped to their predicate and body. Restriction expressions
+can read caller locals and bind locals; nested query and iterator bindings can
+shadow member names. Unshadowed reads of the current query's own members in its
+restrictions are rejected explicitly: those forms crash pinned CLIPS 6.30.
+Binding a query member in its body, or binding a local in its predicate, is a
+load error. Qualified target names and direct queries in global initializers
+remain unsupported. Ferric retains owned candidate payloads across delayed
+query resets instead of reproducing CLIPS's stale-pointer reuse behavior.
 
 ### Activation Ordering Contract
 

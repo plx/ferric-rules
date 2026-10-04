@@ -1,0 +1,11 @@
+
+[ANALYSIS4] Variable ?missing found in the expression (= ((query-fact-slot) 0 0 x) ?missing)
+was referenced in CE #2 before being defined.
+
+ERROR:
+(defrule MAIN::r
+   (go)
+   (test (any-factp ((?f p))
+      (= ?f:x ?missing)))
+   =>
+   (printout t BAD crlf))

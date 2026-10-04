@@ -4,16 +4,21 @@
 //! while any fact or construct depends on that identity; do not reinterpret
 //! previously loaded RHS forms using a newly installed template.
 
+use crate::actions::CompiledTestCondition;
 use crate::engine::Engine;
 use crate::evaluator::RuntimeExpr;
 use crate::fact_initializer::{PreparedFact, RuntimeExpressions};
 use crate::modules::ModuleId;
+use crate::query_targets::QueryTarget;
 use ferric_rules_core::{AlphaEntryType, Fact};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
 
 impl Engine {
     pub(crate) fn ordered_identity_is_live(&self, name: &str) -> bool {
-        if name == "initial-fact" {
+        if name == "initial-fact" || self.active_query_targets.iter().any(|target| {
+            matches!(target, QueryTarget::Ordered(symbol)
+                if self.resolve_core_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
+        }) {
             return true;
         }
         let matches_fact = |fact: &Fact| matches!(fact, Fact::Ordered(fact) if self.resolve_core_symbol(fact.relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)));
@@ -21,19 +26,14 @@ impl Engine {
             || self.rete.alpha.entry_types().any(|entry| {
                 matches!(entry, AlphaEntryType::OrderedRelation(symbol) if self.resolve_core_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
             })
-            || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(|fact| matches!(fact, PreparedFact::Ordered { relation, .. } if self.resolve_core_symbol(*relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name))))
+            || self.registered_deffacts.iter().any(|seed| seed.facts.iter().any(|fact| {
+                matches!(fact, PreparedFact::Ordered { relation, .. } if self.resolve_core_symbol(*relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
+                    || fact.all_expressions().any(|expression| self.runtime_expression_uses_ordered_name(expression, seed.module, name))
+            }))
             || self.template_defs.values().any(|template| {
                 template.dynamic_defaults.iter().flatten().any(|default| {
                     default.expressions.iter().any(|expression| {
-                        RuntimeExpressions::new(expression).any(|expression| match expression {
-                            RuntimeExpr::QueryAction { bindings, .. } => bindings
-                                .iter()
-                                .any(|(_, raw)| self.ordered_name_is(raw, default.module, name)),
-                            RuntimeExpr::EffectCall { call } => {
-                                self.call_uses_ordered_name(call, default.module, name)
-                            }
-                            _ => false,
-                        })
+                        RuntimeExpressions::new(expression).any(|expression| self.runtime_expression_uses_ordered_name(expression, default.module, name))
                     })
                 })
             })
@@ -50,6 +50,12 @@ impl Engine {
                 info.actions
                     .iter()
                     .any(|action| self.call_uses_ordered_name(&action.call, *module, name))
+                    || info.test_conditions.iter().any(|condition| {
+                        let CompiledTestCondition::Expr(expression) = condition;
+                        RuntimeExpressions::new(expression).any(|expression| {
+                            self.runtime_expression_uses_ordered_name(expression, *module, name)
+                        })
+                    })
             })
             || self.functions.functions.iter().any(|(&module, functions)| {
                 functions.values().any(|function| {
@@ -64,6 +70,8 @@ impl Engine {
                     method
                         .body
                         .iter()
+                        .chain(method.parameter_queries.iter().flatten())
+                        .chain(method.wildcard_query.as_ref())
                         .any(|expr| self.expr_uses_ordered_name(expr, module, name))
                 })
             })
@@ -106,6 +114,10 @@ impl Engine {
         rule.actions
             .iter()
             .any(|action| self.call_uses_ordered_name(&action.call, module, name))
+            || rule_lhs_expressions(rule).into_iter().any(|expression| {
+                ferric_rules_parser::interpret_action_expr(expression)
+                    .is_ok_and(|expression| self.expr_uses_ordered_name(&expression, module, name))
+            })
     }
 
     fn call_uses_ordered_name(&self, call: &FunctionCall, module: ModuleId, name: &str) -> bool {
@@ -114,54 +126,87 @@ impl Engine {
         })) || crate::effects::evaluated_arguments(self, module, call).iter().any(|expr| self.expr_uses_ordered_name(expr, module, name))
     }
 
-    fn expr_uses_ordered_name(&self, expr: &ActionExpr, module: ModuleId, name: &str) -> bool {
-        let uses = |expr| self.expr_uses_ordered_name(expr, module, name);
-        match expr {
-            ActionExpr::FunctionCall(call) => self.call_uses_ordered_name(call, module, name),
-            ActionExpr::If {
-                condition,
-                then_actions,
-                else_actions,
-                ..
-            } => uses(condition) || then_actions.iter().chain(else_actions).any(uses),
-            ActionExpr::While {
-                condition, body, ..
-            } => uses(condition) || body.iter().any(uses),
-            ActionExpr::LoopForCount {
-                start, end, body, ..
-            } => uses(start) || uses(end) || body.iter().any(uses),
-            ActionExpr::Progn {
-                list_expr, body, ..
-            } => uses(list_expr) || body.iter().any(uses),
-            ActionExpr::QueryAction {
-                bindings,
-                query,
-                body,
-                ..
-            } => {
-                bindings
-                    .iter()
-                    .any(|(_, raw)| self.ordered_name_is(raw, module, name))
-                    || uses(query)
-                    || body.iter().any(uses)
-            }
-            ActionExpr::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                uses(expr)
-                    || cases
-                        .iter()
-                        .any(|(condition, body)| uses(condition) || body.iter().any(uses))
-                    || default.iter().flatten().any(uses)
-            }
-            ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {
-                false
-            }
+    fn runtime_expression_uses_ordered_name(
+        &self,
+        expression: &RuntimeExpr,
+        module: ModuleId,
+        name: &str,
+    ) -> bool {
+        match expression {
+            RuntimeExpr::QueryAction { bindings, .. } => bindings.iter()
+                .flat_map(|binding| &binding.restrictions)
+                .any(|restriction| matches!(restriction,
+                    RuntimeExpr::Literal(ferric_rules_core::Value::Symbol(symbol))
+                    if self.resolve_core_symbol(*symbol).is_some_and(|raw| self.ordered_name_is(raw, module, name)))),
+            RuntimeExpr::EffectCall { call } => self.call_uses_ordered_name(call, module, name),
+            _ => false,
         }
     }
+
+    fn expr_uses_ordered_name(&self, expr: &ActionExpr, module: ModuleId, name: &str) -> bool {
+        if let ActionExpr::FunctionCall(call) = expr {
+            return self.call_uses_ordered_name(call, module, name);
+        }
+        if let ActionExpr::QueryAction { bindings, .. } = expr {
+            if bindings
+                .iter()
+                .flat_map(|binding| &binding.restrictions)
+                .any(|restriction| {
+                    matches!(restriction, ActionExpr::Literal(literal)
+                    if matches!(&literal.value, ferric_rules_parser::LiteralKind::Symbol(raw)
+                        if self.ordered_name_is(raw, module, name)))
+                })
+            {
+                return true;
+            }
+        }
+        let mut children = Vec::new();
+        expr.push_children(&mut children);
+        children
+            .into_iter()
+            .any(|child| self.expr_uses_ordered_name(child, module, name))
+    }
+}
+
+/// Raw match expressions also carry literal query dependencies before a rule is compiled.
+pub(crate) fn rule_lhs_expressions(rule: &RuleConstruct) -> Vec<&ferric_rules_parser::SExpr> {
+    use ferric_rules_parser::Constraint;
+    let mut expressions = Vec::new();
+    let mut patterns: Vec<_> = rule.patterns.iter().collect();
+    let mut constraints = Vec::new();
+    while let Some(pattern) = patterns.pop() {
+        match pattern {
+            Pattern::Ordered(pattern) => constraints.extend(&pattern.constraints),
+            Pattern::Template(pattern) => constraints.extend(
+                pattern
+                    .slot_constraints
+                    .iter()
+                    .flat_map(|slot| &slot.constraints),
+            ),
+            Pattern::Test(expression, _) => expressions.push(expression),
+            Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
+                patterns.push(inner);
+            }
+            Pattern::And(children, _)
+            | Pattern::Or(children, _)
+            | Pattern::Exists(children, _)
+            | Pattern::Forall(children, _)
+            | Pattern::Logical(children, _) => patterns.extend(children),
+        }
+    }
+    while let Some(constraint) = constraints.pop() {
+        match constraint {
+            Constraint::Predicate(expression, _) | Constraint::ReturnValue(expression, _) => {
+                expressions.push(expression);
+            }
+            Constraint::Not(inner, _) => constraints.push(inner),
+            Constraint::And(children, _) | Constraint::Or(children, _) => {
+                constraints.extend(children);
+            }
+            _ => {}
+        }
+    }
+    expressions
 }
 
 impl Engine {

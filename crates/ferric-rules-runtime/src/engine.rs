@@ -200,6 +200,8 @@ pub struct Engine {
     pub(crate) source_load_depth: usize,
     /// Transient executing callable identities, retained across nested evaluator frames.
     pub(crate) active_callables: Vec<(ModuleId, String)>,
+    /// Query schemas retained while restrictions, predicates, and bodies execute.
+    pub(crate) active_query_targets: Vec<crate::query_targets::QueryTarget>,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
@@ -308,6 +310,7 @@ impl Engine {
             reset_in_progress: false,
             source_load_depth: 0,
             active_callables: Vec::new(),
+            active_query_targets: Vec::new(),
             active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
@@ -466,12 +469,38 @@ impl Engine {
                 )));
                 continue;
             };
+            // A predicate sees only the facts already matched at its position.
+            // Later pattern addresses remain unbound in this private token copy.
+            // The graph retains its original pass-through bindings.
+            let mut evaluation_token = std::borrow::Cow::Borrowed(&token);
+            if !info.fact_address_vars.is_empty() {
+                let facts = self
+                    .rete
+                    .token_store
+                    .collect_all_facts(pending.parent_token);
+                actions::bind_fact_addresses(
+                    evaluation_token.to_mut(),
+                    info.as_ref(),
+                    &facts,
+                    &self.symbol_table,
+                    self.config.string_encoding,
+                    &self.fact_base,
+                    self.initial_fact_id,
+                    self.fact_epoch,
+                    self.fact_index_starts_at_zero,
+                );
+            }
             let evaluation = {
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
                 };
-                actions::evaluate_test_condition(&token, info.as_ref(), condition, &mut context)
+                actions::evaluate_test_condition(
+                    evaluation_token.as_ref(),
+                    info.as_ref(),
+                    condition,
+                    &mut context,
+                )
             };
             let passed = match evaluation {
                 Ok(passed) => passed,

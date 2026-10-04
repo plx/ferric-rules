@@ -1,0 +1,9 @@
+
+[PRCCODE3] Undefined variable f referenced in RHS of defrule.
+
+ERROR:
+(defrule MAIN::r
+   =>
+   (find-all-facts ((?f p))
+      TRUE)
+   (printout t ?f))

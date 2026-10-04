@@ -6,14 +6,19 @@
 use ferric_rules_core::{AlphaEntryType, RuleId, TemplateId};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
 
+use crate::actions::CompiledTestCondition;
 use crate::engine::{rule_index_get, Engine};
 use crate::evaluator::RuntimeExpr;
 use crate::fact_initializer::{PreparedFact, RuntimeExpressions};
 use crate::modules::ModuleId;
+use crate::query_targets::QueryTarget;
 
 impl Engine {
     pub(crate) fn template_is_in_use(&self, id: TemplateId) -> bool {
-        if self.fact_base.facts_by_template(id).next().is_some()
+        if self
+            .active_query_targets
+            .contains(&QueryTarget::Template(id))
+            || self.fact_base.facts_by_template(id).next().is_some()
             || self
                 .rete
                 .alpha
@@ -46,6 +51,12 @@ impl Engine {
             info.actions
                 .iter()
                 .any(|action| self.call_uses_template(&action.call, module, id))
+                || info.test_conditions.iter().any(|condition| {
+                    let CompiledTestCondition::Expr(expression) = condition;
+                    RuntimeExpressions::new(expression).any(|expression| {
+                        self.runtime_expression_uses_template(expression, module, id)
+                    })
+                })
         }) || self.functions.functions.iter().any(|(&module, functions)| {
             functions.values().any(|function| {
                 function
@@ -76,9 +87,11 @@ impl Engine {
         id: TemplateId,
     ) -> bool {
         match expression {
-            RuntimeExpr::QueryAction { bindings, .. } => bindings
-                .iter()
-                .any(|(_, name)| self.template_name_is(name, module, id)),
+            RuntimeExpr::QueryAction { bindings, .. } => bindings.iter()
+                .flat_map(|binding| &binding.restrictions)
+                .any(|restriction| matches!(restriction,
+                    RuntimeExpr::Literal(ferric_rules_core::Value::Symbol(symbol))
+                    if self.resolve_core_symbol(*symbol).is_some_and(|name| self.template_name_is(name, module, id)))),
             RuntimeExpr::EffectCall { call } => self.call_uses_template(call, module, id),
             _ => false,
         }
@@ -117,6 +130,12 @@ impl Engine {
         rule.actions
             .iter()
             .any(|action| self.call_uses_template(&action.call, module, id))
+            || crate::template_identity::rule_lhs_expressions(rule)
+                .into_iter()
+                .any(|expression| {
+                    ferric_rules_parser::interpret_action_expr(expression)
+                        .is_ok_and(|expression| self.expr_uses_template(&expression, module, id))
+                })
     }
 
     fn call_uses_template(&self, call: &FunctionCall, module: ModuleId, id: TemplateId) -> bool {
@@ -126,51 +145,26 @@ impl Engine {
     }
 
     fn expr_uses_template(&self, expr: &ActionExpr, module: ModuleId, id: TemplateId) -> bool {
-        let uses = |expr| self.expr_uses_template(expr, module, id);
-        match expr {
-            ActionExpr::FunctionCall(call) => self.call_uses_template(call, module, id),
-            ActionExpr::If {
-                condition,
-                then_actions,
-                else_actions,
-                ..
-            } => uses(condition) || then_actions.iter().chain(else_actions).any(uses),
-            ActionExpr::While {
-                condition, body, ..
-            } => uses(condition) || body.iter().any(uses),
-            ActionExpr::LoopForCount {
-                start, end, body, ..
-            } => uses(start) || uses(end) || body.iter().any(uses),
-            ActionExpr::Progn {
-                list_expr, body, ..
-            } => uses(list_expr) || body.iter().any(uses),
-            ActionExpr::QueryAction {
-                bindings,
-                query,
-                body,
-                ..
-            } => {
-                bindings
-                    .iter()
-                    .any(|(_, name)| self.template_name_is(name, module, id))
-                    || uses(query)
-                    || body.iter().any(uses)
-            }
-            ActionExpr::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                uses(expr)
-                    || cases
-                        .iter()
-                        .any(|(condition, body)| uses(condition) || body.iter().any(uses))
-                    || default.iter().flatten().any(uses)
-            }
-            ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {
-                false
+        if let ActionExpr::FunctionCall(call) = expr {
+            return self.call_uses_template(call, module, id);
+        }
+        if let ActionExpr::QueryAction { bindings, .. } = expr {
+            if bindings
+                .iter()
+                .flat_map(|binding| &binding.restrictions)
+                .any(|restriction| {
+                    matches!(restriction, ActionExpr::Literal(literal)
+                    if matches!(&literal.value, ferric_rules_parser::LiteralKind::Symbol(name)
+                        if self.template_name_is(name, module, id)))
+                })
+            {
+                return true;
             }
         }
+        let mut children = Vec::new();
+        expr.push_children(&mut children);
+        children
+            .into_iter()
+            .any(|child| self.expr_uses_template(child, module, id))
     }
 }

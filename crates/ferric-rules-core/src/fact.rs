@@ -391,6 +391,10 @@ pub struct FactBase {
     /// visible without rebuilding. This derived index is omitted from snapshots.
     #[cfg_attr(feature = "serde", serde(skip))]
     by_template_chronology: HashMap<TemplateId, BTreeMap<Timestamp, FactId>>,
+    /// Sparse, derived chronology for ordered relations whose cursor has been used.
+    /// Like template chronology, empty initialized trees survive retraction.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    by_relation_chronology: HashMap<Symbol, BTreeMap<Timestamp, FactId>>,
     pub(crate) next_timestamp: Timestamp,
 }
 
@@ -410,6 +414,7 @@ impl FactBase {
             by_relation: SymbolMap::new(),
             by_structural_fingerprint: Some(HashMap::default()),
             by_template_chronology: HashMap::default(),
+            by_relation_chronology: HashMap::default(),
             next_timestamp: Timestamp::ZERO,
         }
     }
@@ -571,6 +576,9 @@ impl FactBase {
                 self.by_relation
                     .get_or_insert_with(relation, HashSet::default)
                     .insert(id);
+                if let Some(chronology) = self.by_relation_chronology.get_mut(&relation) {
+                    chronology.insert(self.facts[id].timestamp, id);
+                }
                 id
             }
             Fact::Template(template) => {
@@ -623,6 +631,9 @@ impl FactBase {
         match &entry.fact {
             Fact::Ordered(ordered) => {
                 remove_from_symbol_set_index(&mut self.by_relation, ordered.relation, id);
+                if let Some(chronology) = self.by_relation_chronology.get_mut(&ordered.relation) {
+                    chronology.remove(&entry.timestamp);
+                }
             }
             Fact::Template(template) => {
                 remove_from_set_index(&mut self.by_template, template.template_id, id);
@@ -690,6 +701,42 @@ impl FactBase {
             .or_insert_with(|| {
                 self.by_template
                     .get(&template_id)
+                    .into_iter()
+                    .flat_map(|ids| ids.iter())
+                    .filter_map(|id| self.facts.get(*id).map(|entry| (entry.timestamp, *id)))
+                    .collect()
+            });
+        let next = match after {
+            Some(timestamp) => chronology
+                .range((Excluded(Timestamp::new(timestamp)), Unbounded))
+                .next(),
+            None => chronology.first_key_value(),
+        };
+        next.map(|(timestamp, id)| (*id, timestamp.get()))
+    }
+
+    /// Find the next live ordered fact of a relation in assertion order.
+    ///
+    /// `None` includes the oldest assertion, even timestamp zero. `Some(timestamp)`
+    /// selects the oldest live fact strictly after it, skipping retracted facts
+    /// and observing later assertions even when arena slots have been reused.
+    ///
+    /// The first query builds a derived O(n log n) index over this relation alone.
+    /// Later queries, insertions, and retractions use O(log n) tree operations.
+    /// Unqueried relations incur no tree cost. Empty initialized trees are retained.
+    /// Snapshots omit this cache and rebuild it lazily after restore. A cursor
+    /// belongs to this fact base's lifetime; reset starts a new chronology.
+    pub fn next_relation_fact_after(
+        &mut self,
+        relation: Symbol,
+        after: Option<u64>,
+    ) -> Option<(FactId, u64)> {
+        let chronology = self
+            .by_relation_chronology
+            .entry(relation)
+            .or_insert_with(|| {
+                self.by_relation
+                    .get(relation)
                     .into_iter()
                     .flat_map(|ids| ids.iter())
                     .filter_map(|id| self.facts.get(*id).map(|entry| (entry.timestamp, *id)))
@@ -965,6 +1012,177 @@ mod tests {
 
         fb.retract(id);
         assert!(!fb.by_template.contains_key(&template_id));
+    }
+
+    #[test]
+    fn relation_chronology_tracks_zero_retraction_slot_reuse_and_new_assertions() {
+        use slotmap::Key;
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let other_relation = symbols
+            .intern_symbol("other", StringEncoding::Ascii)
+            .unwrap();
+        let mut facts = FactBase::new();
+        let first = facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
+        let removed = facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(2)]);
+        let third = facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(3)]);
+        let other = facts.assert_ordered(other_relation, SmallVec::new());
+        assert!(facts.by_relation_chronology.is_empty());
+        assert_eq!(
+            facts.next_relation_fact_after(relation, None),
+            Some((first, 0))
+        );
+        assert!(!facts.by_relation_chronology.contains_key(&other_relation));
+        facts.retract(removed).unwrap();
+        let replacement = facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(2)]);
+        assert_ne!(replacement, removed);
+        assert_eq!(
+            removed.data().as_ffi() & u64::from(u32::MAX),
+            replacement.data().as_ffi() & u64::from(u32::MAX)
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(0)),
+            Some((third, 2))
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(2)),
+            Some((replacement, 4))
+        );
+        assert_eq!(facts.next_relation_fact_after(relation, Some(4)), None);
+        let appended = facts.assert_ordered(relation, SmallVec::new());
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(4)),
+            Some((appended, 5))
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(other_relation, None),
+            Some((other, 3))
+        );
+    }
+
+    #[test]
+    fn relation_chronology_keeps_empty_cache_and_rebuilds_after_restore_or_reset() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let mut facts = FactBase::new();
+        assert_eq!(facts.next_relation_fact_after(relation, None), None);
+        assert!(facts.by_relation_chronology[&relation].is_empty());
+        let first = facts.assert_ordered(relation, SmallVec::new());
+        facts.retract(first).unwrap();
+        assert!(facts.by_relation_chronology[&relation].is_empty());
+        let second = facts.assert_ordered(relation, SmallVec::new());
+        let third = facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(0)),
+            Some((second, 1))
+        );
+        // Serde omits this derived cache; the primary relation index rebuilds it.
+        facts.by_relation_chronology.clear();
+        assert_eq!(
+            facts.next_relation_fact_after(relation, None),
+            Some((second, 1))
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(1)),
+            Some((third, 2))
+        );
+        facts.retract(second).unwrap();
+        let fourth = facts.assert_ordered(relation, SmallVec::new());
+        assert_eq!(
+            facts.next_relation_fact_after(relation, None),
+            Some((third, 2))
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(2)),
+            Some((fourth, 3))
+        );
+        facts = FactBase::new();
+        assert!(facts.by_relation_chronology.is_empty());
+        let reset = facts.assert_ordered(relation, SmallVec::new());
+        assert_eq!(
+            facts.next_relation_fact_after(relation, None),
+            Some((reset, 0))
+        );
+    }
+
+    #[test]
+    fn relation_chronology_is_sparse_and_separates_symbol_pools() {
+        let mut symbols = SymbolTable::new();
+        for index in 0..1000 {
+            symbols
+                .intern_symbol(&format!("unrelated-{index}"), StringEncoding::Ascii)
+                .unwrap();
+        }
+        let ascii = symbols
+            .intern_symbol("ascii", StringEncoding::Ascii)
+            .unwrap();
+        let unicode = symbols
+            .intern_symbol("élément", StringEncoding::Utf8)
+            .unwrap();
+        let mut facts = FactBase::new();
+        let first = facts.assert_ordered(ascii, SmallVec::new());
+        let second = facts.assert_ordered(unicode, SmallVec::new());
+        assert_eq!(
+            facts.next_relation_fact_after(ascii, None),
+            Some((first, 0))
+        );
+        assert_eq!(facts.by_relation_chronology.len(), 1);
+        assert_eq!(
+            facts.next_relation_fact_after(unicode, None),
+            Some((second, 1))
+        );
+        assert_eq!(facts.by_relation_chronology.len(), 2);
+    }
+
+    #[test]
+    fn relation_chronology_duplicate_suppression_and_timestamp_exhaustion_are_stable() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let mut facts = FactBase::new();
+        let fact = Fact::Ordered(OrderedFact {
+            relation,
+            fields: SmallVec::new(),
+        });
+        let FactInsertionResult::Inserted(first) = facts.assert_fact(fact.clone(), false) else {
+            panic!("first insert");
+        };
+        assert_eq!(
+            facts.next_relation_fact_after(relation, None),
+            Some((first, 0))
+        );
+        assert_eq!(
+            facts.assert_fact(fact.clone(), false),
+            FactInsertionResult::Duplicate(first)
+        );
+        assert_eq!(facts.next_relation_fact_after(relation, Some(0)), None);
+        facts.next_timestamp = Timestamp::new(u64::MAX - 1);
+        let last = facts.try_assert_distinct_fact(fact.clone()).unwrap();
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(0)),
+            Some((last, u64::MAX - 1))
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(u64::MAX - 1)),
+            None
+        );
+        assert_eq!(
+            facts.next_relation_fact_after(relation, Some(u64::MAX)),
+            None
+        );
+        assert!(facts.try_assert_fact(fact, true).is_err());
+        facts.retract(first).unwrap();
+        assert_eq!(
+            facts.next_relation_fact_after(relation, None),
+            Some((last, u64::MAX - 1))
+        );
+        facts.retract(last).unwrap();
+        assert_eq!(facts.next_relation_fact_after(relation, None), None);
     }
 
     #[test]

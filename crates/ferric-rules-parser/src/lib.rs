@@ -56,9 +56,9 @@ pub use stage2::{
     FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct, GlobalDefinition,
     ImportSpec, InterpretError, InterpretErrorKind, InterpretResult, InterpreterConfig,
     LiteralKind, LiteralValue, MethodConstruct, MethodParameter, ModuleConstruct, ModuleSpec,
-    NumericBound, NumericRange, OrderedFactBody, OrderedPattern, Pattern, RuleConstruct,
-    SlotConstraint, SlotConstraints, SlotDefinition, SlotType, SlotValueType, TemplateConstruct,
-    TemplateFactBody, TemplatePattern,
+    NumericBound, NumericRange, OrderedFactBody, OrderedPattern, Pattern, QueryBinding,
+    RuleConstruct, SlotConstraint, SlotConstraints, SlotDefinition, SlotType, SlotValueType,
+    TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
 #[cfg(test)]

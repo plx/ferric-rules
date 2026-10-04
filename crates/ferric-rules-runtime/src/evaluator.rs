@@ -183,6 +183,15 @@ pub enum EvalError {
 // Runtime expression model
 // ---------------------------------------------------------------------------
 
+/// One fact-query member and the target expressions evaluated before traversal.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RuntimeQueryBinding {
+    pub variable: String,
+    pub restrictions: Vec<RuntimeExpr>,
+    pub span: Option<SourceSpan>,
+}
+
 /// A runtime expression for evaluation.
 ///
 /// This is the normalized expression model consumed by the evaluator.
@@ -269,7 +278,7 @@ pub enum RuntimeExpr {
         /// The specific macro name (e.g. `"do-for-fact"`).
         name: String,
         /// `(variable_name, template_name)` binding pairs.
-        bindings: Vec<(String, String)>,
+        bindings: Vec<RuntimeQueryBinding>,
         /// Query expression (evaluated to a boolean).
         query: Box<RuntimeExpr>,
         /// Body items (empty for `any-factp`, `find-fact`, `find-all-facts`).
@@ -1278,7 +1287,15 @@ pub(crate) fn validate_query_predicate(
             validate_query_predicate(ctx, list_expr, name, span, next)?;
             validate_query_predicate_body(ctx, body, name, span, next)?;
         }
-        RuntimeExpr::QueryAction { query, body, .. } => {
+        RuntimeExpr::QueryAction {
+            bindings,
+            query,
+            body,
+            ..
+        } => {
+            for restriction in bindings.iter().flat_map(|binding| &binding.restrictions) {
+                validate_query_predicate(ctx, restriction, name, span, next)?;
+            }
             validate_query_predicate(ctx, query, name, span, next)?;
             validate_query_predicate_body(ctx, body, name, span, next)?;
         }
@@ -1350,7 +1367,21 @@ fn with_expression_query_candidate<T>(
 fn eval_fact_query(
     ctx: &mut EvalContext<'_>,
     name: &str,
-    members: &[(String, String)],
+    members: &[RuntimeQueryBinding],
+    predicate: &RuntimeExpr,
+    body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    let retained = ctx.engine.active_query_targets.len();
+    let result = eval_fact_query_inner(ctx, name, members, predicate, body, span);
+    ctx.engine.active_query_targets.truncate(retained);
+    result
+}
+
+fn eval_fact_query_inner(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    members: &[RuntimeQueryBinding],
     predicate: &RuntimeExpr,
     body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
     span: Option<&SourceSpan>,
@@ -1374,8 +1405,12 @@ fn eval_fact_query(
         ));
     }
     validate_query_predicate(ctx, predicate, name, span, 0)?;
-    let mut cursor =
-        crate::query_cursor::ActionQueryCursor::new(members, ctx.engine, ctx.current_module)?;
+    let members = crate::query_targets::prepare_query_members(members, |expression, span| {
+        let value = eval_inner(ctx, expression)?;
+        ctx.engine
+            .retain_query_targets(&value, ctx.current_module, span)
+    })?;
+    let mut cursor = crate::query_cursor::ActionQueryCursor::new(members, ctx.engine)?;
     let delayed = name == "delayed-do-for-all-facts";
     let mut selected = Vec::new();
     let mut found = ferric_rules_core::Multifield::new();
@@ -2523,7 +2558,18 @@ pub(crate) fn validate_action_depth(
                 pending.push((list_expr, depth + 1));
                 branches.push(body);
             }
-            ActionExpr::QueryAction { query, body, .. } => {
+            ActionExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            } => {
+                pending.extend(
+                    bindings
+                        .iter()
+                        .flat_map(|binding| &binding.restrictions)
+                        .map(|expression| (expression, depth + 1)),
+                );
                 pending.push((query, depth + 1));
                 branches.push(body);
             }
@@ -2724,7 +2770,25 @@ fn from_action_expr_inner(
             }
             Ok(RuntimeExpr::QueryAction {
                 name: name.clone(),
-                bindings: bindings.clone(),
+                bindings: bindings
+                    .iter()
+                    .map(|binding| {
+                        Ok(RuntimeQueryBinding {
+                            variable: binding.variable.clone(),
+                            restrictions: binding
+                                .restrictions
+                                .iter()
+                                .map(|expression| {
+                                    from_action_expr_inner(expression, symbol_table, config)
+                                })
+                                .collect::<Result<_, EvalError>>()?,
+                            span: Some(SourceSpan {
+                                line: binding.span.start.line,
+                                column: binding.span.start.column,
+                            }),
+                        })
+                    })
+                    .collect::<Result<_, EvalError>>()?,
                 query: Box::new(query_rt),
                 body: body_rt,
                 span: Some(SourceSpan {
@@ -7026,7 +7090,7 @@ fn builtin_compact_fact_slot_ref(
             actual: format!("fact bound to ?{name} no longer exists"),
             span: span.cloned(),
         })?;
-    if matches!(fact, Fact::Ordered(_)) {
+    if matches!(fact, Fact::Ordered(_)) && member.retained.is_none() {
         return Err(EvalError::TypeError {
             function: COMPACT_FACT_SLOT_REF.into(),
             expected: "template fact".into(),
@@ -8011,7 +8075,18 @@ mod tests {
             name: name.into(),
             bindings: members
                 .iter()
-                .map(|(member, template)| ((*member).into(), (*template).into()))
+                .map(|(member, template)| RuntimeQueryBinding {
+                    variable: (*member).into(),
+                    restrictions: vec![RuntimeExpr::Call {
+                        name: "sym-cat".into(),
+                        args: vec![RuntimeExpr::Literal(Value::String(
+                            FerricString::new(template, ferric_rules_core::StringEncoding::Utf8)
+                                .unwrap(),
+                        ))],
+                        span: None,
+                    }],
+                    span: None,
+                })
                 .collect(),
             query: Box::new(predicate),
             body: Vec::new(),
@@ -8533,7 +8608,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_compact_record_requires_template_metadata_and_rejects_ordered_records() {
+    fn retained_compact_record_checks_template_metadata_and_reads_ordered_implied() {
         let (mut engine, fact) = compact_test_engine();
         let address = test_fact_address(&engine, fact);
         let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
@@ -8571,9 +8646,11 @@ mod tests {
         )]);
         let implied = compact_ref(&mut engine, "f", "implied");
         with_compact_context(&mut engine, Some(&scope), |ctx| {
-            assert!(
-                matches!(eval(ctx, &implied), Err(EvalError::TypeError { expected, .. }) if expected == "template fact")
-            );
+            let Value::Multifield(fields) = eval(ctx, &implied).unwrap() else {
+                panic!("ordered implied slot must be a multifield");
+            };
+            assert_eq!(fields.len(), 1);
+            assert!(fields[0].structural_eq(&Value::Integer(3)));
         });
     }
 
