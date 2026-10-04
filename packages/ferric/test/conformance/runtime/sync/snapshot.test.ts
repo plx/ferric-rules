@@ -12,6 +12,8 @@ import * as assert from "node:assert/strict";
 import {
   Engine,
   EngineHandle,
+  FerricSerializationError,
+  Format,
   HaltReason,
 } from "../../../helpers/ferric";
 
@@ -60,5 +62,21 @@ test("D-002 Engine.serialize() snapshot round-trips through EngineHandle", async
     );
   } finally {
     await handle.close();
+  }
+});
+
+test("snapshot write limits retain the binding error category", () => {
+  const engine = new Engine();
+  try {
+    engine.pushInput("x".repeat(16 * 1024 * 1024));
+    for (const format of [Format.Json, Format.Cbor]) {
+      assert.throws(() => engine.serialize(format), (error: unknown) => {
+        assert.ok(error instanceof FerricSerializationError);
+        assert.match(error.message, /^snapshot exceeds the 16 MiB byte limit$/);
+        return true;
+      });
+    }
+  } finally {
+    engine.close();
   }
 });

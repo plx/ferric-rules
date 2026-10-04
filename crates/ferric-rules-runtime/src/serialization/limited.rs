@@ -5,40 +5,114 @@ use std::cell::Cell;
 use std::fmt;
 
 pub(super) const MAX_DEPTH: usize = 128;
-pub(super) const MAX_ITEMS: usize = 1_000_000;
+// Charge Serde operations, including keys and wrappers, independently of the
+// actual encoded length. The complete input still has its separate byte cap.
+pub(super) const MAX_STEPS: usize = super::MAX_SNAPSHOT_BYTES / 4;
 
-pub(super) struct Limited<T>(pub T);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LimitKind {
+    Steps,
+    Depth,
+    Collection,
+}
 
-impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Limited<T> {
+impl LimitKind {
+    pub(super) const fn description(self) -> &'static str {
+        match self {
+            Self::Steps => "decoder step",
+            Self::Depth => "decoder nesting",
+            Self::Collection => "decoder collection length",
+        }
+    }
+}
+
+struct Budget {
+    remaining: Cell<usize>,
+    max_depth: usize,
+    failure: Cell<Option<LimitKind>>,
+}
+
+impl Budget {
+    fn fail<E: de::Error>(&self, kind: LimitKind) -> E {
+        if self.failure.get().is_none() {
+            self.failure.set(Some(kind));
+        }
+        E::custom(format_args!(
+            "snapshot {} limit exceeded",
+            kind.description()
+        ))
+    }
+
+    fn check_depth<E: de::Error>(&self, depth: usize) -> Result<(), E> {
+        if depth > self.max_depth {
+            return Err(self.fail(LimitKind::Depth));
+        }
+        Ok(())
+    }
+
+    fn enter<E: de::Error>(&self, depth: usize) -> Result<(), E> {
+        self.check_depth(depth)?;
+        let Some(remaining) = self.remaining.get().checked_sub(1) else {
+            return Err(self.fail(LimitKind::Steps));
+        };
+        self.remaining.set(remaining);
+        Ok(())
+    }
+
+    fn check_hint<E: de::Error>(&self, hint: Option<usize>) -> Result<(), E> {
+        if hint.is_some_and(|size| size > self.remaining.get()) {
+            return Err(self.fail(LimitKind::Collection));
+        }
+        Ok(())
+    }
+}
+
+/// Internal report carrier: a recorded limit must survive codec error erasure.
+/// The caller must inspect this result before checking for trailing input, since
+/// reaching a limit deliberately stops consuming the payload.
+pub(super) struct Limited<T, const STEPS: usize = MAX_STEPS, const DEPTH: usize = MAX_DEPTH>(
+    pub Result<T, LimitKind>,
+);
+
+impl<'de, T: serde::Deserialize<'de>, const STEPS: usize, const DEPTH: usize>
+    serde::Deserialize<'de> for Limited<T, STEPS, DEPTH>
+{
     fn deserialize<D: de::Deserializer<'de>>(inner: D) -> Result<Self, D::Error> {
-        let remaining = Cell::new(MAX_ITEMS);
-        T::deserialize(Decoder {
+        let budget = Budget {
+            remaining: Cell::new(STEPS),
+            max_depth: DEPTH,
+            failure: Cell::new(None),
+        };
+        let result = T::deserialize(Decoder {
             inner,
-            remaining: &remaining,
+            budget: &budget,
             depth: 0,
-        })
-        .map(Self)
+        });
+        match budget.failure.get() {
+            Some(kind) => Ok(Self(Err(kind))),
+            None => result.map(|value| Self(Ok(value))),
+        }
     }
 }
 
 struct Decoder<'a, D> {
     inner: D,
-    remaining: &'a Cell<usize>,
+    budget: &'a Budget,
     depth: usize,
 }
 struct LimitVisitor<'a, V> {
     inner: V,
-    remaining: &'a Cell<usize>,
+    budget: &'a Budget,
     depth: usize,
 }
 struct Seed<'a, S> {
     inner: S,
-    remaining: &'a Cell<usize>,
+    budget: &'a Budget,
     depth: usize,
 }
 struct Access<'a, A> {
     inner: A,
-    remaining: &'a Cell<usize>,
+    budget: &'a Budget,
     depth: usize,
 }
 
@@ -47,7 +121,7 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Seed<'_, S> {
     fn deserialize<D: de::Deserializer<'de>>(self, inner: D) -> Result<Self::Value, D::Error> {
         self.inner.deserialize(Decoder {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth + 1,
         })
     }
@@ -56,12 +130,8 @@ impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Seed<'_, S> {
 macro_rules! forward {
     ($name:ident $(, $arg:ident: $ty:ty)*) => {
         fn $name<V: Visitor<'de>>(self, $($arg: $ty,)* visitor: V) -> Result<V::Value, Self::Error> {
-            if self.depth > MAX_DEPTH { return Err(de::Error::custom("snapshot nesting limit exceeded")); }
-            let Some(remaining) = self.remaining.get().checked_sub(1) else {
-                return Err(de::Error::custom("snapshot item limit exceeded"));
-            };
-            self.remaining.set(remaining);
-            self.inner.$name($($arg,)* LimitVisitor { inner: visitor, remaining: self.remaining, depth: self.depth })
+            self.budget.enter(self.depth)?;
+            self.inner.$name($($arg,)* LimitVisitor { inner: visitor, budget: self.budget, depth: self.depth })
         }
     };
 }
@@ -98,7 +168,11 @@ impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for Decoder<'_, D> {
     forward!(deserialize_struct, name: &'static str, fields: &'static [&'static str]);
     forward!(deserialize_enum, name: &'static str, variants: &'static [&'static str]);
     forward!(deserialize_identifier);
-    forward!(deserialize_ignored_any);
+    // Native JSON ignored_any skips entire subtrees outside these wrappers.
+    // Traversing through any keeps ignored descendants under the same guards.
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        self.deserialize_any(visitor)
+    }
     fn is_human_readable(&self) -> bool {
         self.inner.is_human_readable()
     }
@@ -146,7 +220,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for LimitVisitor<'_, V> {
     fn visit_some<D: de::Deserializer<'de>>(self, inner: D) -> Result<Self::Value, D::Error> {
         self.inner.visit_some(Decoder {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth + 1,
         })
     }
@@ -156,40 +230,33 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for LimitVisitor<'_, V> {
     ) -> Result<Self::Value, D::Error> {
         self.inner.visit_newtype_struct(Decoder {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth + 1,
         })
     }
     fn visit_seq<A: SeqAccess<'de>>(self, inner: A) -> Result<Self::Value, A::Error> {
-        check_hint(inner.size_hint(), self.remaining)?;
+        self.budget.check_hint(inner.size_hint())?;
         self.inner.visit_seq(Access {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
     fn visit_map<A: MapAccess<'de>>(self, inner: A) -> Result<Self::Value, A::Error> {
-        check_hint(inner.size_hint(), self.remaining)?;
+        self.budget.check_hint(inner.size_hint())?;
         self.inner.visit_map(Access {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
     fn visit_enum<A: EnumAccess<'de>>(self, inner: A) -> Result<Self::Value, A::Error> {
         self.inner.visit_enum(Access {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
-}
-
-fn check_hint<E: de::Error>(hint: Option<usize>, remaining: &Cell<usize>) -> Result<(), E> {
-    if hint.is_some_and(|size| size > remaining.get()) {
-        return Err(E::custom("snapshot collection limit exceeded"));
-    }
-    Ok(())
 }
 
 impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for Access<'_, A> {
@@ -200,7 +267,7 @@ impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for Access<'_, A> {
     ) -> Result<Option<S::Value>, Self::Error> {
         self.inner.next_element_seed(Seed {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
@@ -217,7 +284,7 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for Access<'_, A> {
     ) -> Result<Option<S::Value>, Self::Error> {
         self.inner.next_key_seed(Seed {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
@@ -227,7 +294,7 @@ impl<'de, A: MapAccess<'de>> MapAccess<'de> for Access<'_, A> {
     ) -> Result<S::Value, Self::Error> {
         self.inner.next_value_seed(Seed {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
@@ -244,14 +311,14 @@ impl<'a, 'de, A: EnumAccess<'de>> EnumAccess<'de> for Access<'a, A> {
     ) -> Result<(S::Value, Self::Variant), Self::Error> {
         let (value, inner) = self.inner.variant_seed(Seed {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })?;
         Ok((
             value,
             Access {
                 inner,
-                remaining: self.remaining,
+                budget: self.budget,
                 depth: self.depth,
             },
         ))
@@ -268,16 +335,17 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Access<'_, A> {
     ) -> Result<S::Value, Self::Error> {
         self.inner.newtype_variant_seed(Seed {
             inner,
-            remaining: self.remaining,
+            budget: self.budget,
             depth: self.depth,
         })
     }
     fn tuple_variant<V: Visitor<'de>>(self, len: usize, inner: V) -> Result<V::Value, Self::Error> {
+        self.budget.check_depth(self.depth + 1)?;
         self.inner.tuple_variant(
             len,
             LimitVisitor {
                 inner,
-                remaining: self.remaining,
+                budget: self.budget,
                 depth: self.depth + 1,
             },
         )
@@ -287,13 +355,17 @@ impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Access<'_, A> {
         fields: &'static [&'static str],
         inner: V,
     ) -> Result<V::Value, Self::Error> {
+        self.budget.check_depth(self.depth + 1)?;
         self.inner.struct_variant(
             fields,
             LimitVisitor {
                 inner,
-                remaining: self.remaining,
+                budget: self.budget,
                 depth: self.depth + 1,
             },
         )
     }
 }
+
+#[cfg(test)]
+mod tests;

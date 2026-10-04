@@ -137,19 +137,27 @@ installed. Never accept snapshots as trusted executable policy solely because
 their checksum is valid.
 
 Supported persistence bounds are 16 MiB including the envelope, 128 Serde nesting
-levels, and 1,000,000 decoded items across the whole payload. Collection length
-hints are checked before allocation and do not control allocation capacity.
+levels, and 4,194,304 Serde decode steps across the whole payload. The step budget
+is derived from the configured byte cap (one step per four maximum bytes), not
+from the size of the particular input. Scalars, struct field names, options, enum
+tags, and containers consume steps; this is a work bound, not a count of facts or
+an exact heap-memory allowance. Ignored fields consume the same budget.
+Collection length hints are checked before allocation and do not control
+allocation capacity. Regression tests cover 50,000 runtime-asserted two-slot
+template facts and 5,000 pending indexed join matches in both JSON and CBOR.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
 16 levels, alpha paths 64 value tests plus one ordered field-count test,
 beta parent paths 66 nodes (including root
-and terminal), and NCC nesting 4. Requested call-depth configuration is
+and terminal), and compiled NCC dependency depth 8. The source-language
+quantifier nesting limit remains 4: one multi-pattern `exists` can lower to two
+NCC layers. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
 Derived template defaults have separate expansion bounds of 1,000,000 fields and
 32 MiB of estimated storage, including repeated string payloads. These bounds are
 checked before allocation and do not limit a declared maximum cardinality or
 facts supplied explicitly. Static values already stored in a snapshot remain
-subject to the ordinary snapshot byte and item limits.
+subject to the ordinary snapshot byte and decode-step limits.
 A multifield join token is checked by rebuilding its recorded split; other splits
 are not re-enumerated. The facts recorded as supporting a negated or existential
 multifield pattern must be exactly those that match through some split. Each
@@ -164,8 +172,8 @@ fact: `(tag ?t) (exists (item (tags $? ?t $?)))` with four-value lists fails
 to save at about 530 tags and 530 items, matching or not.
 Graph validation has a 10,000,000-operation work allowance and a separate equal
 allowance for compiler-cache validation. It charges cross-products and test/index
-widths before evaluating them. A valid but unusually large engine can exceed
-these persistence bounds; its direct engine API remains usable.
+widths before evaluating them. Engines with expensive validation or large stored
+state can exceed these persistence bounds; their direct engine API remains usable.
 
 Writes use a bounded output buffer and the same read limits before returning
 bytes. JSON explicitly rejects non-finite floats. Recommended CBOR preserves
@@ -193,8 +201,12 @@ These checks run at snapshot boundaries, not on ordinary evaluation paths.
 Decoding creates a separate engine; an error cannot partially replace the caller's
 existing engine. Callers receive owned errors distinguishing legacy data, unknown
 version/capabilities, wrong format, limits, checksum failure, codec failure, and
-invalid restored state. The C and language bindings preserve useful diagnostics
-through their existing snapshot error categories.
+invalid restored state. Byte, decode-step, nesting, and validation-work overruns
+return `SerializationError::LimitExceeded` on both reads and writes, including
+the write-side read-back check. Invalid references and graph relationships remain
+`InvalidState`, and malformed codec input remains `Decode`. The C and language
+bindings preserve useful diagnostics through their existing snapshot error
+categories.
 
 Fact timestamps and beta node IDs use checked allocation. An exhausted counter
 remains a valid snapshot state: reads, retraction, and persistence still work.

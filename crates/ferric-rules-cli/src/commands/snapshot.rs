@@ -59,12 +59,7 @@ pub fn execute(json_mode: bool, file: &Path, output: &Path, format: Serializatio
     let bytes = match engine.serialize(format) {
         Ok(b) => b,
         Err(err) => {
-            emit_error(
-                json_mode,
-                "snapshot",
-                "serialize_error",
-                format_args!("serialization failed: {err}"),
-            );
+            emit_error(json_mode, "snapshot", "serialize_error", err);
             return 1;
         }
     };

@@ -1,11 +1,36 @@
 //! Fallible invariant checks shared by snapshot restoration and debug assertions.
 
+/// A snapshot validation failure, before any runtime state is accepted.
+///
+/// Resource limits remain distinct from malformed graph or value metadata.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SnapshotValidationError {
+    /// Persisted identities, indexes, values, or graph links are inconsistent.
+    #[error("{0}")]
+    InvalidState(String),
+    /// Validation reached a supported resource boundary.
+    #[error("snapshot exceeds the {0} limit")]
+    LimitExceeded(&'static str),
+}
+
+impl From<String> for SnapshotValidationError {
+    fn from(message: String) -> Self {
+        Self::InvalidState(message)
+    }
+}
+
+impl From<&str> for SnapshotValidationError {
+    fn from(message: &str) -> Self {
+        Self::InvalidState(message.to_owned())
+    }
+}
+
 macro_rules! require {
     ($condition:expr $(,)?) => {
-        if !$condition { return Err(stringify!($condition).to_owned()); }
+        if !$condition { return Err(stringify!($condition).to_owned().into()); }
     };
     ($condition:expr, $($message:tt)+) => {
-        if !$condition { return Err(format!($($message)+)); }
+        if !$condition { return Err(format!($($message)+).into()); }
     };
 }
 pub(crate) use require;
@@ -24,7 +49,10 @@ use crate::fact::{Fact, FactBase};
 use crate::symbol::SymbolTable;
 use crate::value::{AtomKey, Value};
 
-fn validate_index_key_metadata(actual: &AtomKey, expected: &AtomKey) -> Result<(), String> {
+fn validate_index_key_metadata(
+    actual: &AtomKey,
+    expected: &AtomKey,
+) -> Result<(), SnapshotValidationError> {
     // Key equality deliberately ignores an address's cached public spelling.
     // Index rebuilds must compare that metadata against the source value too.
     if let (AtomKey::FactAddress(actual), AtomKey::FactAddress(expected)) = (actual, expected) {
@@ -39,6 +67,13 @@ fn validate_index_key_metadata(actual: &AtomKey, expected: &AtomKey) -> Result<(
 impl SymbolTable {
     #[doc(hidden)]
     pub fn validate_snapshot(&self) -> Result<(), String> {
+        self.validate_snapshot_checked()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_checked(&self) -> Result<(), SnapshotValidationError> {
         require_eq!(self.ascii_strings.len(), self.ascii_to_id.len());
         require_eq!(self.utf8_strings.len(), self.utf8_to_id.len());
         for (index, text) in self.ascii_strings.iter().enumerate() {
@@ -63,17 +98,27 @@ impl SymbolTable {
 
     #[doc(hidden)]
     pub fn validate_snapshot_value(&self, value: &Value) -> Result<(), String> {
+        self.validate_snapshot_value_checked(value)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_value_checked(
+        &self,
+        value: &Value,
+    ) -> Result<(), SnapshotValidationError> {
         let mut pending = vec![(value, 0_usize)];
         let mut count = 0_usize;
         while let Some((value, depth)) = pending.pop() {
             count += 1;
-            require!(
-                count <= 1_000_000 && depth <= 32,
-                "snapshot value limit exceeded"
-            );
+            snapshot_limit(count <= 1_000_000, "1,000,000-item value")?;
+            snapshot_limit(depth <= 32, "32-level value")?;
             match value {
                 Value::ExternalAddress(_) => {
-                    return Err("snapshot contains unsupported external identity".to_owned())
+                    return Err("snapshot contains unsupported external identity"
+                        .to_owned()
+                        .into())
                 }
                 Value::Symbol(symbol) => require!(
                     self.resolve_symbol_str(*symbol).is_some(),
@@ -106,6 +151,19 @@ impl FactBase {
         initial_fact_id: Option<crate::fact::FactId>,
         zero_based: bool,
     ) -> Result<(), String> {
+        self.validate_snapshot_fact_address_checked(address, epoch, initial_fact_id, zero_based)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_fact_address_checked(
+        &self,
+        address: &crate::value::FactAddress,
+        epoch: u64,
+        initial_fact_id: Option<crate::fact::FactId>,
+        zero_based: bool,
+    ) -> Result<(), SnapshotValidationError> {
         use slotmap::Key;
         let Some(id) = address.fact_id() else {
             return Ok(());
@@ -166,6 +224,16 @@ impl FactBase {
 
     #[doc(hidden)]
     pub fn validate_snapshot(&self, symbols: &SymbolTable) -> Result<(), String> {
+        self.validate_snapshot_checked(symbols)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_checked(
+        &self,
+        symbols: &SymbolTable,
+    ) -> Result<(), SnapshotValidationError> {
         // MAX is the exhausted sentinel. Checked insertion preserves this state
         // for reads, retraction, persistence, and reset instead of wrapping.
         let mut timestamps = rustc_hash::FxHashSet::default();
@@ -202,7 +270,7 @@ impl FactBase {
                 }
             };
             for value in values {
-                symbols.validate_snapshot_value(value)?;
+                symbols.validate_snapshot_value_checked(value)?;
             }
         }
         require!(
@@ -216,7 +284,9 @@ impl FactBase {
         ] {
             for (index, ids) in pool.iter().enumerate() {
                 if let Some(ids) = ids {
-                    let index = u32::try_from(index).map_err(|_| "oversized relation index")?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        SnapshotValidationError::LimitExceeded("32-bit relation index")
+                    })?;
                     let symbol = crate::symbol::Symbol(if ascii {
                         crate::symbol::SymbolId::Ascii(index)
                     } else {
@@ -250,13 +320,35 @@ use std::ops::ControlFlow;
 // terminal. Partner callbacks need their own nesting/cycle bound below.
 const MAX_ALPHA_DEPTH: usize = 64;
 const MAX_BETA_PATH_NODES: usize = 66;
-const MAX_NCC_DEPTH: usize = 4;
+// Each of the four supported source quantifier levels can lower a
+// multi-pattern exists into two NCC wrappers. This is a compiled callback
+// dependency bound, separate from source syntax and the beta parent path.
+const MAX_COMPILED_NCC_DEPTH: usize = 8;
+const MAX_VALIDATION_WORK: usize = 10_000_000;
+
+fn snapshot_limit(allowed: bool, limit: &'static str) -> Result<(), SnapshotValidationError> {
+    if allowed {
+        Ok(())
+    } else {
+        Err(SnapshotValidationError::LimitExceeded(limit))
+    }
+}
 
 impl VarMap {
     #[doc(hidden)]
     pub fn validate_snapshot(&self, symbols: &SymbolTable) -> Result<(), String> {
+        self.validate_snapshot_checked(symbols)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_checked(
+        &self,
+        symbols: &SymbolTable,
+    ) -> Result<(), SnapshotValidationError> {
         require_eq!(self.by_id.len(), self.by_name.len());
-        require!(self.by_id.len() <= 65_536, "too many rule variables");
+        snapshot_limit(self.by_id.len() <= 65_536, "65,536 rule variables")?;
         for (index, symbol) in self.by_id.iter().enumerate() {
             require!(
                 symbols.resolve_symbol_str(*symbol).is_some(),
@@ -277,22 +369,22 @@ impl VarMap {
 /// A large but valid engine may exceed this supported snapshot boundary.
 struct Work(usize);
 impl Work {
-    fn step(&mut self) -> Result<(), String> {
+    fn step(&mut self) -> Result<(), SnapshotValidationError> {
         self.spend(1)
     }
 
-    fn spend(&mut self, count: usize) -> Result<(), String> {
+    fn spend(&mut self, count: usize) -> Result<(), SnapshotValidationError> {
         self.0 = self
             .0
             .checked_sub(count)
-            .ok_or("snapshot validation work limit exceeded")?;
+            .ok_or(SnapshotValidationError::LimitExceeded("validation work"))?;
         Ok(())
     }
 }
 
 /// Work to copy every value of `fact`, counting string bytes and nested
 /// multifields. It bounds copying or comparing any capture of the fact.
-fn fact_value_cost(fact: &Fact, work: &mut Work) -> Result<usize, String> {
+fn fact_value_cost(fact: &Fact, work: &mut Work) -> Result<usize, SnapshotValidationError> {
     let values = match fact {
         Fact::Ordered(fact) => fact.fields.as_slice(),
         Fact::Template(fact) => fact.slots.as_ref(),
@@ -357,7 +449,7 @@ fn any_sequence_match(
     tests: &[JoinTest],
     sequence: &SequencePattern,
     work: &mut Work,
-) -> Result<bool, String> {
+) -> Result<bool, SnapshotValidationError> {
     let value_cost = fact_value_cost(fact, work)?;
     let split_cost = split_cost(sequence, tests);
     let copy_cost = value_cost.saturating_mul(2);
@@ -450,8 +542,12 @@ fn validate_sequence_plan(
     bindings: &[(crate::alpha::SlotIndex, crate::binding::VarId)],
     symbols: &SymbolTable,
     work: &mut Work,
-) -> Result<(), String> {
+) -> Result<(), SnapshotValidationError> {
     work.spend(split_cost(sequence, tests).saturating_add(bindings.len()))?;
+    snapshot_limit(
+        crate::alpha::constant_test_count(&sequence.tests) <= MAX_ALPHA_DEPTH,
+        "64 tests per sequence pattern",
+    )?;
     sequence.validate()?;
     let valid_slot = sequence.logical_slot_validator();
     require!(
@@ -488,12 +584,12 @@ fn same_bindings(left: &crate::binding::BindingSet, right: &crate::binding::Bind
 fn validate_constant(
     test: &crate::alpha::ConstantTest,
     symbols: &SymbolTable,
-) -> Result<(), String> {
+) -> Result<(), SnapshotValidationError> {
     use crate::alpha::ConstantTestType as Test;
-    require!(
+    snapshot_limit(
         crate::alpha::constant_test_count(std::slice::from_ref(test)) <= MAX_ALPHA_DEPTH,
-        "snapshot constant constraint exceeds 64 tests"
-    );
+        "64 tests per constant constraint",
+    )?;
     let mut pending = vec![(test, false)];
     while let Some((test, nested)) = pending.pop() {
         match &test.test_type {
@@ -507,7 +603,7 @@ fn validate_constant(
                     !matches!(value, crate::value::AtomKey::FactAddress(_)),
                     "fact address cannot be a source constant"
                 );
-                symbols.validate_snapshot_value(&value.to_value())?;
+                symbols.validate_snapshot_value_checked(&value.to_value())?;
             }
             Test::EqualAny(values) => {
                 for value in values {
@@ -515,18 +611,24 @@ fn validate_constant(
                         !matches!(value, crate::value::AtomKey::FactAddress(_)),
                         "fact address cannot be a source constant"
                     );
-                    symbols.validate_snapshot_value(&value.to_value())?;
+                    symbols.validate_snapshot_value_checked(&value.to_value())?;
                 }
             }
             Test::Any(branches) => {
                 pending.extend(branches.iter().flatten().map(|test| (test, true)));
             }
             Test::Sequence(plan) if !nested => {
+                snapshot_limit(
+                    crate::alpha::constant_test_count(&plan.tests) <= MAX_ALPHA_DEPTH,
+                    "64 tests per sequence pattern",
+                )?;
                 plan.validate()?;
                 pending.extend(plan.tests.iter().map(|test| (test, true)));
             }
             Test::OrderedFieldCount { .. } | Test::Sequence(_) if nested => {
-                return Err("field disjunction contains a whole-fact constraint".to_string());
+                return Err("field disjunction contains a whole-fact constraint"
+                    .to_string()
+                    .into());
             }
             _ => {}
         }
@@ -565,6 +667,18 @@ impl ReteNetwork {
         &self,
         validate: impl Fn(&Value) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.validate_snapshot_binding_values_checked(|value| {
+            validate(value).map_err(SnapshotValidationError::from)
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_binding_values_checked(
+        &self,
+        validate: impl Fn(&Value) -> Result<(), SnapshotValidationError>,
+    ) -> Result<(), SnapshotValidationError> {
         for token in self.token_store.tokens.values() {
             for value in token.bindings.bindings.iter().flatten() {
                 validate(value)?;
@@ -575,8 +689,19 @@ impl ReteNetwork {
 
     /// Validate persisted graph identities, runtime memberships, and reverse indexes.
     #[doc(hidden)]
-    #[allow(clippy::too_many_lines)]
     pub fn validate_snapshot(&self, facts: &FactBase, symbols: &SymbolTable) -> Result<(), String> {
+        self.validate_snapshot_checked(facts, symbols)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_snapshot_checked(
+        &self,
+        facts: &FactBase,
+        symbols: &SymbolTable,
+    ) -> Result<(), SnapshotValidationError> {
         self.validate_consistency()?;
         self.validate_block_orders()?;
         require!(
@@ -587,7 +712,7 @@ impl ReteNetwork {
             self.pending_events.is_empty(),
             "snapshot has unfinished runtime events"
         );
-        let mut work = Work(10_000_000);
+        let mut work = Work(MAX_VALIDATION_WORK);
         self.validate_alpha_snapshot(facts, symbols, &mut work)?;
         let alpha_entries = self.alpha_memory_entry_types(&mut work)?;
 
@@ -627,10 +752,7 @@ impl ReteNetwork {
                 while let Some(next) = ancestor {
                     work.step()?;
                     require!(seen.insert(next), "cyclic beta graph");
-                    require!(
-                        seen.len() <= MAX_BETA_PATH_NODES,
-                        "snapshot beta path exceeds 66 nodes"
-                    );
+                    snapshot_limit(seen.len() <= MAX_BETA_PATH_NODES, "66 nodes per beta path")?;
                     ancestor = parent(self.beta.nodes.get(&next).ok_or("dangling beta ancestor")?);
                 }
             } else {
@@ -723,7 +845,7 @@ impl ReteNetwork {
                         .tokens
                         .len()
                         .checked_mul(memory.indexed_vars.len() + 1)
-                        .ok_or("snapshot validation work overflow")?,
+                        .ok_or(SnapshotValidationError::LimitExceeded("validation work"))?,
                 )?;
                 for variable in &memory.indexed_vars {
                     rebuilt.request_var_index_empty(*variable);
@@ -920,7 +1042,7 @@ impl ReteNetwork {
                         self.validate_passthrough(parent_id, id, token.owner_node)?;
                     }
                 }
-                _ => return Err("invalid token ancestry".to_owned()),
+                _ => return Err("invalid token ancestry".to_owned().into()),
             }
             if token.fact.is_none() {
                 require!(
@@ -931,12 +1053,9 @@ impl ReteNetwork {
             if let Some(fact) = token.fact {
                 require!(facts.get(fact).is_some(), "dangling token fact");
             }
-            require!(
-                token.bindings.capacity() <= 65_536,
-                "oversized token bindings"
-            );
+            snapshot_limit(token.bindings.capacity() <= 65_536, "65,536 token bindings")?;
             for value in token.bindings.bindings.iter().flatten() {
-                symbols.validate_snapshot_value(value)?;
+                symbols.validate_snapshot_value_checked(value)?;
             }
         }
         let mut activated_pairs = rustc_hash::FxHashSet::default();
@@ -996,7 +1115,7 @@ impl ReteNetwork {
         Ok(())
     }
 
-    fn validate_ncc_paths(&self, work: &mut Work) -> Result<(), String> {
+    fn validate_ncc_paths(&self, work: &mut Work) -> Result<(), SnapshotValidationError> {
         let mut dependencies = rustc_hash::FxHashMap::<NodeId, Vec<NodeId>>::default();
         for (&id, node) in &self.beta.nodes {
             let BetaNode::Ncc {
@@ -1011,7 +1130,7 @@ impl ReteNetwork {
                 Some(BetaNode::NccPartner {
                     parent, ncc_node, ..
                 }) if *ncc_node == id => *parent,
-                _ => return Err("invalid NCC partner link".to_owned()),
+                _ => return Err("invalid NCC partner link".to_owned().into()),
             };
             require!(cursor != *prefix, "empty NCC partner branch");
             let nested = dependencies.entry(id).or_default();
@@ -1039,7 +1158,10 @@ impl ReteNetwork {
                 let nested = dependencies.get(&id).ok_or("missing nested NCC")?;
                 if exit {
                     let depth = 1 + nested.iter().map(|child| depths[child]).max().unwrap_or(0);
-                    require!(depth <= MAX_NCC_DEPTH, "snapshot NCC nesting exceeds 4");
+                    snapshot_limit(
+                        depth <= MAX_COMPILED_NCC_DEPTH,
+                        "8-level compiled NCC nesting",
+                    )?;
                     visiting.remove(&id);
                     depths.insert(id, depth);
                 } else {
@@ -1058,7 +1180,7 @@ impl ReteNetwork {
         facts: &FactBase,
         symbols: &SymbolTable,
         work: &mut Work,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         for memory in &self.alpha.memories {
             require!(
                 memory
@@ -1081,7 +1203,10 @@ impl ReteNetwork {
         let mut depths = vec![0_usize; self.alpha.nodes.len()];
         let mut field_count_depths = vec![0_usize; self.alpha.nodes.len()];
         for (index, node) in self.alpha.nodes.iter().enumerate() {
-            let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
+            let id =
+                NodeId(u32::try_from(index).map_err(|_| {
+                    SnapshotValidationError::LimitExceeded("32-bit alpha node index")
+                })?);
             let (children, memory) = match node {
                 AlphaNode::Entry {
                     entry_type,
@@ -1129,10 +1254,10 @@ impl ReteNetwork {
                 depths[child.0 as usize] = depths[index].saturating_add(test_count);
                 field_count_depths[child.0 as usize] =
                     field_count_depths[index] + usize::from(field_count_test);
-                require!(
+                snapshot_limit(
                     depths[child.0 as usize] <= MAX_ALPHA_DEPTH,
-                    "snapshot alpha path exceeds 64 tests"
-                );
+                    "64 tests per alpha path",
+                )?;
                 require!(
                     field_count_depths[child.0 as usize] <= 1,
                     "snapshot alpha path exceeds one ordered field-count test"
@@ -1264,7 +1389,7 @@ impl ReteNetwork {
         &self,
         facts: &FactBase,
         work: &mut Work,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         for (&node_id, node) in &self.beta.nodes {
             let (parent_id, alpha_id, tests, sequence, negative, exists) = match node {
                 BetaNode::Negative {
@@ -1324,7 +1449,7 @@ impl ReteNetwork {
                         .ok_or("missing NCC parent memory")?;
                     let partner_parent = match self.beta.get_node(*partner) {
                         Some(BetaNode::NccPartner { parent, .. }) => *parent,
-                        _ => return Err("missing NCC partner parent".to_owned()),
+                        _ => return Err("missing NCC partner parent".to_owned().into()),
                     };
                     let results = self
                         .beta
@@ -1540,7 +1665,7 @@ impl ReteNetwork {
         parent: crate::token::TokenId,
         token: crate::token::TokenId,
         node: NodeId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         let token = self
             .token_store
             .get(token)
@@ -1563,7 +1688,11 @@ impl ReteNetwork {
         Ok(())
     }
 
-    fn validate_join_memberships(&self, facts: &FactBase, work: &mut Work) -> Result<(), String> {
+    fn validate_join_memberships(
+        &self,
+        facts: &FactBase,
+        work: &mut Work,
+    ) -> Result<(), SnapshotValidationError> {
         for (&node_id, node) in &self.beta.nodes {
             let BetaNode::Join {
                 parent,
@@ -1654,7 +1783,7 @@ impl ReteNetwork {
         sequence: &SequencePattern,
         facts: &FactBase,
         work: &mut Work,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         let mut seen = rustc_hash::FxHashSet::default();
         let mut value_costs = rustc_hash::FxHashMap::default();
         for id in memory.iter() {
@@ -1723,7 +1852,16 @@ impl ReteNetwork {
     pub fn snapshot_template_sequence_patterns(
         &self,
     ) -> Result<Vec<(crate::fact::TemplateId, &SequencePattern)>, String> {
-        let mut work = Work(10_000_000);
+        self.snapshot_template_sequence_patterns_checked()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn snapshot_template_sequence_patterns_checked(
+        &self,
+    ) -> Result<Vec<(crate::fact::TemplateId, &SequencePattern)>, SnapshotValidationError> {
+        let mut work = Work(MAX_VALIDATION_WORK);
         let entries = self.alpha_memory_entry_types(&mut work)?;
         let mut plans = Vec::new();
         for node in self.beta.nodes.values() {
@@ -1755,7 +1893,7 @@ impl ReteNetwork {
     fn alpha_memory_entry_types(
         &self,
         work: &mut Work,
-    ) -> Result<rustc_hash::FxHashMap<AlphaMemoryId, AlphaEntryType>, String> {
+    ) -> Result<rustc_hash::FxHashMap<AlphaMemoryId, AlphaEntryType>, SnapshotValidationError> {
         let mut paths = vec![None; self.alpha.nodes.len()];
         let mut memories = rustc_hash::FxHashMap::default();
         for (index, node) in self.alpha.nodes.iter().enumerate() {
@@ -1806,6 +1944,16 @@ impl ReteNetwork {
         &self,
         metadata: impl Fn(RuleId) -> Option<(crate::beta::Salience, u16, usize)>,
     ) -> Result<(), String> {
+        self.validate_snapshot_rules_checked(metadata)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_rules_checked(
+        &self,
+        metadata: impl Fn(RuleId) -> Option<(crate::beta::Salience, u16, usize)>,
+    ) -> Result<(), SnapshotValidationError> {
         for node in self.beta.nodes.values() {
             match node {
                 BetaNode::Terminal {
@@ -1848,7 +1996,17 @@ impl crate::compiler::ReteCompiler {
 
     #[doc(hidden)]
     pub fn validate_snapshot(&self, rete: &ReteNetwork) -> Result<(), String> {
-        let mut work = Work(10_000_000);
+        self.validate_snapshot_checked(rete)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Validate while retaining the distinction between malformed state and resource limits.
+    #[doc(hidden)]
+    pub fn validate_snapshot_checked(
+        &self,
+        rete: &ReteNetwork,
+    ) -> Result<(), SnapshotValidationError> {
+        let mut work = Work(MAX_VALIDATION_WORK);
         require!(
             self.next_rule_id > 0 && self.next_rule_id < u32::MAX,
             "invalid rule allocation counter"
@@ -1865,7 +2023,10 @@ impl crate::compiler::ReteCompiler {
         let mut parents = vec![None; rete.alpha.nodes.len()];
         let mut owners = vec![None; rete.alpha.memories.len()];
         for (index, node) in rete.alpha.nodes.iter().enumerate() {
-            let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
+            let id =
+                NodeId(u32::try_from(index).map_err(|_| {
+                    SnapshotValidationError::LimitExceeded("32-bit alpha node index")
+                })?);
             let (children, memory) = match node {
                 AlphaNode::Entry {
                     children, memory, ..
@@ -1936,6 +2097,143 @@ impl crate::compiler::ReteCompiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_limits_remain_distinct_from_invalid_symbols_and_instances() {
+        use crate::symbol::{InstanceName, Symbol, SymbolId};
+
+        let symbols = SymbolTable::new();
+        for id in [SymbolId::Ascii(u32::MAX), SymbolId::Utf8(u32::MAX)] {
+            for value in [
+                Value::Symbol(Symbol(id)),
+                Value::InstanceName(InstanceName::from_symbol(Symbol(id))),
+            ] {
+                let error = symbols.validate_snapshot_value_checked(&value).unwrap_err();
+                assert!(matches!(error, SnapshotValidationError::InvalidState(_)));
+                assert_eq!(
+                    symbols.validate_snapshot_value(&value).unwrap_err(),
+                    error.to_string()
+                );
+            }
+        }
+
+        let mut value = Value::Integer(1);
+        for _ in 0..32 {
+            value = Value::Multifield(Box::new(std::iter::once(value).collect()));
+        }
+        symbols.validate_snapshot_value_checked(&value).unwrap();
+        value = Value::Multifield(Box::new(std::iter::once(value).collect()));
+        assert_eq!(
+            symbols.validate_snapshot_value_checked(&value).unwrap_err(),
+            SnapshotValidationError::LimitExceeded("32-level value")
+        );
+    }
+
+    #[test]
+    fn snapshot_work_exhaustion_is_typed_and_does_not_underflow() {
+        let mut work = Work(MAX_VALIDATION_WORK);
+        work.spend(MAX_VALIDATION_WORK).unwrap();
+        work.spend(0).unwrap();
+        assert_eq!(
+            work.step().unwrap_err(),
+            SnapshotValidationError::LimitExceeded("validation work")
+        );
+        assert_eq!(work.0, 0);
+        let mut work = Work(1);
+        assert_eq!(
+            work.spend(usize::MAX).unwrap_err(),
+            SnapshotValidationError::LimitExceeded("validation work")
+        );
+        assert_eq!(work.0, 1);
+    }
+
+    #[test]
+    fn snapshot_sequence_test_limit_is_typed_at_both_entry_points() {
+        use crate::alpha::{ConstantTest, SlotIndex};
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+
+        let mut plan = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![SequenceField::Single],
+            }],
+            tests: vec![
+                ConstantTest {
+                    slot: SlotIndex::Ordered(0),
+                    test_type: ConstantTestType::Equal(AtomKey::Integer(1)),
+                };
+                MAX_ALPHA_DEPTH
+            ],
+        };
+        let symbols = SymbolTable::new();
+        validate_sequence_plan(&plan, &[], &[], &symbols, &mut Work(10_000)).unwrap();
+        plan.tests.push(plan.tests[0].clone());
+        assert_eq!(
+            validate_sequence_plan(&plan, &[], &[], &symbols, &mut Work(10_000)).unwrap_err(),
+            SnapshotValidationError::LimitExceeded("64 tests per sequence pattern")
+        );
+        assert_eq!(
+            validate_constant(
+                &ConstantTest {
+                    slot: SlotIndex::Ordered(0),
+                    test_type: ConstantTestType::Sequence(Box::new(plan)),
+                },
+                &symbols,
+            )
+            .unwrap_err(),
+            SnapshotValidationError::LimitExceeded("64 tests per sequence pattern")
+        );
+    }
+
+    #[test]
+    fn snapshot_supports_eight_compiled_ncc_levels_and_rejects_nine() {
+        use crate::compiler::{CompilableCondition, CompilablePattern};
+
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol("leaf", crate::StringEncoding::Ascii)
+            .unwrap();
+        for depth in [8, 9] {
+            let mut condition = CompilableCondition::Pattern(CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relation),
+                constant_tests: vec![],
+                sequence: None,
+                variable_slots: vec![],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            });
+            for _ in 0..depth {
+                condition = CompilableCondition::Ncc(vec![condition]);
+            }
+            let mut facts = FactBase::new();
+            let mut rete = ReteNetwork::new();
+            crate::ReteCompiler::new()
+                .compile_conditions(
+                    &mut rete,
+                    &facts,
+                    RuleId(1),
+                    crate::Salience::DEFAULT,
+                    &[condition],
+                )
+                .unwrap();
+            if depth == 9 {
+                assert_eq!(
+                    rete.validate_snapshot_checked(&facts, &symbols)
+                        .unwrap_err(),
+                    SnapshotValidationError::LimitExceeded("8-level compiled NCC nesting")
+                );
+                continue;
+            }
+            rete.validate_snapshot_checked(&facts, &symbols).unwrap();
+            let id = facts.assert_ordered(relation, smallvec::smallvec![]);
+            rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+            rete.validate_snapshot_checked(&facts, &symbols).unwrap();
+            let removed = facts.retract(id).unwrap();
+            rete.retract_fact(id, &removed.fact, &facts);
+            rete.validate_snapshot_checked(&facts, &symbols).unwrap();
+        }
+    }
 
     #[test]
     fn snapshot_checks_ce_recency_and_terminal_complexity_even_without_facts() {
@@ -2206,6 +2504,7 @@ mod tests {
         };
         assert!(validate_constant(&test, &SymbolTable::new())
             .unwrap_err()
+            .to_string()
             .contains("invalid ASCII string"));
         let mut deep = ConstantTest {
             slot: SlotIndex::Ordered(0),
@@ -2217,9 +2516,10 @@ mod tests {
                 test_type: ConstantTestType::Any(vec![vec![deep]]),
             };
         }
-        assert!(validate_constant(&deep, &SymbolTable::new())
-            .unwrap_err()
-            .contains("exceeds 64 tests"));
+        assert_eq!(
+            validate_constant(&deep, &SymbolTable::new()).unwrap_err(),
+            SnapshotValidationError::LimitExceeded("64 tests per constant constraint")
+        );
     }
 
     #[test]
@@ -2249,7 +2549,7 @@ mod tests {
         };
         assert_eq!(
             any_sequence_match(&fact, None, &[], &plan, &mut Work(100)).unwrap_err(),
-            "snapshot validation work limit exceeded"
+            SnapshotValidationError::LimitExceeded("validation work")
         );
         assert!(!any_sequence_match(&fact, None, &[], &plan, &mut Work(1000)).unwrap());
     }
@@ -2306,7 +2606,7 @@ mod tests {
         assert_eq!(
             any_sequence_match(&fact, Some(&token.bindings), &[], &plan, &mut Work(100))
                 .unwrap_err(),
-            "snapshot validation work limit exceeded"
+            SnapshotValidationError::LimitExceeded("validation work")
         );
         assert!(
             !any_sequence_match(&fact, Some(&token.bindings), &[], &plan, &mut Work(100_000))

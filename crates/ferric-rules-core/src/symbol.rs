@@ -161,16 +161,15 @@ impl SymbolTable {
         }
     }
 
-    /// Resolve a `SymbolId` to a `&str`, if possible.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `SymbolId` is not valid for this table.
+    /// Resolve a `SymbolId` to a `&str`, if it is valid for this table.
     #[must_use]
     pub(crate) fn resolve_str(&self, id: SymbolId) -> Option<&str> {
         match id {
-            SymbolId::Ascii(i) => std::str::from_utf8(&self.ascii_strings[i as usize]).ok(),
-            SymbolId::Utf8(i) => Some(&self.utf8_strings[i as usize]),
+            SymbolId::Ascii(i) => self
+                .ascii_strings
+                .get(i as usize)
+                .and_then(|bytes| std::str::from_utf8(bytes).ok()),
+            SymbolId::Utf8(i) => self.utf8_strings.get(i as usize).map(AsRef::as_ref),
         }
     }
 
@@ -196,11 +195,10 @@ impl SymbolTable {
         self.resolve(sym.0)
     }
 
-    /// Resolve a [`Symbol`] to a `&str`, if possible.
+    /// Resolve a [`Symbol`] to a `&str`, or return `None` for an invalid symbol.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `Symbol` is not valid for this table.
+    /// Symbols are local to their originating table; an in-range ID from a
+    /// different table cannot be distinguished from this table's own symbol.
     #[must_use]
     pub fn resolve_symbol_str(&self, sym: Symbol) -> Option<&str> {
         self.resolve_str(sym.0)
@@ -256,6 +254,34 @@ impl Default for SymbolTable {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn string_resolution_rejects_out_of_range_ids_in_both_pools() {
+        let mut table = SymbolTable::new();
+        for id in [SymbolId::Ascii(0), SymbolId::Utf8(0)] {
+            assert_eq!(table.resolve_str(id), None);
+            assert_eq!(table.resolve_symbol_str(Symbol(id)), None);
+        }
+        let ascii = table.intern_ascii(b"hello");
+        let utf8 = table.intern_utf8("h\u{e9}llo");
+        assert_eq!(table.resolve_symbol_str(Symbol(ascii)), Some("hello"));
+        assert_eq!(table.resolve_symbol_str(Symbol(utf8)), Some("h\u{e9}llo"));
+        for index in [1, u32::MAX] {
+            for id in [SymbolId::Ascii(index), SymbolId::Utf8(index)] {
+                assert_eq!(table.resolve_str(id), None);
+                assert_eq!(table.resolve_symbol_str(Symbol(id)), None);
+            }
+        }
+    }
+
+    #[test]
+    fn string_resolution_rejects_invalid_utf8_in_corrupt_ascii_pool() {
+        let mut table = SymbolTable::new();
+        let id = table.intern_ascii(b"valid");
+        table.ascii_strings[0] = Box::new([0xff]);
+        assert_eq!(table.resolve_str(id), None);
+        assert_eq!(table.resolve_symbol_str(Symbol(id)), None);
+    }
 
     // ---- Property-based tests -----------------------------------------------
 

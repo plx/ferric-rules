@@ -94,6 +94,27 @@ class TestSerializeErrors:
         with pytest.raises(ferric.FerricSerializationError):
             ferric.Engine.from_snapshot(data, format=ferric.Format.JSON)
 
+    @pytest.mark.parametrize("fmt", ALL_FORMATS)
+    def test_write_byte_limit_is_reported_without_codec_wrapping(self, fmt, tmp_path):
+        engine = ferric.Engine()
+        engine.push_input("x" * (16 * 1024 * 1024))
+        message = "^snapshot exceeds the 16 MiB byte limit$"
+        with pytest.raises(ferric.FerricSerializationError, match=message):
+            engine.serialize(format=fmt)
+        path = tmp_path / "state.ferric"
+        path.write_bytes(b"existing snapshot")
+        with pytest.raises(ferric.FerricSerializationError, match=message):
+            engine.save_snapshot(path, format=fmt)
+        assert path.read_bytes() == b"existing snapshot"
+
+    @pytest.mark.parametrize("fmt", ALL_FORMATS)
+    def test_read_limit_keeps_snapshot_error_category(self, fmt):
+        with pytest.raises(
+            ferric.FerricSerializationError,
+            match="^snapshot exceeds the 16 MiB byte limit$",
+        ):
+            ferric.Engine.from_snapshot(bytes(16 * 1024 * 1024 + 1), format=fmt)
+
 
 class TestFileConvenience:
     @pytest.mark.parametrize("fmt", ALL_FORMATS)

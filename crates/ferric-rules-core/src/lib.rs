@@ -79,6 +79,7 @@ pub use rete::{
     PendingNccLeftActivation, PendingPredicateMatch, PendingReteEvent, ReteCardinality, ReteNetwork,
 };
 pub use sequence::{SequenceField, SequencePattern, SequenceSegment, SequenceSource};
+pub use snapshot::SnapshotValidationError;
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;
 pub use symbol::{InstanceName, Symbol, SymbolTable};
