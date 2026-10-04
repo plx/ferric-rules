@@ -1,42 +1,39 @@
 # ferric-rules spec-test-writer memory
 
 ## Project Overview
-`ferric-rules` is a Rust CLIPS rules engine. Tests live in `crates/ferric-rules-ffi/src/tests/`.
-All tests are inside the crate as `#[cfg(test)] mod` modules registered in `tests.rs`.
+`ferric-rules` is a Rust CLIPS rules engine. The FFI contract tests live in
+`crates/ferric-rules-ffi/src/tests/`, registered as modules in `src/tests.rs`.
+Other crates also have unit, integration, and doc tests; use their existing layout.
 
 ## Test Patterns (ferric-rules-ffi crate)
 
 ### Standard test structure
-- All FFI tests use `unsafe { }` blocks
+- Pointer-taking engine/value APIs require `unsafe` calls with valid lifetimes; integer, float, and void value constructors are safe functions.
 - Create engine: `ferric_engine_new()`, free: `ferric_engine_free(engine)`
-- Always call `ferric_engine_reset(engine)` before asserting facts or running
+- Call `ferric_engine_reset(engine)` when the test needs deffacts/reset initialization, before asserting facts that must remain live. Reset is not required for every assertion/run and discards existing facts.
 - Use `CString::new("...").unwrap()` for C string construction
 - Check errors with `assert_eq!(result, FerricError::Ok)`
 - Import from `crate::engine::*`, `crate::error::FerricError`, `crate::types::*`
 
 ### Buffer-copy pattern
 Functions that return strings use: `buf: *mut c_char`, `buf_len: usize`, `out_len: *mut usize`
-- Size query: `null buf + buf_len=0 → Ok, *out_len = needed`
+- Size query: `null buf + buf_len=0 → Ok, *out_len = needed` (including the terminating NUL)
 - Undersized: returns `FerricError::BufferTooSmall`, `*out_len` still = needed
-- Allocate with: `let mut buf = vec![0i8; N]; buf.as_mut_ptr()`
+- Allocate with `let mut buf = vec![0u8; needed];` and pass `buf.as_mut_ptr().cast()` for the platform's `c_char` pointer.
 
-## CRITICAL: Template Facts vs Ordered Facts
+## Template and Ordered Facts
 
-`ferric_engine_assert_string` always creates **ordered facts** — it calls the
-simplified `process_assert_fact` path which does `assert_ordered` unconditionally,
-regardless of whether a deftemplate exists for that name.
+`ferric_engine_assert_string` accepts a CLIPS form such as
+`(assert (person (name Alice)))` and uses the runtime loader. A visible
+`deftemplate person` makes this a template fact; without a matching template,
+the relation uses ordered-fact syntax. Field expressions are evaluated for both
+forms. The output ID is the first asserted fact's opaque host ID.
 
-To create true **template facts** in tests, use `deffacts` + `reset()`:
-```rust
-let source = CString::new(
-    "(deftemplate person (slot name))\
-     (deffacts init (person (name Alice)))",
-).unwrap();
-ferric_engine_load_string(engine, source.as_ptr());
-ferric_engine_reset(engine); // triggers deffacts → template fact is now in WM
-```
-
-Then enumerate fact IDs with `ferric_engine_fact_ids` to obtain the fact ID.
+See `tests/execution.rs::assert_string_evaluates_ordered_and_template_expressions`
+for template/ordered matching, arithmetic, globals, and multifield splicing.
+`deffacts` plus reset is another supported initialization path, not a workaround
+for an ordered-only assertion API. `tests/template_assertion.rs` covers direct
+`ferric_engine_assert_template` and slot-by-name access.
 
 ## Key API Surface (new FFI expansion functions)
 
@@ -77,7 +74,7 @@ Then enumerate fact IDs with `ferric_engine_fact_ids` to obtain the fact ID.
 - `ferric_engine_run_ex(engine, limit, out_fired, out_reason)` — writes `FerricHaltReason`
 
 ### FerricHaltReason
-- `AgendaEmpty = 0`, `LimitReached = 1`, `HaltRequested = 2`
+- `AgendaEmpty = 0`, `LimitReached = 1`, `HaltRequested = 2`, `ActionError = 3`
 
 ## Module Registration
 New test modules must be added to `crates/ferric-rules-ffi/src/tests.rs`:
@@ -89,4 +86,4 @@ mod ffi_expansion;
 ## Index of test files
 - `tests/execution.rs` — run/step/assert_string/retract/get_output patterns
 - `tests/values.rs` — FerricValue conversion, get_fact_field, get_global, fact_count
-- `tests/ffi_expansion.rs` — all new FFI expansion functions (63 tests)
+- `tests/ffi_expansion.rs` — FFI expansion function contracts
