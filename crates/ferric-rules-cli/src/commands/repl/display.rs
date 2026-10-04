@@ -1,100 +1,38 @@
-//! Output formatting for the REPL: values, facts, errors.
+//! Shared runtime formatting and ordered shell output delivery.
 
-use ferric_rules_core::{Fact, Value};
-use ferric_rules_runtime::Engine;
+use ferric_rules_runtime::{Engine, STANDARD_CHANNELS};
 
-/// Format a [`Value`] for display in the REPL.
-pub(crate) fn format_value(value: &Value, engine: &Engine) -> String {
-    match value {
-        Value::Symbol(sym) => engine
-            .resolve_core_symbol(*sym)
-            .unwrap_or("<unknown>")
-            .to_string(),
-        Value::InstanceName(name) => format!(
-            "[{}]",
-            engine
-                .resolve_core_symbol(name.as_symbol())
-                .unwrap_or("<unknown>")
-        ),
-        Value::String(s) => format!("\"{}\"", s.as_str()),
-        Value::Integer(i) => i.to_string(),
-        Value::FactAddress(address) => address.public_index().map_or_else(
-            || "<Dummy Fact>".to_string(),
-            |index| format!("<Fact-{index}>"),
-        ),
-        Value::Float(f) => {
-            if f.fract() == 0.0 {
-                format!("{f:.1}")
-            } else {
-                f.to_string()
-            }
-        }
-        Value::Multifield(mf) => {
-            let items: Vec<String> = mf.iter().map(|v| format_value(v, engine)).collect();
-            format!("({})", items.join(" "))
-        }
-        Value::ExternalAddress(ea) => {
-            format!("<External-{}>", ea.type_id.0)
-        }
-        Value::Void => String::new(),
-    }
-}
-
-/// Print everything written to the `"t"` output channel, then clear it.
 pub(crate) fn print_output(engine: &mut Engine) {
-    if let Some(output) = engine.get_output("t") {
-        if !output.is_empty() {
+    for (channel, output) in engine.drain_output_events() {
+        if STANDARD_CHANNELS.contains(&channel.as_str()) {
             print!("{output}");
         }
     }
-    engine.clear_output_channel("t");
 }
 
-/// List all facts in working memory.
 pub(crate) fn print_facts(engine: &Engine) {
-    match engine.facts() {
-        Ok(iter) => {
-            let mut count = 0usize;
-            for (id, fact) in iter {
-                count += 1;
-                let id_num = { id.as_raw() };
-                match fact {
-                    Fact::Ordered(o) => {
-                        let relation = engine
-                            .resolve_core_symbol(o.relation)
-                            .unwrap_or("<unknown>");
-                        print!("f-{id_num:<5}  ({relation}");
-                        for field in &o.fields {
-                            print!(" {}", format_value(field, engine));
-                        }
-                        println!(")");
-                    }
-                    Fact::Template(t) => {
-                        print!("f-{id_num:<5}  (template-fact");
-                        for slot in t.slots.iter() {
-                            print!(" {}", format_value(slot, engine));
-                        }
-                        println!(")");
-                    }
-                }
-            }
-            println!("For a total of {count} facts.");
+    let facts = match engine.facts() {
+        Ok(facts) => facts,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return;
         }
-        Err(err) => eprintln!("Error: {err}"),
+    };
+    let mut facts: Vec<_> = facts
+        .filter_map(|(handle, fact)| engine.public_fact_index(handle).map(|index| (index, fact)))
+        .collect();
+    facts.sort_unstable_by_key(|(index, _)| *index);
+    for (index, fact) in &facts {
+        match engine.format_fact(fact) {
+            Ok(text) => println!("f-{index:<5} {text}"),
+            Err(error) => eprintln!("Error: {error}"),
+        }
     }
-}
-
-/// Format a load error with a category prefix for clearer diagnostics.
-pub(crate) fn format_load_error(err: &ferric_rules_runtime::LoadError) -> String {
-    use ferric_rules_runtime::LoadError;
-    match err {
-        LoadError::Parse(pe) => format!("[PARSE] {pe}"),
-        LoadError::Interpret(ie) => format!("[INTERPRET] {ie}"),
-        LoadError::Compile(msg) => format!("[COMPILE] {msg}"),
-        LoadError::Validation(errs) => {
-            let msgs: Vec<String> = errs.iter().map(ToString::to_string).collect();
-            format!("[VALIDATION] {}", msgs.join("\n  "))
-        }
-        other => format!("{other}"),
+    if !facts.is_empty() {
+        println!(
+            "For a total of {} fact{}.",
+            facts.len(),
+            if facts.len() == 1 { "" } else { "s" }
+        );
     }
 }

@@ -10,6 +10,8 @@ enum Context {
     TopLevel,
     Field,
     ImplodeField,
+    Display,
+    Save,
 }
 
 /// Append one printout operand. Control SYMBOLs expand only at the top level;
@@ -22,6 +24,16 @@ pub(crate) fn append_printout_value(value: &Value, symbols: &SymbolTable, output
 /// backslashes. Control SYMBOLs retain their literal spelling.
 pub(crate) fn append_implode_field(value: &Value, symbols: &SymbolTable, output: &mut String) {
     append_value(value, symbols, output, Context::ImplodeField);
+}
+
+/// Append a shell value: strings are quoted and control symbols stay literal.
+pub(crate) fn append_display_value(value: &Value, symbols: &SymbolTable, output: &mut String) {
+    append_value(value, symbols, output, Context::Display);
+}
+
+/// Append a saved fact field, escaping strings and preserving address spelling as a string.
+pub(crate) fn append_save_value(value: &Value, symbols: &SymbolTable, output: &mut String) {
+    append_value(value, symbols, output, Context::Save);
 }
 
 fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, context: Context) {
@@ -56,7 +68,7 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
             if context != Context::TopLevel {
                 output.push('"');
             }
-            if context == Context::ImplodeField {
+            if matches!(context, Context::ImplodeField | Context::Save) {
                 for character in string.as_str().chars() {
                     if matches!(character, '"' | '\\') {
                         output.push('\\');
@@ -71,10 +83,10 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
             }
         }
         Value::Multifield(fields) => {
-            let field_context = if context == Context::ImplodeField {
+            let field_context = if matches!(context, Context::ImplodeField | Context::Save) {
                 // Preserve the existing space-joined shape of host-created
                 // nested multifields; source-visible multifields are flat.
-                Context::ImplodeField
+                context
             } else {
                 output.push('(');
                 Context::Field
@@ -85,20 +97,27 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
                 }
                 append_value(field, symbols, output, field_context);
             }
-            if context != Context::ImplodeField {
+            if !matches!(context, Context::ImplodeField | Context::Save) {
                 output.push(')');
             }
         }
         Value::Void => {}
         Value::FactAddress(address) => {
+            if context == Context::Save {
+                output.push('"');
+            }
             if let Some(index) = address.public_index() {
                 let _ = write!(output, "<Fact-{index}>");
             } else {
                 output.push_str("<Dummy Fact>");
             }
+            if context == Context::Save {
+                output.push('"');
+            }
         }
         // Preserve the existing opaque-host-value boundary; this is not a
         // fabricated CLIPS pointer or a typed fact-address representation.
+        Value::ExternalAddress(_) if context == Context::Save => {}
         Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
     }
 }

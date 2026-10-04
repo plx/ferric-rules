@@ -13,7 +13,16 @@ use crate::templates::RegisteredTemplate;
 pub(crate) fn is_effect(name: &str) -> bool {
     matches!(
         name,
-        "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear"
+        "assert"
+            | "retract"
+            | "modify"
+            | "duplicate"
+            | "halt"
+            | "focus"
+            | "reset"
+            | "clear"
+            | "load-facts"
+            | "save-facts"
     )
 }
 
@@ -124,18 +133,30 @@ pub(crate) fn eval_call(
 ) -> Result<Value, EvalError> {
     require_effects(ctx, name, span)?;
     match name {
+        "load-facts" | "save-facts" => crate::fact_io::eval_call(ctx, name, args, span),
         "halt" | "reset" | "clear" => {
             arity(name, args.len(), 0, true, span)?;
             match name {
                 "halt" => ctx.engine.halt(),
-                "reset" => ctx
-                    .engine
-                    .reset_for_evaluation()
-                    .map_err(|error| failure(name, error.to_string(), span))?,
-                "clear" => ctx
-                    .engine
-                    .clear_for_evaluation()
-                    .map_err(|error| failure(name, error.to_string(), span))?,
+                "reset" => {
+                    ctx.engine
+                        .reset_for_evaluation()
+                        .map_err(|error| failure(name, error.to_string(), span))?;
+                    if ctx.call_depth == 0 && ctx.engine.active_rules.is_empty() {
+                        ctx.current_module = ctx.engine.module_registry.current_module();
+                        ctx.global_module = None;
+                    }
+                }
+                "clear" => {
+                    if ctx
+                        .engine
+                        .clear_for_evaluation()
+                        .map_err(|error| failure(name, error.to_string(), span))?
+                    {
+                        ctx.current_module = ctx.engine.module_registry.current_module();
+                        ctx.global_module = None;
+                    }
+                }
                 _ => unreachable!(),
             }
             Ok(Value::Void)
@@ -266,6 +287,13 @@ pub(crate) fn eval_syntax(
     ctx: &mut EvalContext<'_>,
     call: &FunctionCall,
 ) -> Result<Value, EvalError> {
+    ctx.engine.active_fact_initializers += 1;
+    let result = eval_syntax_inner(ctx, call);
+    ctx.engine.active_fact_initializers -= 1;
+    result
+}
+
+fn eval_syntax_inner(ctx: &mut EvalContext<'_>, call: &FunctionCall) -> Result<Value, EvalError> {
     let span = SourceSpan {
         line: call.span.start.line,
         column: call.span.start.column,
@@ -440,6 +468,7 @@ fn resolve_target(
 }
 
 fn retract(engine: &mut Engine, id: FactId) {
+    engine.trace_fact(id, false);
     if let Some(entry) = engine.fact_base.get(id) {
         engine.rete.retract_fact(id, &entry.fact, &engine.fact_base);
         engine.fact_base.retract(id);

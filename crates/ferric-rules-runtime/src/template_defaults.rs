@@ -85,7 +85,10 @@ pub(crate) fn evaluate_dynamic(
         compact_fact_bindings: None,
         allow_engine_effects: ctx.allow_engine_effects,
     };
-    evaluate_expressions(&mut child, slot_type, name, &default.expressions, true)
+    child.engine.active_fact_initializers += 1;
+    let result = evaluate_expressions(&mut child, slot_type, name, &default.expressions, true);
+    child.engine.active_fact_initializers -= 1;
+    result
 }
 
 /// Explicit fields and missing defaults interleave in slot declaration order.
@@ -96,7 +99,9 @@ pub(crate) fn evaluate_slots(
     overrides: &[(usize, Vec<RuntimeExpr>)],
 ) -> Result<Vec<Value>, SlotEvaluationError> {
     let owns_budget = ctx.engine.config.begin_action_loop_budget_if_inactive();
+    ctx.engine.active_fact_initializers += 1;
     let result = evaluate_slots_inner(ctx, template, overrides);
+    ctx.engine.active_fact_initializers -= 1;
     if owns_budget {
         ctx.engine.config.end_action_loop_budget();
     }

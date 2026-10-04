@@ -6,7 +6,8 @@ use std::process::Command;
 fn lhs_evaluation_diagnostics_survive_load_and_reset_boundaries() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("match-error.clp");
-    for assertion in ["(assert (item 0))", "(deffacts seed (item 0))"] {
+    // Explicit assertion makes this a procedural script; run is then explicit.
+    for assertion in ["(assert (item 0)) (run)", "(deffacts seed (item 0))"] {
         std::fs::write(
             &path,
             format!(

@@ -266,9 +266,11 @@ then uses the same LEX comparison. These rules also order multiple partitions
 of one multifield fact.
 
 `Simplicity`, `Complexity`, and `Random` are not implemented.
-CLIPS `set-strategy`/`get-strategy` source commands are
-unsupported and produce missing-function diagnostics; configure a declared
-strategy through the host API. Bindings reject unknown enum/name values.
+`(get-strategy)` returns the current strategy symbol. `(set-strategy breadth)`
+returns the previous strategy and reorders pending activations without changing
+their identity or creation order. The supported names are `depth`, `breadth`,
+`lex`, and `mea`; the setting survives reset, clear, and snapshots. Changing it
+from a match condition is rejected. Bindings reject unknown enum/name values.
 
 For equal salience, activation creation order breaks ties: depth selects the
 newest activation and breadth the oldest. Shared beta successors and mixed
@@ -446,7 +448,11 @@ already written. It can repopulate the agenda, so a rule that resets must
 arrange to terminate. A nested reset during reset-time initialization is
 ignored. Clear during active execution emits a recoverable refusal, retains
 constructs and refraction, removes facts, and restarts public fact indices at
-zero. Later actions and eligible activations continue.
+zero. During fact initialization, it refuses before removing facts. Later
+actions and eligible activations continue. At an ordinary expression root with
+no constructs in use, clear removes constructs, restores `initial-fact` as f-0,
+and selects MAIN; the next user assertion is f-1. Source clear preserves queued
+input, printed output, and watch settings.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
@@ -1324,7 +1330,16 @@ identity; use an engine snapshot when identity must survive persistence.
 | `read` | Read the first CLIPS field of the next nonblank input line |
 | `readline` | Read a line from input |
 | `load-facts` | Load facts from a `.fct` file into working memory |
-| `save-facts` | Save all facts to a `.fct` file |
+| `save-facts` | Save local or visible facts, optionally restricted to named templates |
+
+`save-facts` and `load-facts` work both as RHS actions and ordinary expressions,
+including at the REPL. Fact files contain literal facts with real template and
+slot names, without an `assert` wrapper. Saving defaults to `local`; use
+`(save-facts "facts.fct" visible template-name ...)` to select visible templates.
+The templates must already exist when loading their facts. File errors return
+`FALSE` and write a diagnostic; a load failure after complete valid facts retains
+those earlier assertions. Saving escapes strings for reloading; fact addresses
+remain the lossy quoted representation described above.
 
 `printout` writes a top-level STRING without quotes, and a multifield in
 parentheses with its STRING fields quoted but not escaped:
@@ -1352,6 +1367,49 @@ byte of 128 or more, produce U+FFFD where C emits bytes that are not UTF-8.
 CLIPS hands a malformed directive such as `%5-3d` to `printf`, which echoes it;
 Ferric reports a format error. Ferric also rejects a width or precision above
 4096 (CLIPS 6.30 crashes on `%5000d`).
+
+### Command-line evaluation and inspection
+
+`ferric run file.clp` queues non-terminal standard input before loading and
+executing the file, so initializer and rule calls to `read`/`readline` can consume
+it. Construct-only files receive an implicit reset and unlimited run. A file
+containing any procedural form, including `assert`, is a script: its forms
+execute in source order, with no additional reset/run or expression-result echo.
+Use explicit `(reset)` and `(run)` where needed. The entire bounded file is
+parsed before execution; later evaluation/loading failures retain earlier
+effects and make the command exit unsuccessfully.
+
+The CLI writes captured standard channels to process stdout in emission order:
+`t`, `stdin`, `stdout`, `stderr`, `wclips`, `wdialog`, `wdisplay`, `werror`,
+`wtrace`, and `wwarning`. These are Ferric's channel names; native CLIPS 6.30
+does not accept all of them as output destinations. Host-facing CLI diagnostics
+retain their usual text/JSON error handling.
+
+The REPL accepts constructs, shell commands such as `(run)` and `(facts)`, and
+ordinary expressions. It echoes non-void values, including assertion addresses,
+and uses the runtime's CLIPS value/fact formatter. `(agenda [module])` prints
+ordered rows with fact bases; `*` lists all modules. `(watch facts)` records each
+assertion and retraction, including facts created and removed within one run.
+`(watch rules)` includes each firing's fact basis. Watch settings are transient
+host state and are disabled when restoring a snapshot.
+
+`Engine::eval_str` evaluates exactly one expression with fresh local bindings.
+Globals, engine changes, and output persist, including changes before a runtime
+error. `(bind ?x 3)` returns `3`, but a later call cannot read `?x`; bind and read
+within one `progn` to share a local. This differs from CLIPS's persistent prompt
+locals. The Ferric REPL also accepts multiple forms on one input line.
+`Engine::load_str` remains the construct-loading API. A root `(reset)` selects
+`MAIN` for subsequent shell commands and remaining root-expression operands.
+Nested callable evaluation retains its lexical module for dynamic `build` and
+query target resolution; it does not reproduce CLIPS's temporary ambient-module
+switch after a reset inside a callable.
+
+For hosts that need cross-channel order, call `enable_output_events()` before
+evaluation and consume `(channel, text)` chunks with `drain_output_events()`.
+Draining clears the captured per-channel buffers. Reset and buffer clearing
+preserve undelivered events. Output already buffered when observation starts is
+delivered in channel-name order; snapshots retain those buffers but do not retain
+the live event queue or observation setting.
 
 ### Agenda / Focus Functions
 

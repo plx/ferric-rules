@@ -1,84 +1,89 @@
-//! `ferric run` command — load and execute a CLIPS file.
-//!
-//! Pipeline: load file → reset → run → print output
-//!
-//! Exit codes:
-//! - 0: Success
-//! - 1: Runtime/load error
+//! Execute construct files with implicit reset/run, or scripts in source order.
 
+use std::io::{BufRead, IsTerminal, Read};
 use std::path::Path;
 
-use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
+use ferric_rules_runtime::{Engine, EngineConfig, MAX_SOURCE_BYTES};
 
-use super::common::{emit_error, emit_warning};
+use super::common::emit_error;
+use super::repl::commands::{parse_commands, ReplCommand};
+use super::repl::session::ReplSession;
 
-/// Execute the `run` subcommand.
 pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
-    if !file_path.exists() {
-        emit_error(
-            json_mode,
-            "run",
-            "io_error",
-            format_args!("file not found: {}", file_path.display()),
-        );
-        return 1;
-    }
-
+    let source = match read_source(file_path) {
+        Ok(source) => source,
+        Err(error) => {
+            emit_error(json_mode, "run", "io_error", error);
+            return 1;
+        }
+    };
+    // Parse the whole bounded file before executing anything. Syntax errors do
+    // not partly execute a script; runtime errors retain completed effects.
+    let commands = match parse_commands(&source) {
+        Ok(commands) => commands,
+        Err(error) => {
+            emit_error(json_mode, "run", "load_error", error);
+            return 1;
+        }
+    };
+    let construct_only = commands
+        .iter()
+        .all(|command| matches!(command, ReplCommand::Construct { .. }));
     let mut engine = Engine::new(EngineConfig::default());
-
-    // Load
-    if let Err(errors) = engine.load_file(file_path) {
-        for err in &errors {
-            emit_error(json_mode, "run", "load_error", err);
-        }
-        return 1;
-    }
-    // Loading can assert facts or install rules against existing facts. Report
-    // their match-time errors before reset clears the diagnostic buffer.
-    emit_action_diagnostics(json_mode, &engine);
-
-    // Reset (asserts initial-fact, processes deffacts)
-    if let Err(err) = engine.reset() {
-        emit_error(
-            json_mode,
-            "run",
-            "runtime_error",
-            format_args!("reset failed: {err}"),
-        );
-        return 1;
-    }
-    // Reset evaluates LHS expressions while asserting seeds; run starts a new
-    // diagnostic buffer even when those errors left no activation to fire.
-    emit_action_diagnostics(json_mode, &engine);
-
-    // Run
-    match engine.run(RunLimit::Unlimited) {
-        Ok(_result) => {
-            // Print captured output from channel "t" (standard CLIPS output)
-            if let Some(output) = engine.get_output("t") {
-                print!("{output}");
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(line) => engine.push_input(&line),
+                Err(error) => {
+                    emit_error(
+                        json_mode,
+                        "run",
+                        "io_error",
+                        format_args!("reading stdin: {error}"),
+                    );
+                    return 1;
+                }
             }
-
-            // Print any action diagnostics as warnings
-            emit_action_diagnostics(json_mode, &engine);
-
-            // halt is normal termination in CLIPS — all outcomes are success
-            0
-        }
-        Err(err) => {
-            emit_error(
-                json_mode,
-                "run",
-                "runtime_error",
-                format_args!("execution failed: {err}"),
-            );
-            1
         }
     }
+    let mut session = ReplSession::with_engine(engine, Some(json_mode));
+    if construct_only {
+        // Keep one load for ordinary files, including its forward declarations.
+        if session.load_source(&source).is_err()
+            || session.cmd_reset().is_err()
+            || session.cmd_run(None).is_err()
+        {
+            return 1;
+        }
+    } else {
+        for command in commands {
+            match session.dispatch(command, false) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(()) => return 1,
+            }
+        }
+    }
+    0
 }
 
-fn emit_action_diagnostics(json_mode: bool, engine: &Engine) {
-    for diagnostic in engine.action_diagnostics() {
-        emit_warning(json_mode, "run", "action_warning", diagnostic);
+fn read_source(path: &Path) -> Result<String, std::io::Error> {
+    let file = std::fs::File::open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            std::io::Error::new(error.kind(), format!("file not found: {}", path.display()))
+        } else {
+            error
+        }
+    })?;
+    let mut bytes = Vec::new();
+    file.take((MAX_SOURCE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err(std::io::Error::other(format!(
+            "source exceeds the {MAX_SOURCE_BYTES}-byte limit"
+        )));
     }
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }

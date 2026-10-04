@@ -7,7 +7,15 @@ use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
 pub(crate) fn is_builtin(name: &str) -> bool {
     matches!(
         name,
-        "random" | "seed" | "time" | "eval" | "build" | "assert-string" | "str-assert"
+        "random"
+            | "seed"
+            | "time"
+            | "eval"
+            | "build"
+            | "assert-string"
+            | "str-assert"
+            | "get-strategy"
+            | "set-strategy"
     )
 }
 
@@ -45,6 +53,7 @@ pub(crate) fn eval(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     match name {
+        "get-strategy" | "set-strategy" => strategy(ctx, name, args, span),
         "eval" | "build" | "assert-string" | "str-assert" => dynamic_source(ctx, name, args, span),
         "seed" => {
             let [argument] = args else {
@@ -109,6 +118,72 @@ fn failure(name: &str, reason: &dyn std::fmt::Display, span: Option<&SourceSpan>
         reason: reason.to_string(),
         span: span.cloned(),
     }
+}
+
+fn strategy(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    use ferric_rules_core::ConflictResolutionStrategy;
+
+    // The reference captures the return value before evaluating the argument,
+    // which can itself call set-strategy.
+    let previous = ctx.engine.config.strategy;
+    let expected = usize::from(name == "set-strategy");
+    if args.len() != expected {
+        return Err(arity(
+            name,
+            args,
+            if expected == 0 { "0" } else { "1" },
+            span,
+        ));
+    }
+    if let Some(argument) = args.first() {
+        if !ctx.allow_engine_effects {
+            return Err(failure(
+                name,
+                &"engine mutation is unavailable while evaluating a match condition",
+                span,
+            ));
+        }
+        let value = evaluator::eval_inner(ctx, argument)?;
+        let Value::Symbol(symbol) = value else {
+            return Err(EvalError::TypeError {
+                function: name.to_owned(),
+                expected: "SYMBOL strategy".to_owned(),
+                actual: value.type_name().to_owned(),
+                span: span.cloned(),
+            });
+        };
+        let strategy = match ctx.engine.symbol_table.resolve_symbol_str(symbol) {
+            Some("depth") => ConflictResolutionStrategy::Depth,
+            Some("breadth") => ConflictResolutionStrategy::Breadth,
+            Some("lex") => ConflictResolutionStrategy::Lex,
+            Some("mea") => ConflictResolutionStrategy::Mea,
+            _ => {
+                return Err(failure(
+                    name,
+                    &"supported strategies are depth, breadth, lex, and mea",
+                    span,
+                ))
+            }
+        };
+        ctx.engine.rete.agenda.set_strategy(strategy);
+        ctx.engine.config.strategy = strategy;
+    }
+    let name = match previous {
+        ConflictResolutionStrategy::Depth => "depth",
+        ConflictResolutionStrategy::Breadth => "breadth",
+        ConflictResolutionStrategy::Lex => "lex",
+        ConflictResolutionStrategy::Mea => "mea",
+    };
+    ctx.engine
+        .symbol_table
+        .intern_symbol(name, ctx.engine.config.string_encoding)
+        .map(Value::Symbol)
+        .map_err(|error| failure("strategy", &error, span))
 }
 
 fn dynamic_source(

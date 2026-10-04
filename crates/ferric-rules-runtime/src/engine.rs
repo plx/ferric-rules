@@ -198,12 +198,15 @@ pub struct Engine {
     pub(crate) fact_index_starts_at_zero: bool,
     pub(crate) reset_in_progress: bool,
     pub(crate) source_load_depth: usize,
+    pub(crate) active_fact_initializers: usize,
     /// Transient executing callable identities, retained across nested evaluator frames.
     pub(crate) active_callables: Vec<(ModuleId, String)>,
     /// Query schemas retained while restrictions, predicates, and bodies execute.
     pub(crate) active_query_targets: Vec<crate::query_targets::QueryTarget>,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
+    /// Transient host/session tracing state; never restored from snapshots.
+    pub(crate) watch: crate::inspection::WatchState,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
@@ -309,9 +312,11 @@ impl Engine {
             fact_index_starts_at_zero: false,
             reset_in_progress: false,
             source_load_depth: 0,
+            active_fact_initializers: 0,
             active_callables: Vec::new(),
             active_query_targets: Vec::new(),
             active_rules: Vec::new(),
+            watch: crate::inspection::WatchState::default(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
             halted: false,
@@ -388,6 +393,7 @@ impl Engine {
                 .try_assert_fact(fact, self.fact_duplication())?
             {
                 FactInsertionResult::Inserted(fact_id) => {
+                    self.trace_fact(fact_id, true);
                     propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
                     self.drain_network_events();
                     FactAssertionResult::Asserted(fact_id)
@@ -414,6 +420,7 @@ impl Engine {
         // Predicates may introspect indices during propagation. Publish the
         // protected identity before any match-time expression can run.
         self.initial_fact_id = Some(fact_id);
+        self.trace_fact(fact_id, true);
         propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
         self.drain_network_events();
         Ok(())
@@ -881,6 +888,7 @@ impl Engine {
         if Some(fact_id) == self.initial_fact_id {
             return Err(EngineError::ProtectedInitialFact);
         }
+        self.trace_fact(fact_id, false);
         let entry = self
             .fact_base
             .get(fact_id)
@@ -1292,6 +1300,9 @@ impl Engine {
             token_id: activation.token,
         };
 
+        self.watch.firing_ordinal = 0;
+        self.trace_rule_firing(&activation);
+
         // Execute actions. Diagnostics remain available through
         // action_diagnostics(), while step() returns Some(fired) to indicate
         // that the activation was processed even when action evaluation fails.
@@ -1348,6 +1359,7 @@ impl Engine {
     fn run_inner(&mut self, limit: RunLimit, clear_execution_state: bool) -> RunResult {
         ferric_span!(info_span, "engine_run", limit = ?limit);
         if clear_execution_state {
+            self.watch.firing_ordinal = 0;
             self.halted = false;
             self.action_diagnostics.clear();
             if self.module_registry.current_focus().is_none() {
@@ -1386,6 +1398,7 @@ impl Engine {
                 return run_result(rules_fired, HaltReason::AgendaEmpty);
             };
 
+            self.trace_rule_firing(&activation);
             let (logically_fired, action_error) =
                 self.execute_activation_actions(activation.rule, activation.token);
 
@@ -1470,6 +1483,12 @@ impl Engine {
         self.host.clear_facts();
         ferric_span!(info_span, "engine_reset");
 
+        if !preserve_output {
+            self.router.clear();
+            self.action_diagnostics.clear();
+        }
+        self.trace_fact_removals();
+
         // Clear all runtime state
         self.fact_base = FactBase::new();
         self.initial_fact_id = None;
@@ -1477,10 +1496,6 @@ impl Engine {
         // Reset focus before root matches emit their new auto-focus notices.
         self.module_registry.reset_focus();
         self.rete.clear_working_memory();
-        if !preserve_output {
-            self.router.clear();
-            self.action_diagnostics.clear();
-        }
         self.halted = false;
         // Note: input_buffer is intentionally NOT cleared on reset.
         // Input is live I/O state that should persist across resets.
@@ -1529,6 +1544,13 @@ impl Engine {
     /// Unlike `reset()`, which preserves compiled rules and templates,
     /// `clear()` removes everything.
     pub fn clear(&mut self) {
+        self.clear_internal(false);
+    }
+
+    fn clear_internal(&mut self, preserve_io: bool) {
+        if !preserve_io {
+            self.trace_fact_removals();
+        }
         // Clear discards every internal address carrier, including registered
         // globals. Host assertions reject retained addresses, so epoch reuse
         // here cannot revive one. Reset preserves carriers and must not wrap.
@@ -1547,7 +1569,9 @@ impl Engine {
         self.template_local_ids.clear();
         self.template_declarations = vec![(ModuleId(0), "initial-fact".to_owned())];
         self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
-        self.router.clear();
+        if !preserve_io {
+            self.router.clear();
+        }
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the
         // environment's random stream (nor affect another engine's stream).
@@ -1567,7 +1591,9 @@ impl Engine {
         self.action_diagnostics.clear();
         self.processing_predicates = false;
         self.halted = false;
-        self.input_buffer.clear();
+        if !preserve_io {
+            self.input_buffer.clear();
+        }
     }
 
     /// Drain expression output before an effect can clear or replace globals.
@@ -1577,20 +1603,44 @@ impl Engine {
         }
     }
 
-    /// CLIPS first clears facts, then refuses to remove in-use constructs.
-    /// Keep the active rule/callable frames and the existing refraction state.
-    pub(crate) fn clear_for_evaluation(&mut self) -> Result<(), EngineError> {
+    /// Clear constructs only when no active evaluation frame depends on them.
+    /// Returns whether constructs were removed, so the caller can reset its
+    /// module context. In-use constructs retain their existing refraction state.
+    pub(crate) fn clear_for_evaluation(&mut self) -> Result<bool, EngineError> {
         self.flush_expression_output();
+        if self.active_fact_initializers != 0 {
+            self.router.write(
+                "werror",
+                "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n",
+            );
+            return Ok(false);
+        }
         let epoch = self
             .fact_epoch
             .checked_add(1)
             .ok_or(EngineError::FactEpochExhausted)?;
-        let facts: Vec<_> = self
+        if self.active_rules.is_empty()
+            && self.active_callables.is_empty()
+            && self.active_query_targets.is_empty()
+            && self.source_load_depth == 0
+            && !self.reset_in_progress
+        {
+            // clear_internal preserves the symbol pool: the compiled outer
+            // expression and its locals may still contain interned literals.
+            self.clear_internal(true);
+            self.fact_epoch = epoch;
+            self.fact_index_starts_at_zero = false;
+            self.ensure_initial_fact()?;
+            return Ok(true);
+        }
+        let mut facts: Vec<_> = self
             .fact_base
             .iter()
-            .map(|(id, entry)| (id, entry.fact.clone()))
+            .map(|(id, entry)| (entry.timestamp, id, entry.fact.clone()))
             .collect();
-        for (id, fact) in facts {
+        facts.sort_by_key(|(timestamp, _, _)| *timestamp);
+        for (_, id, fact) in facts {
+            self.trace_fact(id, false);
             self.rete.retract_fact(id, &fact, &self.fact_base);
             self.fact_base.retract(id);
         }
@@ -1600,7 +1650,11 @@ impl Engine {
         self.fact_index_starts_at_zero = true;
         self.host.clear_facts();
         self.drain_network_events();
-        Ok(())
+        self.router.write(
+            "werror",
+            "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n",
+        );
+        Ok(false)
     }
 
     /// Check whether the engine is currently halted.

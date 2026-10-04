@@ -233,8 +233,13 @@ fn load_facts_evaluates_omitted_defaults_but_still_requires_literal_fields() {
     .unwrap();
     assert_eq!(
         engine.run(RunLimit::Unlimited).unwrap().halt_reason,
-        HaltReason::ActionError
+        HaltReason::AgendaEmpty
     );
+    assert!(engine.action_diagnostics().is_empty());
+    assert!(engine
+        .get_output("werror")
+        .unwrap()
+        .contains("Function load-facts encountered an error"));
     assert_eq!(engine.fact_count(), 2);
     assert!(matches!(
         engine.get_global("calls"),

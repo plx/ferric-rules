@@ -343,12 +343,17 @@ fn load_facts_stays_literal_only_and_preserves_earlier_facts_on_failure() {
             "(deftemplate item (slot one) (multislot many))
              (defglobal ?*g* = 5 ?*calls* = 0)
              (deffunction mark () (bind ?*calls* (+ ?*calls* 1)) ?*calls*)
-             (defrule read => (load-facts \"{escaped}\"))"
+             (defrule read => (load-facts \"{escaped}\") (printout t continued))"
         ))
         .unwrap();
         let result = engine.run(RunLimit::Unlimited).unwrap();
-        assert_eq!(result.halt_reason, HaltReason::ActionError, "{invalid}");
-        assert!(!engine.action_diagnostics().is_empty());
+        assert_eq!(result.halt_reason, HaltReason::AgendaEmpty, "{invalid}");
+        assert!(engine.action_diagnostics().is_empty());
+        assert_eq!(engine.get_output("t"), Some("continued"));
+        assert!(engine
+            .get_output("werror")
+            .unwrap()
+            .contains("Function load-facts encountered an error"));
         assert_eq!(integers(&engine, "before"), [7]);
         assert!(engine.find_facts("after").unwrap().is_empty());
         assert!(engine.find_facts("bad").unwrap().is_empty());

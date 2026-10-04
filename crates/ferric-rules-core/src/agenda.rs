@@ -480,10 +480,40 @@ impl Agenda {
         self.activations.values()
     }
 
+    /// Inspect activations in conflict-resolution order without consuming them.
+    pub fn iter_ordered(&self) -> impl Iterator<Item = &Activation> {
+        self.ordering
+            .values()
+            .filter_map(|id| self.activations.get(*id))
+    }
+
     /// Get the current conflict resolution strategy.
     #[must_use]
     pub fn strategy(&self) -> ConflictResolutionStrategy {
         self.strategy
+    }
+
+    /// Change conflict resolution without replacing or recreating activations.
+    ///
+    /// Activation identity, creation order, recency and complexity survive the
+    /// reorder. The per-rule index is rebuilt lazily on the next focus miss.
+    pub fn set_strategy(
+        &mut self,
+        strategy: ConflictResolutionStrategy,
+    ) -> ConflictResolutionStrategy {
+        let previous = self.strategy;
+        if previous != strategy {
+            self.strategy = strategy;
+            self.rule_ordering = None;
+            self.ordering.clear();
+            self.id_to_key.clear();
+            for (id, activation) in &self.activations {
+                let key = self.build_key(activation);
+                self.ordering.insert(key.clone(), id);
+                self.id_to_key.insert(id, key);
+            }
+        }
+        previous
     }
 
     /// Clear all activations, preserving the strategy.
@@ -2509,5 +2539,62 @@ mod clips_ordering_tests {
             assert_eq!(drain(&mut agenda), expected);
         }
         assert_eq!(retained[0].recency.as_slice(), &[fact(0), fact(9)]);
+    }
+
+    #[test]
+    fn switching_live_strategy_retains_identity_and_chronology() {
+        let mut agenda = Agenda::new();
+        let first = agenda.add(activation(1, &[fact(0), fact(9)], 4));
+        let removed = agenda.add(activation(9, &[fact(1)], 0));
+        let second = agenda.add(activation(2, &[fact(8), fact(1)], 5));
+        let third = agenda.add(activation(3, &[fact(0), fact(9)], 5));
+        agenda.remove_activations_for_rule(RuleId(9));
+        assert!(agenda.get(removed).is_none());
+        let next_seq = agenda.next_seq;
+        let retained: Vec<_> = [first, second, third]
+            .into_iter()
+            .map(|id| (id, agenda.get(id).unwrap().clone()))
+            .collect();
+        for (strategy, expected) in [
+            (ConflictResolutionStrategy::Breadth, vec![1, 2, 3]),
+            (ConflictResolutionStrategy::Lex, vec![3, 1, 2]),
+            (ConflictResolutionStrategy::Mea, vec![2, 3, 1]),
+            (ConflictResolutionStrategy::Depth, vec![3, 2, 1]),
+        ] {
+            // Materialize the focus index before each change, then verify that
+            // switching does not leave its old priority keys behind.
+            assert!(agenda
+                .pop_matching_rule(|rule| rule == RuleId(99))
+                .is_none());
+            let previous = agenda.strategy();
+            assert_eq!(agenda.set_strategy(strategy), previous);
+            assert_eq!(agenda.next_seq, next_seq);
+            assert_eq!(
+                agenda.iter_ordered().map(|a| a.rule.0).collect::<Vec<_>>(),
+                expected
+            );
+            for (id, before) in &retained {
+                let after = agenda.get(*id).unwrap();
+                assert_eq!(after.id, before.id);
+                assert_eq!(after.activation_seq, before.activation_seq);
+                assert_eq!(after.recency, before.recency);
+                assert_eq!(after.complexity, before.complexity);
+            }
+            agenda.debug_assert_consistency();
+        }
+        assert_eq!(
+            agenda
+                .pop_matching_rule(|rule| rule == RuleId(2))
+                .unwrap()
+                .id,
+            second
+        );
+        assert_eq!(
+            agenda
+                .remove_activations_for_token(TokenId::default())
+                .len(),
+            2
+        );
+        agenda.debug_assert_consistency();
     }
 }

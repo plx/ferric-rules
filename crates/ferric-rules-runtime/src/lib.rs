@@ -45,14 +45,17 @@ pub mod config;
 mod effects;
 pub mod engine;
 mod environment;
+mod evaluation;
 pub mod evaluator;
 pub mod execution;
 mod fact_address;
 mod fact_initializer;
+mod fact_io;
 mod field_scanner;
 mod formatting;
 pub mod functions;
 pub mod host;
+mod inspection;
 mod introspection;
 pub mod loader;
 pub mod modules;
@@ -68,6 +71,7 @@ mod rule_complexity;
 pub mod serialization;
 pub(crate) mod slot_constraints;
 mod source_limits;
+pub use source_limits::MAX_SOURCE_BYTES;
 mod template_defaults;
 mod template_identity;
 mod template_reload;
@@ -95,15 +99,18 @@ pub use ferric_rules_core::{
 pub use actions::ActionError;
 pub use config::EngineConfig;
 pub use engine::{Engine, EngineError, FactAssertionResult, InitError};
+pub use evaluation::EvalStrError;
 pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
 pub use host::{
     FactHandle, HostFact, HostValue, IntoHostFields, SymbolHandle, HOST_VALUE_MAX_DEPTH,
     HOST_VALUE_MAX_ITEMS,
 };
+pub use inspection::AgendaEntry;
 pub use loader::{LoadError, LoadResult, RuleDef};
 pub use modules::{ModuleId, ModuleRegistry};
 pub use qualified_name::{parse_qualified_name, QualifiedName};
+pub use router::STANDARD_CHANNELS;
 #[cfg(feature = "serde")]
 pub use serialization::{
     SerializationError, SerializationFormat, SnapshotFileError, MAX_SNAPSHOT_BYTES,

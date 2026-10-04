@@ -262,9 +262,11 @@ impl EngineSnapshotOwned {
     fn into_engine(self) -> Engine {
         let mut engine = Engine {
             fact_base: self.fact_base,
+            watch: crate::inspection::WatchState::default(),
             host: crate::host::HostState::new(),
             reset_in_progress: false,
             source_load_depth: 0,
+            active_fact_initializers: 0,
             active_rules: Vec::new(),
             active_callables: Vec::new(),
             active_query_targets: Vec::new(),

@@ -7,16 +7,13 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
-use std::io::Write as IoWrite;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use ferric_rules_core::beta::{RuleId, Salience};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
 use ferric_rules_core::token::Token;
-use ferric_rules_core::{
-    EncodingError, Fact, FactBase, FactId, ReteNetwork, SymbolTable, TemplateId, Value,
-};
+use ferric_rules_core::{EncodingError, FactBase, FactId, SymbolTable, Value};
 use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
 use crate::evaluator::CompactFactBinding;
@@ -631,7 +628,7 @@ fn execute_single_action(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
-        "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear" => {
+        "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear" | "load-facts" | "save-facts" => {
             if let Some(runtime_expr) = runtime_call {
                 eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
             } else {
@@ -683,9 +680,12 @@ fn execute_single_action(
             execute_list_focus_stack(&mut context.engine.router, &context.engine.module_registry)
         }
         "agenda" => execute_agenda(
-            &context.engine.rete,
-            &mut context.engine.router,
-            &context.engine.rule_info,
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
         ),
         "rules" => execute_rules(
             token,
@@ -720,22 +720,6 @@ fn execute_single_action(
             collected_facts,
         ),
         "load" => execute_load(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "load-facts" => execute_load_facts(
-            token,
-            rule_info,
-            &call.args,
-            context,
-            eval_env,
-            collected_facts,
-        ),
-        "save-facts" => execute_save_facts(
             token,
             rule_info,
             &call.args,
@@ -1579,26 +1563,68 @@ fn execute_list_focus_stack(
     Ok(())
 }
 
-/// Execute an `agenda` action: print the current agenda to the `t` channel.
-///
-/// Format: one line per activation showing `salience rule-name`.
-/// When the agenda is empty, prints `(no activations)`.
-#[allow(clippy::unnecessary_wraps)] // Consistent with other action-handler return type
+/// Execute an `agenda` action using the public ordered inspection view.
+#[allow(clippy::too_many_arguments)] // Keep call-site symmetry with other action handlers.
 fn execute_agenda(
-    rete: &ReteNetwork,
-    router: &mut OutputRouter,
-    all_rule_info: &crate::engine::RuleIndex<Arc<CompiledRuleInfo>>,
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    if args.len() > 1 {
+        return Err(ActionError::EvalError(format!(
+            "agenda: expected 0 or 1 arguments, got {}",
+            args.len()
+        )));
+    }
+    let module = if let Some(arg) = args.first() {
+        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
+        let Value::Symbol(symbol) = value else {
+            return Err(ActionError::EvalError(
+                "agenda: expected a module name symbol".into(),
+            ));
+        };
+        context
+            .engine
+            .symbol_table
+            .resolve_symbol_str(symbol)
+            .ok_or_else(|| ActionError::EvalError("agenda: invalid module symbol".into()))?
+            .to_owned()
+    } else {
+        context
+            .engine
+            .module_registry
+            .module_name(context.current_module)
+            .unwrap_or("MAIN")
+            .to_owned()
+    };
+    let rows = context
+        .engine
+        .agenda_entries_in_module(&module)
+        .map_err(|error| ActionError::EvalError(error.to_string()))?;
     let mut output = String::new();
-    for activation in rete.agenda.iter_activations() {
-        let rule_name = crate::engine::rule_index_get(all_rule_info, activation.rule)
-            .map_or("???", |info| info.name.as_str());
-        let _ = writeln!(output, "{} {rule_name}", activation.salience.get());
+    let mut previous_module = None;
+    for row in &rows {
+        if module == "*" {
+            if previous_module != Some(row.module_name.as_str()) {
+                let _ = writeln!(output, "{}:", row.module_name);
+                previous_module = Some(row.module_name.as_str());
+            }
+            output.push_str("   ");
+        }
+        let _ = writeln!(output, "{}", row.format_line());
     }
-    if output.is_empty() {
-        output.push_str("(no activations)\n");
+    if !rows.is_empty() {
+        let _ = writeln!(
+            output,
+            "For a total of {} activation{}.",
+            rows.len(),
+            if rows.len() == 1 { "" } else { "s" }
+        );
     }
-    router.write("t", &output);
+    context.engine.router.write("t", &output);
     Ok(())
 }
 
@@ -1891,247 +1917,6 @@ fn execute_load(
             )))
         }
     }
-}
-
-/// Format a `Value` as it should appear inside a `.fct` file (CLIPS s-expression syntax).
-///
-/// Strings are quoted; symbols, integers, floats, and multifields render as CLIPS expects.
-fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
-    match value {
-        Value::Integer(n) => output.push_str(&n.to_string()),
-        Value::Float(f) => {
-            if f.fract() == 0.0 {
-                let _ = write!(output, "{f:.1}");
-            } else {
-                output.push_str(&f.to_string());
-            }
-        }
-        Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
-                output.push_str(name);
-            }
-        }
-        Value::InstanceName(name) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(name.as_symbol()) {
-                let _ = write!(output, "[{name}]");
-            }
-        }
-        Value::String(s) => {
-            output.push('"');
-            for ch in s.as_str().chars() {
-                match ch {
-                    '\\' => output.push_str("\\\\"),
-                    '"' => output.push_str("\\\""),
-                    _ => output.push(ch),
-                }
-            }
-            output.push('"');
-        }
-        Value::Multifield(mf) => {
-            for (i, v) in mf.as_slice().iter().enumerate() {
-                if i > 0 {
-                    output.push(' ');
-                }
-                format_value_for_fct(v, symbol_table, output);
-            }
-        }
-        Value::FactAddress(_) => {
-            // CLIPS saves the address spelling as a string, not a reusable identity.
-            output.push('"');
-            crate::value_print::append_printout_value(value, symbol_table, output);
-            output.push('"');
-        }
-        Value::ExternalAddress(_) | Value::Void => {}
-    }
-}
-
-/// Format a single `Fact` as a bare CLIPS s-expression suitable for a `.fct` file.
-///
-/// Ordered facts render as `(relation field1 field2 ...)`.
-/// Template facts render as `(template-name (slot1 val1) (slot2 val2) ...)`.
-fn format_fact_for_fct(
-    fact: &Fact,
-    symbol_table: &SymbolTable,
-    template_defs: &slotmap::SlotMap<TemplateId, Arc<crate::templates::RegisteredTemplate>>,
-) -> String {
-    let mut out = String::new();
-    match fact {
-        Fact::Ordered(o) => {
-            out.push('(');
-            if let Some(rel) = symbol_table.resolve_symbol_str(o.relation) {
-                out.push_str(rel);
-            }
-            for field in &o.fields {
-                out.push(' ');
-                format_value_for_fct(field, symbol_table, &mut out);
-            }
-            out.push(')');
-        }
-        Fact::Template(t) => {
-            out.push('(');
-            if let Some(reg) = template_defs.get(t.template_id) {
-                out.push_str(&reg.name);
-                // Use slot_names (declaration order) for deterministic output.
-                for (slot_idx, slot_name) in reg.slot_names.iter().enumerate() {
-                    if let Some(val) = t.slots.get(slot_idx) {
-                        out.push(' ');
-                        out.push('(');
-                        out.push_str(slot_name);
-                        out.push(' ');
-                        format_value_for_fct(val, symbol_table, &mut out);
-                        out.push(')');
-                    }
-                }
-            }
-            out.push(')');
-        }
-    }
-    out
-}
-
-/// Evaluate the first argument of `load-facts` or `save-facts` as a filename string.
-fn eval_filename_arg(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    command_name: &str,
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<String, ActionError> {
-    if args.len() != 1 {
-        return Err(ActionError::EvalError(format!(
-            "{command_name}: expected exactly 1 argument, got {}",
-            args.len()
-        )));
-    }
-    let val = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
-    match val {
-        Value::String(s) => Ok(s.as_str().to_string()),
-        Value::Symbol(sym) => Ok(context
-            .engine
-            .symbol_table
-            .resolve_symbol_str(sym)
-            .unwrap_or("???")
-            .to_string()),
-        other => Err(ActionError::EvalError(format!(
-            "{command_name}: expected STRING or SYMBOL filename, got {}",
-            runtime_value_type_name(&other)
-        ))),
-    }
-}
-
-/// `(save-facts <filename>)` — write all current facts to a file in `.fct` format.
-///
-/// Each fact is written as a bare s-expression on its own line, readable by
-/// `load-facts`. Returns TRUE on success, FALSE on I/O failure.
-fn execute_save_facts(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    let filename = eval_filename_arg(
-        token,
-        rule_info,
-        args,
-        "save-facts",
-        context,
-        eval_env,
-        collected_facts,
-    )?;
-
-    let result = do_save_facts(&filename, context);
-    let return_val = match result {
-        Ok(_count) => crate::evaluator::clips_true(
-            &mut context.engine.symbol_table,
-            context.engine.config.string_encoding,
-        ),
-        Err(_) => crate::evaluator::clips_false(
-            &mut context.engine.symbol_table,
-            context.engine.config.string_encoding,
-        ),
-    };
-    // Write return value to global ?*result* if it exists; otherwise discard.
-    // (CLIPS itself returns the value but RHS actions discard scalar returns —
-    // the caller can capture it via (bind ?result (save-facts "file")).)
-    let _ = return_val;
-    Ok(())
-}
-
-/// Inner I/O body for save-facts, separated to avoid borrow-conflict with `symbol_table`.
-fn do_save_facts(
-    filename: &str,
-    context: &mut ActionExecutionContext<'_>,
-) -> Result<usize, std::io::Error> {
-    let file = std::fs::File::create(filename)?;
-    let mut writer = std::io::BufWriter::new(file);
-    let mut count = 0usize;
-
-    // Collect (id, cloned fact) pairs to avoid holding a borrow on fact_base
-    // while also borrowing symbol_table and template_defs.
-    let exclude_id = context.engine.initial_fact_id;
-    let facts: Vec<(FactId, Fact)> = context
-        .engine
-        .fact_base
-        .iter()
-        .filter(|(id, _)| Some(*id) != exclude_id)
-        .map(|(id, entry)| (id, entry.fact.clone()))
-        .collect();
-
-    for (_fact_id, fact) in facts {
-        let line = format_fact_for_fct(
-            &fact,
-            &context.engine.symbol_table,
-            &context.engine.template_defs,
-        );
-        writeln!(writer, "{line}")?;
-        count += 1;
-    }
-
-    Ok(count)
-}
-
-/// `(load-facts <filename>)` — read a `.fct` file and assert each fact.
-///
-/// The file must contain bare fact s-expressions (not wrapped in `assert`),
-/// one per top-level form.  Facts are asserted directly into working memory
-/// and are **not** registered for re-assertion on reset.
-/// Returns TRUE on success, FALSE on failure.
-fn execute_load_facts(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    args: &[ActionExpr],
-    context: &mut ActionExecutionContext<'_>,
-    eval_env: &mut ActionEvalEnv,
-    collected_facts: &[FactId],
-) -> Result<(), ActionError> {
-    let filename = eval_filename_arg(
-        token,
-        rule_info,
-        args,
-        "load-facts",
-        context,
-        eval_env,
-        collected_facts,
-    )?;
-
-    let contents = match crate::source_limits::read_source_file(std::path::Path::new(&filename)) {
-        Ok(contents) => contents,
-        // Preserve the existing I/O-failure behavior, but report resource limits.
-        Err(crate::loader::LoadError::Io(_)) => return Ok(()),
-        Err(error) => return Err(ActionError::EvalError(format!("load-facts: {error}"))),
-    };
-
-    // Loading facts must not mutate named reset seeds or collide with a source
-    // definition. The shared fact builder validates and asserts file facts.
-    context
-        .engine
-        .load_facts_str(&contents)
-        .map_err(|error| ActionError::EvalError(format!("load-facts: {error}")))?;
-    Ok(())
 }
 
 fn evaluated_rule_selectors(

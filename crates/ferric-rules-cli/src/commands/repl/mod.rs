@@ -10,32 +10,32 @@
 //! - `(run)` / `(run N)` — Run rules (optionally with a step limit)
 //! - `(facts)` — List all facts in working memory
 //! - `(rules)` — List all defined rules
-//! - `(agenda)` — Show count of activations on the agenda
+//! - `(agenda [module])` — Show ordered activations and their fact basis
 //! - `(clear)` — Clear the engine completely
 //! - `(load "file")` — Load a CLIPS file
-//! - `(save "file")` — Save current facts to a file
+//! - `(save-facts "file")` / `(load-facts "file")` — Save/load facts
 //! - `(watch facts)` / `(watch rules)` — Enable tracing
 //! - `(unwatch facts)` / `(unwatch rules)` — Disable tracing
 //! - `(help)` — Show available commands
 //! - `(exit)` / `(quit)` — Exit the REPL
 //!
-//! Any other input is evaluated as a CLIPS form via `engine.load_str()`.
+//! Any other input is evaluated as a CLIPS form via `engine.eval_str()`.
 //!
 //! Exit codes:
 //! - 0: Normal exit
 
-mod commands;
+pub(super) mod commands;
 mod display;
 mod history;
 mod input;
-mod session;
+pub(super) mod session;
 
 use std::path::PathBuf;
 
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
-use self::commands::parse_command;
+use self::commands::parse_commands;
 use self::input::FerricHelper;
 use self::session::ReplSession;
 
@@ -100,8 +100,25 @@ pub fn execute(
                     continue;
                 }
 
-                let cmd = parse_command(trimmed);
-                if session.dispatch(cmd) {
+                let commands = match parse_commands(trimmed) {
+                    Ok(commands) => commands,
+                    Err(error) => {
+                        session.error("parse_error", error);
+                        continue;
+                    }
+                };
+                let mut exit = false;
+                for command in commands {
+                    match session.dispatch(command, true) {
+                        Ok(true) => {
+                            exit = true;
+                            break;
+                        }
+                        Ok(false) => {}
+                        Err(()) => break,
+                    }
+                }
+                if exit {
                     break;
                 }
             }

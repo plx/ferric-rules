@@ -1758,27 +1758,52 @@ impl Engine {
     /// Reuse source fact validation without publishing a temporary definition.
     pub(crate) fn load_facts_str(&mut self, contents: &str) -> Result<usize, LoadError> {
         crate::source_limits::check_source_size(contents.len())?;
-        let wrapped = format!("(deffacts __loaded_facts__ {contents})");
-        let parsed = parse_sexprs(&wrapped, FileId(0));
-        if let Some(error) = parsed.errors.into_iter().next() {
-            return Err(LoadError::Parse(error));
-        }
-        let interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
-        if let Some(error) = interpreted.errors.into_iter().next() {
-            return Err(LoadError::Interpret(error));
-        }
+        let parsed = parse_sexprs(contents, FileId(0));
+        let first_error = parsed
+            .errors
+            .into_iter()
+            .min_by_key(|error| error.span.start.offset);
         let mut count = 0;
-        for construct in interpreted.constructs {
-            if let Construct::Facts(definition) = construct {
-                for body in definition.facts {
-                    let prepared = self.prepare_fact_body(&body, true)?;
-                    let fact = self
-                        .evaluate_prepared_fact(&prepared, self.module_registry.current_module())
-                        .map_err(LoadError::Compile)?;
-                    self.assert_fact_internal(fact)?;
-                    count += 1;
+        for expression in parsed.exprs {
+            if first_error
+                .as_ref()
+                .is_some_and(|error| expression.span().end.offset > error.span.start.offset)
+            {
+                break;
+            }
+            let span = expression.span();
+            // Interpret each complete fact independently, keeping its original
+            // locations and retaining prior assertions if a later form fails.
+            let wrapper = SExpr::List(
+                vec![
+                    SExpr::Atom(Atom::Symbol("deffacts".to_owned()), span),
+                    SExpr::Atom(Atom::Symbol("__loaded_facts__".to_owned()), span),
+                    expression,
+                ],
+                span,
+            );
+            let interpreted = interpret_constructs(&[wrapper], &InterpreterConfig::default());
+            if let Some(error) = interpreted.errors.into_iter().next() {
+                return Err(LoadError::Interpret(error));
+            }
+            for construct in interpreted.constructs {
+                if let Construct::Facts(definition) = construct {
+                    for body in definition.facts {
+                        let prepared = self.prepare_fact_body(&body, true)?;
+                        let fact = self
+                            .evaluate_prepared_fact(
+                                &prepared,
+                                self.module_registry.current_module(),
+                            )
+                            .map_err(LoadError::Compile)?;
+                        self.assert_fact_internal(fact)?;
+                        count += 1;
+                    }
                 }
             }
+        }
+        if let Some(error) = first_error {
+            return Err(LoadError::Parse(error));
         }
         Ok(count)
     }

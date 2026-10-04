@@ -356,6 +356,45 @@ impl Engine {
         self.prepare_field(expression, module, &mut HashSet::new(), false)
     }
 
+    /// Host root expressions have fresh, mutable locals. Unlike dormant fact
+    /// initializers and dynamic eval, ordinary local reads are resolved at run
+    /// time, so preceding effects survive a later unbound-variable error.
+    pub(crate) fn prepare_root_expression(
+        &mut self,
+        expression: &ActionExpr,
+        module: ModuleId,
+    ) -> Result<RuntimeExpr, LoadError> {
+        self.declare_expression_query_order(std::iter::once(expression), module)?;
+        self.validate_source_default_control(expression, module, "root expression")?;
+        crate::callable_validation::validate_iterator_binds_with_templates(
+            std::slice::from_ref(expression),
+            &|name| self.resolve_template_id(name, module).is_ok(),
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
+        crate::callable_validation::validate_breaks_with_templates(
+            std::slice::from_ref(expression),
+            &|name| self.resolve_template_id(name, module).is_ok(),
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
+        self.validate_expression_query_declarations(expression, module, None)?;
+        crate::query_validation::validate_query_scopes(
+            std::iter::once(expression),
+            HashSet::new(),
+            &HashSet::new(),
+            self,
+            module,
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
+        self.validate_action_expr_as_expression(
+            expression,
+            module,
+            "root expression",
+            &HashSet::new(),
+        )?;
+        evaluator::from_action_expr(expression, &mut self.symbol_table, &self.config)
+            .map_err(|error| invalid_at(expression_span(expression), &error.to_string()))
+    }
+
     pub(crate) fn prepare_salience_expression(
         &mut self,
         expression: &ActionExpr,
@@ -526,7 +565,9 @@ impl Engine {
         module: ModuleId,
         locals: &mut evaluator::CallableLocals,
     ) -> Result<Fact, String> {
+        self.active_fact_initializers += 1;
         let result = self.evaluate_prepared_fact_inner(fact, module, locals);
+        self.active_fact_initializers -= 1;
         for (channel, text) in self.globals.take_printout_events() {
             self.router.write(&channel, &text);
         }

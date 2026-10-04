@@ -26,7 +26,11 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
         | "instance-namep"
         | "multifieldp"
         | "set-fact-duplication" => b"11",
-        "symbol-to-instance-name" | "undefrule" | "ppdefrule" | "deftemplate-slot-names" => b"11w",
+        "symbol-to-instance-name"
+        | "undefrule"
+        | "ppdefrule"
+        | "deftemplate-slot-names"
+        | "set-strategy" => b"11w",
         "instance-name-to-symbol" => b"11p",
         "evenp" | "oddp" | "setgen" | "seed" => b"11i",
         "str-cat" | "sym-cat" | "printout" => b"1*",
@@ -34,6 +38,7 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
         "gensym"
         | "gensym*"
         | "get-fact-duplication"
+        | "get-strategy"
         | "get-focus"
         | "get-focus-stack"
         | "pi"
@@ -132,6 +137,17 @@ fn type_description(restriction: u8) -> &'static str {
 }
 
 pub(crate) fn validate_call(call: &FunctionCall) -> Result<(), String> {
+    if call.name == "set-strategy" {
+        if let [ActionExpr::Literal(literal)] = call.args.as_slice() {
+            if let LiteralKind::Symbol(name) = &literal.value {
+                if !matches!(name.as_str(), "depth" | "breadth" | "lex" | "mea") {
+                    return Err(format!(
+                        "set-strategy does not support `{name}`; expected depth, breadth, lex, or mea"
+                    ));
+                }
+            }
+        }
+    }
     let Some(restrictions) = restrictions(&call.name) else {
         return Ok(());
     };

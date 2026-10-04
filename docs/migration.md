@@ -105,10 +105,13 @@ remain visible.
 Source `(reset)` now executes immediately, preserves output and active local
 bindings, and continues the current RHS or callable. It also allows the run to
 select new activations. A nested reset inside reset-time initialization is
-ignored. Source `(clear)` removes facts and restarts public fact numbering at
-zero, then preserves constructs because they are in active use. It continues
-execution instead of stopping the run. Public host `reset()` and `clear()`
-retain their output-clearing and construct-removal contracts.
+ignored. Source `(clear)` inside an active rule or callable removes facts and
+restarts public fact numbering at zero, then preserves in-use constructs and
+continues execution. During fact initialization it refuses before removing
+facts. At the prompt, with no constructs in use, clear removes constructs and
+restores `initial-fact` as f-0; the next user assertion is f-1. Source clear
+preserves input and output. Public host `reset()` and `clear()` retain their
+output-clearing and construct-removal contracts.
 
 Action queries return their last body value, `FALSE` when no body runs, or no
 value after `break`. Ordinary action queries stop selecting members after a

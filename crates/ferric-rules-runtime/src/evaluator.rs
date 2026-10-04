@@ -3325,7 +3325,7 @@ fn dispatch_builtin(
         return crate::environment::eval(ctx, name, args, span_ref);
     }
     match name {
-        "retract" | "halt" | "focus" | "reset" | "clear" => {
+        "retract" | "halt" | "focus" | "reset" | "clear" | "load-facts" | "save-facts" => {
             crate::effects::eval_call(ctx, name, args, span_ref)
         }
         // Arithmetic
@@ -3475,8 +3475,6 @@ fn dispatch_builtin(
 
         // Fact I/O — require engine access; return FALSE when called from pure
         // expression context (the real implementation lives in actions.rs).
-        "load-facts" => builtin_load_save_facts_stub(ctx, args, "load-facts", span_ref),
-        "save-facts" => builtin_load_save_facts_stub(ctx, args, "save-facts", span_ref),
 
         // Special forms
         "bind" => dispatch_bind(ctx, args, span_ref),
@@ -5076,32 +5074,64 @@ fn builtin_refresh_agenda(
     })
 }
 
-/// `watch` — debugging command accepted for compatibility.
+/// Enable transient observer output for supported watch targets.
 fn builtin_watch(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("watch", args, 1, span)?;
-    let _ = eval_args(ctx, args)?;
-    Ok(clips_true(
-        &mut ctx.engine.symbol_table,
-        ctx.engine.config.string_encoding,
-    ))
+    configure_watch(ctx, args, "watch", true, span)
 }
 
-/// `unwatch` — debugging command accepted for compatibility.
+/// Disable transient observer output for supported watch targets.
 fn builtin_unwatch(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("unwatch", args, 1, span)?;
-    let _ = eval_args(ctx, args)?;
-    Ok(clips_true(
-        &mut ctx.engine.symbol_table,
-        ctx.engine.config.string_encoding,
-    ))
+    configure_watch(ctx, args, "unwatch", false, span)
+}
+
+fn configure_watch(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    name: &str,
+    enabled: bool,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact(name, args, 1, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    let Value::Symbol(symbol) = value else {
+        return Err(EvalError::TypeError {
+            function: name.to_owned(),
+            expected: "SYMBOL watch target".to_owned(),
+            actual: value.type_name().to_owned(),
+            span: span.cloned(),
+        });
+    };
+    match ctx.engine.symbol_table.resolve_symbol_str(symbol) {
+        Some("facts") => {
+            ctx.engine.set_watch_facts(enabled);
+        }
+        Some("rules") => {
+            ctx.engine.set_watch_rules(enabled);
+        }
+        Some("all") => {
+            ctx.engine.set_watch_facts(enabled);
+            ctx.engine.set_watch_rules(enabled);
+        }
+        target => {
+            return Err(EvalError::UnsupportedOperation {
+                operation: name.to_owned(),
+                reason: format!(
+                    "unsupported watch target `{}`; expected facts, rules, or all",
+                    target.unwrap_or("<invalid>")
+                ),
+                span: span.cloned(),
+            })
+        }
+    }
+    Ok(Value::Void)
 }
 
 /// `str-length` — the character length of a STRING, SYMBOL or INSTANCE-NAME.
@@ -7300,33 +7330,6 @@ fn builtin_fact_slot_names(
             Ok(Value::Multifield(Box::new(result)))
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Fact I/O stubs (load-facts / save-facts)
-// ---------------------------------------------------------------------------
-
-/// Existing expression fallback for `load-facts` and `save-facts`.
-///
-/// The real implementations live in `actions.rs` and are dispatched before
-/// the evaluator is reached.  When these functions appear in an expression
-/// context (e.g., inside a `deffunction` body or a `test` CE), we evaluate
-/// the filename argument for side-effect hygiene and return FALSE.
-fn builtin_load_save_facts_stub(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    name: &'static str,
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    check_arity_exact(name, args, 1, span)?;
-    // Evaluate the filename arg to surface any errors (e.g., wrong type).
-    let _ = eval_inner(ctx, &args[0])?;
-    // These I/O operations still use their existing top-level action handlers.
-    // Preserve the expression fallback until those handlers share dispatch.
-    Ok(clips_false(
-        &mut ctx.engine.symbol_table,
-        ctx.engine.config.string_encoding,
-    ))
 }
 
 // ===========================================================================
@@ -11376,10 +11379,17 @@ mod tests {
 
     #[test]
     fn watch_and_unwatch_with_argument_succeed() {
-        let watch_result = eval_expr(&call("watch", vec![str_lit("facts")])).unwrap();
-        assert!(matches!(watch_result, Value::Symbol(_)));
-        let unwatch_result = eval_expr(&call("unwatch", vec![str_lit("facts")])).unwrap();
-        assert!(matches!(unwatch_result, Value::Symbol(_)));
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        assert!(matches!(
+            engine.eval_str("(watch facts)").unwrap(),
+            Value::Void
+        ));
+        assert!(engine.watch_facts());
+        assert!(matches!(
+            engine.eval_str("(unwatch facts)").unwrap(),
+            Value::Void
+        ));
+        assert!(!engine.watch_facts());
     }
 
     #[test]

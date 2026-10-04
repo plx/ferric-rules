@@ -253,9 +253,8 @@ fn load_facts_bounds_file_reads_and_reports_resource_limits() {
     .unwrap();
     engine.reset().unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    let diagnostics = engine.action_diagnostics();
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    let diagnostic = diagnostics[0].to_string();
+    assert!(engine.action_diagnostics().is_empty());
+    let diagnostic = engine.get_output("werror").unwrap();
     assert!(diagnostic.contains("load-facts"), "{diagnostic}");
     assert!(diagnostic.contains("source bytes"), "{diagnostic}");
     assert!(diagnostic.contains("16777217"), "{diagnostic}");

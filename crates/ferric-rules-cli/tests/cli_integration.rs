@@ -297,7 +297,7 @@ fn repl_assert_errors_preserve_completed_facts_and_continue() {
         r#"(defrule retained (before-variable 3) (before-call 5) (not (bad-variable $?)) (not (bad-call $?)) (not (after-variable)) (not (after-call)) => (printout t "completed facts retained" crlf))"#,
         "(reset)",
         "(assert (before-variable (+ 1 2)) (bad-variable prefix ?missing suffix) (after-variable))",
-        "(assert (before-call (+ 2 3)) (bad-call prefix (missing-function) suffix) (after-call))",
+        "(assert (before-call (+ 2 3)) (bad-call prefix (/ 1 0) suffix) (after-call))",
         "(run)",
         "(exit)",
     ] {
@@ -314,7 +314,7 @@ fn repl_assert_errors_preserve_completed_facts_and_continue() {
     );
     let stderr = stderr_str(&output);
     assert!(stderr.contains("missing"), "stderr: {stderr}");
-    assert!(stderr.contains("missing-function"), "stderr: {stderr}");
+    assert!(stderr.contains("zero"), "stderr: {stderr}");
 }
 
 #[test]
