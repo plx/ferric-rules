@@ -1386,8 +1386,7 @@ fn test_semantic_regression_stdlib_multifield_advanced() {
     assert_output_exact(&result, "len: 5\n2nd: b\npos-c: 3\npos-z: FALSE\n");
 }
 
-/// format function: printf-style formatting returns a string, printed via printout.
-/// Note: format does not write to the router; the result must be passed to printout.
+/// format writes to its logical name and returns a string; nil suppresses writing.
 #[test]
 fn test_semantic_regression_stdlib_format_output() {
     let result = run_ferric_semantic_regression_file("stdlib/format_output.clp");

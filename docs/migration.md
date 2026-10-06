@@ -80,8 +80,8 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346, #395 and #404 make these cases behave like
-CLIPS 6.30. Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346, #395, #396 and #404 make these cases behave
+like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -94,6 +94,12 @@ CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   returns only the first field of its line.
 - `format` rejects an argument count that does not match its directives, `%s`
   of a number, and a malformed directive such as `%5-3d`.
+- `format` writes its result to its logical name unless that name is `nil`, so
+  `(printout t (format t ...) crlf)` now prints the text twice; use `nil` when
+  the result goes into another output call. `printout` and `println` write each
+  argument as soon as it is evaluated, so output from nested calls appears in
+  place and text written before an argument error stays visible.
+  `(printout nil ...)` no longer evaluates its arguments.
 - `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
   `"1e+20"`), and `printout` quotes STRING fields inside a multifield.
 - `round` breaks half ties toward the lower integer, and `min`/`max` return the
@@ -216,14 +222,14 @@ To select matching rules with the condition instead, use a `test` CE:
 
 ## Step 4: Review format Usage
 
-In Ferric, `format` returns a string and does not write to a router
-directly. Adjust calls accordingly:
+Like CLIPS, `format` writes to its logical name and returns the formatted
+string. Use `nil` when only the return value is needed:
 
 ```clp
-;; CLIPS
-(format t "value=%d" 42)
+;; Write a line and return its text.
+(format t "value=%d%n" 42)
 
-;; Ferric
+;; Format without writing, then include the result in another output call.
 (printout t (format nil "value=%d" 42) crlf)
 ```
 
@@ -343,7 +349,7 @@ was never populated.
 | Gotcha | Detail |
 |--------|--------|
 | `=` vs `eq` | `=` is numeric (coerces types); `eq` is value+type sensitive |
-| `format` writes nowhere | `format` returns a string; use `(printout t (format nil ...) crlf)` |
+| `format` writes and returns | Use `nil` to format a string without also writing it |
 | `sub-string` positions | One-based, inclusive Unicode scalar positions; bounds clip to the text |
 | Function bodies are evaluator expressions | Put fact mutation and agenda/focus control in rule RHS code |
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
@@ -365,7 +371,7 @@ was never populated.
 | `defmodule` | Supported |
 | `defgeneric` / `defmethod` | Supported (evaluator expressions; no fact mutation/control actions) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
-| `printout` / `format` / `read` / `readline` | Supported (format is expression-only) |
+| `printout` / `format` / `read` / `readline` | Supported |
 | `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |
 | Salience | Supported |
 | Focus stack | Supported |

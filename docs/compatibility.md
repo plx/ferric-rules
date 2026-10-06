@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 646
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 656
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -988,7 +988,7 @@ without a notice.
 | Function | Description |
 |----------|-------------|
 | `printout` | Write to a named channel |
-| `format` | Printf-style formatting (returns string; does not write to router) |
+| `format` | Printf-style formatting; write to a named channel and return the string (`nil` returns only) |
 | `read` | Read the first CLIPS field of the next nonblank input line |
 | `readline` | Read a line from input |
 | `load-facts` | Load facts from a `.fct` file into working memory |
@@ -1004,9 +1004,13 @@ FLOATs print with up to 15 significant digits (CLIPS's `%.15g`), with `.0` on
 integral values: `1.0`, `1e-05`, `1e+15`. Non-finite values print as `nan.0`,
 `inf.0` and `-inf.0`. `str-cat` and `sym-cat` spell FLOATs the same way.
 
-**format note:** In Ferric, `format` is an evaluator-only function that
-returns a formatted string. It does not write directly to a router. Use
-`(printout t (format nil "n=%d" 42) crlf)` to produce output.
+`format` writes its completed string to the named channel and returns the
+same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;
+`(format nil "n=%d" 42)` returns the string without writing it. `printout`
+writes each argument before evaluating the next, including inside callable
+bodies. Output from nested calls appears in evaluation order, and an error
+in a later argument preserves the output already written. `printout` to `nil`
+writes nothing and evaluates none of its arguments.
 
 `format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
 `%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number
