@@ -6507,6 +6507,16 @@
         "printout",
         "deffunction"
       ]
+    },
+    {
+      "path": "stdlib/244_format_output_printout_nil_skips_operands.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "defglobal"
+      ]
     }
   ]
 }
