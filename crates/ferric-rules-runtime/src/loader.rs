@@ -6437,18 +6437,31 @@ mod tests {
               (v 2)
               (v 3))
             (defrule branchy
-              (v ?x&2|?x&~2)
+              (v ?x&2|?x&:(> ?x 1))
               =>
               (assert (hit ?x)))
             ",
         );
+        assert_eq!(engine.rules().len(), 1);
         engine.reset().unwrap();
 
+        // (v 2) satisfies both alternatives; a duplicated rule would fire
+        // for it twice.
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 2);
 
-        let hits = find_facts_by_relation(&engine, "hit");
-        assert_eq!(hits.len(), 2);
+        let mut hits: Vec<_> = find_facts_by_relation(&engine, "hit")
+            .into_iter()
+            .map(|handle| match engine.get_fact(handle).unwrap().unwrap() {
+                Fact::Ordered(ordered) => match ordered.fields.as_slice() {
+                    [Value::Integer(value)] => *value,
+                    fields => panic!("unexpected hit fields {fields:?}"),
+                },
+                Fact::Template(_) => panic!("expected ordered fact"),
+            })
+            .collect();
+        hits.sort_unstable();
+        assert_eq!(hits, [2, 3]);
     }
 
     #[test]
