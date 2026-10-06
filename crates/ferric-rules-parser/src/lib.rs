@@ -36,6 +36,7 @@
 
 pub mod error;
 pub mod lexer;
+pub mod numeric_scanner;
 pub mod qualified_name;
 pub mod sexpr;
 pub mod span;

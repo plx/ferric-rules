@@ -46,6 +46,31 @@ def test_scanner_notices_are_output_not_protocol_failures():
         extract_output("BEGIN\n[SCANNER1] other\nEND\n", "", "BEGIN", "END")
 
 
+def test_source_integer_overflow_notice_is_allowed_only_before_output_frame():
+    notice = "[SCANNER1] WARNING: Over or underflow of long long integer.\n"
+    assert extract_output(f"{notice}{notice}BEGIN\nclamped\nEND\n", "", "BEGIN", "END") == (
+        "clamped\n"
+    )
+    assert extract_output(f"{notice}BEGIN\n{notice}clamped\nEND\n", "", "BEGIN", "END") == (
+        notice + "clamped\n"
+    )
+    with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+        extract_output(f"BEGIN\nclamped\nEND\n{notice}", "", "BEGIN", "END")
+
+
+@pytest.mark.parametrize(
+    "notice",
+    [
+        "[SCANNER1] other\n",
+        "[SCANNER1] WARNING: Over or underflow of long long integer. extra\n",
+        "\n[SCANNER1] Encountered End-Of-File while scanning a string\n",
+    ],
+)
+def test_other_source_scanner_notices_remain_protocol_failures(notice):
+    with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+        extract_output(f"{notice}BEGIN\nvalue\nEND\n", "", "BEGIN", "END")
+
+
 def test_literal_bracket_text_inside_output_is_not_a_diagnostic():
     assert extract_output("BEGIN\n[USER123]\nEND\n", "", "BEGIN", "END") == "[USER123]\n"
 

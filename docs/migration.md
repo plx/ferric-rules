@@ -80,7 +80,7 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346 and #395 make these cases behave like
+The fixes for issues #320 to #346, #395 and #404 make these cases behave like
 CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
@@ -118,6 +118,13 @@ CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   CLIPS. `?x&a|b` binds `?x` for every alternative. Overlapping alternatives
   no longer fire twice, and `not`, `exists` and `forall` test the whole
   disjunction.
+- Source files, the REPL and `load-facts` scan numbers like `explode$`: a
+  lexeme that starts with a digit, sign or `.` runs to the next CLIPS
+  delimiter. `(place 1st)` now has one field, not `1 st`; `1-2`, `0x10`,
+  `12abc` and `5e` are single SYMBOLs; `1.`, `.5` and `1.e3` are FLOATs (`.5`
+  was a SYMBOL). Integers outside the signed 64-bit range saturate instead of
+  rejecting the file. A `;` comment ends at CR as well as LF. The parser no
+  longer reports `ParseErrorKind::InvalidNumber`.
 
 ## Step 1: Check Feature Coverage
 

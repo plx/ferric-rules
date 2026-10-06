@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "59459eff9d0be2a5bf69a336b25b2376adb24602",
+    "ferric_revision": "0d53f00a653460bcd115097f04b3a747fd780030",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -2137,6 +2137,97 @@
         "variable-binding",
         "retract",
         "salience"
+      ]
+    },
+    {
+      "path": "patterns/121_source_scanner_numeric_table.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "integerp",
+        "floatp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "patterns/122_source_scanner_signed_zero_exponents.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "create$",
+        "integerp",
+        "floatp"
+      ]
+    },
+    {
+      "path": "patterns/123_source_scanner_ordered_numeric_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "ordered-facts",
+        "explode$",
+        "multifield"
+      ]
+    },
+    {
+      "path": "patterns/124_source_scanner_incomplete_exponent_patterns.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "ordered-facts",
+        "explode$"
+      ]
+    },
+    {
+      "path": "patterns/125_source_scanner_integer_overflow.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "integerp",
+        "create$"
+      ]
+    },
+    {
+      "path": "patterns/126_source_scanner_cr_comments.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "comments",
+        "line-endings"
+      ]
+    },
+    {
+      "path": "patterns/127_source_scanner_connective_delimiters.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "deffacts",
+        "field-disjunction",
+        "variable-binding"
+      ]
+    },
+    {
+      "path": "patterns/128_source_scanner_signed_numeric_symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "patterns/129_source_scanner_symbol_continuations.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "symbolp",
+        "create$"
       ]
     },
     {
