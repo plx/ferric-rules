@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 636
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 637
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -467,9 +467,9 @@ Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant
-tests, including the children of compound field tests. A field disjunction
-too wide for that alpha budget is evaluated as one match-time predicate
-instead. These bounds keep recursive propagation practical without adding a
+tests, including the children of compound field tests. When a pattern's
+field disjunctions would take it past that alpha budget, the widest ones are
+evaluated as match-time predicates instead. These bounds keep recursive propagation practical without adding a
 resumable execution subsystem.
 Boundary regressions exercise combined alpha
 and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.

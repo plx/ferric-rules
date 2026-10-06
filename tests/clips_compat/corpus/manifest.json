@@ -2126,6 +2126,20 @@
       ]
     },
     {
+      "path": "patterns/120_field_disjunction_alpha_budget_later_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multifield",
+        "not",
+        "variable-binding",
+        "retract",
+        "salience"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
