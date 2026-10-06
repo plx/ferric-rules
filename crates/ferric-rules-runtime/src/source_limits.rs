@@ -2,7 +2,7 @@
 //!
 //! The estimate is deliberately conservative: independent choice counts are
 //! multiplied even when some alternatives would share work. It is checked
-//! before normalization and again before slot/CE expansion, since normalization
+//! before normalization and again before CE expansion, since normalization
 //! can duplicate constraints inside negative conjunctions.
 
 use ferric_rules_parser::{Constraint, Pattern, RuleConstruct};
@@ -128,11 +128,8 @@ pub(crate) fn check_expansion(
             Input::Constraint(constraint) => match constraint {
                 Constraint::And(children, _) | Constraint::Or(children, _) => {
                     pending.extend(children.iter().map(Input::Constraint));
-                    if matches!(constraint, Constraint::Or(..)) {
-                        children.len().max(1)
-                    } else {
-                        1
-                    }
+                    // A field disjunction is one Boolean test, not a rule product.
+                    1
                 }
                 Constraint::Not(inner, _) => {
                     pending.push(Input::Constraint(inner));

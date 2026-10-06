@@ -150,6 +150,13 @@ impl SequencePattern {
             | ConstantTestType::LessOrEqualSlotOffset(other, _) => {
                 *other = self.physical_selector(*other)?;
             }
+            ConstantTestType::Any(branches) => {
+                for branch in branches {
+                    for test in branch {
+                        *test = self.physical_test(test)?;
+                    }
+                }
+            }
             ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_) => {
                 return None
             }
@@ -188,15 +195,17 @@ impl SequencePattern {
                 }
             }
         }
-        if self.tests.len() > crate::compiler::MAX_ALPHA_TESTS {
+        if crate::alpha::constant_test_count(&self.tests) > crate::compiler::MAX_ALPHA_TESTS {
             return Err("sequence pattern exceeds 64 tests".to_string());
         }
         let valid_slot = self.logical_slot_validator();
-        for test in &self.tests {
+        let mut pending: Vec<_> = self.tests.iter().collect();
+        while let Some(test) = pending.pop() {
             if !valid_slot(test.slot) {
                 return Err("sequence test has an invalid logical field".to_string());
             }
-            match test.test_type {
+            match &test.test_type {
+                ConstantTestType::Any(branches) => pending.extend(branches.iter().flatten()),
                 ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_) => {
                     return Err("sequence test contains a whole-fact constraint".to_string());
                 }
@@ -208,7 +217,7 @@ impl SequencePattern {
                 | ConstantTestType::LessThanSlotOffset(slot, _)
                 | ConstantTestType::GreaterOrEqualSlotOffset(slot, _)
                 | ConstantTestType::LessOrEqualSlotOffset(slot, _)
-                    if !valid_slot(slot) =>
+                    if !valid_slot(*slot) =>
                 {
                     return Err("sequence test references an invalid logical field".to_string());
                 }
@@ -355,7 +364,7 @@ fn test_extent(test: &ConstantTest) -> usize {
     let index = |slot: SlotIndex| match slot {
         SlotIndex::Ordered(index) | SlotIndex::Template(index) => index,
     };
-    let other = match test.test_type {
+    let other = match &test.test_type {
         ConstantTestType::EqualSlot(slot)
         | ConstantTestType::NotEqualSlot(slot)
         | ConstantTestType::EqualSlotOffset(slot, _)
@@ -363,10 +372,16 @@ fn test_extent(test: &ConstantTest) -> usize {
         | ConstantTestType::GreaterThanSlotOffset(slot, _)
         | ConstantTestType::LessThanSlotOffset(slot, _)
         | ConstantTestType::GreaterOrEqualSlotOffset(slot, _)
-        | ConstantTestType::LessOrEqualSlotOffset(slot, _) => index(slot),
+        | ConstantTestType::LessOrEqualSlotOffset(slot, _) => index(*slot).saturating_add(1),
+        ConstantTestType::Any(branches) => branches
+            .iter()
+            .flatten()
+            .map(test_extent)
+            .max()
+            .unwrap_or(0),
         _ => 0,
     };
-    index(test.slot).max(other).saturating_add(1)
+    index(test.slot).saturating_add(1).max(other)
 }
 
 /// The values a segment's captures share, or `None` when its single fields
@@ -690,6 +705,116 @@ mod tests {
         assert!(pattern.validate().is_err());
         pattern.tests[0].test_type = ConstantTestType::OrderedFieldCount { min: 0, max: None };
         assert!(pattern.validate().is_err());
+    }
+
+    #[test]
+    fn sequence_disjunction_waits_for_every_referenced_field() {
+        let pattern = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![
+                    SequenceField::Single,
+                    SequenceField::Multi,
+                    SequenceField::Single,
+                ],
+            }],
+            tests: vec![ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Any(vec![
+                    vec![ConstantTest {
+                        slot: SlotIndex::Ordered(0),
+                        test_type: ConstantTestType::EqualSlotOffset(SlotIndex::Ordered(2), -3),
+                    }],
+                    vec![ConstantTest {
+                        slot: SlotIndex::Ordered(0),
+                        test_type: ConstantTestType::Equal(AtomKey::Integer(99)),
+                    }],
+                ]),
+            }],
+        };
+        assert!(pattern.validate().is_ok());
+        assert_eq!(
+            pattern.matches(&fact(4)).next().unwrap().lengths.as_slice(),
+            &[2]
+        );
+        assert_eq!(pattern.matches(&fact(3)).count(), 0);
+        assert!(pattern.physical_test(&pattern.tests[0]).is_none());
+    }
+
+    #[test]
+    fn sequence_disjunction_remaps_every_nested_selector() {
+        let pattern = SequencePattern {
+            segments: vec![
+                SequenceSegment {
+                    source: SequenceSource::TemplateScalar(3),
+                    fields: vec![SequenceField::Single],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateScalar(1),
+                    fields: vec![SequenceField::Single],
+                },
+            ],
+            tests: vec![],
+        };
+        let test = ConstantTest {
+            slot: SlotIndex::Template(0),
+            test_type: ConstantTestType::Any(vec![vec![ConstantTest {
+                slot: SlotIndex::Template(1),
+                test_type: ConstantTestType::EqualSlotOffset(SlotIndex::Template(0), 2),
+            }]]),
+        };
+        assert_eq!(
+            pattern.physical_test(&test),
+            Some(ConstantTest {
+                slot: SlotIndex::Template(3),
+                test_type: ConstantTestType::Any(vec![vec![ConstantTest {
+                    slot: SlotIndex::Template(1),
+                    test_type: ConstantTestType::EqualSlotOffset(SlotIndex::Template(3), 2),
+                }]]),
+            })
+        );
+    }
+
+    #[test]
+    fn sequence_disjunction_validates_nested_selectors_and_constraints() {
+        let mut pattern = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![SequenceField::Single],
+            }],
+            tests: vec![],
+        };
+        for test in [
+            ConstantTest {
+                slot: SlotIndex::Ordered(1),
+                test_type: ConstantTestType::Equal(AtomKey::Integer(0)),
+            },
+            ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::EqualSlot(SlotIndex::Ordered(1)),
+            },
+            ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::OrderedFieldCount { min: 0, max: None },
+            },
+        ] {
+            pattern.tests = vec![ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Any(vec![vec![test]]),
+            }];
+            assert!(pattern.validate().is_err());
+        }
+        pattern.tests = vec![ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Any(vec![vec![
+                ConstantTest {
+                    slot: SlotIndex::Ordered(0),
+                    test_type: ConstantTestType::Equal(AtomKey::Integer(0)),
+                };
+                crate::compiler::MAX_ALPHA_TESTS
+            ]]),
+        }];
+        assert!(pattern.validate().unwrap_err().contains("exceeds 64 tests"));
     }
 
     fn multifield(values: &[i64]) -> Value {

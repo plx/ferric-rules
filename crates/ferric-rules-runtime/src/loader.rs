@@ -23,8 +23,8 @@ use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
     FactValue, FileId, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
     InterpretError, InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct,
-    OrderedFactBody, OrderedPattern, ParseError, Pattern, RuleConstruct, SExpr, SlotConstraint,
-    SlotType, Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
+    OrderedFactBody, OrderedPattern, ParseError, Pattern, RuleConstruct, SExpr, SlotType, Span,
+    TemplateConstruct, TemplateFactBody,
 };
 
 use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
@@ -247,6 +247,17 @@ struct PreparedRuleInstallation {
     plan: ConditionCompilationPlan,
     info: Arc<CompiledRuleInfo>,
     module: crate::modules::ModuleId,
+}
+
+/// A field disjunction compiled as one alpha `Any` test, kept so the pattern
+/// can move it to a match-time predicate if its alpha path is over budget.
+struct AlphaDisjunction {
+    /// Position of the `Any` test in the pattern's constant tests.
+    index: usize,
+    slot: SlotIndex,
+    constraint: Constraint,
+    /// Where its predicate goes among the generated tests, in field order.
+    generated_at: usize,
 }
 
 struct RuleRhsScope<'a> {
@@ -2989,18 +3000,104 @@ impl Engine {
             Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
                 variables.insert(name.clone());
             }
-            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+            Constraint::And(parts, _) => {
                 for part in parts {
                     Self::collect_constraint_binding_variables(part, variables);
                 }
             }
-            Constraint::Literal(_)
+            Constraint::Or(_, _)
+            | Constraint::Literal(_)
             | Constraint::Wildcard(_)
             | Constraint::MultiWildcard(_)
             | Constraint::Predicate(_, _)
             | Constraint::ReturnValue(_, _)
             | Constraint::Not(_, _) => {}
         }
+    }
+
+    /// Alternatives test existing variables; they cannot introduce bindings.
+    fn validate_disjunction_bindings(
+        pattern: &Pattern,
+        bound: &mut HashSet<String>,
+    ) -> Result<(), LoadError> {
+        match pattern {
+            Pattern::Ordered(ordered) => {
+                for constraint in &ordered.constraints {
+                    Self::validate_constraint_disjunction_bindings(constraint, bound, false)?;
+                }
+            }
+            Pattern::Template(template) => {
+                for constraint in template
+                    .slot_constraints
+                    .iter()
+                    .flat_map(|slot| &slot.constraints)
+                {
+                    Self::validate_constraint_disjunction_bindings(constraint, bound, false)?;
+                }
+            }
+            Pattern::Assigned {
+                variable, pattern, ..
+            } => {
+                bound.insert(variable.clone());
+                Self::validate_disjunction_bindings(pattern, bound)?;
+            }
+            Pattern::And(children, _) | Pattern::Logical(children, _) => {
+                for child in children {
+                    Self::validate_disjunction_bindings(child, bound)?;
+                }
+            }
+            Pattern::Not(inner, _) => {
+                Self::validate_disjunction_bindings(inner, &mut bound.clone())?;
+            }
+            Pattern::Exists(children, _) | Pattern::Forall(children, _) => {
+                let mut local = bound.clone();
+                for child in children {
+                    Self::validate_disjunction_bindings(child, &mut local)?;
+                }
+            }
+            Pattern::Or(children, _) => {
+                for child in children {
+                    Self::validate_disjunction_bindings(child, &mut bound.clone())?;
+                }
+            }
+            Pattern::Test(..) => {}
+        }
+        Ok(())
+    }
+
+    fn validate_constraint_disjunction_bindings(
+        constraint: &Constraint,
+        bound: &mut HashSet<String>,
+        alternative: bool,
+    ) -> Result<(), LoadError> {
+        match constraint {
+            Constraint::Variable(name, span) | Constraint::MultiVariable(name, span) => {
+                if alternative && !bound.contains(name) {
+                    let message = format!(
+                        "variable ?{name} in a field disjunction is referenced before being bound"
+                    );
+                    return Err(Self::compile_error_at(span, &message));
+                }
+                if !alternative {
+                    bound.insert(name.clone());
+                }
+            }
+            Constraint::And(parts, _) => {
+                for part in parts {
+                    Self::validate_constraint_disjunction_bindings(part, bound, alternative)?;
+                }
+            }
+            Constraint::Or(parts, _) => {
+                for part in parts {
+                    Self::validate_constraint_disjunction_bindings(part, bound, true)?;
+                }
+            }
+            Constraint::Not(inner, _) if alternative => {
+                Self::validate_constraint_disjunction_bindings(inner, bound, true)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn collect_existential_local_variables(pattern: &Pattern, variables: &mut HashSet<String>) {
@@ -3617,10 +3714,9 @@ impl Engine {
     }
 
     /// Expand `Pattern::Or` CEs via rule duplication.
-    /// Also expands slot-level `Constraint::Or` disjunctions inside patterns.
     /// Returns a vec of rule variants (1 if no disjunctions, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
-        // Without any `or` CE or `|` constraint, every pattern has exactly one
+        // Without any `or` CE, every pattern has exactly one
         // alternative; skip building (and cloning) the single-variant product.
         if !rule.patterns.iter().any(Self::pattern_has_disjunction) {
             return vec![rule.clone()];
@@ -3641,7 +3737,6 @@ impl Engine {
         // Alternatives come from:
         // - top-level `or` CEs
         // - assigned wrappers over top-level `or` CEs
-        // - slot-level `|` disjunctions distributed into separate pattern variants
         let mut pattern_options: Vec<Vec<Pattern>> = Vec::new();
         for pattern in &flat_patterns {
             pattern_options.push(Self::pattern_disjunction_options(pattern));
@@ -3679,25 +3774,11 @@ impl Engine {
             .collect()
     }
 
-    /// Whether a pattern contains an `or` CE or a `|` constraint anywhere.
+    /// Whether a pattern contains an `or` CE. Field disjunctions stay in one test.
     fn pattern_has_disjunction(pattern: &Pattern) -> bool {
-        fn constraint_has_disjunction(constraint: &Constraint) -> bool {
-            match constraint {
-                Constraint::Or(..) => true,
-                Constraint::And(parts, _) => parts.iter().any(constraint_has_disjunction),
-                Constraint::Not(inner, _) => constraint_has_disjunction(inner),
-                _ => false,
-            }
-        }
         match pattern {
             Pattern::Or(..) => true,
-            Pattern::Test(..) => false,
-            Pattern::Ordered(ordered) => ordered.constraints.iter().any(constraint_has_disjunction),
-            Pattern::Template(template) => template
-                .slot_constraints
-                .iter()
-                .flat_map(|slot| &slot.constraints)
-                .any(constraint_has_disjunction),
+            Pattern::Test(..) | Pattern::Ordered(_) | Pattern::Template(_) => false,
             Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
                 Self::pattern_has_disjunction(inner)
             }
@@ -3708,192 +3789,24 @@ impl Engine {
         }
     }
 
-    /// Expand a top-level pattern into disjunctive alternatives used for rule duplication.
+    /// Expand only a top-level `or` CE (possibly wrapped in a fact assignment).
     fn pattern_disjunction_options(pattern: &Pattern) -> Vec<Pattern> {
-        let expanded = Self::expand_pattern_constraint_disjunctions(pattern);
-        let mut options = Vec::new();
-        for variant in expanded {
-            match variant {
-                Pattern::Or(branches, _) => {
-                    options.extend(branches);
-                }
-                Pattern::Assigned {
-                    variable,
-                    pattern,
-                    span,
-                } => {
-                    if let Pattern::Or(branches, _) = pattern.as_ref() {
-                        options.extend(branches.iter().cloned().map(|branch| Pattern::Assigned {
-                            variable: variable.clone(),
-                            pattern: Box::new(branch),
-                            span,
-                        }));
-                    } else {
-                        options.push(Pattern::Assigned {
-                            variable,
-                            pattern,
-                            span,
-                        });
-                    }
-                }
-                other => options.push(other),
-            }
-        }
-
-        if options.is_empty() {
-            vec![pattern.clone()]
-        } else {
-            options
-        }
-    }
-
-    /// Recursively expand slot-level `Constraint::Or` disjunctions into pattern variants.
-    fn expand_pattern_constraint_disjunctions(pattern: &Pattern) -> Vec<Pattern> {
         match pattern {
-            Pattern::Ordered(ordered) => Self::expand_ordered_pattern_disjunctions(ordered)
-                .into_iter()
-                .map(Pattern::Ordered)
-                .collect(),
-            Pattern::Template(template) => Self::expand_template_pattern_disjunctions(template)
-                .into_iter()
-                .map(Pattern::Template)
-                .collect(),
+            Pattern::Or(branches, _) if !branches.is_empty() => branches.clone(),
             Pattern::Assigned {
                 variable,
                 pattern: inner,
                 span,
-            } => Self::expand_pattern_constraint_disjunctions(inner)
+            } => Self::pattern_disjunction_options(inner)
                 .into_iter()
-                .map(|p| Pattern::Assigned {
+                .map(|branch| Pattern::Assigned {
                     variable: variable.clone(),
-                    pattern: Box::new(p),
+                    pattern: Box::new(branch),
                     span: *span,
                 })
                 .collect(),
-            Pattern::Not(inner, span) => Self::expand_pattern_constraint_disjunctions(inner)
-                .into_iter()
-                .map(|p| Pattern::Not(Box::new(p), *span))
-                .collect(),
-            Pattern::And(children, span) => Self::expand_child_pattern_product(children)
-                .into_iter()
-                .map(|combo| Pattern::And(combo, *span))
-                .collect(),
-            Pattern::Logical(children, span) => Self::expand_child_pattern_product(children)
-                .into_iter()
-                .map(|combo| Pattern::Logical(combo, *span))
-                .collect(),
-            Pattern::Exists(children, span) => Self::expand_child_pattern_product(children)
-                .into_iter()
-                .map(|combo| Pattern::Exists(combo, *span))
-                .collect(),
-            Pattern::Forall(children, span) => Self::expand_child_pattern_product(children)
-                .into_iter()
-                .map(|combo| Pattern::Forall(combo, *span))
-                .collect(),
-            Pattern::Or(children, span) => Self::expand_child_pattern_product(children)
-                .into_iter()
-                .map(|combo| Pattern::Or(combo, *span))
-                .collect(),
-            Pattern::Test(_, _) => vec![pattern.clone()],
+            _ => vec![pattern.clone()],
         }
-    }
-
-    fn expand_ordered_pattern_disjunctions(pattern: &OrderedPattern) -> Vec<OrderedPattern> {
-        let per_slot: Vec<Vec<Constraint>> = pattern
-            .constraints
-            .iter()
-            .map(Self::expand_constraint_disjunctions)
-            .collect();
-        Self::cartesian_product(&per_slot)
-            .into_iter()
-            .map(|constraints| OrderedPattern {
-                relation: pattern.relation.clone(),
-                constraints,
-                span: pattern.span,
-            })
-            .collect()
-    }
-
-    fn expand_template_pattern_disjunctions(pattern: &TemplatePattern) -> Vec<TemplatePattern> {
-        let per_slot: Vec<Vec<SlotConstraint>> = pattern
-            .slot_constraints
-            .iter()
-            .map(|slot_constraint| {
-                let per_field: Vec<_> = slot_constraint
-                    .constraints
-                    .iter()
-                    .map(Self::expand_constraint_disjunctions)
-                    .collect();
-                Self::cartesian_product(&per_field)
-                    .into_iter()
-                    .map(|constraints| SlotConstraint {
-                        slot_name: slot_constraint.slot_name.clone(),
-                        constraints,
-                        span: slot_constraint.span,
-                    })
-                    .collect()
-            })
-            .collect();
-
-        Self::cartesian_product(&per_slot)
-            .into_iter()
-            .map(|slot_constraints| TemplatePattern {
-                template: pattern.template.clone(),
-                slot_constraints,
-                span: pattern.span,
-            })
-            .collect()
-    }
-
-    /// Expand a constraint into alternatives by distributing nested `or` inside `and`.
-    fn expand_constraint_disjunctions(constraint: &Constraint) -> Vec<Constraint> {
-        match constraint {
-            Constraint::Or(branches, _) => branches
-                .iter()
-                .flat_map(Self::expand_constraint_disjunctions)
-                .collect(),
-            Constraint::And(parts, span) => {
-                let per_part: Vec<Vec<Constraint>> = parts
-                    .iter()
-                    .map(Self::expand_constraint_disjunctions)
-                    .collect();
-                Self::cartesian_product(&per_part)
-                    .into_iter()
-                    .map(|parts| {
-                        if parts.len() == 1 {
-                            parts.into_iter().next().unwrap()
-                        } else {
-                            Constraint::And(parts, *span)
-                        }
-                    })
-                    .collect()
-            }
-            _ => vec![constraint.clone()],
-        }
-    }
-
-    fn expand_child_pattern_product(children: &[Pattern]) -> Vec<Vec<Pattern>> {
-        let per_child: Vec<Vec<Pattern>> = children
-            .iter()
-            .map(Self::expand_pattern_constraint_disjunctions)
-            .collect();
-        Self::cartesian_product(&per_child)
-    }
-
-    fn cartesian_product<T: Clone>(choices: &[Vec<T>]) -> Vec<Vec<T>> {
-        let mut product: Vec<Vec<T>> = vec![vec![]];
-        for options in choices {
-            let mut next = Vec::new();
-            for combo in &product {
-                for option in options {
-                    let mut new_combo = combo.clone();
-                    new_combo.push(option.clone());
-                    next.push(new_combo);
-                }
-            }
-            product = next;
-        }
-        product
     }
 
     /// Translate a `RuleConstruct` (parser types) into a `CompilableRule` (core types).
@@ -3902,6 +3815,10 @@ impl Engine {
         &mut self,
         rule: &RuleConstruct,
     ) -> Result<TranslatedRule, LoadError> {
+        let mut bound = HashSet::new();
+        for pattern in &rule.patterns {
+            Self::validate_disjunction_bindings(pattern, &mut bound)?;
+        }
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
         let mut test_conditions: Vec<CompiledTestCondition> = Vec::new();
@@ -3991,24 +3908,15 @@ impl Engine {
                 test_conditions.len(),
                 &mut embedded_generated_tests,
             )?;
-            if matches!(
-                &condition,
-                CompilableCondition::Pattern(compilable) if compilable.exists
-            ) && !generated_tests.is_empty()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside existential patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
-            if matches!(condition, CompilableCondition::Ncc(_))
-                && generated_tests.len() != embedded_generated_tests.len()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside NCC patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
+            // Quantified translation embeds every test it generates in its own
+            // subnetwork; only a plain positive pattern leaves tests to follow it.
+            debug_assert!(
+                matches!(
+                    &condition,
+                    CompilableCondition::Pattern(compilable)
+                        if !compilable.negated && !compilable.exists
+                ) || generated_tests.len() == embedded_generated_tests.len()
+            );
             if let Some(name) = var_name {
                 if !is_negated && Self::condition_has_fact_address(&condition) {
                     fact_address_vars.insert(name, fact_index);
@@ -4096,14 +4004,10 @@ impl Engine {
                         }
                         let mut subconditions = Vec::with_capacity(inner_patterns.len());
                         for sub in inner_patterns {
-                            let condition = self.translate_condition(
-                                sub,
-                                generated_tests,
-                                internal_slot_var_seed,
-                                test_condition_base,
-                                embedded_generated_tests,
-                            )?;
-                            subconditions.push(condition);
+                            subconditions.extend(self.translate_subcondition(
+                                sub, generated_tests, internal_slot_var_seed,
+                                test_condition_base, embedded_generated_tests,
+                            )?);
                         }
                         Ok(CompilableCondition::Ncc(subconditions))
                     }
@@ -4121,25 +4025,19 @@ impl Engine {
                                 embedded_generated_tests,
                             )
                         } else {
-                            let mut compilable = self.translate_pattern(
-                                doubly_inner,
-                                generated_tests,
-                                internal_slot_var_seed,
-                                false,
+                            let mut conditions = self.translate_quantified_pattern(
+                                doubly_inner, false, true, generated_tests, internal_slot_var_seed,
+                                test_condition_base, embedded_generated_tests,
                             )?;
-                            compilable.exists = true;
-                            Ok(CompilableCondition::Pattern(compilable))
+                            Ok(conditions.remove(0))
                         }
                     }
                     _ => {
-                        let mut compilable = self.translate_pattern(
-                            inner,
-                            generated_tests,
-                            internal_slot_var_seed,
-                            true,
+                        let mut conditions = self.translate_quantified_pattern(
+                            inner, true, false, generated_tests, internal_slot_var_seed,
+                            test_condition_base, embedded_generated_tests,
                         )?;
-                        compilable.negated = true;
-                        Ok(CompilableCondition::Pattern(compilable))
+                        Ok(conditions.remove(0))
                     }
                 }
             }
@@ -4158,14 +4056,11 @@ impl Engine {
                         Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Assigned { .. }
                     )
                 {
-                    let mut compilable = self.translate_pattern(
-                        &sub_patterns[0],
-                        generated_tests,
-                        internal_slot_var_seed,
-                        false,
+                    let mut conditions = self.translate_quantified_pattern(
+                        &sub_patterns[0], false, true, generated_tests, internal_slot_var_seed,
+                        test_condition_base, embedded_generated_tests,
                     )?;
-                    compilable.exists = true;
-                    return Ok(CompilableCondition::Pattern(compilable));
+                    return Ok(conditions.remove(0));
                 }
 
                 let mut tuple_conditions = Vec::new();
@@ -4173,7 +4068,7 @@ impl Engine {
                     match sub_pattern {
                         Pattern::And(children, _) | Pattern::Logical(children, _) => {
                             for child in children {
-                                tuple_conditions.push(self.translate_condition(
+                                tuple_conditions.extend(self.translate_subcondition(
                                     child,
                                     generated_tests,
                                     internal_slot_var_seed,
@@ -4182,7 +4077,7 @@ impl Engine {
                                 )?);
                             }
                         }
-                        _ => tuple_conditions.push(self.translate_condition(
+                        _ => tuple_conditions.extend(self.translate_subcondition(
                             sub_pattern,
                             generated_tests,
                             internal_slot_var_seed,
@@ -4250,27 +4145,16 @@ impl Engine {
                     }
                 }
 
-                // Desugar forall(P, Q) → NCC([P, neg(Q)]).
-                // Compile condition (P) as positive pattern.
-                let condition = self.translate_pattern(
-                    &sub_patterns[0],
-                    generated_tests,
-                    internal_slot_var_seed,
-                    false,
+                // forall(P, Q) holds while no P lacks a matching Q.
+                let mut conditions = self.translate_quantified_pattern(
+                    &sub_patterns[0], false, false, generated_tests, internal_slot_var_seed,
+                    test_condition_base, embedded_generated_tests,
                 )?;
-                // Compile then-clause (Q) as negated pattern.
-                let mut then_clause = self.translate_pattern(
-                    &sub_patterns[1],
-                    generated_tests,
-                    internal_slot_var_seed,
-                    true,
-                )?;
-                then_clause.negated = true;
-
-                Ok(CompilableCondition::Ncc(vec![
-                    CompilableCondition::Pattern(condition),
-                    CompilableCondition::Pattern(then_clause),
-                ]))
+                conditions.extend(self.translate_quantified_pattern(
+                    &sub_patterns[1], true, false, generated_tests, internal_slot_var_seed,
+                    test_condition_base, embedded_generated_tests,
+                )?);
+                Ok(CompilableCondition::Ncc(conditions))
             }
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
@@ -4290,10 +4174,106 @@ impl Engine {
             _ => Ok(CompilableCondition::Pattern(self.translate_pattern(
                 pattern,
                 generated_tests,
+                &mut 0,
                 internal_slot_var_seed,
                 false,
             )?)),
         }
+    }
+
+    /// Append predicates to their positive child before an enclosing NCC decides
+    /// whether the tuple exists. Nested quantified children embed their own tests.
+    fn translate_subcondition(
+        &mut self,
+        pattern: &Pattern,
+        generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        internal_slot_var_seed: &mut usize,
+        test_condition_base: usize,
+        embedded_generated_tests: &mut HashSet<usize>,
+    ) -> Result<Vec<CompilableCondition>, LoadError> {
+        let first_test = generated_tests.len();
+        let condition = self.translate_condition(
+            pattern,
+            generated_tests,
+            internal_slot_var_seed,
+            test_condition_base,
+            embedded_generated_tests,
+        )?;
+        let mut conditions = vec![condition];
+        for index in first_test..generated_tests.len() {
+            if embedded_generated_tests.insert(index) {
+                let condition_index = test_condition_base
+                    .checked_add(index)
+                    .and_then(|index| u32::try_from(index).ok())
+                    .ok_or_else(|| {
+                        LoadError::Compile("too many test CEs in one rule".to_owned())
+                    })?;
+                conditions.push(CompilableCondition::Predicate { condition_index });
+            }
+        }
+        Ok(conditions)
+    }
+
+    /// Keep generated field predicates within the quantified match. Moving a
+    /// predicate after a not/exists node would test unbound local variables and
+    /// miss changes to the supporting facts.
+    #[allow(clippy::too_many_arguments)]
+    fn translate_quantified_pattern(
+        &mut self,
+        pattern: &Pattern,
+        negated: bool,
+        exists: bool,
+        generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        internal_slot_var_seed: &mut usize,
+        test_condition_base: usize,
+        embedded_generated_tests: &mut HashSet<usize>,
+    ) -> Result<Vec<CompilableCondition>, LoadError> {
+        let first_test = generated_tests.len();
+        let mut disjunction_tests = 0;
+        let mut compiled = self.translate_pattern(
+            pattern,
+            generated_tests,
+            &mut disjunction_tests,
+            internal_slot_var_seed,
+            negated,
+        )?;
+        if first_test == generated_tests.len() {
+            compiled.negated = negated;
+            compiled.exists = exists;
+            return Ok(vec![CompilableCondition::Pattern(compiled)]);
+        }
+        // Preserve the explicitly unsupported general existential-expression
+        // boundary; this lowering is for connected field disjunctions, so any
+        // other generated test keeps the pattern unsupported.
+        if exists && generated_tests.len() - first_test != disjunction_tests {
+            return Err(LoadError::Compile(
+                "complex constraints inside existential patterns are not supported at match time"
+                    .to_owned(),
+            ));
+        }
+        // The positive child carries the predicates; the wrappers below come
+        // only from this call's quantifier, not from an inner `exists` that
+        // `translate_pattern` reports on the pattern itself.
+        compiled.negated = false;
+        compiled.exists = false;
+        let mut conditions = vec![CompilableCondition::Pattern(compiled)];
+        for index in first_test..generated_tests.len() {
+            let condition_index = test_condition_base
+                .checked_add(index)
+                .and_then(|index| u32::try_from(index).ok())
+                .ok_or_else(|| LoadError::Compile("too many test CEs in one rule".to_owned()))?;
+            embedded_generated_tests.insert(index);
+            conditions.push(CompilableCondition::Predicate { condition_index });
+        }
+        if negated {
+            conditions = vec![CompilableCondition::Ncc(conditions)];
+        }
+        if exists {
+            conditions = vec![CompilableCondition::Ncc(vec![CompilableCondition::Ncc(
+                conditions,
+            )])];
+        }
+        Ok(conditions)
     }
 
     /// Translate a single `Pattern` into a `CompilablePattern`.
@@ -4302,6 +4282,7 @@ impl Engine {
         &mut self,
         pattern: &Pattern,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
     ) -> Result<CompilablePattern, LoadError> {
@@ -4332,6 +4313,7 @@ impl Engine {
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
+                let mut alpha_disjunctions = Vec::new();
 
                 for (i, constraint) in ordered.constraints.iter().enumerate() {
                     let slot = SlotIndex::Ordered(i);
@@ -4343,11 +4325,23 @@ impl Engine {
                         &mut negated_variable_slots,
                         &mut seen_variable_slots,
                         generated_tests,
+                        disjunction_tests,
+                        &mut alpha_disjunctions,
                         &mut slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
                 }
+                self.fit_alpha_disjunctions(
+                    alpha_disjunctions,
+                    &mut constant_tests,
+                    &mut variable_slots,
+                    &mut seen_variable_slots,
+                    generated_tests,
+                    disjunction_tests,
+                    &mut slot_runtime_vars,
+                    internal_slot_var_seed,
+                )?;
 
                 let sequence = ordered
                     .constraints
@@ -4401,6 +4395,7 @@ impl Engine {
                 self.translate_pattern(
                     pattern,
                     generated_tests,
+                    disjunction_tests,
                     internal_slot_var_seed,
                     in_negated_pattern,
                 )
@@ -4408,7 +4403,13 @@ impl Engine {
             Pattern::Not(inner, _span) => {
                 // Unwrap the inner pattern and set negated flag
                 let mut compilable =
-                    self.translate_pattern(inner, generated_tests, internal_slot_var_seed, true)?;
+                    self.translate_pattern(
+                        inner,
+                        generated_tests,
+                        disjunction_tests,
+                        internal_slot_var_seed,
+                        true,
+                    )?;
                 compilable.negated = true;
                 Ok(compilable)
             }
@@ -4418,6 +4419,7 @@ impl Engine {
                     let mut compilable = self.translate_pattern(
                         &patterns[0],
                         generated_tests,
+                        disjunction_tests,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
@@ -4518,6 +4520,7 @@ impl Engine {
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
+                let mut alpha_disjunctions = Vec::new();
                 let mut segments = Vec::new();
                 let mut logical_offset = 0;
 
@@ -4548,6 +4551,8 @@ impl Engine {
                             &mut negated_variable_slots,
                             &mut seen_variable_slots,
                             generated_tests,
+                            disjunction_tests,
+                            &mut alpha_disjunctions,
                             &mut slot_runtime_vars,
                             internal_slot_var_seed,
                             in_negated_pattern,
@@ -4555,6 +4560,16 @@ impl Engine {
                         logical_offset += 1;
                     }
                 }
+                self.fit_alpha_disjunctions(
+                    alpha_disjunctions,
+                    &mut constant_tests,
+                    &mut variable_slots,
+                    &mut seen_variable_slots,
+                    generated_tests,
+                    disjunction_tests,
+                    &mut slot_runtime_vars,
+                    internal_slot_var_seed,
+                )?;
 
                 let sequence = needs_sequence.then(|| {
                     let tests = std::mem::take(&mut constant_tests);
@@ -4650,6 +4665,8 @@ impl Engine {
         negated_variable_slots: &mut Vec<(SlotIndex, ferric_rules_core::Symbol, JoinTestType)>,
         seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
+        alpha_disjunctions: &mut Vec<AlphaDisjunction>,
         slot_runtime_vars: &mut HashMap<SlotIndex, String>,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
@@ -4733,6 +4750,8 @@ impl Engine {
                         negated_variable_slots,
                         seen_variable_slots,
                         generated_tests,
+                        disjunction_tests,
+                        alpha_disjunctions,
                         slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4740,73 +4759,98 @@ impl Engine {
                 }
             }
             Constraint::Or(constraints, span) => {
-                // Try to compile as an EqualAny alpha test (all-literal case).
-                // For each sub-constraint, extract the literal value. If any
-                // sub-constraint is not a simple literal, fall back to processing
-                // each alternative — binding variables via the first variable branch.
-                let mut all_literal = true;
+                if constraints.is_empty() {
+                    return Err(Self::unsupported_constraint(
+                        "or",
+                        span,
+                        "or constraints require at least one alternative",
+                    ));
+                }
+                // Literal alternatives use the existing compact alpha test.
                 let mut keys = Vec::with_capacity(constraints.len());
                 for sub in constraints {
-                    if let Constraint::Literal(lit) = sub {
-                        if let Some(key) = self.literal_to_atom_key(&lit.value)? {
-                            keys.push(key);
-                        } else {
-                            all_literal = false;
-                            break;
-                        }
-                    } else {
-                        all_literal = false;
+                    let Constraint::Literal(lit) = sub else { break };
+                    let Some(key) = self.literal_to_atom_key(&lit.value)? else {
                         break;
-                    }
+                    };
+                    keys.push(key);
                 }
-
-                if all_literal && !keys.is_empty() {
+                if keys.len() == constraints.len() {
                     constant_tests.push(ConstantTest {
                         slot,
                         test_type: ConstantTestType::EqualAny(keys),
                     });
+                    return Ok(());
+                }
+
+                // Preserve each alternative as a conjunction, without leaking
+                // its bindings or comparisons into the other alternatives.
+                // Constant and same-fact comparisons can run in alpha memory,
+                // including inside not/exists and sequence plans. Every
+                // alternative is translated, so each one is held to the same
+                // restrictions as a standalone constraint in this position,
+                // whatever its order.
+                let mut alternatives = Vec::with_capacity(constraints.len());
+                let mut alpha_only = true;
+                for sub in constraints {
+                    let mut tests = Vec::new();
+                    let mut vars = variable_slots.clone();
+                    let mut joins = Vec::new();
+                    let mut seen = seen_variable_slots.clone();
+                    let mut predicates = Vec::new();
+                    let mut runtime_vars = slot_runtime_vars.clone();
+                    self.translate_constraint(
+                        sub,
+                        slot,
+                        &mut tests,
+                        &mut vars,
+                        &mut joins,
+                        &mut seen,
+                        &mut predicates,
+                        &mut 0,
+                        &mut Vec::new(),
+                        &mut runtime_vars,
+                        internal_slot_var_seed,
+                        in_negated_pattern,
+                    )?;
+                    if vars != *variable_slots || !joins.is_empty() || !predicates.is_empty() {
+                        alpha_only = false;
+                    } else if alpha_only {
+                        alternatives.push(tests);
+                    }
+                }
+                let candidate = ConstantTest {
+                    slot,
+                    test_type: ConstantTestType::Any(alternatives),
+                };
+                // A field too wide for the alpha path budget is evaluated as
+                // one match-time predicate instead of failing to load. Later
+                // fields can still exceed the budget, so the pattern rechecks
+                // it once all of its fields are translated.
+                let fits_alpha_budget = ferric_rules_core::alpha::constant_test_count(
+                    constant_tests,
+                )
+                .saturating_add(ferric_rules_core::alpha::constant_test_count(
+                    std::slice::from_ref(&candidate),
+                )) <= ferric_rules_core::compiler::MAX_ALPHA_TESTS;
+                if alpha_only && fits_alpha_budget {
+                    alpha_disjunctions.push(AlphaDisjunction {
+                        index: constant_tests.len(),
+                        slot,
+                        constraint: constraint.clone(),
+                        generated_at: generated_tests.len(),
+                    });
+                    constant_tests.push(candidate);
                 } else {
-                    // Mixed or-constraint with variables: bind the first variable
-                    // branch and skip others. This is a simplification — full
-                    // semantics would require backtracking.
-                    let mut found_var = false;
-                    for sub in constraints {
-                        match sub {
-                            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _)
-                                if !found_var =>
-                            {
-                                self.translate_variable_constraint(
-                                    name,
-                                    slot,
-                                    constant_tests,
-                                    variable_slots,
-                                    seen_variable_slots,
-                                )?;
-                                found_var = true;
-                            }
-                            Constraint::Literal(lit) if !found_var => {
-                                if let Some(key) = self.literal_to_atom_key(&lit.value)? {
-                                    constant_tests.push(ConstantTest {
-                                        slot,
-                                        test_type: ConstantTestType::Equal(key),
-                                    });
-                                    found_var = true;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    if !found_var && constraints.is_empty() {
-                        return Err(Self::unsupported_constraint(
-                            "or",
-                            span,
-                            "or constraints require at least one alternative",
-                        ));
-                    }
-                    // If !found_var but constraints is non-empty, all alternatives
-                    // are wildcards/predicates — no alpha-level filtering needed.
-                    // Predicate constraints have already been absorbed as wildcards
-                    // by the parser, so we just accept any value for this slot.
+                    let slot_var = self.ensure_slot_runtime_variable(
+                        slot,
+                        variable_slots,
+                        seen_variable_slots,
+                        slot_runtime_vars,
+                        internal_slot_var_seed,
+                    )?;
+                    generated_tests.push(self.constraint_runtime_expr(constraint, &slot_var)?);
+                    *disjunction_tests += 1;
                 }
             }
             Constraint::Predicate(expr, span) => {
@@ -4888,6 +4932,138 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Decide the alpha budget once the whole pattern is translated: while its
+    /// constant tests exceed `MAX_ALPHA_TESTS`, the widest alpha disjunctions
+    /// become match-time predicates. An alpha-only disjunction binds nothing,
+    /// so the swap leaves the pattern's bindings unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_alpha_disjunctions(
+        &mut self,
+        mut disjunctions: Vec<AlphaDisjunction>,
+        constant_tests: &mut Vec<ConstantTest>,
+        variable_slots: &mut Vec<(SlotIndex, ferric_rules_core::Symbol)>,
+        seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
+        generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
+        slot_runtime_vars: &mut HashMap<SlotIndex, String>,
+        internal_slot_var_seed: &mut usize,
+    ) -> Result<(), LoadError> {
+        use ferric_rules_core::alpha::constant_test_count;
+        use std::cmp::Reverse;
+        // Sequence plans split these tests between alpha selectors and
+        // sequence tests without changing the total, and the field-count
+        // test is added later and not counted, so this total is the budget.
+        let mut count = constant_test_count(constant_tests);
+        if count <= ferric_rules_core::compiler::MAX_ALPHA_TESTS {
+            return Ok(());
+        }
+        let size = |disjunction: &AlphaDisjunction| {
+            constant_test_count(std::slice::from_ref(&constant_tests[disjunction.index]))
+        };
+        disjunctions.sort_by_cached_key(|disjunction| Reverse(size(disjunction)));
+        let mut fallbacks = Vec::new();
+        for disjunction in disjunctions {
+            if count <= ferric_rules_core::compiler::MAX_ALPHA_TESTS {
+                break;
+            }
+            count -= size(&disjunction);
+            fallbacks.push(disjunction);
+        }
+        // Remove from the back so the recorded positions stay valid.
+        fallbacks.sort_by_key(|disjunction| Reverse(disjunction.index));
+        for disjunction in &fallbacks {
+            constant_tests.remove(disjunction.index);
+        }
+        // Insert later fields first so the predicates keep field order.
+        fallbacks.sort_by_key(|disjunction| Reverse((disjunction.generated_at, disjunction.index)));
+        for disjunction in fallbacks {
+            let slot_var = self.ensure_slot_runtime_variable(
+                disjunction.slot,
+                variable_slots,
+                seen_variable_slots,
+                slot_runtime_vars,
+                internal_slot_var_seed,
+            )?;
+            let test = self.constraint_runtime_expr(&disjunction.constraint, &slot_var)?;
+            generated_tests.insert(disjunction.generated_at, test);
+            *disjunction_tests += 1;
+        }
+        Ok(())
+    }
+
+    /// A connected constraint is a Boolean expression over one field. Variables
+    /// within alternatives reference existing bindings; only the leading binding
+    /// (outside the disjunction) introduces a variable.
+    fn constraint_runtime_expr(
+        &mut self,
+        constraint: &Constraint,
+        slot_var: &str,
+    ) -> Result<crate::evaluator::RuntimeExpr, LoadError> {
+        use crate::evaluator::RuntimeExpr;
+        let call = |name: &str, args| RuntimeExpr::Call {
+            name: name.to_owned(),
+            args,
+            span: None,
+        };
+        let field = || RuntimeExpr::BoundVar {
+            name: slot_var.to_owned(),
+            span: None,
+        };
+        Ok(match constraint {
+            Constraint::Literal(literal) => {
+                let value = crate::evaluator::from_action_expr(
+                    &ActionExpr::Literal(literal.clone()),
+                    &mut self.symbol_table,
+                    &self.config,
+                )
+                .map_err(|error| LoadError::Compile(format!("field constraint: {error}")))?;
+                call("eq", vec![field(), value])
+            }
+            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => call(
+                "eq",
+                vec![
+                    field(),
+                    RuntimeExpr::BoundVar {
+                        name: name.clone(),
+                        span: None,
+                    },
+                ],
+            ),
+            Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => {
+                RuntimeExpr::Literal(Value::Symbol(self.compile_symbol("TRUE")?))
+            }
+            Constraint::Not(inner, _) => {
+                call("not", vec![self.constraint_runtime_expr(inner, slot_var)?])
+            }
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                let args = parts
+                    .iter()
+                    .map(|part| self.constraint_runtime_expr(part, slot_var))
+                    .collect::<Result<Vec<_>, _>>()?;
+                call(
+                    if matches!(constraint, Constraint::And(..)) {
+                        "and"
+                    } else {
+                        "or"
+                    },
+                    args,
+                )
+            }
+            Constraint::Predicate(expr, _) | Constraint::ReturnValue(expr, _) => {
+                let value =
+                    crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
+                        .map_err(|error| {
+                            LoadError::Compile(format!("field constraint: {error}"))
+                        })?;
+                if matches!(constraint, Constraint::ReturnValue(..)) {
+                    call("eq", vec![field(), value])
+                } else {
+                    value
+                }
+            }
+        })
     }
 
     fn try_lower_simple_predicate_constraint(
@@ -6336,7 +6512,7 @@ mod tests {
     }
 
     #[test]
-    fn load_or_constraints_with_reused_variables_across_slots_compiles() {
+    fn field_alternatives_require_previously_bound_variables() {
         let mut engine = new_utf8_engine();
         let result = engine.load_str(
             r"
@@ -6348,13 +6524,15 @@ mod tests {
         );
 
         assert!(
-            result.is_ok(),
-            "reused vars inside mixed or-constraints should compile: {result:?}"
+            result.as_ref().is_err_and(|errors| errors
+                .iter()
+                .any(|error| { error.to_string().contains("referenced before being bound") })),
+            "alternatives cannot introduce variables: {result:?}"
         );
     }
 
     #[test]
-    fn or_constraint_distributes_mixed_branches_and_preserves_bindings() {
+    fn or_constraint_preserves_bindings_without_rule_duplication() {
         let mut engine = new_utf8_engine();
         load_ok(
             &mut engine,
@@ -6363,18 +6541,31 @@ mod tests {
               (v 2)
               (v 3))
             (defrule branchy
-              (v ?x&2|?x&~2)
+              (v ?x&2|?x&:(> ?x 1))
               =>
               (assert (hit ?x)))
             ",
         );
+        assert_eq!(engine.rules().len(), 1);
         engine.reset().unwrap();
 
+        // (v 2) satisfies both alternatives; a duplicated rule would fire
+        // for it twice.
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 2);
 
-        let hits = find_facts_by_relation(&engine, "hit");
-        assert_eq!(hits.len(), 2);
+        let mut hits: Vec<_> = find_facts_by_relation(&engine, "hit")
+            .into_iter()
+            .map(|handle| match engine.get_fact(handle).unwrap().unwrap() {
+                Fact::Ordered(ordered) => match ordered.fields.as_slice() {
+                    [Value::Integer(value)] => *value,
+                    fields => panic!("unexpected hit fields {fields:?}"),
+                },
+                Fact::Template(_) => panic!("expected ordered fact"),
+            })
+            .collect();
+        hits.sort_unstable();
+        assert_eq!(hits, [2, 3]);
     }
 
     #[test]
@@ -6776,6 +6967,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6820,6 +7013,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6857,6 +7052,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6894,6 +7091,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6908,6 +7107,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,

@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 2")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 3")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 2;
+const SCHEMA_VERSION: u16 = 3;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -134,7 +134,7 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 2.
+    bytes.push(0); // No optional capabilities in schema 3.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -1551,11 +1551,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-2 fixture: an ordered fact with three
-    /// splits and a template fact with six slot-segment splits, one fired.
+    /// Source of the committed schema-3 fixture: ordered and template splits,
+    /// one fired, plus dormant scalar and sequence field disjunctions.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-3.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -1634,12 +1634,42 @@ mod tests {
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 18);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(9))));
+        // The committed graph retains disjunctions in scalar and sequence
+        // constraints. Overlapping alternatives admit y once in either rule.
+        engine
+            .load_str("(assert (choice x) (choice y) (choice z) (choices x y z))")
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 4);
+        assert_eq!(engine.find_facts("accepted").unwrap().len(), 2);
+        assert_eq!(engine.find_facts("accepted-sequence").unwrap().len(), 2);
+        // Replacing a supporting sequence fact recreates only its two matches.
+        let choices = engine.find_facts("choices").unwrap()[0].0;
+        engine.retract(choices).unwrap();
+        engine.load_str("(assert (choices x y z))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        // New rules can share both kinds of restored disjunctive paths.
+        engine
+            .load_str(
+                "(defrule later-choice (choice ?v&~x|y) =>)
+                 (defrule later-choices (choices $? ?v&~x|y $?) =>)",
+            )
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 4);
         assert!(engine.action_diagnostics().is_empty());
     }
 
     #[test]
-    fn committed_schema_two_snapshot_resumes_pending_splits() {
+    fn committed_schema_two_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-2.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(2))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_three_snapshot_resumes_pending_splits_and_field_disjunctions() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-3.cbor");
         verify_split_resume(Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap());
     }
 
@@ -1653,11 +1683,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-2 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_two_fixture() {
+    #[ignore = "regenerates the committed schema-3 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_three_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-2.cbor");
+            .join("tests/fixtures/snapshots/schema-3.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

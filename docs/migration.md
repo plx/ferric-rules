@@ -68,18 +68,20 @@ multislot pattern holds a sequence of field constraints. In the core,
 `CompilablePattern` has a new `sequence` field, so struct literals need it
 (`sequence: None` for a pattern without multifield fields).
 
-## Pre-1.0 snapshot schema 2
+## Pre-1.0 snapshot schema 3
 
-Snapshots are written with schema 2, and schema 1 snapshots are rejected with
-`UnsupportedVersion(1)`: their compiled patterns did not check field counts.
-Restore an old snapshot with the version that produced it, export the
-application data, and assert it into a new engine; see
-[snapshots.md](snapshots.md).
+Snapshots are written with schema 3. Schema 2 snapshots are rejected with
+`UnsupportedVersion(2)`: their compiled graphs could expand field-level `|`
+constraints into rule variants with incorrect matching and firing behavior.
+Schema 1 snapshots remain rejected with `UnsupportedVersion(1)` because their
+compiled patterns did not check field counts. Restore an old snapshot with the
+version that produced it, export the application data, and assert it into a
+new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
-Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346 and #395 make these cases behave like
+CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -111,6 +113,11 @@ Programs that relied on the earlier behavior need changes:
   parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
   several field constraints such as `(color red green)`, and a slot that
   appears twice in one template pattern.
+- A variable must be bound before an `|` alternative uses it, so
+  `(item ?x|99)` and `(mnj (x ?x|?y) (y ?x|?y))` are now load errors, as in
+  CLIPS. `?x&a|b` binds `?x` for every alternative. Overlapping alternatives
+  no longer fire twice, and `not`, `exists` and `forall` test the whole
+  disjunction.
 
 ## Step 1: Check Feature Coverage
 
@@ -398,9 +405,9 @@ constraints, general static type inference, or dynamic constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 2); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 3); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned and schema-1 snapshots are rejected explicitly. Export durable
+  unversioned, schema-1 and schema-2 snapshots are rejected explicitly. Export durable
   application data through the producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.

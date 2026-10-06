@@ -237,16 +237,33 @@ fn fact_value_cost(fact: &Fact, work: &mut Work) -> Result<usize, String> {
     Ok(value_cost)
 }
 
+/// Work to traverse a constant test, including every alternative.
+fn constant_test_cost(test: &crate::alpha::ConstantTest) -> usize {
+    let mut pending = vec![test];
+    let mut cost = 0_usize;
+    while let Some(test) = pending.pop() {
+        cost = cost.saturating_add(1);
+        match &test.test_type {
+            ConstantTestType::EqualAny(values) => cost = cost.saturating_add(values.len()),
+            ConstantTestType::Any(branches) => {
+                cost = cost.saturating_add(branches.len());
+                pending.extend(branches.iter().flatten());
+            }
+            ConstantTestType::Sequence(plan) => {
+                cost = cost.saturating_add(plan.logical_width() + plan.segments.len());
+                pending.extend(&plan.tests);
+            }
+            _ => {}
+        }
+    }
+    cost
+}
+
 /// Work to view one split and run its tests, before any capture is copied.
 fn split_cost(sequence: &SequencePattern, tests: &[JoinTest]) -> usize {
     sequence.tests.iter().fold(
         sequence.logical_width() + sequence.segments.len() + tests.len() + 1,
-        |cost, test| {
-            cost.saturating_add(match &test.test_type {
-                ConstantTestType::EqualAny(values) => values.len(),
-                _ => 1,
-            })
-        },
+        |cost, test| cost.saturating_add(constant_test_cost(test)),
     )
 }
 
@@ -308,8 +325,12 @@ fn sequence_tests_read_captures(sequence: &SequencePattern) -> bool {
             .get(index)
             .is_some_and(|field| **field == crate::sequence::SequenceField::Multi)
     };
-    sequence.tests.iter().any(|test| {
-        capture(test.slot)
+    let mut pending: Vec<_> = sequence.tests.iter().collect();
+    while let Some(test) = pending.pop() {
+        if let ConstantTestType::Any(branches) = &test.test_type {
+            pending.extend(branches.iter().flatten());
+        }
+        if capture(test.slot)
             || matches!(
                 test.test_type,
                 ConstantTestType::EqualSlot(slot)
@@ -322,7 +343,11 @@ fn sequence_tests_read_captures(sequence: &SequencePattern) -> bool {
                     | ConstantTestType::LessOrEqualSlotOffset(slot, _)
                     if capture(slot)
             )
-    })
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Bindings a join token must carry for the fields of its fact or split.
@@ -347,14 +372,7 @@ fn validate_sequence_plan(
     symbols: &SymbolTable,
     work: &mut Work,
 ) -> Result<(), String> {
-    work.spend(
-        sequence.logical_width()
-            + sequence.segments.len()
-            + sequence.tests.len()
-            + tests.len()
-            + bindings.len()
-            + 1,
-    )?;
+    work.spend(split_cost(sequence, tests).saturating_add(bindings.len()))?;
     sequence.validate()?;
     let valid_slot = sequence.logical_slot_validator();
     require!(
@@ -393,25 +411,36 @@ fn validate_constant(
     symbols: &SymbolTable,
 ) -> Result<(), String> {
     use crate::alpha::ConstantTestType as Test;
-    match &test.test_type {
-        Test::Equal(value)
-        | Test::NotEqual(value)
-        | Test::GreaterThan(value)
-        | Test::LessThan(value)
-        | Test::GreaterOrEqual(value)
-        | Test::LessOrEqual(value) => symbols.validate_snapshot_value(&value.to_value())?,
-        Test::EqualAny(values) => {
-            for value in values {
-                symbols.validate_snapshot_value(&value.to_value())?;
+    require!(
+        crate::alpha::constant_test_count(std::slice::from_ref(test)) <= MAX_ALPHA_DEPTH,
+        "snapshot constant constraint exceeds 64 tests"
+    );
+    let mut pending = vec![(test, false)];
+    while let Some((test, nested)) = pending.pop() {
+        match &test.test_type {
+            Test::Equal(value)
+            | Test::NotEqual(value)
+            | Test::GreaterThan(value)
+            | Test::LessThan(value)
+            | Test::GreaterOrEqual(value)
+            | Test::LessOrEqual(value) => symbols.validate_snapshot_value(&value.to_value())?,
+            Test::EqualAny(values) => {
+                for value in values {
+                    symbols.validate_snapshot_value(&value.to_value())?;
+                }
             }
-        }
-        Test::Sequence(plan) => {
-            plan.validate()?;
-            for test in &plan.tests {
-                validate_constant(test, symbols)?;
+            Test::Any(branches) => {
+                pending.extend(branches.iter().flatten().map(|test| (test, true)));
             }
+            Test::Sequence(plan) if !nested => {
+                plan.validate()?;
+                pending.extend(plan.tests.iter().map(|test| (test, true)));
+            }
+            Test::OrderedFieldCount { .. } | Test::Sequence(_) if nested => {
+                return Err("field disjunction contains a whole-fact constraint".to_string());
+            }
+            _ => {}
         }
-        _ => {}
     }
     Ok(())
 }
@@ -979,7 +1008,13 @@ impl ReteNetwork {
                     AlphaNode::ConstantTest { test, .. }
                         if matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
                 );
-                depths[child.0 as usize] = depths[index] + usize::from(!field_count_test);
+                let test_count = match &self.alpha.nodes[child.0 as usize] {
+                    AlphaNode::ConstantTest { test, .. } if !field_count_test => {
+                        crate::alpha::constant_test_count(std::slice::from_ref(test))
+                    }
+                    _ => 0,
+                };
+                depths[child.0 as usize] = depths[index].saturating_add(test_count);
                 field_count_depths[child.0 as usize] =
                     field_count_depths[index] + usize::from(field_count_test);
                 require!(
@@ -1044,7 +1079,9 @@ impl ReteNetwork {
                     self.alpha.nodes.get(node.0 as usize)
                 {
                     match &test.test_type {
-                        ConstantTestType::EqualAny(values) => work.spend(values.len())?,
+                        ConstantTestType::EqualAny(_) | ConstantTestType::Any(_) => {
+                            work.spend(constant_test_cost(test))?;
+                        }
                         // Charge the split search the test itself repeats.
                         ConstantTestType::Sequence(plan) => {
                             any_sequence_match(&entry.fact, None, &[], plan, work)?;
@@ -1700,11 +1737,7 @@ impl crate::compiler::ReteCompiler {
                 .flatten()
                 .ok_or("cached alpha memory lacks owner")?;
             for expected in key.tests.iter().rev() {
-                work.spend(match &expected.test_type {
-                    ConstantTestType::EqualAny(values) => values.len() + 1,
-                    ConstantTestType::Sequence(plan) => plan.tests.len() + plan.logical_width() + 1,
-                    _ => 1,
-                })?;
+                work.spend(constant_test_cost(expected))?;
                 require!(
                     matches!(rete.alpha.nodes.get(id.0 as usize), Some(AlphaNode::ConstantTest { test, .. }) if test == expected),
                     "cached alpha test mismatch"
@@ -1743,6 +1776,88 @@ impl crate::compiler::ReteCompiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_disjunction_checks_nested_constants_and_limits() {
+        use crate::alpha::{ConstantTest, SlotIndex};
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Any(vec![vec![ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Equal(crate::value::AtomKey::String(
+                    crate::string::FerricString::Ascii(Box::new([0xff])),
+                )),
+            }]]),
+        };
+        assert!(validate_constant(&test, &SymbolTable::new())
+            .unwrap_err()
+            .contains("invalid ASCII string"));
+        let mut deep = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(0)),
+        };
+        for _ in 0..MAX_ALPHA_DEPTH {
+            deep = ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Any(vec![vec![deep]]),
+            };
+        }
+        assert!(validate_constant(&deep, &SymbolTable::new())
+            .unwrap_err()
+            .contains("exceeds 64 tests"));
+    }
+
+    #[test]
+    fn snapshot_sequence_disjunction_charges_nested_alternatives() {
+        use crate::alpha::{ConstantTest, SlotIndex};
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+        let mut symbols = SymbolTable::new();
+        let fact = Fact::Ordered(crate::fact::OrderedFact {
+            relation: symbols
+                .intern_symbol("row", crate::StringEncoding::Ascii)
+                .unwrap(),
+            fields: smallvec::smallvec![Value::Integer(0)],
+        });
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::EqualAny(vec![crate::value::AtomKey::Integer(-1); 100]),
+        };
+        let plan = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![SequenceField::Single],
+            }],
+            tests: vec![ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Any(vec![vec![test.clone()], vec![test]]),
+            }],
+        };
+        assert_eq!(
+            any_sequence_match(&fact, None, &[], &plan, &mut Work(100)).unwrap_err(),
+            "snapshot validation work limit exceeded"
+        );
+        assert!(!any_sequence_match(&fact, None, &[], &plan, &mut Work(1000)).unwrap());
+    }
+
+    #[test]
+    fn snapshot_sequence_disjunction_detects_nested_capture_reads() {
+        use crate::alpha::{ConstantTest, SlotIndex};
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+        let plan = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![SequenceField::Single, SequenceField::Multi],
+            }],
+            tests: vec![ConstantTest {
+                slot: SlotIndex::Ordered(0),
+                test_type: ConstantTestType::Any(vec![vec![ConstantTest {
+                    slot: SlotIndex::Ordered(0),
+                    test_type: ConstantTestType::EqualSlot(SlotIndex::Ordered(1)),
+                }]]),
+            }],
+        };
+        assert!(sequence_tests_read_captures(&plan));
+    }
 
     #[test]
     fn rejected_template_cartesian_candidates_consume_snapshot_work() {

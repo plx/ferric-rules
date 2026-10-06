@@ -9,7 +9,8 @@ use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
 use crate::alpha::{
-    AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, ConstantTestType, SlotIndex,
+    constant_test_count, AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest,
+    ConstantTestType, SlotIndex,
 };
 use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
@@ -561,17 +562,19 @@ impl ReteCompiler {
     fn validate_pattern_tests(pattern: &CompilablePattern) -> Result<(), CompileError> {
         Self::validate_alpha_test_count(&pattern.constant_tests)?;
         if let Some(sequence) = &pattern.sequence {
-            Self::check_limit("sequence tests", sequence.tests.len(), MAX_ALPHA_TESTS)?;
-            let alpha_value_tests = pattern
-                .constant_tests
-                .iter()
-                .filter(|test| {
-                    !matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
-                })
-                .count();
+            let sequence_test_count = constant_test_count(&sequence.tests);
+            Self::check_limit("sequence tests", sequence_test_count, MAX_ALPHA_TESTS)?;
+            let alpha_value_tests = constant_test_count(&pattern.constant_tests)
+                - pattern
+                    .constant_tests
+                    .iter()
+                    .filter(|test| {
+                        matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                    })
+                    .count();
             Self::check_limit(
                 "alpha tests",
-                alpha_value_tests + sequence.tests.len(),
+                alpha_value_tests.saturating_add(sequence_test_count),
                 MAX_ALPHA_TESTS,
             )?;
             let valid_slot = sequence.logical_slot_validator();
@@ -608,9 +611,31 @@ impl ReteCompiler {
         Self::check_limit("ordered field-count tests", field_count_tests, 1)?;
         Self::check_limit(
             "alpha tests",
-            tests.len() - field_count_tests,
+            constant_test_count(tests) - field_count_tests,
             MAX_ALPHA_TESTS,
-        )
+        )?;
+        let mut pending: Vec<_> = tests.iter().map(|test| (test, false)).collect();
+        while let Some((test, nested)) = pending.pop() {
+            match &test.test_type {
+                ConstantTestType::Any(branches) => {
+                    pending.extend(branches.iter().flatten().map(|test| (test, true)));
+                }
+                ConstantTestType::OrderedFieldCount { .. } | ConstantTestType::Sequence(_)
+                    if nested =>
+                {
+                    return Err(CompileError::Validation(vec![PatternValidationError::new(
+                        PatternViolation::UnsupportedNestingCombination {
+                            description: "field disjunction contains a whole-fact constraint"
+                                .to_string(),
+                        },
+                        None,
+                        ValidationStage::ReteCompilation,
+                    )]));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn check_limit(
@@ -1642,6 +1667,39 @@ mod tests {
 
         // Should share alpha memory
         assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
+    }
+
+    #[test]
+    fn field_disjunction_counts_nested_tests_toward_alpha_limits() {
+        let leaf = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(42)),
+        };
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Any(vec![vec![leaf; MAX_ALPHA_TESTS]]),
+        };
+        assert!(matches!(
+            ReteCompiler::validate_alpha_test_count(&[test]),
+            Err(CompileError::ResourceLimit {
+                resource: "alpha tests",
+                required: 65,
+                limit: 64
+            })
+        ));
+        let mut test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::Any(vec![vec![]; MAX_ALPHA_TESTS]),
+        };
+        assert!(ReteCompiler::validate_alpha_test_count(std::slice::from_ref(&test)).is_err());
+        test.test_type = ConstantTestType::Any(vec![vec![ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::OrderedFieldCount { min: 0, max: None },
+        }]]);
+        assert!(matches!(
+            ReteCompiler::validate_alpha_test_count(&[test]),
+            Err(CompileError::Validation(_))
+        ));
     }
 
     #[test]
