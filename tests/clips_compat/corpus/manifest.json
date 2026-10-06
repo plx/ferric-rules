@@ -2004,6 +2004,20 @@
       ]
     },
     {
+      "path": "patterns/111_field_disjunction_not_exists_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "exists",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [

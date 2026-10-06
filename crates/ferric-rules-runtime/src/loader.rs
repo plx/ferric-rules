@@ -4262,6 +4262,11 @@ impl Engine {
                     .to_owned(),
             ));
         }
+        // The positive child carries the predicates; the wrappers below come
+        // only from this call's quantifier, not from an inner `exists` that
+        // `translate_pattern` reports on the pattern itself.
+        compiled.negated = false;
+        compiled.exists = false;
         let mut conditions = vec![CompilableCondition::Pattern(compiled)];
         for index in first_test..generated_tests.len() {
             let condition_index = test_condition_base

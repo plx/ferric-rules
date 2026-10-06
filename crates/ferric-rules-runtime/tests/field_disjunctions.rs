@@ -167,3 +167,29 @@ fn disjunctions_keep_the_explicit_complex_negative_constraint_boundary() {
         .contains("complex constraints inside negated patterns")));
     assert!(engine.rules().is_empty());
 }
+
+#[test]
+fn negated_exists_over_a_disjunction_compiles_to_one_rule() {
+    let mut engine = Engine::with_rules(
+        "(defrule select (key ?k) (not (exists (item ?k|99)))
+           => (printout t ?k crlf))",
+    )
+    .unwrap();
+    assert_eq!(engine.rules(), [("select", 0)]);
+    engine.assert_ordered("key", [Value::Integer(1)]).unwrap();
+    engine.assert_ordered("key", [Value::Integer(2)]).unwrap();
+    let support = engine.assert_ordered("item", [Value::Integer(2)]).unwrap();
+    fire(&mut engine, 1);
+    assert_eq!(engine.get_output("t"), Some("1\n"));
+
+    // The literal alternative supports every key; removing the variable
+    // witness alone must not unblock its key.
+    let shared = engine.assert_ordered("item", [Value::Integer(99)]).unwrap();
+    engine.retract(support).unwrap();
+    fire(&mut engine, 0);
+    engine.retract(shared).unwrap();
+    fire(&mut engine, 2);
+    let mut keys: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["1", "1", "2"]);
+}
