@@ -6517,6 +6517,21 @@
         "deffunction",
         "defglobal"
       ]
+    },
+    {
+      "path": "stdlib/245_format_output_nested_body_direct_write.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "if",
+        "loop-for-count",
+        "while",
+        "switch",
+        "do-for-all-facts",
+        "list-focus-stack"
+      ]
     }
   ]
 }
