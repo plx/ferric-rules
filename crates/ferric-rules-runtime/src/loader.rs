@@ -4789,11 +4789,21 @@ impl Engine {
                         alternatives.push(tests);
                     }
                 }
-                if alpha_only {
-                    constant_tests.push(ConstantTest {
-                        slot,
-                        test_type: ConstantTestType::Any(alternatives),
-                    });
+                let candidate = alpha_only.then(|| ConstantTest {
+                    slot,
+                    test_type: ConstantTestType::Any(alternatives),
+                });
+                // A field too wide for the alpha path budget is evaluated as
+                // one match-time predicate instead of failing to load.
+                let candidate = candidate.filter(|candidate| {
+                    ferric_rules_core::alpha::constant_test_count(constant_tests).saturating_add(
+                        ferric_rules_core::alpha::constant_test_count(std::slice::from_ref(
+                            candidate,
+                        )),
+                    ) <= ferric_rules_core::compiler::MAX_ALPHA_TESTS
+                });
+                if let Some(candidate) = candidate {
+                    constant_tests.push(candidate);
                 } else {
                     let slot_var = self.ensure_slot_runtime_variable(
                         slot,

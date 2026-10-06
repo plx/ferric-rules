@@ -234,3 +234,23 @@ fn every_alternative_keeps_the_restrictions_of_its_position() {
         );
     }
 }
+
+#[test]
+fn a_field_wider_than_the_alpha_budget_still_loads_as_one_rule() {
+    // `~0` plus 64 literals needs 66 alpha test nodes as one compound test.
+    let alternatives = std::iter::once("~0".to_owned())
+        .chain((1..=64).map(|index| index.to_string()))
+        .collect::<Vec<_>>()
+        .join("|");
+    for (condition, fires) in [
+        (format!("(sym {alternatives})"), 1),
+        (format!("(go) (not (sym {alternatives}))"), 0),
+    ] {
+        let mut engine =
+            Engine::with_rules(&format!("(defrule select {condition} =>)")).unwrap();
+        assert_eq!(engine.rules(), [("select", 0)]);
+        engine.assert_ordered("go", Vec::<Value>::new()).unwrap();
+        engine.assert_ordered("sym", [Value::Integer(99)]).unwrap();
+        fire(&mut engine, fires);
+    }
+}

@@ -2018,6 +2018,18 @@
       ]
     },
     {
+      "path": "patterns/112_field_disjunction_wide_mixed_alternatives.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
