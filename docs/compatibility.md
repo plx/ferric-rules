@@ -915,8 +915,10 @@ Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
 exponents such as `5e` are single symbols. Source integers outside the signed
 64-bit range saturate too, but the source lexer has no warning channel and
-does not emit the `[SCANNER1]` notice. Comments end at CR or LF, including
-files that use CR-only line endings.
+does not emit the `[SCANNER1]` notice. This includes `load-facts` at run
+time, where CLIPS prints that warning within the program's output for each
+overflowing integer and Ferric prints nothing. Comments end at CR or LF,
+including files that use CR-only line endings.
 
 ### Multifield Functions
 
