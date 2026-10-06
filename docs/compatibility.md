@@ -233,6 +233,10 @@ including all commonly used conditional elements and RHS actions.
 | `\|` | Disjunction | `(color red\|blue)` |
 | `&` | Conjunction | `(value ?x&~0)` |
 
+Precedence is `~` > `&` > `|`, except that a leading `?x&` binds over the
+rest of the field: `?x&a|b` means `?x&(a|b)`. Variables used inside
+alternatives must already be bound.
+
 ### Conflict Resolution Strategies
 
 Depth and breadth are the supported CLIPS ordering strategies. The host API
@@ -456,11 +460,10 @@ and disjunction expansion use checked, conservative work estimates: at most
 256 CE alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
 expanded source per rule. Both normalization passes also share a per-load
 budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
-does not count field-level `|` constraints as rule alternatives: each field
-disjunction is evaluated once, including inside `not`, `exists`, and `forall`.
-A leading `?x&` binds over all alternatives (`?x&a|b` means `?x&(a|b)`).
-The estimate may reject an unusually redundant `or` CE expression that could
-be optimized to less work; Ferric does not perform that optimization implicitly.
+does not count field-level `|` constraints, which compile to one test on
+their field rather than to rule alternatives. The estimate may reject an
+unusually redundant `or` CE expression that could be optimized to less work;
+Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant

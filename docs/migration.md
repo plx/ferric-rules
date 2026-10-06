@@ -80,8 +80,8 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
-Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346 and #395 make these cases behave like
+CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -113,6 +113,11 @@ Programs that relied on the earlier behavior need changes:
   parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
   several field constraints such as `(color red green)`, and a slot that
   appears twice in one template pattern.
+- A variable must be bound before an `|` alternative uses it, so
+  `(item ?x|99)` and `(mnj (x ?x|?y) (y ?x|?y))` are now load errors, as in
+  CLIPS. `?x&a|b` binds `?x` for every alternative. Overlapping alternatives
+  no longer fire twice, and `not`, `exists` and `forall` test the whole
+  disjunction.
 
 ## Step 1: Check Feature Coverage
 
