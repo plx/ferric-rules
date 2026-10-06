@@ -249,6 +249,17 @@ struct PreparedRuleInstallation {
     module: crate::modules::ModuleId,
 }
 
+/// A field disjunction compiled as one alpha `Any` test, kept so the pattern
+/// can move it to a match-time predicate if its alpha path is over budget.
+struct AlphaDisjunction {
+    /// Position of the `Any` test in the pattern's constant tests.
+    index: usize,
+    slot: SlotIndex,
+    constraint: Constraint,
+    /// Where its predicate goes among the generated tests, in field order.
+    generated_at: usize,
+}
+
 struct RuleRhsScope<'a> {
     exported: &'a HashSet<String>,
     existential: &'a HashSet<String>,
@@ -4302,6 +4313,7 @@ impl Engine {
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
+                let mut alpha_disjunctions = Vec::new();
 
                 for (i, constraint) in ordered.constraints.iter().enumerate() {
                     let slot = SlotIndex::Ordered(i);
@@ -4314,11 +4326,22 @@ impl Engine {
                         &mut seen_variable_slots,
                         generated_tests,
                         disjunction_tests,
+                        &mut alpha_disjunctions,
                         &mut slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
                 }
+                self.fit_alpha_disjunctions(
+                    alpha_disjunctions,
+                    &mut constant_tests,
+                    &mut variable_slots,
+                    &mut seen_variable_slots,
+                    generated_tests,
+                    disjunction_tests,
+                    &mut slot_runtime_vars,
+                    internal_slot_var_seed,
+                )?;
 
                 let sequence = ordered
                     .constraints
@@ -4497,6 +4520,7 @@ impl Engine {
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
+                let mut alpha_disjunctions = Vec::new();
                 let mut segments = Vec::new();
                 let mut logical_offset = 0;
 
@@ -4528,6 +4552,7 @@ impl Engine {
                             &mut seen_variable_slots,
                             generated_tests,
                             disjunction_tests,
+                            &mut alpha_disjunctions,
                             &mut slot_runtime_vars,
                             internal_slot_var_seed,
                             in_negated_pattern,
@@ -4535,6 +4560,16 @@ impl Engine {
                         logical_offset += 1;
                     }
                 }
+                self.fit_alpha_disjunctions(
+                    alpha_disjunctions,
+                    &mut constant_tests,
+                    &mut variable_slots,
+                    &mut seen_variable_slots,
+                    generated_tests,
+                    disjunction_tests,
+                    &mut slot_runtime_vars,
+                    internal_slot_var_seed,
+                )?;
 
                 let sequence = needs_sequence.then(|| {
                     let tests = std::mem::take(&mut constant_tests);
@@ -4631,6 +4666,7 @@ impl Engine {
         seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
         disjunction_tests: &mut usize,
+        alpha_disjunctions: &mut Vec<AlphaDisjunction>,
         slot_runtime_vars: &mut HashMap<SlotIndex, String>,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
@@ -4715,6 +4751,7 @@ impl Engine {
                         seen_variable_slots,
                         generated_tests,
                         disjunction_tests,
+                        alpha_disjunctions,
                         slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4771,6 +4808,7 @@ impl Engine {
                         &mut seen,
                         &mut predicates,
                         &mut 0,
+                        &mut Vec::new(),
                         &mut runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4786,7 +4824,9 @@ impl Engine {
                     test_type: ConstantTestType::Any(alternatives),
                 };
                 // A field too wide for the alpha path budget is evaluated as
-                // one match-time predicate instead of failing to load.
+                // one match-time predicate instead of failing to load. Later
+                // fields can still exceed the budget, so the pattern rechecks
+                // it once all of its fields are translated.
                 let fits_alpha_budget = ferric_rules_core::alpha::constant_test_count(
                     constant_tests,
                 )
@@ -4794,6 +4834,12 @@ impl Engine {
                     std::slice::from_ref(&candidate),
                 )) <= ferric_rules_core::compiler::MAX_ALPHA_TESTS;
                 if alpha_only && fits_alpha_budget {
+                    alpha_disjunctions.push(AlphaDisjunction {
+                        index: constant_tests.len(),
+                        slot,
+                        constraint: constraint.clone(),
+                        generated_at: generated_tests.len(),
+                    });
                     constant_tests.push(candidate);
                 } else {
                     let slot_var = self.ensure_slot_runtime_variable(
@@ -4884,6 +4930,65 @@ impl Engine {
                     span: None,
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Decide the alpha budget once the whole pattern is translated: while its
+    /// constant tests exceed `MAX_ALPHA_TESTS`, the widest alpha disjunctions
+    /// become match-time predicates. An alpha-only disjunction binds nothing,
+    /// so the swap leaves the pattern's bindings unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_alpha_disjunctions(
+        &mut self,
+        mut disjunctions: Vec<AlphaDisjunction>,
+        constant_tests: &mut Vec<ConstantTest>,
+        variable_slots: &mut Vec<(SlotIndex, ferric_rules_core::Symbol)>,
+        seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
+        generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
+        slot_runtime_vars: &mut HashMap<SlotIndex, String>,
+        internal_slot_var_seed: &mut usize,
+    ) -> Result<(), LoadError> {
+        use ferric_rules_core::alpha::constant_test_count;
+        use std::cmp::Reverse;
+        // Sequence plans split these tests between alpha selectors and
+        // sequence tests without changing the total, and the field-count
+        // test is added later and not counted, so this total is the budget.
+        let mut count = constant_test_count(constant_tests);
+        if count <= ferric_rules_core::compiler::MAX_ALPHA_TESTS {
+            return Ok(());
+        }
+        let size = |disjunction: &AlphaDisjunction| {
+            constant_test_count(std::slice::from_ref(&constant_tests[disjunction.index]))
+        };
+        disjunctions.sort_by_cached_key(|disjunction| Reverse(size(disjunction)));
+        let mut fallbacks = Vec::new();
+        for disjunction in disjunctions {
+            if count <= ferric_rules_core::compiler::MAX_ALPHA_TESTS {
+                break;
+            }
+            count -= size(&disjunction);
+            fallbacks.push(disjunction);
+        }
+        // Remove from the back so the recorded positions stay valid.
+        fallbacks.sort_by_key(|disjunction| Reverse(disjunction.index));
+        for disjunction in &fallbacks {
+            constant_tests.remove(disjunction.index);
+        }
+        // Insert later fields first so the predicates keep field order.
+        fallbacks.sort_by_key(|disjunction| Reverse((disjunction.generated_at, disjunction.index)));
+        for disjunction in fallbacks {
+            let slot_var = self.ensure_slot_runtime_variable(
+                disjunction.slot,
+                variable_slots,
+                seen_variable_slots,
+                slot_runtime_vars,
+                internal_slot_var_seed,
+            )?;
+            let test = self.constraint_runtime_expr(&disjunction.constraint, &slot_var)?;
+            generated_tests.insert(disjunction.generated_at, test);
+            *disjunction_tests += 1;
         }
         Ok(())
     }
@@ -6863,6 +6968,7 @@ mod tests {
                 &mut seen_variable_slots,
                 &mut generated_tests,
                 &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6908,6 +7014,7 @@ mod tests {
                 &mut seen_variable_slots,
                 &mut generated_tests,
                 &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6946,6 +7053,7 @@ mod tests {
                 &mut seen_variable_slots,
                 &mut generated_tests,
                 &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6984,6 +7092,7 @@ mod tests {
                 &mut seen_variable_slots,
                 &mut generated_tests,
                 &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6999,6 +7108,7 @@ mod tests {
                 &mut seen_variable_slots,
                 &mut generated_tests,
                 &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,

@@ -257,6 +257,45 @@ fn a_field_wider_than_the_alpha_budget_still_loads_as_one_rule() {
 }
 
 #[test]
+fn a_later_field_cannot_push_an_alpha_disjunction_over_budget() {
+    // `~0` plus 62 literals fills the 64-test alpha budget on its own, so the
+    // later field's test must move the disjunction to a match-time predicate.
+    let alternatives = std::iter::once("~0".to_owned())
+        .chain((1..=62).map(|index| index.to_string()))
+        .collect::<Vec<_>>()
+        .join("|");
+    for (rules, fact) in [
+        (
+            format!("(defrule select (sym {alternatives} x) =>)"),
+            "(sym 99 x)",
+        ),
+        (
+            format!(
+                "(deftemplate t (slot a) (slot b))
+                 (defrule select (t (a {alternatives}) (b x)) =>)"
+            ),
+            "(t (a 99) (b x))",
+        ),
+        (
+            format!("(defrule select (sym ?v&{alternatives} ?w&~z) =>)"),
+            "(sym 99 x)",
+        ),
+        (
+            format!("(defrule select (go) (not (sym {alternatives} x)) =>)"),
+            "(sym 0 x)",
+        ),
+    ] {
+        let mut engine = Engine::with_rules(&rules).unwrap();
+        assert_eq!(engine.rules(), [("select", 0)], "{rules}");
+        engine
+            .load_str(&format!("(deffacts seed (go) {fact})"))
+            .unwrap();
+        engine.reset().unwrap();
+        fire(&mut engine, 1);
+    }
+}
+
+#[test]
 fn single_pattern_existentials_accept_only_disjunction_predicates() {
     // Other match-time predicates stay unsupported in a single-pattern
     // existential, whether or not an unrelated field has alternatives.
