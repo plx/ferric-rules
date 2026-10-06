@@ -254,3 +254,31 @@ fn a_field_wider_than_the_alpha_budget_still_loads_as_one_rule() {
         fire(&mut engine, fires);
     }
 }
+
+#[test]
+fn single_pattern_existentials_accept_only_disjunction_predicates() {
+    // Other match-time predicates stay unsupported in a single-pattern
+    // existential, whether or not an unrelated field has alternatives.
+    for pattern in [
+        "(foo ?x&:(> (* ?x ?x) 4))",
+        "(foo ?x&:(> (* ?x ?x) 4) a|b)",
+        "(foo ?x&:(> (* ?x ?x) 4) ?k|99)",
+    ] {
+        for condition in [format!("(exists {pattern})"), format!("(not (not {pattern}))")] {
+            assert_load_error(
+                &format!("(defrule unsupported (key ?k) {condition} =>)"),
+                "complex constraints inside existential patterns",
+            );
+        }
+    }
+
+    let mut engine =
+        Engine::with_rules("(defrule select (key ?k) (exists (item ?k|99)) => (printout t ?k crlf))")
+            .unwrap();
+    assert_eq!(engine.rules(), [("select", 0)]);
+    engine.assert_ordered("key", [Value::Integer(1)]).unwrap();
+    engine.assert_ordered("key", [Value::Integer(2)]).unwrap();
+    engine.assert_ordered("item", [Value::Integer(2)]).unwrap();
+    fire(&mut engine, 1);
+    assert_eq!(engine.get_output("t"), Some("2\n"));
+}

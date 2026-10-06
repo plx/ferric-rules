@@ -3778,27 +3778,6 @@ impl Engine {
         }
     }
 
-    fn pattern_has_field_disjunction(pattern: &Pattern) -> bool {
-        fn has_or(constraint: &Constraint) -> bool {
-            match constraint {
-                Constraint::Or(..) => true,
-                Constraint::And(parts, _) => parts.iter().any(has_or),
-                Constraint::Not(inner, _) => has_or(inner),
-                _ => false,
-            }
-        }
-        match pattern {
-            Pattern::Ordered(pattern) => pattern.constraints.iter().any(has_or),
-            Pattern::Template(pattern) => pattern
-                .slot_constraints
-                .iter()
-                .flat_map(|slot| &slot.constraints)
-                .any(has_or),
-            Pattern::Assigned { pattern, .. } => Self::pattern_has_field_disjunction(pattern),
-            _ => false,
-        }
-    }
-
     /// Expand only a top-level `or` CE (possibly wrapped in a fact assignment).
     fn pattern_disjunction_options(pattern: &Pattern) -> Vec<Pattern> {
         match pattern {
@@ -3918,24 +3897,15 @@ impl Engine {
                 test_conditions.len(),
                 &mut embedded_generated_tests,
             )?;
-            if matches!(
-                &condition,
-                CompilableCondition::Pattern(compilable) if compilable.exists
-            ) && !generated_tests.is_empty()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside existential patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
-            if matches!(condition, CompilableCondition::Ncc(_))
-                && generated_tests.len() != embedded_generated_tests.len()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside NCC patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
+            // Quantified translation embeds every test it generates in its own
+            // subnetwork; only a plain positive pattern leaves tests to follow it.
+            debug_assert!(
+                matches!(
+                    &condition,
+                    CompilableCondition::Pattern(compilable)
+                        if !compilable.negated && !compilable.exists
+                ) || generated_tests.len() == embedded_generated_tests.len()
+            );
             if let Some(name) = var_name {
                 if !is_negated && Self::condition_has_fact_address(&condition) {
                     fact_address_vars.insert(name, fact_index);
@@ -4193,6 +4163,7 @@ impl Engine {
             _ => Ok(CompilableCondition::Pattern(self.translate_pattern(
                 pattern,
                 generated_tests,
+                &mut 0,
                 internal_slot_var_seed,
                 false,
             )?)),
@@ -4247,16 +4218,23 @@ impl Engine {
         embedded_generated_tests: &mut HashSet<usize>,
     ) -> Result<Vec<CompilableCondition>, LoadError> {
         let first_test = generated_tests.len();
-        let mut compiled =
-            self.translate_pattern(pattern, generated_tests, internal_slot_var_seed, negated)?;
+        let mut disjunction_tests = 0;
+        let mut compiled = self.translate_pattern(
+            pattern,
+            generated_tests,
+            &mut disjunction_tests,
+            internal_slot_var_seed,
+            negated,
+        )?;
         if first_test == generated_tests.len() {
             compiled.negated = negated;
             compiled.exists = exists;
             return Ok(vec![CompilableCondition::Pattern(compiled)]);
         }
         // Preserve the explicitly unsupported general existential-expression
-        // boundary; this lowering is for connected field disjunctions.
-        if exists && !Self::pattern_has_field_disjunction(pattern) {
+        // boundary; this lowering is for connected field disjunctions, so any
+        // other generated test keeps the pattern unsupported.
+        if exists && generated_tests.len() - first_test != disjunction_tests {
             return Err(LoadError::Compile(
                 "complex constraints inside existential patterns are not supported at match time"
                     .to_owned(),
@@ -4293,6 +4271,7 @@ impl Engine {
         &mut self,
         pattern: &Pattern,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
     ) -> Result<CompilablePattern, LoadError> {
@@ -4334,6 +4313,7 @@ impl Engine {
                         &mut negated_variable_slots,
                         &mut seen_variable_slots,
                         generated_tests,
+                        disjunction_tests,
                         &mut slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4392,6 +4372,7 @@ impl Engine {
                 self.translate_pattern(
                     pattern,
                     generated_tests,
+                    disjunction_tests,
                     internal_slot_var_seed,
                     in_negated_pattern,
                 )
@@ -4399,7 +4380,13 @@ impl Engine {
             Pattern::Not(inner, _span) => {
                 // Unwrap the inner pattern and set negated flag
                 let mut compilable =
-                    self.translate_pattern(inner, generated_tests, internal_slot_var_seed, true)?;
+                    self.translate_pattern(
+                        inner,
+                        generated_tests,
+                        disjunction_tests,
+                        internal_slot_var_seed,
+                        true,
+                    )?;
                 compilable.negated = true;
                 Ok(compilable)
             }
@@ -4409,6 +4396,7 @@ impl Engine {
                     let mut compilable = self.translate_pattern(
                         &patterns[0],
                         generated_tests,
+                        disjunction_tests,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
@@ -4539,6 +4527,7 @@ impl Engine {
                             &mut negated_variable_slots,
                             &mut seen_variable_slots,
                             generated_tests,
+                            disjunction_tests,
                             &mut slot_runtime_vars,
                             internal_slot_var_seed,
                             in_negated_pattern,
@@ -4641,6 +4630,7 @@ impl Engine {
         negated_variable_slots: &mut Vec<(SlotIndex, ferric_rules_core::Symbol, JoinTestType)>,
         seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
         slot_runtime_vars: &mut HashMap<SlotIndex, String>,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
@@ -4724,6 +4714,7 @@ impl Engine {
                         negated_variable_slots,
                         seen_variable_slots,
                         generated_tests,
+                        disjunction_tests,
                         slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4779,6 +4770,7 @@ impl Engine {
                         &mut joins,
                         &mut seen,
                         &mut predicates,
+                        &mut 0,
                         &mut runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4813,6 +4805,7 @@ impl Engine {
                         internal_slot_var_seed,
                     )?;
                     generated_tests.push(self.constraint_runtime_expr(constraint, &slot_var)?);
+                    *disjunction_tests += 1;
                 }
             }
             Constraint::Predicate(expr, span) => {
@@ -6857,6 +6850,7 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6901,6 +6895,7 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6938,6 +6933,7 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6975,6 +6971,7 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -6989,6 +6986,7 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,

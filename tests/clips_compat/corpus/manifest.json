@@ -2030,6 +2030,47 @@
       ]
     },
     {
+      "path": "patterns/113_complex_predicate_ncc_child.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not",
+        "and",
+        "ncc",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/114_complex_predicate_multi_exists.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/115_complex_predicate_forall_condition.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "forall",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
