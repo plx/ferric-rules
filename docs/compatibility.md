@@ -241,6 +241,10 @@ including all commonly used conditional elements and RHS actions.
 | `\|` | Disjunction | `(color red\|blue)` |
 | `&` | Conjunction | `(value ?x&~0)` |
 
+Precedence is `~` > `&` > `|`, except that a leading `?x&` binds over the
+rest of the field: `?x&a|b` means `?x&(a|b)`. Variables used inside
+alternatives must already be bound.
+
 ### Conflict Resolution Strategies
 
 Depth and breadth are the supported CLIPS ordering strategies. The host API
@@ -469,16 +473,17 @@ and disjunction expansion use checked, conservative work estimates: at most
 256 CE alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
 expanded source per rule. Both normalization passes also share a per-load
 budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
-does not count field-level `|` constraints as rule alternatives: each field
-disjunction is evaluated once, including inside `not`, `exists`, and `forall`.
-A leading `?x&` binds over all alternatives (`?x&a|b` means `?x&(a|b)`).
-The estimate may reject an unusually redundant `or` CE expression that could
-be optimized to less work; Ferric does not perform that optimization implicitly.
+does not count field-level `|` constraints, which compile to one test on
+their field rather than to rule alternatives. The estimate may reject an
+unusually redundant `or` CE expression that could be optimized to less work;
+Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant
-tests, including the children of compound field tests. These bounds keep
-recursive propagation practical without adding a resumable execution subsystem.
+tests, including the children of compound field tests. When a pattern's
+field disjunctions would take it past that alpha budget, the widest ones are
+evaluated as match-time predicates instead. These bounds keep recursive propagation practical without adding a
+resumable execution subsystem.
 Boundary regressions exercise combined alpha
 and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
 Over-limit constructs fail before installation; previously installed rules and
@@ -923,8 +928,10 @@ Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
 exponents such as `5e` are single symbols. Source integers outside the signed
 64-bit range saturate too, but the source lexer has no warning channel and
-does not emit the `[SCANNER1]` notice. Comments end at CR or LF, including
-files that use CR-only line endings.
+does not emit the `[SCANNER1]` notice. This includes `load-facts` at run
+time, where CLIPS prints that warning within the program's output for each
+overflowing integer and Ferric prints nothing. Comments end at CR or LF,
+including files that use CR-only line endings.
 
 ### Multifield Functions
 
@@ -1015,7 +1022,8 @@ same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;
 `(format nil "n=%d" 42)` returns the string without writing it. `printout`
 writes each argument before evaluating the next, including inside callable
 bodies. Output from nested calls appears in evaluation order, and an error
-in a later argument preserves the output already written.
+in a later argument preserves the output already written. `printout` to `nil`
+writes nothing and evaluates none of its arguments.
 
 `format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
 `%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number
