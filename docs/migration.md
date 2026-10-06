@@ -80,8 +80,8 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
-Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346, #395 and #404 make these cases behave like
+CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -113,6 +113,18 @@ Programs that relied on the earlier behavior need changes:
   parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
   several field constraints such as `(color red green)`, and a slot that
   appears twice in one template pattern.
+- A variable must be bound before an `|` alternative uses it, so
+  `(item ?x|99)` and `(mnj (x ?x|?y) (y ?x|?y))` are now load errors, as in
+  CLIPS. `?x&a|b` binds `?x` for every alternative. Overlapping alternatives
+  no longer fire twice, and `not`, `exists` and `forall` test the whole
+  disjunction.
+- Source files, the REPL and `load-facts` scan numbers like `explode$`: a
+  lexeme that starts with a digit, sign or `.` runs to the next CLIPS
+  delimiter. `(place 1st)` now has one field, not `1 st`; `1-2`, `0x10`,
+  `12abc` and `5e` are single SYMBOLs; `1.`, `.5` and `1.e3` are FLOATs (`.5`
+  was a SYMBOL). Integers outside the signed 64-bit range saturate instead of
+  rejecting the file. A `;` comment ends at CR as well as LF. The parser no
+  longer reports `ParseErrorKind::InvalidNumber`.
 
 ## Step 1: Check Feature Coverage
 

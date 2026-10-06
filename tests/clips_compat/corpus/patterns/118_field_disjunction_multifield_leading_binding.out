@@ -1,0 +1,4 @@
+pick 5 (a b c d e)
+pick 1 (a)
+pick 0 ()
+done
