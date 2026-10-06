@@ -2221,6 +2221,16 @@
       ]
     },
     {
+      "path": "patterns/129_source_scanner_symbol_continuations.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "symbolp",
+        "create$"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
