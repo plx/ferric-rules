@@ -2071,6 +2071,61 @@
       ]
     },
     {
+      "path": "patterns/116_field_disjunction_sequence_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "multifield",
+        "not",
+        "exists",
+        "join",
+        "variable-binding",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/117_field_disjunction_template_multislot_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multislot",
+        "not",
+        "exists",
+        "forall",
+        "join",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/118_field_disjunction_multifield_leading_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "multifield",
+        "predicate-constraint",
+        "variable-binding",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/119_field_disjunction_template_slot_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "not",
+        "exists",
+        "join",
+        "variable-binding",
+        "salience"
+      ]
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
