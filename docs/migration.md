@@ -80,8 +80,8 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346, #395 and #404 make these cases behave like
-CLIPS 6.30. Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346, #395, #396 and #404 make these cases behave
+like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -94,6 +94,12 @@ CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   returns only the first field of its line.
 - `format` rejects an argument count that does not match its directives, `%s`
   of a number, and a malformed directive such as `%5-3d`.
+- `format` writes its result to its logical name unless that name is `nil`, so
+  `(printout t (format t ...) crlf)` now prints the text twice; use `nil` when
+  the result goes into another output call. `printout` and `println` write each
+  argument as soon as it is evaluated, so output from nested calls appears in
+  place and text written before an argument error stays visible.
+  `(printout nil ...)` no longer evaluates its arguments.
 - `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
   `"1e+20"`), and `printout` quotes STRING fields inside a multifield.
 - `round` breaks half ties toward the lower integer, and `min`/`max` return the

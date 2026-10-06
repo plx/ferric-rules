@@ -1009,7 +1009,8 @@ same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;
 `(format nil "n=%d" 42)` returns the string without writing it. `printout`
 writes each argument before evaluating the next, including inside callable
 bodies. Output from nested calls appears in evaluation order, and an error
-in a later argument preserves the output already written.
+in a later argument preserves the output already written. `printout` to `nil`
+writes nothing and evaluates none of its arguments.
 
 `format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
 `%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number
