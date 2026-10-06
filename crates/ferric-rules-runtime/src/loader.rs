@@ -4758,8 +4758,12 @@ impl Engine {
                 // Preserve each alternative as a conjunction, without leaking
                 // its bindings or comparisons into the other alternatives.
                 // Constant and same-fact comparisons can run in alpha memory,
-                // including inside not/exists and sequence plans.
+                // including inside not/exists and sequence plans. Every
+                // alternative is translated, so each one is held to the same
+                // restrictions as a standalone constraint in this position,
+                // whatever its order.
                 let mut alternatives = Vec::with_capacity(constraints.len());
+                let mut alpha_only = true;
                 for sub in constraints {
                     let mut tests = Vec::new();
                     let mut vars = variable_slots.clone();
@@ -4780,11 +4784,12 @@ impl Engine {
                         in_negated_pattern,
                     )?;
                     if vars != *variable_slots || !joins.is_empty() || !predicates.is_empty() {
-                        break;
+                        alpha_only = false;
+                    } else if alpha_only {
+                        alternatives.push(tests);
                     }
-                    alternatives.push(tests);
                 }
-                if alternatives.len() == constraints.len() {
+                if alpha_only {
                     constant_tests.push(ConstantTest {
                         slot,
                         test_type: ConstantTestType::Any(alternatives),

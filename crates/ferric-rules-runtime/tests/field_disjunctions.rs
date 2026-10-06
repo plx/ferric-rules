@@ -193,3 +193,44 @@ fn negated_exists_over_a_disjunction_compiles_to_one_rule() {
     keys.sort_unstable();
     assert_eq!(keys, ["1", "1", "2"]);
 }
+
+fn assert_load_error(source: &str, message: &str) {
+    let mut engine = Engine::new(EngineConfig::default());
+    let errors = engine.load_str(source).expect_err(source);
+    assert!(
+        errors.iter().any(|error| error.to_string().contains(message)),
+        "{source}: {errors:?}"
+    );
+    assert!(engine.rules().is_empty(), "{source}");
+}
+
+#[test]
+fn every_alternative_keeps_the_restrictions_of_its_position() {
+    // A correlated alternative must not hide a later one from the negated
+    // pattern restrictions (#300): the boundary is independent of order.
+    for field in ["?x&?k|:(> (* ?x ?x) ?k)", "?x&:(> (* ?x ?x) ?k)|?k"] {
+        for condition in [
+            format!("(not (cell (v {field})))"),
+            format!("(forall (go) (cell (v {field})))"),
+        ] {
+            assert_load_error(
+                &format!(
+                    "(deftemplate cell (slot v))
+                     (defrule unsupported (key ?k) {condition} =>)"
+                ),
+                "predicate constraints inside negated patterns",
+            );
+        }
+        assert_load_error(
+            &format!("(defrule unsupported (key ?k) (not (item {field})) =>)"),
+            "complex constraints inside negated patterns",
+        );
+    }
+    // A negated predicate is rejected in an alternative as it is on its own.
+    for field in ["?x&?k|~:(> ?x 1)", "?x&~:(> ?x 1)|?k"] {
+        assert_load_error(
+            &format!("(defrule unsupported (key ?k) (item {field}) =>)"),
+            "only negated literals",
+        );
+    }
+}
