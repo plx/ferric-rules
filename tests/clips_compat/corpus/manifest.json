@@ -774,6 +774,40 @@
       ]
     },
     {
+      "path": "generics/callable-query-wildcard-per-argument.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "zero-arguments"
+      ]
+    },
+    {
+      "path": "generics/callable-query-argument-order.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "lazy-dispatch",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-wildcard-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
       "path": "io/read-blank-comment-lines-skip.clp",
       "level": "boundary",
       "covers": [

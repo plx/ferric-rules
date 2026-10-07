@@ -749,16 +749,27 @@ Ferric supports generic function dispatch via `defgeneric` and `defmethod`.
 
 Methods are ranked by type specificity. More specific types win:
 `INTEGER` > `NUMBER`, `FLOAT` > `NUMBER`, etc. When multiple methods could
-match, the most specific applicable method is selected. Fixed parameters
-outrank wildcards, and a type restriction outranks an otherwise unrestricted
-parameter with a query. A query adds specificity when the other restrictions
-are the same.
+match, the most specific applicable method is selected. Restrictions are
+compared left to right, with a wildcard counting as its method's last
+restriction. A wildcard loses at once to a regular parameter in the same
+position when that parameter's method has no wildcard. Otherwise the
+restriction covering fewer types wins, so a type restriction outranks an
+otherwise unrestricted parameter with a query; a query adds specificity when
+the types are the same. When every shared position ties, a method without a
+wildcard wins, then the method with more restrictions. For example,
+`(($?xs INTEGER))` outranks `(?x $?xs)`, while `(?x ?y)` outranks
+`(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
 
 A parameter query follows its optional type restrictions. It can reference
 any method parameter, including later ones: all arguments are bound before
 queries run. Queries use CLIPS truthiness and are evaluated only as dispatch
-searches for the next applicable method. Lower-priority method queries are
-not evaluated after a match is found. A query error stops dispatch instead
+searches for the next applicable method. For each candidate, dispatch walks
+the arguments left to right: it checks the argument's type and then runs its
+restriction's query, stopping at the first failure. A query therefore runs,
+with its side effects, even when a later argument's type rules the method
+out. Excess arguments share the wildcard restriction, so a wildcard query
+runs once per excess argument and not at all when there are none.
+Lower-priority method queries are not evaluated after a match is found. A query error stops dispatch instead
 of trying a fallback. Queries may bind globals, but cannot bind local variables
 or parameters. Undefined variables and templates unavailable when the method
 is defined are load errors.

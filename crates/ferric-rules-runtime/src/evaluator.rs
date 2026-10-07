@@ -1804,52 +1804,71 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
 /// than `b`, `Ordering::Greater` if `b` is more specific, and `Ordering::Equal` only
 /// when the two methods are identical in specificity (resolved by index tie-break).
 ///
-/// Compare parameters left to right: fewer covered primitive types is more
-/// specific, then a query outranks no query. A fixed parameter outranks a
-/// wildcard at the same position; two wildcards compare their restrictions.
+/// Following CLIPS 6.30, each method's restriction slots are its fixed
+/// parameters followed by its wildcard, compared left to right. A wildcard slot
+/// loses at once to a regular parameter of a method that has no wildcard.
+/// Otherwise fewer covered primitive types is more specific, then a query
+/// outranks no query. When the shared slots tie, a method without a wildcard
+/// wins, then the method with more slots, then the lower index.
 fn compare_method_specificity(
     a: &crate::functions::RegisteredMethod,
     b: &crate::functions::RegisteredMethod,
 ) -> std::cmp::Ordering {
-    for i in 0..a.parameters.len().min(b.parameters.len()) {
-        let a_types = a.type_restrictions.get(i).map_or(&[][..], Vec::as_slice);
-        let b_types = b.type_restrictions.get(i).map_or(&[][..], Vec::as_slice);
-        let order = compare_parameter_specificity(
-            a_types,
-            a.parameter_queries.get(i).is_some_and(Option::is_some),
-            b_types,
-            b.parameter_queries.get(i).is_some_and(Option::is_some),
-        );
+    let a_slots = method_slot_count(a);
+    let b_slots = method_slot_count(b);
+    for i in 0..a_slots.min(b_slots) {
+        let a_slot = method_slot(a, i);
+        let b_slot = method_slot(b, i);
+        if a_slot.wildcard && b.wildcard_parameter.is_none() {
+            return std::cmp::Ordering::Greater;
+        }
+        if b_slot.wildcard && a.wildcard_parameter.is_none() {
+            return std::cmp::Ordering::Less;
+        }
+        let order =
+            compare_parameter_specificity(a_slot.types, a_slot.query, b_slot.types, b_slot.query);
         if !order.is_eq() {
             return order;
         }
     }
-    // At the first unmatched position, a fixed parameter outranks a wildcard,
-    // even when only the wildcard carries a primitive type restriction.
-    let fixed_count = b.parameters.len().cmp(&a.parameters.len());
-    if !fixed_count.is_eq() {
-        return fixed_count;
-    }
-    match (
-        a.wildcard_parameter.is_some(),
-        b.wildcard_parameter.is_some(),
-    ) {
-        (false, true) => return std::cmp::Ordering::Less,
-        (true, false) => return std::cmp::Ordering::Greater,
-        (true, true) => {
-            let order = compare_parameter_specificity(
-                &a.wildcard_type_restrictions,
-                a.wildcard_query.is_some(),
-                &b.wildcard_type_restrictions,
-                b.wildcard_query.is_some(),
-            );
-            if !order.is_eq() {
-                return order;
-            }
+    a.wildcard_parameter
+        .is_some()
+        .cmp(&b.wildcard_parameter.is_some())
+        .then_with(|| b_slots.cmp(&a_slots))
+        .then_with(|| a.index.cmp(&b.index))
+}
+
+/// One restriction slot of a method: a fixed parameter or the wildcard.
+struct MethodSlot<'a> {
+    wildcard: bool,
+    types: &'a [String],
+    query: bool,
+}
+
+fn method_slot_count(method: &crate::functions::RegisteredMethod) -> usize {
+    method.parameters.len() + usize::from(method.wildcard_parameter.is_some())
+}
+
+fn method_slot(method: &crate::functions::RegisteredMethod, slot: usize) -> MethodSlot<'_> {
+    if slot < method.parameters.len() {
+        MethodSlot {
+            wildcard: false,
+            types: method
+                .type_restrictions
+                .get(slot)
+                .map_or(&[][..], Vec::as_slice),
+            query: method
+                .parameter_queries
+                .get(slot)
+                .is_some_and(Option::is_some),
         }
-        (false, false) => {}
+    } else {
+        MethodSlot {
+            wildcard: true,
+            types: &method.wildcard_type_restrictions,
+            query: method.wildcard_query.is_some(),
+        }
     }
-    a.index.cmp(&b.index)
 }
 
 fn compare_parameter_specificity(
@@ -1863,49 +1882,13 @@ fn compare_parameter_specificity(
         .then_with(|| b_query.cmp(&a_query))
 }
 
-/// Check arity and primitive restrictions without running query expressions.
-fn method_accepts_arguments(
-    method: &crate::functions::RegisteredMethod,
-    arg_values: &[Value],
-) -> bool {
-    let required_count = method.parameters.len();
-    let has_wildcard = method.wildcard_parameter.is_some();
-
-    // Arity check: exact match without wildcard, or at-least match with wildcard.
-    if has_wildcard {
-        if arg_values.len() < required_count {
-            return false;
-        }
-    } else if arg_values.len() != required_count {
-        return false;
+/// Check only the argument count; restrictions are checked during selection.
+fn method_accepts_arity(method: &crate::functions::RegisteredMethod, arg_count: usize) -> bool {
+    if method.wildcard_parameter.is_some() {
+        arg_count >= method.parameters.len()
+    } else {
+        arg_count == method.parameters.len()
     }
-
-    // Type restriction check for each required parameter.
-    for (i, restrictions) in method.type_restrictions.iter().enumerate() {
-        if restrictions.is_empty() {
-            continue; // No restriction = any type.
-        }
-        if i >= arg_values.len() {
-            return false; // Shouldn't happen given arity check, but be safe.
-        }
-        if !restrictions
-            .iter()
-            .any(|t| value_matches_type(&arg_values[i], t))
-        {
-            return false;
-        }
-    }
-
-    // Restrictions apply to the original values, before wildcard binding
-    // flattens multifield arguments into the parameter's field sequence.
-    !has_wildcard
-        || method.wildcard_type_restrictions.is_empty()
-        || arg_values[required_count..].iter().all(|value| {
-            method
-                .wildcard_type_restrictions
-                .iter()
-                .any(|kind| value_matches_type(value, kind))
-        })
 }
 
 struct SelectedMethod {
@@ -1914,18 +1897,15 @@ struct SelectedMethod {
     bindings: BindingSet,
 }
 
-/// Each candidate gets all parameter bindings before any query runs. Caller
-/// locals and method chains are not visible in a restriction query's scope.
-fn method_queries_match(
+/// Evaluate one restriction query with every parameter bound. Caller locals
+/// and method chains are not visible in a restriction query's scope.
+fn method_query_matches(
     ctx: &mut EvalContext<'_>,
-    method: &crate::functions::RegisteredMethod,
+    query: &ferric_rules_parser::ActionExpr,
     module: crate::modules::ModuleId,
     var_map: &VarMap,
     bindings: &BindingSet,
 ) -> Result<bool, EvalError> {
-    if method.parameter_queries.iter().all(Option::is_none) && method.wildcard_query.is_none() {
-        return Ok(true);
-    }
     let mut locals = CallableLocals::default();
     let mut query_ctx = EvalContext {
         bindings,
@@ -1951,15 +1931,58 @@ fn method_queries_match(
         initial_fact_id: ctx.initial_fact_id,
         template_defs: ctx.template_defs,
     };
-    for query in method
-        .parameter_queries
-        .iter()
-        .flatten()
-        .chain(method.wildcard_query.iter())
-    {
-        let expression = from_action_expr(query, query_ctx.symbol_table, query_ctx.config)?;
-        let value = finish_root_evaluation(eval_inner(&mut query_ctx, &expression))?;
-        if !is_truthy(&value, query_ctx.symbol_table) {
+    let expression = from_action_expr(query, query_ctx.symbol_table, query_ctx.config)?;
+    let value = finish_root_evaluation(eval_inner(&mut query_ctx, &expression))?;
+    Ok(is_truthy(&value, query_ctx.symbol_table))
+}
+
+/// Walk the original arguments in order, as CLIPS 6.30 does: each argument's
+/// type is checked against its restriction, then that restriction's query
+/// runs, stopping at the first failure. Excess arguments reuse the wildcard
+/// restriction, so its query runs once per excess argument (never when there
+/// are none). All parameters are bound before the first query runs, so a
+/// query can reference later parameters and the flattened wildcard.
+fn method_applies(
+    ctx: &mut EvalContext<'_>,
+    chain: &MethodChain,
+    method: &crate::functions::RegisteredMethod,
+    bound: &mut Option<(VarMap, BindingSet)>,
+    span: Option<&SourceSpan>,
+) -> Result<bool, EvalError> {
+    let fixed_count = method.parameters.len();
+    for (i, value) in chain.arg_values.iter().enumerate() {
+        let (types, query) = if i < fixed_count {
+            (
+                method
+                    .type_restrictions
+                    .get(i)
+                    .map_or(&[][..], Vec::as_slice),
+                method.parameter_queries.get(i).and_then(Option::as_ref),
+            )
+        } else {
+            (
+                method.wildcard_type_restrictions.as_slice(),
+                method.wildcard_query.as_ref(),
+            )
+        };
+        if !types.is_empty() && !types.iter().any(|kind| value_matches_type(value, kind)) {
+            return Ok(false);
+        }
+        let Some(query) = query else {
+            continue;
+        };
+        let (var_map, bindings) = match bound {
+            Some(bound) => bound,
+            None => bound.insert(bind_callable_arguments(
+                ctx,
+                &chain.generic_name,
+                &method.parameters,
+                method.wildcard_parameter.as_deref(),
+                &chain.arg_values,
+                span,
+            )?),
+        };
+        if !method_query_matches(ctx, query, chain.generic_module, var_map, bindings)? {
             return Ok(false);
         }
     }
@@ -1973,21 +1996,26 @@ fn select_method(
     span: Option<&SourceSpan>,
 ) -> Result<Option<SelectedMethod>, EvalError> {
     for (index, method) in chain.candidate_methods.iter().enumerate().skip(start) {
-        let (var_map, bindings) = bind_callable_arguments(
-            ctx,
-            &chain.generic_name,
-            &method.parameters,
-            method.wildcard_parameter.as_deref(),
-            &chain.arg_values,
-            span,
-        )?;
-        if method_queries_match(ctx, method, chain.generic_module, &var_map, &bindings)? {
-            return Ok(Some(SelectedMethod {
-                index,
-                var_map,
-                bindings,
-            }));
+        let mut bound = None;
+        if !method_applies(ctx, chain, method, &mut bound, span)? {
+            continue;
         }
+        let (var_map, bindings) = match bound {
+            Some(bound) => bound,
+            None => bind_callable_arguments(
+                ctx,
+                &chain.generic_name,
+                &method.parameters,
+                method.wildcard_parameter.as_deref(),
+                &chain.arg_values,
+                span,
+            )?,
+        };
+        return Ok(Some(SelectedMethod {
+            index,
+            var_map,
+            bindings,
+        }));
     }
     Ok(None)
 }
@@ -2010,8 +2038,9 @@ fn no_applicable_method(name: &str, arg_values: &[Value], span: Option<SourceSpa
     }
 }
 
-/// Dispatch a call after evaluating arguments once. Primitive restrictions are
-/// side-effect-free; queries remain lazy throughout the call-next-method chain.
+/// Dispatch a call after evaluating arguments once. Candidates are filtered by
+/// arity only; type restrictions and queries are checked in argument order as
+/// selection reaches each candidate, throughout the call-next-method chain.
 fn dispatch_generic(
     ctx: &mut EvalContext<'_>,
     generic: &GenericFunction,
@@ -2023,7 +2052,7 @@ fn dispatch_generic(
     let mut candidates: Vec<_> = generic
         .methods
         .iter()
-        .filter(|method| method_accepts_arguments(method, &arg_values))
+        .filter(|method| method_accepts_arity(method, arg_values.len()))
         .cloned()
         .collect();
     candidates.sort_by(compare_method_specificity);
@@ -10673,6 +10702,93 @@ mod tests {
         let m1 = make_method(1, vec![vec!["INTEGER".to_string()]], false);
         assert_eq!(
             compare_method_specificity(&m0, &m1),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    fn typed_wildcard(
+        mut method: crate::functions::RegisteredMethod,
+        types: &[&str],
+        query: bool,
+    ) -> crate::functions::RegisteredMethod {
+        method.wildcard_type_restrictions = types.iter().map(|kind| (*kind).to_string()).collect();
+        method.wildcard_query = query.then(|| {
+            ferric_rules_parser::ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol("TRUE".into()),
+                span: dummy_span(),
+            })
+        });
+        method
+    }
+
+    #[test]
+    fn compare_specificity_untyped_fixed_prefix_beats_wildcard() {
+        // CLIPS: (?x) outranks (?x $?y), and () outranks ($?y).
+        let fixed = make_method(1, vec![vec![]], false);
+        let variadic = make_method(0, vec![vec![]], true);
+        assert_eq!(
+            compare_method_specificity(&fixed, &variadic),
+            std::cmp::Ordering::Less,
+        );
+        let empty = make_method(1, vec![], false);
+        let wildcard = make_method(0, vec![], true);
+        assert_eq!(
+            compare_method_specificity(&empty, &wildcard),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_typed_wildcard_beats_untyped_fixed_wildcard() {
+        // c4/p3: (($?xs INTEGER)) outranks (?x $?xs).
+        let typed = typed_wildcard(make_method(1, vec![], true), &["INTEGER"], false);
+        let untyped = make_method(2, vec![vec![]], true);
+        assert_eq!(
+            compare_method_specificity(&typed, &untyped),
+            std::cmp::Ordering::Less,
+        );
+        // p8: (($?xs INTEGER)) outranks (?x ?y $?z).
+        let two_fixed_wild = make_method(2, vec![vec![], vec![]], true);
+        assert_eq!(
+            compare_method_specificity(&typed, &two_fixed_wild),
+            std::cmp::Ordering::Less,
+        );
+        // p7: a wildcard slot loses to a regular parameter of a method with
+        // no wildcard, whatever its types: (?x ?y) outranks (($?xs INTEGER)).
+        let two_fixed = make_method(2, vec![vec![], vec![]], false);
+        assert_eq!(
+            compare_method_specificity(&typed, &two_fixed),
+            std::cmp::Ordering::Greater,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_wildcard_slot_compares_with_later_fixed_slot() {
+        // p9: ((?x INTEGER) ($?xs INTEGER)) outranks ((?x INTEGER) ?y $?z).
+        let a = typed_wildcard(
+            make_method(1, vec![vec!["INTEGER".to_string()]], true),
+            &["INTEGER"],
+            false,
+        );
+        let b = make_method(2, vec![vec!["INTEGER".to_string()], vec![]], true);
+        assert_eq!(compare_method_specificity(&a, &b), std::cmp::Ordering::Less,);
+        // p5: equal shared slots, so more slots wins:
+        // ((?x INTEGER) $?xs) outranks (($?xs INTEGER)).
+        let typed = typed_wildcard(make_method(1, vec![], true), &["INTEGER"], false);
+        let int_fixed_wild = make_method(2, vec![vec!["INTEGER".to_string()]], true);
+        assert_eq!(
+            compare_method_specificity(&int_fixed_wild, &typed),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_queried_wildcard_beats_untyped_fixed_wildcard() {
+        // p10: (($?xs (> 1 0))) outranks (?x $?xs).
+        let queried = typed_wildcard(make_method(1, vec![], true), &[], true);
+        let untyped = make_method(2, vec![vec![]], true);
+        assert_eq!(
+            compare_method_specificity(&queried, &untyped),
             std::cmp::Ordering::Less,
         );
     }
