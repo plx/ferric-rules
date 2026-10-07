@@ -120,8 +120,8 @@ coverage before adding another execution protocol.
 COOL, certainty factors, distributed evaluation, and truth maintenance via
 `logical` are outside the declared target. Simplicity, Complexity, and Random
 strategies remain deferred. Triple-nested negation, `exists (not ...)`, and
-nested forall remain unsupported. Identical negative/NCC join sharing and selected multi-pattern `exists` ties
-remain characterized topology gaps.
+nested forall remain unsupported. Identical negative/NCC join sharing, selected multi-pattern `exists` ties,
+and CLIPS's transient nested NCC refire remain characterized topology gaps.
 General cross-engine replay-identical activation order is not promised; use
 explicit salience/phases when application precedence must be independent of
 network construction. These exclusions should not be

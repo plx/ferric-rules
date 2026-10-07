@@ -10138,6 +10138,30 @@
       }
     },
     {
+      "path": "patterns/400o_gap_nested_ncc_shared_entry_refire_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta",
+        "refraction"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented boundary: CLIPS visits a nested NCC before a shared subnetwork entry that is not its parent's newest successor, so a transient inner match refires the enclosing rule; Ferric settles the inner NCC after its entry and does not refire it.",
+        "observed": {
+          "phase": "complete",
+          "output": "nested\nadd-a\nhelper\nmid\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
       "path": "stdlib/403b_fact_designator_symbol_literals.clp",
       "level": "boundary",
       "covers": [

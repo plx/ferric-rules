@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1010
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1011
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -47,7 +47,7 @@ Docker image.
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
 direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and four track remaining
+[#394](https://github.com/plx/ferric-rules/issues/394), and five track remaining
 network-topology tie differences described with
 [#400](https://github.com/plx/ferric-rules/issues/400):
 
@@ -57,6 +57,7 @@ network-topology tie differences described with
 | Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
 | Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
+| Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
@@ -373,7 +374,10 @@ through nested NCC nodes, while CLIPS uses a distinct existential join topology.
 Its independent-support example remains characterized. Ties among subscribers
 of different patterns, for example a later rule reusing an earlier rule's
 pattern behind a different first pattern, are ordered by node age rather than
-pattern by pattern as in CLIPS, and may differ. Other strategy combinations are
+pattern by pattern as in CLIPS, and may differ. A nested NCC whose subnetwork
+entry is shared with an older rule settles after that entry, so Ferric never
+transiently retracts and refires the enclosing rule, as CLIPS can when another
+successor was linked to the same parent in between. Other strategy combinations are
 not a promise of replay-identical order across engines or versions.
 
 For application semantics that require precedence independently of network
