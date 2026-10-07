@@ -159,7 +159,7 @@ lengths, for example `(slot age (type INTEGER) (range 0 150))` or
 constraints; a multislot repeats its derived value to its minimum length.
 `(default ?NONE)` requires callers to supply the slot. Known invalid literals
 fail at load time; computed values are checked before the fact is published.
-See [template constraint compatibility](compatibility.md) for details and
+See [template constraint compatibility](compatibility.md#163-deftemplates) for details and
 allocation limits on automatically expanded defaults.
 
 Fact duplication is disabled by default, matching CLIPS. Reasserting the same
@@ -391,7 +391,8 @@ overrides. A suppressed duplicate insertion returns `FALSE`.
 
 For control flow inside the RHS, ferric supports the action-level forms:
 `if/then/else`, `while/do`, `loop-for-count`, `progn$`/`foreach`, and
-`switch/case/default`. Fact mutation and focus control also work in ordinary
+`switch/case/default`. `(break)` exits the nearest enclosing loop or action
+fact query. Fact mutation and focus control also work in ordinary
 expressions, user functions, and methods.
 
 ---
@@ -453,7 +454,12 @@ those constructs intact. Use the host `engine.clear()` API to remove everything
 between runs. `halt` finishes the current RHS before stopping the run.
 
 Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
-`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`.
+`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`. A
+parameter can add a final query after its types, as in
+`((?x SYMBOL (eq ?x special)))`, and a wildcard `$?name` parameter accepts
+optional types and a query, as in `(($?r SYMBOL))`. See
+[Generic Functions and Methods](compatibility.md#168-generic-functions-and-methods)
+for dispatch order and specificity.
 
 `next-methodp` checks for another applicable method without advancing the
 chain. `override-next-method` supplies replacement arguments to the remaining

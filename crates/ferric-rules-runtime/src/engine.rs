@@ -17,6 +17,7 @@ use ferric_rules_core::{
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
+use crate::evaluator::RuntimeExpr;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
 use crate::host::{
@@ -103,6 +104,23 @@ impl<Id: Copy> FactAssertionResult<Id> {
     #[must_use]
     pub fn was_asserted(self) -> bool {
         matches!(self, Self::Asserted(_))
+    }
+}
+
+/// The construct identity a fact holds in use while it is assembled
+/// (see [`Engine::with_active_fact`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FactIdentity {
+    Template(TemplateId),
+    Ordered(Symbol),
+}
+
+impl FactIdentity {
+    pub(crate) fn of(fact: &Fact) -> Self {
+        match fact {
+            Fact::Template(fact) => Self::Template(fact.template_id),
+            Fact::Ordered(fact) => Self::Ordered(fact.relation),
+        }
     }
 }
 
@@ -200,12 +218,30 @@ pub struct Engine {
     pub(crate) source_load_depth: usize,
     /// Transient executing callable identities, retained across nested evaluator frames.
     pub(crate) active_callables: Vec<(ModuleId, String)>,
+    /// Templates whose fact is being assembled or published; transient like
+    /// `active_callables`. A slot expression or dynamic default cannot
+    /// redefine such a template underneath its own assertion.
+    pub(crate) active_templates: Vec<TemplateId>,
+    /// Ordered relations whose fact is being assembled or published, held
+    /// like `active_templates` so `build` cannot define an explicit template
+    /// over the relation underneath its own assertion.
+    pub(crate) active_ordered_relations: Vec<Symbol>,
+    /// Compiled source that runs outside any registered construct, held like
+    /// `active_templates`: an `eval`/`assert-string` expression, or the
+    /// fields of a top-level assertion. The templates and ordered relations
+    /// it names stay in use until it returns.
+    pub(crate) active_expressions: Vec<(ModuleId, Arc<RuntimeExpr>)>,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
     pub(crate) processing_predicates: bool,
+    /// Evaluator depth `(call_depth, expression_depth)` of the active engine
+    /// effect. Evaluation roots that an effect opens (match conditions,
+    /// deffacts and defglobal initializers) start here instead of at zero, so
+    /// the evaluator limits still bound the native stack across them.
+    pub(crate) eval_depth_floor: (usize, usize),
     /// Whether a halt has been requested.
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
@@ -305,9 +341,13 @@ impl Engine {
             reset_in_progress: false,
             source_load_depth: 0,
             active_callables: Vec::new(),
+            active_templates: Vec::new(),
+            active_ordered_relations: Vec::new(),
+            active_expressions: Vec::new(),
             active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: false,
             input_buffer: VecDeque::new(),
         }
@@ -364,13 +404,72 @@ impl Engine {
         self.config.set_fact_duplication(enabled)
     }
 
+    /// Keep a fact's template or ordered relation in use while the fact is
+    /// assembled and published. Its slot expressions, fields and dynamic
+    /// defaults may run `build`; like CLIPS 6.30, a redefinition of that
+    /// template, or an explicit template over that relation, is then rejected
+    /// (CSTRCPSR4) instead of publishing the fact under a different layout.
+    pub(crate) fn with_active_fact<T>(
+        &mut self,
+        identity: FactIdentity,
+        assemble: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.with_active_facts([identity], assemble)
+    }
+
+    /// Hold every identity in use, as [`Engine::with_active_fact`] does for
+    /// one, while `assemble` runs. A command that prepares several facts holds
+    /// all of them from before the first is evaluated until the last is
+    /// published, so an earlier fact's fields cannot redefine a later one.
+    pub(crate) fn with_active_facts<T>(
+        &mut self,
+        identities: impl IntoIterator<Item = FactIdentity>,
+        assemble: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let templates = self.active_templates.len();
+        let relations = self.active_ordered_relations.len();
+        for identity in identities {
+            match identity {
+                FactIdentity::Template(id) => self.active_templates.push(id),
+                FactIdentity::Ordered(relation) => self.active_ordered_relations.push(relation),
+            }
+        }
+        let result = assemble(self);
+        self.active_templates.truncate(templates);
+        self.active_ordered_relations.truncate(relations);
+        result
+    }
+
+    /// Keep the templates and ordered relations that compiled source outside
+    /// any registered construct names in use while it runs (see
+    /// `active_expressions`). Nested holds unwind to their own depth.
+    pub(crate) fn with_active_expressions<T>(
+        &mut self,
+        module: ModuleId,
+        expressions: impl IntoIterator<Item = Arc<RuntimeExpr>>,
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let depth = self.active_expressions.len();
+        self.active_expressions.extend(
+            expressions
+                .into_iter()
+                .map(|expression| (module, expression)),
+        );
+        let result = run(self);
+        self.active_expressions.truncate(depth);
+        result
+    }
+
     pub(crate) fn assert_fact_internal(
         &mut self,
         fact: Fact,
     ) -> Result<FactAssertionResult<FactId>, EngineError> {
         if let Fact::Ordered(ordered) = &fact {
+            // Almost every relation is already declared. An unqualified name
+            // is its own local name, so check before allocating a copy.
             if let Some(name) = self
                 .resolve_core_symbol(ordered.relation)
+                .filter(|name| !self.template_declaration_names.contains(*name))
                 .map(str::to_owned)
             {
                 self.declare_implicit_template(&name, self.module_registry.current_module());
@@ -661,9 +760,17 @@ impl Engine {
     /// template identity and every positional slot value after defaults and
     /// named overrides have been applied.
     ///
+    /// Omitted slots with a `default-dynamic` attribute are evaluated, in
+    /// slot declaration order, after every supplied value has been validated.
+    ///
     /// # Errors
     ///
-    /// Returns an error for an unknown template or slot.
+    /// Returns an error for an unknown template or slot, a duplicate slot, or
+    /// a mismatched name/value count. A supplied value that violates its
+    /// slot's type or constraints, an omitted `?NONE` slot, and an evaluated
+    /// `default-dynamic` slot whose expression fails or whose result violates
+    /// the slot's constraints all return [`EngineError::InvalidSlotValue`]
+    /// naming that slot.
     pub fn assert_template_with_result(
         &mut self,
         template_name: &str,
@@ -686,13 +793,13 @@ impl Engine {
         let def = self
             .template_defs
             .get(tid)
-            .cloned()
             .ok_or_else(|| EngineError::TemplateNotFound(template_name.to_string()))?;
 
-        let mut overrides = Vec::with_capacity(slot_names.len());
+        // Start with default values for all slots.
+        let mut slots = def.defaults.clone();
 
         // Validate every override before mutating working memory.
-        let mut seen = vec![false; def.slot_names.len()];
+        let mut seen = vec![false; slots.len()];
         for (name, value) in slot_names.iter().zip(slot_values) {
             let idx = def
                 .slot_index(name)
@@ -726,16 +833,74 @@ impl Engine {
             };
             def.validate_slot(idx, &value)
                 .map_err(|reason| invalid(&reason))?;
-            overrides.push((idx, vec![crate::evaluator::RuntimeExpr::Literal(value)]));
+            slots[idx] = value;
         }
-        let slots = self
-            .evaluate_template_defaults(&def, &overrides, self.module_registry.current_module())
-            .map_err(|error| EngineError::InvalidSlotValue {
-                template: template_name.to_owned(),
-                slot: def.slot_names[error.index].clone(),
-                reason: error.error.to_string(),
-            })?
-            .into_boxed_slice();
+        // Omitted static defaults (including `?NONE`) are checked before any
+        // dynamic default runs, so a rejected assertion has no side effects.
+        let mut dynamic = false;
+        for (index, value) in slots.iter().enumerate() {
+            if seen[index] {
+                continue;
+            }
+            if def.dynamic_defaults[index].is_some() {
+                dynamic = true;
+                continue;
+            }
+            def.validate_slot(index, value)
+                .map_err(|reason| EngineError::InvalidSlotValue {
+                    template: template_name.to_owned(),
+                    slot: def.slot_names[index].clone(),
+                    reason,
+                })?;
+        }
+        let def = std::sync::Arc::clone(def);
+        // Dynamic defaults may run `build`; hold the template until published.
+        self.with_active_fact(FactIdentity::Template(tid), |engine| {
+            engine.assert_template_slots_with_defaults(
+                template_name,
+                tid,
+                &def,
+                slots,
+                &seen,
+                dynamic,
+            )
+        })
+    }
+
+    fn assert_template_slots_with_defaults(
+        &mut self,
+        template_name: &str,
+        tid: TemplateId,
+        def: &std::sync::Arc<crate::templates::RegisteredTemplate>,
+        slots: Vec<Value>,
+        seen: &[bool],
+        dynamic: bool,
+    ) -> Result<FactAssertionResult, EngineError> {
+        let slots = if dynamic {
+            let sources = slots
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    if seen[index] || def.dynamic_defaults[index].is_none() {
+                        crate::template_defaults::SlotSource::Supplied(value)
+                    } else {
+                        crate::template_defaults::SlotSource::Default
+                    }
+                })
+                .collect();
+            self.evaluate_template_defaults(def, sources, self.module_registry.current_module())
+                .map_err(|error| EngineError::InvalidSlotValue {
+                    template: template_name.to_owned(),
+                    slot: def.slot_names[error.index].clone(),
+                    reason: match error.failure {
+                        crate::template_defaults::SlotFailure::Invalid(reason) => reason,
+                        crate::template_defaults::SlotFailure::Eval(error) => error.to_string(),
+                    },
+                })?
+        } else {
+            slots
+        }
+        .into_boxed_slice();
 
         let fact = Fact::Template(TemplateFact {
             template_id: tid,
@@ -1392,27 +1557,34 @@ impl Engine {
     ///
     /// Evaluation errors stop reset before publishing the failing fact.
     pub fn reset(&mut self) -> Result<(), EngineError> {
-        self.reset_with_output(false)
+        self.reset_with_output(false, true)
     }
 
+    /// A source `reset` keeps output and a pending halt: CLIPS 6.30 finishes
+    /// the current RHS after `(halt)` and stops the run even when an RHS or a
+    /// callable resets afterwards.
     pub(crate) fn reset_for_evaluation(&mut self) -> Result<(), EngineError> {
         self.flush_expression_output();
-        self.reset_with_output(true)
+        self.reset_with_output(true, false)
     }
 
-    fn reset_with_output(&mut self, preserve_output: bool) -> Result<(), EngineError> {
+    fn reset_with_output(
+        &mut self,
+        preserve_output: bool,
+        clear_halt: bool,
+    ) -> Result<(), EngineError> {
         // CLIPS ignores a reset invoked by a reset-time initializer. Do not
         // create a fresh evaluation root that could evade the recursion limit.
         if self.reset_in_progress {
             return Ok(());
         }
         self.reset_in_progress = true;
-        let result = self.reset_state(preserve_output);
+        let result = self.reset_state(preserve_output, clear_halt);
         self.reset_in_progress = false;
         result
     }
 
-    fn reset_state(&mut self, preserve_output: bool) -> Result<(), EngineError> {
+    fn reset_state(&mut self, preserve_output: bool, clear_halt: bool) -> Result<(), EngineError> {
         self.fact_epoch = self
             .fact_epoch
             .checked_add(1)
@@ -1429,7 +1601,9 @@ impl Engine {
             self.router.clear();
             self.action_diagnostics.clear();
         }
-        self.halted = false;
+        if clear_halt {
+            self.halted = false;
+        }
         // Note: input_buffer is intentionally NOT cleared on reset.
         // Input is live I/O state that should persist across resets.
 
@@ -1453,13 +1627,15 @@ impl Engine {
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
             for initializer in definition.facts {
-                let fact = self
-                    .evaluate_prepared_fact(&initializer, definition.module)
-                    .map_err(|reason| EngineError::FactInitialization {
-                        definition: definition.name.clone(),
-                        reason,
-                    })?;
-                self.assert_fact_internal(fact)?;
+                self.with_active_fact(initializer.identity(), |engine| {
+                    let fact = engine
+                        .evaluate_prepared_fact(&initializer, definition.module)
+                        .map_err(|reason| EngineError::FactInitialization {
+                            definition: definition.name.clone(),
+                            reason,
+                        })?;
+                    engine.assert_fact_internal(fact)
+                })?;
             }
         }
 
@@ -1498,6 +1674,9 @@ impl Engine {
         self.template_local_ids.clear();
         self.template_declarations = vec![(ModuleId(0), "initial-fact".to_owned())];
         self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
+        self.active_templates.clear();
+        self.active_ordered_relations.clear();
+        self.active_expressions.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the
@@ -1517,6 +1696,7 @@ impl Engine {
         self.initial_fact_id = None;
         self.action_diagnostics.clear();
         self.processing_predicates = false;
+        self.eval_depth_floor = (0, 0);
         self.halted = false;
         self.input_buffer.clear();
     }

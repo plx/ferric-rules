@@ -19,7 +19,7 @@ use ferric_rules_core::{
 };
 use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
-use crate::evaluator::CompactFactBinding;
+use crate::evaluator::{CompactFactBinding, EvalError};
 use crate::modules::ModuleRegistry;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::query_cursor::{ActionQueryCursor, QueryCandidate};
@@ -61,6 +61,13 @@ fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
     for (channel, text) in context.engine.globals.take_printout_events() {
         context.engine.router.write(&channel, &text);
     }
+}
+
+/// Write action output directly to the router, after any output that
+/// evaluation has queued, so a direct write never overtakes earlier text.
+fn write_output(context: &mut ActionExecutionContext<'_>, channel: &str, text: &str) {
+    flush_deferred_printout(context);
+    context.engine.router.write(channel, text);
 }
 
 impl ActionEvalEnv {
@@ -129,13 +136,14 @@ impl ActionEvalEnv {
         allow_engine_effects: bool,
     ) -> crate::evaluator::EvalContext<'ctx> {
         let engine = &mut *context.engine;
+        let (call_depth, expression_depth) = engine.eval_depth_floor;
         crate::evaluator::EvalContext {
             global_module: None,
             engine,
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             callable_locals: None,
             current_module: context.current_module,
             method_chain: None,
@@ -223,13 +231,14 @@ impl ActionEvalEnv {
         locals: &mut crate::evaluator::CallableLocals,
     ) -> Result<Value, ActionError> {
         let engine = &mut *context.engine;
+        let (call_depth, expression_depth) = engine.eval_depth_floor;
         let mut ctx = crate::evaluator::EvalContext {
             global_module: None,
             engine,
             bindings,
             var_map,
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             callable_locals: Some(locals),
             current_module: context.current_module,
             method_chain: None,
@@ -626,6 +635,19 @@ fn execute_single_action(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    if takes_expanded_operands(call) {
+        let call =
+            expand_action_operands(token, rule_info, call, context, eval_env, collected_facts)?;
+        return execute_single_action(
+            token,
+            rule_info,
+            &call,
+            None,
+            context,
+            eval_env,
+            collected_facts,
+        );
+    }
     match call.name.as_str() {
         "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear" => {
             if let Some(runtime_expr) = runtime_call {
@@ -676,13 +698,17 @@ fn execute_single_action(
             collected_facts,
         ),
         "list-focus-stack" => {
+            flush_deferred_printout(context);
             execute_list_focus_stack(&mut context.engine.router, &context.engine.module_registry)
         }
-        "agenda" => execute_agenda(
-            &context.engine.rete,
-            &mut context.engine.router,
-            &context.engine.rule_info,
-        ),
+        "agenda" => {
+            flush_deferred_printout(context);
+            execute_agenda(
+                &context.engine.rete,
+                &mut context.engine.router,
+                &context.engine.rule_info,
+            )
+        }
         "rules" => execute_rules(
             token,
             rule_info,
@@ -1232,6 +1258,114 @@ fn execute_single_action(
     }
 }
 
+/// Whether `call` is a dedicated action handler, which evaluates its own
+/// operands, given an explicit `expand$` operand. The evaluator expands
+/// `printout`, `bind` and ordinary function calls itself, and `println`
+/// prints expanded fields directly, so fields without a literal form (such
+/// as fact addresses) still print.
+fn takes_expanded_operands(call: &FunctionCall) -> bool {
+    matches!(
+        call.name.as_str(),
+        "list-focus-stack"
+            | "agenda"
+            | "rules"
+            | "undefrule"
+            | "undeffacts"
+            | "ppdefrule"
+            | "load"
+            | "load-facts"
+            | "save-facts"
+    ) && call.args.iter().any(is_expansion)
+}
+
+fn is_expansion(argument: &ActionExpr) -> bool {
+    matches!(argument, ActionExpr::FunctionCall(expansion) if expansion.name == "expand$")
+}
+
+/// Replace each `expand$` operand with literals of its fields, evaluating the
+/// expansions first, in source order, as the evaluator does for function
+/// calls. Other operands stay expressions. The expanded count is rechecked.
+fn expand_action_operands(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    call: &FunctionCall,
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<FunctionCall, ActionError> {
+    let span_of = |call: &FunctionCall| crate::evaluator::SourceSpan {
+        line: call.span.start.line,
+        column: call.span.start.column,
+    };
+    let mut args = Vec::with_capacity(call.args.len());
+    for argument in &call.args {
+        let ActionExpr::FunctionCall(expansion) = argument else {
+            args.push(argument.clone());
+            continue;
+        };
+        if expansion.name != "expand$" {
+            args.push(argument.clone());
+            continue;
+        }
+        let [operand] = expansion.args.as_slice() else {
+            return Err(ActionError::Evaluator(EvalError::ArityMismatch {
+                name: "expand$".into(),
+                expected: "1".into(),
+                actual: expansion.args.len(),
+                span: Some(span_of(expansion)),
+            }));
+        };
+        let value = eval_env.eval_expr(token, rule_info, operand, context, collected_facts)?;
+        let Value::Multifield(fields) = value else {
+            return Err(ActionError::Evaluator(EvalError::TypeError {
+                function: "expand$".into(),
+                expected: "MULTIFIELD".into(),
+                actual: runtime_value_type_name(&value).into(),
+                span: Some(span_of(expansion)),
+            }));
+        };
+        for field in fields.iter() {
+            let symbols = &context.engine.symbol_table;
+            let text = |symbol| symbols.resolve_symbol_str(symbol).map(str::to_owned);
+            let literal = match field {
+                Value::Integer(value) => Some(LiteralKind::Integer(*value)),
+                Value::Float(value) => Some(LiteralKind::Float(*value)),
+                Value::Symbol(symbol) => text(*symbol).map(LiteralKind::Symbol),
+                Value::String(value) => Some(LiteralKind::String(value.as_str().to_owned())),
+                Value::InstanceName(name) => text(name.as_symbol()).map(LiteralKind::InstanceName),
+                _ => None,
+            };
+            let Some(value) = literal else {
+                return Err(ActionError::Evaluator(EvalError::TypeError {
+                    function: call.name.clone(),
+                    expected: "a number, SYMBOL, STRING, or INSTANCE-NAME".into(),
+                    actual: runtime_value_type_name(field).into(),
+                    span: Some(span_of(call)),
+                }));
+            };
+            args.push(ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value,
+                span: expansion.span,
+            }));
+        }
+    }
+    crate::builtin_validation::validate_runtime_arity(&call.name, args.len()).map_err(
+        |expected| {
+            ActionError::Evaluator(EvalError::ArityMismatch {
+                name: call.name.clone(),
+                expected,
+                actual: args.len(),
+                span: Some(span_of(call)),
+            })
+        },
+    )?;
+    Ok(FunctionCall {
+        name: call.name.clone(),
+        args,
+        span: call.span,
+    })
+}
+
 /// Clone the metadata used by temporary action binding frames.
 ///
 /// Clones the parts needed for loop body execution.  `runtime_actions` is
@@ -1374,6 +1508,7 @@ fn execute_loop_body(
                 } else {
                     eval_env.eval_expr(token, rule_info, action_expr, context, collected_facts)?;
                 }
+                flush_deferred_printout(context);
                 continue;
             }
         };
@@ -1386,6 +1521,8 @@ fn execute_loop_body(
             eval_env,
             collected_facts,
         )?;
+        // Queued output belongs to this item, not the enclosing action.
+        flush_deferred_printout(context);
     }
     Ok(())
 }
@@ -1600,7 +1737,7 @@ fn execute_rules(
     if output.is_empty() {
         output.push_str("(no rules)\n");
     }
-    context.engine.router.write("t", &output);
+    write_output(context, "t", &output);
     Ok(())
 }
 
@@ -1791,7 +1928,7 @@ fn execute_ppdefrule(
     }
 
     if !output.is_empty() {
-        context.engine.router.write("t", &output);
+        write_output(context, "t", &output);
     }
 
     Ok(())
@@ -2272,13 +2409,12 @@ fn execute_printout(
     let mut output = String::new();
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
         crate::value_print::append_printout_value(
             &value,
             &context.engine.symbol_table,
             &mut output,
         );
-        context.engine.router.write(&channel, &output);
+        write_output(context, &channel, &output);
         output.clear();
     }
     Ok(())
@@ -2300,17 +2436,53 @@ fn execute_println(
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
+        let value = match arg {
+            ActionExpr::FunctionCall(expansion) if expansion.name == "expand$" => {
+                let span = Some(crate::evaluator::SourceSpan {
+                    line: expansion.span.start.line,
+                    column: expansion.span.start.column,
+                });
+                let [operand] = expansion.args.as_slice() else {
+                    return Err(ActionError::Evaluator(EvalError::ArityMismatch {
+                        name: "expand$".into(),
+                        expected: "1".into(),
+                        actual: expansion.args.len(),
+                        span,
+                    }));
+                };
+                let value =
+                    eval_env.eval_expr(token, rule_info, operand, context, collected_facts)?;
+                let Value::Multifield(fields) = value else {
+                    return Err(ActionError::Evaluator(EvalError::TypeError {
+                        function: "expand$".into(),
+                        expected: "MULTIFIELD".into(),
+                        actual: runtime_value_type_name(&value).into(),
+                        span,
+                    }));
+                };
+                // Each expanded field is its own println argument.
+                for field in fields.iter() {
+                    crate::value_print::append_printout_value(
+                        field,
+                        &context.engine.symbol_table,
+                        &mut output,
+                    );
+                    write_output(context, "t", &output);
+                    output.clear();
+                }
+                continue;
+            }
+            _ => eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?,
+        };
         crate::value_print::append_printout_value(
             &value,
             &context.engine.symbol_table,
             &mut output,
         );
-        context.engine.router.write("t", &output);
+        write_output(context, "t", &output);
         output.clear();
     }
-    context.engine.router.write("t", "\n");
+    write_output(context, "t", "\n");
     Ok(())
 }
 

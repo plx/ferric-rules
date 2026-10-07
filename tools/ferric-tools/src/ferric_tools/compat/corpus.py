@@ -51,6 +51,7 @@ FACT_NOTICE = re.compile(
     r"\[PRNTUTIL1\] Unable to find fact f-[0-9]+\.\n"
     r"|\[ARGACCES5\] Function (?:fact-existp|fact-relation|fact-slot-names|fact-slot-value) "
     r"expected argument #1 to be of type fact-address or fact-index\n"
+    r"|\[ARGACCES5\] Function fact-index expected argument #1 to be of type fact-address\n"
     r"|\[ARGACCES5\] Function retract expected argument #[1-9][0-9]* "
     r"to be of type fact-address, fact-index, or the symbol \*\n"
 )
@@ -60,6 +61,22 @@ CONTROL_NOTICE = re.compile(
 )
 RANDOM_NOTICE = "[MISCFUN3] Function random expected argument #1 to be less than argument #2\n"
 RANDOM_ARITY_NOTICE = "[MISCFUN2] Function random expected either 0 or 2 arguments\n"
+# A build that would redefine a deftemplate in use: the CSTRCPSR4 message and
+# the parser's echo of the construct up to its module-qualified name.
+BUILD_NOTICE = re.compile(
+    r"\n\[CSTRCPSR4\] Cannot redefine deftemplate ([A-Za-z0-9_-]+) while it is in use\.\n"
+    r"\nERROR:\n\(deftemplate [A-Za-z0-9_-]+::\1\n"
+)
+# A missing deftemplate, or a first argument to template or construct
+# introspection that does not name a deftemplate or defmodule.
+INTROSPECTION_NOTICE = re.compile(
+    r"\[PRNTUTIL1\] Unable to find deftemplate [A-Za-z0-9_:-]+\.\n"
+    r"|\[ARGACCES5\] Function deftemplate-slot-(?:names|allowed-values|types|default-value"
+    r"|defaultp|existp|multip|singlep|range|cardinality) "
+    r"expected argument #1 to be of type deftemplate name\n"
+    r"|\[ARGACCES5\] Function get-(?:defrule|deftemplate|defglobal)-list "
+    r"expected argument #1 to be of type defmodule name\n"
+)
 
 
 def extract_output(
@@ -71,6 +88,8 @@ def extract_output(
     recoverable_fact_notices: bool = False,
     recoverable_control_notices: bool = False,
     recoverable_random_notices: bool = False,
+    recoverable_build_notices: bool = False,
+    recoverable_introspection_notices: bool = False,
 ) -> str:
     """Require exactly one complete frame and check reference diagnostics.
 
@@ -118,6 +137,14 @@ def extract_output(
             raise ReferenceFailure("expected a recoverable CLIPS random notice")
         checked = checked.replace(RANDOM_NOTICE, "")
         checked = checked.replace(RANDOM_ARITY_NOTICE, "")
+    if recoverable_build_notices:
+        checked, count = BUILD_NOTICE.subn("", checked)
+        if count == 0:
+            raise ReferenceFailure("expected a recoverable CLIPS build notice")
+    if recoverable_introspection_notices:
+        checked, count = INTROSPECTION_NOTICE.subn("", checked)
+        if count == 0:
+            raise ReferenceFailure("expected a recoverable CLIPS introspection notice")
     if error == "run" and not DIAGNOSTIC.search(checked):
         raise ReferenceFailure(f"expected a CLIPS runtime diagnostic:\n{output}")
     # Unanchored, unlike DIAGNOSTIC: a diagnostic printed after other text on
@@ -242,6 +269,16 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         recoverable_random_notices and error is not None
     ):
         raise ReferenceFailure("recoverable_random_notices requires a successful run")
+    recoverable_build_notices = case.get("recoverable_build_notices", False)
+    if not isinstance(recoverable_build_notices, bool) or (
+        recoverable_build_notices and error is not None
+    ):
+        raise ReferenceFailure("recoverable_build_notices requires a successful run")
+    recoverable_introspection_notices = case.get("recoverable_introspection_notices", False)
+    if not isinstance(recoverable_introspection_notices, bool) or (
+        recoverable_introspection_notices and error is not None
+    ):
+        raise ReferenceFailure("recoverable_introspection_notices requires a successful run")
     source = batch_source(f"tests/clips_compat/corpus/{case['path']}", begin, end, resets, error)
     strategy = case.get("strategy")
     if strategy not in (None, "breadth"):
@@ -302,6 +339,8 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         recoverable_fact_notices,
         recoverable_control_notices,
         recoverable_random_notices,
+        recoverable_build_notices,
+        recoverable_introspection_notices,
     )
     return extract_runs(output, begin, end, resets)
 

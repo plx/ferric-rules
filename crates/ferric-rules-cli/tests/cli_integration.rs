@@ -281,6 +281,8 @@ fn repl_assert_evaluates_ordered_and_template_fields() {
 }
 
 #[test]
+/// An unbound local fails while the command runs and keeps the facts already
+/// asserted; an unknown function rejects the whole command.
 fn repl_assert_errors_preserve_completed_facts_and_continue() {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -294,7 +296,7 @@ fn repl_assert_errors_preserve_completed_facts_and_continue() {
         .expect("failed to spawn ferric repl");
     let stdin = child.stdin.as_mut().unwrap();
     for command in [
-        r#"(defrule retained (before-variable 3) (before-call 5) (not (bad-variable $?)) (not (bad-call $?)) (not (after-variable)) (not (after-call)) => (printout t "completed facts retained" crlf))"#,
+        r#"(defrule retained (before-variable 3) (not (before-call $?)) (not (bad-variable $?)) (not (bad-call $?)) (not (after-variable)) (not (after-call)) => (printout t "completed facts retained" crlf))"#,
         "(reset)",
         "(assert (before-variable (+ 1 2)) (bad-variable prefix ?missing suffix) (after-variable))",
         "(assert (before-call (+ 2 3)) (bad-call prefix (missing-function) suffix) (after-call))",
