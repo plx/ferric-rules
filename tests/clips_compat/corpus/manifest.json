@@ -9490,6 +9490,16 @@
         "issue-403"
       ],
       "recoverable_build_notices": true
+    },
+    {
+      "path": "stdlib/403i_template_metadata_initial_fact.clp",
+      "level": "boundary",
+      "covers": [
+        "construct-introspection",
+        "initial-fact",
+        "issue-403"
+      ],
+      "error": "run"
     }
   ]
 }

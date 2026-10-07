@@ -198,7 +198,8 @@ registered `deffacts`, the same order as CLIPS. The fact supports explicit
 `(initial-fact)` patterns; rules with no patterns or a leading negation match
 without it. Host fact queries do not return it, and it cannot be retracted,
 modified, or duplicated. Its fact index is 0 and, as for CLIPS's slotless
-`initial-fact` deftemplate, `fact-slot-names` of it is `()`. An `initial-fact`
+`initial-fact` deftemplate, `fact-slot-names` and `deftemplate-slot-names` of
+it are `()`. An `initial-fact`
 the host asserts through the engine API is an ordinary user fact with an
 ordinary index; CLIPS gives it index 0.
 
@@ -1290,7 +1291,8 @@ effects can install a new callable definition before that invocation begins.
 | `deftemplate-slot-default-value` | Stored static value, evaluation of the dynamic default, or `?NONE` |
 
 Ordered relation declarations remain available to introspection after their
-last fact is retracted and across reset. Querying a dynamic default evaluates
+last fact is retracted and across reset. The built-in `initial-fact` is a
+deftemplate without slots, not an ordered relation. Querying a dynamic default evaluates
 its expression, including side effects; merely listing slots or asking the
 default kind does not.
 

@@ -204,3 +204,42 @@ fn restored_declaration_membership_deduplicates_and_clear_discards_old_names() {
         assert_eq!(restored.get_output("t"), Some("(initial-fact new)\n"));
     }
 }
+
+// CLIPS 6.30 treats initial-fact as a deftemplate without slots: `()`,
+// FALSE, then `[TMPLTDEF1] Invalid slot implied not defined in
+// corresponding deftemplate initial-fact.` halts the rule. An ordered
+// relation still reports its `implied` multislot.
+#[test]
+fn initial_fact_metadata_has_no_implied_slot() {
+    assert_eq!(
+        output(
+            "(defrule report => (printout t (deftemplate-slot-names initial-fact) \" \"
+               (deftemplate-slot-existp initial-fact implied) \" \"
+               (deftemplate-slot-names MAIN::initial-fact) \" \"
+               (deftemplate-slot-names go) \" \" (deftemplate-slot-existp go implied) crlf))
+             (defrule declare-go (go) =>)"
+        ),
+        "() FALSE () (implied) TRUE\n"
+    );
+    for query in [
+        "multip",
+        "singlep",
+        "types",
+        "range",
+        "cardinality",
+        "allowed-values",
+        "defaultp",
+        "default-value",
+    ] {
+        let mut engine = Engine::with_rules(&format!(
+            "(defrule report => (printout t (deftemplate-slot-{query} initial-fact implied) crlf))"
+        ))
+        .unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(engine.get_output("t").unwrap_or(""), "", "{query}");
+        assert!(
+            format!("{:?}", engine.action_diagnostics()).contains("TMPLTDEF1"),
+            "{query}"
+        );
+    }
+}

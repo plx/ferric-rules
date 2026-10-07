@@ -141,19 +141,29 @@ pub(crate) fn eval(
             .and_then(|id| ctx.engine.template_defs.get(id))
             .cloned()
     };
-    let implied = template.is_none() && ctx.engine.has_implicit_template(&raw, ctx.current_module);
-    if template.is_none() && !implied {
+    if template.is_none() && !ctx.engine.has_implicit_template(&raw, ctx.current_module) {
         ctx.engine.globals.push_printout_event(
             "werror".to_owned(),
             format!("[PRNTUTIL1] Unable to find deftemplate {raw}.\n"),
         );
         return Ok(boolean(ctx, false));
     }
+    // The built-in initial-fact is a deftemplate without slots in CLIPS, not
+    // an implied relation with the single `implied` multislot.
+    let implied = template.is_none()
+        && !crate::qualified_name::parse_qualified_name(&raw)
+            .is_ok_and(|parsed| parsed.local_name() == "initial-fact");
     if slot_names {
         return names(
             ctx,
             template.as_ref().map_or_else(
-                || vec!["implied".to_owned()],
+                || {
+                    if implied {
+                        vec!["implied".to_owned()]
+                    } else {
+                        Vec::new()
+                    }
+                },
                 |template| template.slot_names.clone(),
             ),
         );
