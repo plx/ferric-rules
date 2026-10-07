@@ -4,6 +4,14 @@ use std::collections::HashSet;
 
 use ferric_rules_parser::{ActionExpr, LiteralKind, Span};
 
+use crate::modules::ModuleId;
+use crate::Engine;
+
+struct ScopeContext<'a> {
+    engine: &'a Engine,
+    module: ModuleId,
+}
+
 type ScopeResult = Result<(), (Span, String)>;
 
 /// CLIPS knows all explicit local bind names when validating a callable, even
@@ -13,7 +21,10 @@ pub(crate) fn validate_query_scopes<'a>(
     expressions: impl IntoIterator<Item = &'a ActionExpr>,
     mut ordinary: HashSet<String>,
     compact: &HashSet<String>,
+    engine: &Engine,
+    module: ModuleId,
 ) -> ScopeResult {
+    let context = ScopeContext { engine, module };
     let expressions: Vec<_> = expressions.into_iter().collect();
     let mut pending = expressions.clone();
     while let Some(expr) = pending.pop() {
@@ -24,10 +35,14 @@ pub(crate) fn validate_query_scopes<'a>(
                 }
             }
         }
-        expr.push_children(&mut pending);
+        if let ActionExpr::FunctionCall(call) = expr {
+            pending.extend(crate::effects::evaluated_arguments(engine, module, call));
+        } else {
+            expr.push_children(&mut pending);
+        }
     }
     for expr in expressions {
-        validate_expr(expr, &ordinary, compact, false)?;
+        validate_expr(expr, &ordinary, compact, false, &context)?;
     }
     Ok(())
 }
@@ -49,6 +64,7 @@ fn validate_expr(
     ordinary: &HashSet<String>,
     compact: &HashSet<String>,
     in_predicate: bool,
+    context: &ScopeContext<'_>,
 ) -> ScopeResult {
     match expr {
         ActionExpr::Variable(name, span) if in_predicate => {
@@ -73,8 +89,8 @@ fn validate_expr(
                     }
                 }
             }
-            for arg in &call.args {
-                validate_expr(arg, ordinary, compact, in_predicate)?;
+            for arg in crate::effects::evaluated_arguments(context.engine, context.module, call) {
+                validate_expr(arg, ordinary, compact, in_predicate, context)?;
             }
         }
         ActionExpr::If {
@@ -83,17 +99,17 @@ fn validate_expr(
             else_actions,
             ..
         } => {
-            validate_expr(condition, ordinary, compact, in_predicate)?;
+            validate_expr(condition, ordinary, compact, in_predicate, context)?;
             for action in then_actions.iter().chain(else_actions) {
-                validate_expr(action, ordinary, compact, in_predicate)?;
+                validate_expr(action, ordinary, compact, in_predicate, context)?;
             }
         }
         ActionExpr::While {
             condition, body, ..
         } => {
-            validate_expr(condition, ordinary, compact, in_predicate)?;
+            validate_expr(condition, ordinary, compact, in_predicate, context)?;
             for action in body {
-                validate_expr(action, ordinary, compact, in_predicate)?;
+                validate_expr(action, ordinary, compact, in_predicate, context)?;
             }
         }
         ActionExpr::LoopForCount {
@@ -103,12 +119,12 @@ fn validate_expr(
             body,
             ..
         } => {
-            validate_expr(start, ordinary, compact, in_predicate)?;
-            validate_expr(end, ordinary, compact, in_predicate)?;
+            validate_expr(start, ordinary, compact, in_predicate, context)?;
+            validate_expr(end, ordinary, compact, in_predicate, context)?;
             let mut inner = ordinary.clone();
             inner.extend(var_name.iter().cloned());
             for action in body {
-                validate_expr(action, &inner, compact, in_predicate)?;
+                validate_expr(action, &inner, compact, in_predicate, context)?;
             }
         }
         ActionExpr::Progn {
@@ -117,12 +133,12 @@ fn validate_expr(
             body,
             ..
         } => {
-            validate_expr(list_expr, ordinary, compact, in_predicate)?;
+            validate_expr(list_expr, ordinary, compact, in_predicate, context)?;
             let mut inner = ordinary.clone();
             inner.insert(var_name.clone());
             inner.insert(format!("{var_name}-index"));
             for action in body {
-                validate_expr(action, &inner, compact, in_predicate)?;
+                validate_expr(action, &inner, compact, in_predicate, context)?;
             }
         }
         ActionExpr::QueryAction {
@@ -140,9 +156,15 @@ fn validate_expr(
             }
             let result_query =
                 matches!(name.as_str(), "any-factp" | "find-fact" | "find-all-facts");
-            validate_expr(query, &inner, &inner_compact, in_predicate || result_query)?;
+            validate_expr(
+                query,
+                &inner,
+                &inner_compact,
+                in_predicate || result_query,
+                context,
+            )?;
             for action in body {
-                validate_expr(action, &inner, &inner_compact, in_predicate)?;
+                validate_expr(action, &inner, &inner_compact, in_predicate, context)?;
             }
         }
         ActionExpr::Switch {
@@ -151,16 +173,16 @@ fn validate_expr(
             default,
             ..
         } => {
-            validate_expr(expr, ordinary, compact, in_predicate)?;
+            validate_expr(expr, ordinary, compact, in_predicate, context)?;
             for (value, actions) in cases {
-                validate_expr(value, ordinary, compact, in_predicate)?;
+                validate_expr(value, ordinary, compact, in_predicate, context)?;
                 for action in actions {
-                    validate_expr(action, ordinary, compact, in_predicate)?;
+                    validate_expr(action, ordinary, compact, in_predicate, context)?;
                 }
             }
             if let Some(actions) = default {
                 for action in actions {
-                    validate_expr(action, ordinary, compact, in_predicate)?;
+                    validate_expr(action, ordinary, compact, in_predicate, context)?;
                 }
             }
         }

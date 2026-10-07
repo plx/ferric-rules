@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 744
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 777
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -303,7 +303,8 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
-RHS `do-for-fact`, `do-for-all-facts` and `delayed-do-for-all-facts` visit
+`do-for-fact`, `do-for-all-facts` and `delayed-do-for-all-facts` work in RHS
+actions, expressions, deffunctions, and methods. They visit
 live facts in assertion order, the last member varying fastest. An immediate
 query sees facts its bodies assert and skips facts they retract;
 `delayed-do-for-all-facts` selects every tuple before it runs a body, and its
@@ -315,14 +316,20 @@ expressions, deffunctions and methods; the find forms return a multifield of
 
 Each visited query member costs one iteration of the action-loop budget
 (`EngineConfig::max_action_loop_iterations`), as does each delayed body.
-`halt` in a query body lets the RHS finish, as in CLIPS; `reset` and `clear`
-end the query and the rest of the RHS (CLIPS continues, and can loop forever
-on `reset` in a `do-for-all-facts` body).
+`halt` in a query body lets the current call and RHS finish. `reset` takes
+effect immediately and the current body continues, retaining its locals and
+member slot values. Its old fact addresses become stale. Immediate traversal
+stops when reset invalidates its remaining candidates; a delayed query still
+visits the tuples it captured before reset. A query returns its last body
+value, `FALSE` if no body ran, or no value after `break`.
 
 Each query member names one visible, unqualified deftemplate. Multiple-template
-restrictions, queries in global initializers, and `do-for-*` forms inside
-expressions or callable bodies are unsupported, and binding a query member or a
-local in a query predicate is a load error.
+restrictions remain unsupported. Queries and engine effects in defglobal
+initializers run once at load; on reset Ferric restores the stored value
+instead of re-evaluating the initializer (CLIPS 6.30 re-evaluates;
+[#451](https://github.com/plx/ferric-rules/issues/451)), so captured fact
+addresses become stale and effects are not repeated.
+Binding a query member or a local in a query predicate is a load error.
 
 ### Activation Ordering Contract
 
@@ -338,19 +345,19 @@ local in a query predicate is a load error.
 
 | Action | Notes |
 |--------|-------|
-| `assert` | Assert ordered or template facts |
-| `retract` | Retract by fact-address variable |
-| `modify` | Modify template fact slots in place |
-| `duplicate` | Create a copy of a template fact with slot overrides |
+| `assert` | Assert ordered or template facts; return the last address, or `FALSE` if that assertion is a duplicate |
+| `retract` | Retract by address or public index; return no value |
+| `modify` | Retract the original template fact and assert its replacement; return the new address or `FALSE` for a duplicate |
+| `duplicate` | Assert a template copy with slot overrides; return its address or `FALSE` for a duplicate |
 | `printout` | Write to a named channel (`t` for stdout) |
 | `halt` | Stop the run once the current RHS finishes (loops and queries in it run to completion) |
-| `focus` | Push one or more modules onto the focus stack |
+| `focus` | Push one or more modules onto the focus stack; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
 | `agenda` | Print the current agenda |
 | `run` | No-op when called from RHS (documented behavior) |
-| `reset` | Deferred: sets a flag checked after action execution |
-| `clear` | Deferred: sets a flag checked after action execution |
+| `reset` | Reset working memory and globals immediately, preserving current execution and printed output; return no value |
+| `clear` | During execution, retract all facts and refuse construct removal; continue execution and return no value |
 | `if`/`then`/`else` | Conditional execution; an unmatched condition without `else` returns `FALSE` |
 | `while` | Conditional loop with `do`; returns `FALSE` and shares the configured per-activation action-loop budget |
 | `loop-for-count` | Inclusive count loop with a bare literal, variable, or expression bound, or `(?i end)` / `(?i start end)`; returns `FALSE` and shares the configured per-activation action-loop budget |
@@ -363,6 +370,25 @@ local in a query predicate is a load error.
 | `any-factp` | Boolean fact existence check |
 | `find-fact` | Find first matching fact |
 | `find-all-facts` | Find all matching facts |
+
+`assert`, `retract`, `modify`, `duplicate`, `halt`, `focus`, `reset`, and
+`clear` also work as expressions and in deffunction/method bodies. Effects
+happen as their expressions are evaluated. `focus` evaluates and pushes its
+module operands from right to left, stopping at a missing module while keeping
+modules already pushed. `modify` creates a new fact identity even
+when slot values are unchanged; if its replacement is a duplicate, the
+original is still retracted. Earlier assertions in a multi-fact `assert`
+remain when its last assertion returns `FALSE`.
+
+Reset preserves active parameters, local bindings, loop iterators, and output
+already written. It can repopulate the agenda, so a rule that resets must
+arrange to terminate. A halt requested earlier in the same RHS, directly or in
+a callable, survives the reset: the RHS finishes and the run stops. A nested
+reset during reset-time initialization is ignored. Clear during active
+execution refuses construct removal without output (CLIPS prints
+`[CONSTRCT1]`; Ferric omits it), retains constructs and refraction, removes
+facts, and restarts public fact indices at zero. Later actions and eligible
+activations continue.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
@@ -653,7 +679,11 @@ never defined.
 
 ### Reset Behavior
 
-On `(reset)`, globals are restored to their declared initial values.
+On `(reset)`, globals are restored to their declared initial values. Ferric
+restores the value each initializer produced at load instead of re-evaluating
+it (CLIPS 6.30 re-evaluates; [#451](https://github.com/plx/ferric-rules/issues/451)),
+so an initializer's queries and engine effects are not repeated and a fact
+address it captured becomes stale.
 
 ---
 
@@ -688,7 +718,8 @@ the wildcard binding.
 
 Function bodies are expression sequences. The value of the last expression is
 the return value; an empty body returns `FALSE`. `(return)` and
-`(return <expression>)` immediately unwind the current deffunction or generic-method call; an inner callable's return does not
+`(return <expression>)` immediately unwind the current deffunction or
+generic-method call; an inner callable's return does not
 unwind its caller. A top-level return is an evaluation error. On a rule RHS,
 `return` follows CLIPS behavior and stops only the remaining actions in that
 activation.
@@ -699,9 +730,10 @@ load errors. Ferric resolves calls against the declarations in the loaded
 source, including forward references; CLIPS requires a prior declaration,
 which can be an empty deffunction body replaced by a later definition.
 
-Bodies are evaluator expressions, not full RHS action lists: expression
-functions such as `str-cat`, `format`, and `printout` are available, but fact
-mutation and agenda/focus control belong in the calling rule's RHS.
+Bodies evaluate ordinary expressions and engine effects, including assertions,
+retraction, modification, duplication, action fact queries, halt, focus, and
+reset. Effects act on the calling engine immediately and return their CLIPS
+values. Read-only matching contexts do not permit engine mutation.
 
 ### Module Scoping
 
@@ -726,6 +758,14 @@ and cloning accept trees up to 16 levels. Limit violations report an execution
 or load diagnostic before continuing recursive evaluation. Callable bodies
 are checked before registration; a failed function redefinition or implicit
 generic registration preserves the previous registry state.
+
+Known difference: match conditions and deffacts or defglobal initializers
+evaluated by an engine effect (`assert`, `retract`, `modify`, `duplicate`,
+`reset`) continue that effect's call and expression depth rather than starting
+from zero. An effect run from deep inside nested calls can therefore push such
+a condition or initializer past these limits. Ferric reports that as a
+diagnostic, and an affected match condition does not match; CLIPS 6.30 has no
+such limit and evaluates them normally.
 
 Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
 the deffunction, so later callers are rejected at load; Ferric keeps the
@@ -897,7 +937,7 @@ is a compile error with a diagnostic message.
 
 Method bodies use the same evaluator expression model as deffunction bodies,
 including empty bodies returning `FALSE` and load validation of function calls.
-Use the calling rule's RHS for fact mutation and agenda/focus control.
+Fact mutation and execution/focus control are available directly in the body.
 
 ---
 
@@ -1154,7 +1194,8 @@ nor an INTEGER, also returns `FALSE` from `fact-existp`, `fact-relation`,
 returns `-1` for any argument that is not a fact address, including an INTEGER.
 `fact-slot-value` resolves its designator before evaluating the slot argument,
 so the slot argument is not evaluated when the designator names no live fact.
-On a live fact, an invalid slot name or a slot argument that is not a symbol,
+As in CLIPS, a slot argument that resets or retracts the fact still reads the
+record the designator named, not a fact asserted afterwards. On a live fact, an invalid slot name or a slot argument that is not a symbol,
 string, or instance name stops the rule. CLIPS 6.30 accepts only a SYMBOL slot
 argument: it rejects a literal STRING at load and stops the rule for a computed
 one, whereas Ferric also accepts a STRING or INSTANCE-NAME slot name.

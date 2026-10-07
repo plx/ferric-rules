@@ -260,6 +260,8 @@ struct AlphaDisjunction {
 }
 
 struct RuleRhsScope<'a> {
+    engine: &'a Engine,
+    module: crate::modules::ModuleId,
     exported: &'a HashSet<String>,
     existential: &'a HashSet<String>,
     allow_local_reads: bool,
@@ -1018,6 +1020,8 @@ impl Engine {
         validate_visibility: bool,
     ) -> Result<(), LoadError> {
         let scope = RuleRhsScope {
+            engine: self,
+            module,
             exported: parameters,
             existential: &HashSet::new(),
             allow_local_reads: true,
@@ -1026,10 +1030,16 @@ impl Engine {
         for query in queries {
             crate::evaluator::validate_action_depth(query)
                 .map_err(|error| LoadError::Compile(error.to_string()))?;
-            crate::callable_validation::validate_breaks(std::slice::from_ref(query))
-                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
-            crate::callable_validation::validate_iterator_binds(std::slice::from_ref(query))
-                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+            crate::callable_validation::validate_breaks_with_templates(
+                std::slice::from_ref(query),
+                &|name| self.resolve_template_id(name, module).is_ok(),
+            )
+            .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+            crate::callable_validation::validate_iterator_binds_with_templates(
+                std::slice::from_ref(query),
+                &|name| self.resolve_template_id(name, module).is_ok(),
+            )
+            .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
             let mut pending = vec![query];
             while let Some(expression) = pending.pop() {
                 if let ActionExpr::FunctionCall(call) = expression {
@@ -1050,7 +1060,11 @@ impl Engine {
                         ));
                     }
                 }
-                expression.push_children(&mut pending);
+                if let ActionExpr::FunctionCall(call) = expression {
+                    pending.extend(crate::effects::evaluated_arguments(self, module, call));
+                } else {
+                    expression.push_children(&mut pending);
+                }
             }
             Self::validate_rule_rhs_expr(&context, query, &scope, &mut HashSet::new())?;
             if validate_visibility {
@@ -1368,12 +1382,17 @@ impl Engine {
                             &func.body,
                             ordinary,
                             &HashSet::new(),
+                            self,
+                            owning_module,
                         ) {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
                         }
                         if let Err((span, message)) =
-                            crate::callable_validation::validate_iterator_binds(&func.body)
+                            crate::callable_validation::validate_iterator_binds_with_templates(
+                                &func.body,
+                                &|name| self.resolve_template_id(name, owning_module).is_ok(),
+                            )
                         {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
@@ -1458,12 +1477,17 @@ impl Engine {
                             &method.body,
                             ordinary,
                             &HashSet::new(),
+                            self,
+                            owning_module,
                         ) {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
                         }
                         if let Err((span, message)) =
-                            crate::callable_validation::validate_iterator_binds(&method.body)
+                            crate::callable_validation::validate_iterator_binds_with_templates(
+                                &method.body,
+                                &|name| self.resolve_template_id(name, owning_module).is_ok(),
+                            )
                         {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
@@ -1883,8 +1907,11 @@ impl Engine {
                 ));
             }
 
-            crate::callable_validation::validate_breaks(std::slice::from_ref(&def.value))
-                .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+            crate::callable_validation::validate_breaks_with_templates(
+                std::slice::from_ref(&def.value),
+                &|name| self.resolve_template_id(name, current_module).is_ok(),
+            )
+            .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
             self.validate_expression_query_declarations(&def.value, current_module, None)?;
 
             // Translate the init-value expression.  This must happen before we
@@ -1904,33 +1931,18 @@ impl Engine {
             let value = {
                 let empty_bindings = ferric_rules_core::binding::BindingSet::new();
                 let empty_var_map = ferric_rules_core::binding::VarMap::new();
+                let (call_depth, expression_depth) = self.eval_depth_floor;
                 let mut ctx = crate::evaluator::EvalContext {
+                    current_module: self.module_registry.current_module(),
+                    engine: self,
                     bindings: &empty_bindings,
                     var_map: &empty_var_map,
-                    symbol_table: &mut self.symbol_table,
-                    config: &self.config,
-                    functions: &self.functions,
-                    globals: &mut self.globals,
-                    generics: &self.generics,
-                    call_depth: 0,
-                    expression_depth: 0,
                     callable_locals: None,
-                    current_module: self.module_registry.current_module(),
-                    module_registry: &self.module_registry,
-                    function_modules: &self.function_modules,
-                    global_modules: &self.global_modules,
-                    generic_modules: &self.generic_modules,
+                    call_depth,
+                    expression_depth,
                     method_chain: None,
-                    input_buffer: None,
-                    fact_base: Some(&self.fact_base),
-                    initial_fact_id: self.initial_fact_id,
-                    fact_epoch: self.fact_epoch,
-                    template_defs: None,
                     compact_fact_bindings: None,
-                    // Globals currently persist initializer values for reset,
-                    // not executable initializers. Query results (especially
-                    // addresses) cannot safely be captured by that policy.
-                    template_resolver: None,
+                    allow_engine_effects: true,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
@@ -2341,6 +2353,14 @@ impl Engine {
             | ActionExpr::Variable(_, _)
             | ActionExpr::GlobalVariable(_, _) => Ok(()),
             ActionExpr::FunctionCall(call) => {
+                if crate::effects::is_effect(&call.name) {
+                    return self.validate_rule_action_call(
+                        call,
+                        current_module,
+                        context,
+                        query_members,
+                    );
+                }
                 Self::validate_query_member_rebinding(call, query_members)?;
                 self.validate_expression_callable_name(
                     &call.name,
@@ -2458,14 +2478,8 @@ impl Engine {
                 body,
                 span,
             } => {
-                if !Self::is_result_query(name) {
-                    return Err(Self::compile_error_at(
-                        span,
-                        &format!("{name} in an expression is unsupported; use a rule RHS action"),
-                    ));
-                }
                 self.validate_query_declaration(name, bindings, body, span, current_module)?;
-                Self::validate_query_predicate_bindings(query)?;
+                self.validate_query_predicate_bindings(query, current_module)?;
                 let mut nested_members = query_members.clone();
                 nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
                 self.validate_action_expr_as_expression(
@@ -2473,7 +2487,16 @@ impl Engine {
                     current_module,
                     context,
                     &nested_members,
-                )
+                )?;
+                for action in body {
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        context,
+                        &nested_members,
+                    )?;
+                }
+                Ok(())
             }
             ActionExpr::Switch {
                 expr,
@@ -2642,7 +2665,7 @@ impl Engine {
                     );
                 }
                 self.validate_query_declaration(name, bindings, body, span, current_module)?;
-                Self::validate_query_predicate_bindings(query)?;
+                self.validate_query_predicate_bindings(query, current_module)?;
                 let mut nested_members = query_members.clone();
                 nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
                 self.validate_action_expr_as_expression(
@@ -2754,12 +2777,18 @@ impl Engine {
         self.validate_expression_query_structure(expr, current_module)?;
         let mut pending = vec![expr];
         while let Some(expr) = pending.pop() {
-            if let ActionExpr::QueryAction { name, query, .. } = expr {
-                if Self::is_result_query(name) {
-                    self.validate_query_predicate_callables(query, current_module, self_name)?;
-                }
+            if let ActionExpr::QueryAction { query, .. } = expr {
+                self.validate_query_predicate_callables(query, current_module, self_name)?;
             }
-            expr.push_children(&mut pending);
+            if let ActionExpr::FunctionCall(call) = expr {
+                pending.extend(crate::effects::evaluated_arguments(
+                    self,
+                    current_module,
+                    call,
+                ));
+            } else {
+                expr.push_children(&mut pending);
+            }
         }
         Ok(())
     }
@@ -2781,12 +2810,18 @@ impl Engine {
                 span,
             } = expr
             {
-                if Self::is_result_query(name) {
-                    self.validate_query_declaration(name, bindings, body, span, current_module)?;
-                    Self::validate_query_predicate_bindings(query)?;
-                }
+                self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                self.validate_query_predicate_bindings(query, current_module)?;
             }
-            expr.push_children(&mut pending);
+            if let ActionExpr::FunctionCall(call) = expr {
+                pending.extend(crate::effects::evaluated_arguments(
+                    self,
+                    current_module,
+                    call,
+                ));
+            } else {
+                expr.push_children(&mut pending);
+            }
         }
         Ok(())
     }
@@ -2810,14 +2845,26 @@ impl Engine {
                 )
                 .map_err(|message| Self::compile_error_at(&call.span, &message))?;
             }
-            expr.push_children(&mut pending);
+            if let ActionExpr::FunctionCall(call) = expr {
+                pending.extend(crate::effects::evaluated_arguments(
+                    self,
+                    current_module,
+                    call,
+                ));
+            } else {
+                expr.push_children(&mut pending);
+            }
         }
         Ok(())
     }
 
     /// CLIPS disallows local bind syntax anywhere in a query predicate; a
     /// called function's body belongs to its own scope and is not inspected.
-    fn validate_query_predicate_bindings(expr: &ActionExpr) -> Result<(), LoadError> {
+    fn validate_query_predicate_bindings(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
         let mut pending = vec![expr];
         while let Some(expr) = pending.pop() {
             if let ActionExpr::FunctionCall(call) = expr {
@@ -2830,7 +2877,15 @@ impl Engine {
                     ));
                 }
             }
-            expr.push_children(&mut pending);
+            if let ActionExpr::FunctionCall(call) = expr {
+                pending.extend(crate::effects::evaluated_arguments(
+                    self,
+                    current_module,
+                    call,
+                ));
+            } else {
+                expr.push_children(&mut pending);
+            }
         }
         Ok(())
     }
@@ -3267,8 +3322,13 @@ impl Engine {
         let Ok(expression) = ferric_rules_parser::interpret_action_expr(expression) else {
             return Ok(());
         };
-        crate::callable_validation::validate_breaks(std::slice::from_ref(&expression))
-            .map_err(|(span, message)| Self::compile_error_at(&span, &message))
+        // No loop body is in scope here, so every `break` is invalid whether a
+        // fact head is read as a template or as an ordered relation.
+        crate::callable_validation::validate_breaks_with_templates(
+            std::slice::from_ref(&expression),
+            &|_| false,
+        )
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))
     }
 
     fn validate_constraint_disjunction_bindings(
@@ -3369,11 +3429,14 @@ impl Engine {
     }
 
     fn validate_rule_rhs_scope(
+        &self,
         rule: &RuleConstruct,
         existential_locals: &HashSet<String>,
         exported_variables: &HashSet<String>,
     ) -> Result<(), LoadError> {
         let scope = RuleRhsScope {
+            engine: self,
+            module: self.module_registry.current_module(),
             exported: exported_variables,
             existential: existential_locals,
             allow_local_reads: true,
@@ -3390,10 +3453,14 @@ impl Engine {
     /// Dormant fact initializers may bind locals but never read them; only
     /// iteration variables are visible inside their loop bodies.
     pub(crate) fn validate_fact_initializer_bindings(
+        &self,
         expression: &ActionExpr,
+        module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
         let empty = HashSet::new();
         let scope = RuleRhsScope {
+            engine: self,
+            module,
             exported: &empty,
             existential: &empty,
             allow_local_reads: false,
@@ -3437,7 +3504,7 @@ impl Engine {
             }
         }
 
-        for arg in &call.args {
+        for arg in crate::effects::evaluated_arguments(scope.engine, scope.module, call) {
             Self::validate_rule_rhs_expr(context, arg, scope, rhs_locals)?;
         }
         Ok(())
@@ -4163,7 +4230,7 @@ impl Engine {
         // Empty conjunctions attach directly to the existing non-fact root.
         // The visible initial-fact is separate state, not support for this match.
 
-        Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
+        self.validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
         let mut query_ordinary = exported_variables.clone();
         for action in &rule.actions {
             if action.call.name == "bind" {
@@ -4173,9 +4240,17 @@ impl Engine {
             }
         }
         crate::query_validation::validate_query_scopes(
-            rule.actions.iter().flat_map(|action| &action.call.args),
+            rule.actions.iter().flat_map(|action| {
+                crate::effects::evaluated_arguments(
+                    self,
+                    self.module_registry.current_module(),
+                    &action.call,
+                )
+            }),
             query_ordinary,
             &fact_address_vars.keys().cloned().collect(),
+            self,
+            self.module_registry.current_module(),
         )
         .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
 
@@ -7415,7 +7490,7 @@ mod tests {
     }
 
     #[test]
-    fn expression_queries_in_global_initializers_fail_without_persisting_results() {
+    fn expression_queries_in_global_initializers_share_live_engine_context() {
         let mut engine = new_utf8_engine();
         load_ok(
             &mut engine,
@@ -7427,31 +7502,37 @@ mod tests {
         ",
         );
         engine.reset().unwrap();
-        let main = engine.module_registry.main_module_id();
-        for initializer in [
+        for (index, initializer) in [
             "(any-factp ((?f item)) TRUE)",
             "(find-fact ((?f item)) TRUE)",
             "(find-all-facts ((?f item)) TRUE)",
             "(query)",
-        ] {
-            let errors = engine
-                .load_str(&format!("(defglobal ?*invalid* = {initializer})"))
-                .unwrap_err();
-            assert!(errors.iter().any(|error| error
-                .to_string()
-                .contains("template context is unavailable")));
-            assert!(!engine.globals.contains(main, "invalid"));
-            assert!(!engine
-                .registered_globals
-                .iter()
-                .any(|(_, name, _)| name == "invalid"));
+            "(do-for-fact ((?f item)) TRUE ?f:value)",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let name = format!("captured-{index}");
+            engine
+                .load_str(&format!("(defglobal ?*{name}* = {initializer})"))
+                .unwrap();
+            let value = engine.get_global(&name).unwrap();
+            match index {
+                0 => assert!(
+                    matches!(value, Value::Symbol(symbol) if engine.resolve_core_symbol(*symbol) == Some("TRUE"))
+                ),
+                4 => assert!(matches!(value, Value::Integer(30))),
+                _ => assert!(
+                    matches!(value, Value::Multifield(fields) if fields.len() == 1 && matches!(&fields[0], Value::FactAddress(_)))
+                ),
+            }
         }
         engine.reset().unwrap();
+        assert!(matches!(engine.get_global("kept"), Some(Value::Integer(7))));
         assert!(matches!(
-            engine.globals.get(main, "kept"),
-            Some(Value::Integer(7))
+            engine.get_global("captured-4"),
+            Some(Value::Integer(30))
         ));
-        assert!(!engine.globals.contains(main, "invalid"));
     }
 
     #[test]

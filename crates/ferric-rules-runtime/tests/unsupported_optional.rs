@@ -7,7 +7,6 @@ fn malformed_or_unsupported_queries_reject_before_replacing_a_rule() {
         "(find-fact () TRUE)",
         "(find-all-facts ((?f item) (?f item)) TRUE)",
         "(any-factp ((?f item)) (bind ?temporary 1))",
-        "(length$ (do-for-all-facts ((?f item)) TRUE (printout t ignored)))",
     ] {
         let mut engine =
             Engine::with_rules("(deftemplate item (slot id)) (defrule keep => (assert (kept)))")
@@ -62,7 +61,7 @@ fn callable_result_queries_return_matching_and_empty_results() {
 }
 
 #[test]
-fn callable_action_queries_remain_explicitly_unsupported() {
+fn callable_action_queries_apply_effects_and_continue_the_caller() {
     for action_query in [
         "do-for-fact",
         "do-for-all-facts",
@@ -71,19 +70,16 @@ fn callable_action_queries_remain_explicitly_unsupported() {
         let mut engine = Engine::with_rules(&format!(
             "(deftemplate item (slot id))
              (deffacts seed (item (id 7)))
-             (deffunction query () ({action_query} ((?f item)) TRUE (assert (wrong))))
+             (deffunction query () ({action_query} ((?f item)) TRUE (assert (queried ?f:id))))
              (defrule choose => (query) (assert (after-query)))"
         ))
         .unwrap();
         let result = engine.run(RunLimit::Unlimited).unwrap();
-        assert_eq!(result.halt_reason, HaltReason::ActionError);
-        assert!(engine
-            .action_diagnostics()
-            .iter()
-            .any(|e| e.to_string().contains("unsupported operation")));
-        assert!(engine.find_facts("wrong").unwrap().is_empty());
-        assert!(engine.find_facts("after-query").unwrap().is_empty());
-        assert_eq!(engine.facts().unwrap().count(), 1);
+        assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+        assert!(engine.action_diagnostics().is_empty());
+        assert_eq!(engine.find_facts("queried").unwrap().len(), 1);
+        assert_eq!(engine.find_facts("after-query").unwrap().len(), 1);
+        assert_eq!(engine.facts().unwrap().count(), 3);
     }
 }
 

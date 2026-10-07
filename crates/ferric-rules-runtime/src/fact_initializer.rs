@@ -9,7 +9,7 @@ use ferric_rules_parser::{
 
 use crate::engine::Engine;
 use crate::evaluator::{self, EvalContext, RuntimeExpr};
-use crate::loader::{LoadError, TemplateLookupError, TemplateResolver};
+use crate::loader::{LoadError, TemplateLookupError};
 use crate::modules::ModuleId;
 
 /// Fact identity is fixed when a definition is registered. Values are evaluated
@@ -67,7 +67,8 @@ impl<'a> Iterator for RuntimeExpressions<'a> {
         let expression = self.pending.pop()?;
         let mut branches = Vec::new();
         match expression {
-            RuntimeExpr::Literal(_)
+            RuntimeExpr::EffectCall { .. }
+            | RuntimeExpr::Literal(_)
             | RuntimeExpr::BoundVar { .. }
             | RuntimeExpr::GlobalVar { .. } => {}
             RuntimeExpr::Call { args, .. } => self.pending.extend(args),
@@ -299,12 +300,18 @@ impl Engine {
         allow_local_reads: bool,
     ) -> Result<RuntimeExpr, LoadError> {
         if !allow_local_reads {
-            Self::validate_fact_initializer_bindings(expression)?;
+            self.validate_fact_initializer_bindings(expression, module)?;
         }
-        crate::callable_validation::validate_iterator_binds(std::slice::from_ref(expression))
-            .map_err(|(span, message)| invalid_at(span, &message))?;
-        crate::callable_validation::validate_breaks(std::slice::from_ref(expression))
-            .map_err(|(span, message)| invalid_at(span, &message))?;
+        crate::callable_validation::validate_iterator_binds_with_templates(
+            std::slice::from_ref(expression),
+            &|name| self.resolve_template_id(name, module).is_ok(),
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
+        crate::callable_validation::validate_breaks_with_templates(
+            std::slice::from_ref(expression),
+            &|name| self.resolve_template_id(name, module).is_ok(),
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
         self.validate_expression_query_declarations(expression, module, None)?;
         self.validate_action_expr_as_expression(
             expression,
@@ -422,34 +429,18 @@ impl Engine {
         };
         let bindings = ferric_rules_core::binding::BindingSet::new();
         let var_map = ferric_rules_core::binding::VarMap::new();
-        let mut ctx = EvalContext {
+        let (call_depth, expression_depth) = self.eval_depth_floor;
+        let mut ctx = crate::evaluator::EvalContext {
+            current_module: module,
+            engine: self,
             bindings: &bindings,
             var_map: &var_map,
             callable_locals: Some(locals),
-            symbol_table: &mut self.symbol_table,
-            config: &self.config,
-            functions: &self.functions,
-            globals: &mut self.globals,
-            generics: &self.generics,
-            call_depth: 0,
-            expression_depth: 0,
-            current_module: module,
-            module_registry: &self.module_registry,
-            function_modules: &self.function_modules,
-            global_modules: &self.global_modules,
-            generic_modules: &self.generic_modules,
+            call_depth,
+            expression_depth,
             method_chain: None,
-            input_buffer: Some(&mut self.input_buffer),
-            fact_base: Some(&self.fact_base),
-            initial_fact_id: self.initial_fact_id,
-            fact_epoch: self.fact_epoch,
-            template_defs: Some(&self.template_defs),
             compact_fact_bindings: None,
-            template_resolver: Some(TemplateResolver {
-                template_local_ids: &self.template_local_ids,
-                template_modules: &self.template_modules,
-                module_registry: &self.module_registry,
-            }),
+            allow_engine_effects: true,
         };
         let evaluate_fields = |ctx: &mut EvalContext<'_>, expressions: &[RuntimeExpr]| {
             let mut fields = Vec::new();

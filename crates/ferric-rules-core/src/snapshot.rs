@@ -104,6 +104,7 @@ impl FactBase {
         address: &crate::value::FactAddress,
         epoch: u64,
         initial_fact_id: Option<crate::fact::FactId>,
+        zero_based: bool,
     ) -> Result<(), String> {
         use slotmap::Key;
         let Some(id) = address.fact_id() else {
@@ -140,9 +141,10 @@ impl FactBase {
                     "fact address has inconsistent initial timestamp"
                 );
                 0
-            } else if initial_fact_id
-                .and_then(|id| self.get(id))
-                .is_some_and(|initial| initial.timestamp < timestamp)
+            } else if zero_based
+                || initial_fact_id
+                    .and_then(|id| self.get(id))
+                    .is_some_and(|initial| initial.timestamp < timestamp)
             {
                 timestamp.get()
             } else {
@@ -1902,12 +1904,12 @@ mod tests {
         for index in [0, 3, 4] {
             let address = FactAddress::new(id, 1, timestamp, index);
             current
-                .validate_snapshot_fact_address(&address, 2, None)
+                .validate_snapshot_fact_address(&address, 2, None, false)
                 .unwrap();
         }
         let malformed = FactAddress::new(id, 1, timestamp, 1);
         assert!(current
-            .validate_snapshot_fact_address(&malformed, 2, None)
+            .validate_snapshot_fact_address(&malformed, 2, None, false)
             .unwrap_err()
             .contains("impossible historical public index"));
     }
@@ -1940,7 +1942,7 @@ mod tests {
             // still inconsistent with the address stored in facts and bindings.
             if invalid_index == 0 {
                 facts
-                    .validate_snapshot_fact_address(&invalid_address, 1, None)
+                    .validate_snapshot_fact_address(&invalid_address, 1, None, false)
                     .unwrap();
             }
             let invalid_key = AtomKey::FactAddress(invalid_address);

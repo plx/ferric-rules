@@ -20,9 +20,16 @@ impl Engine {
             || self.registered_deffacts.iter().any(|definition| {
                 definition.facts.iter().any(|fact| {
                     matches!(fact, PreparedFact::Template { template_id, .. } if *template_id == id)
-                        || fact.all_expressions().any(|expression| {
-                            matches!(expression, crate::evaluator::RuntimeExpr::QueryAction { bindings, .. }
-                                if bindings.iter().any(|(_, name)| self.template_name_is(name, definition.module, id)))
+                        || fact.all_expressions().any(|expression| match expression {
+                            crate::evaluator::RuntimeExpr::QueryAction { bindings, .. } => {
+                                bindings.iter().any(|(_, name)| {
+                                    self.template_name_is(name, definition.module, id)
+                                })
+                            }
+                            crate::evaluator::RuntimeExpr::EffectCall { call } => {
+                                self.call_uses_template(call, definition.module, id)
+                            }
+                            _ => false,
                         })
                 })
             })
@@ -125,7 +132,7 @@ impl Engine {
     fn call_uses_template(&self, call: &FunctionCall, module: ModuleId, id: TemplateId) -> bool {
         (call.name == "assert" && call.args.iter().any(|expr| {
             matches!(expr, ActionExpr::FunctionCall(fact) if self.template_name_is(&fact.name, module, id))
-        })) || call.args.iter().any(|expr| self.expr_uses_template(expr, module, id))
+        })) || crate::effects::evaluated_arguments(self, module, call).iter().any(|expr| self.expr_uses_template(expr, module, id))
     }
 
     fn expr_uses_template(&self, expr: &ActionExpr, module: ModuleId, id: TemplateId) -> bool {

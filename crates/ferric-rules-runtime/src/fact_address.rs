@@ -8,10 +8,11 @@ pub(crate) fn make_fact_address(
     facts: &FactBase,
     initial_fact_id: Option<FactId>,
     epoch: u64,
+    zero_based: bool,
     fact_id: FactId,
 ) -> Option<FactAddress> {
     let entry = facts.get(fact_id)?;
-    let index = public_fact_index(facts, initial_fact_id, fact_id)?;
+    let index = public_fact_index(facts, initial_fact_id, zero_based, fact_id)?;
     Some(FactAddress::new(fact_id, epoch, entry.timestamp, index))
 }
 
@@ -30,6 +31,7 @@ pub(crate) fn live_fact_id(facts: &FactBase, epoch: u64, address: &FactAddress) 
 pub(crate) fn public_fact_index(
     facts: &FactBase,
     initial_fact_id: Option<FactId>,
+    zero_based: bool,
     fact_id: FactId,
 ) -> Option<u64> {
     let entry = facts.get(fact_id)?;
@@ -39,7 +41,7 @@ pub(crate) fn public_fact_index(
     let initial_precedes = initial_fact_id
         .and_then(|id| facts.get(id))
         .is_some_and(|initial| initial.timestamp < entry.timestamp);
-    if initial_precedes {
+    if initial_precedes || zero_based {
         Some(entry.timestamp.get())
     } else {
         entry.timestamp.get().checked_add(1)

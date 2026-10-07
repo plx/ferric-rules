@@ -106,6 +106,33 @@ and empty restriction vectors when there are no queries or wildcard types.
 The existing `GenericRegistry::register_method` API retains its signature;
 `register_restricted_method` accepts the additional restrictions.
 
+## Expression effects and source lifecycle
+
+Fact mutation, `halt`, `focus`, `reset`, `clear`, and action queries now work
+inside expressions, deffunctions, and methods. `assert`, `modify`, and
+`duplicate` return typed fact addresses or `FALSE` when insertion is
+suppressed. `modify` replaces the original assertion even when its values do
+not change. A missing index makes modify/duplicate return `FALSE` without
+evaluating their slot overrides, and retract ignores missing targets; other
+unresolved targets behave as described under typed fact addresses below.
+Effects completed before a later evaluation error remain visible.
+
+Source `(reset)` now executes immediately, preserves output and active local
+bindings, and continues the current RHS or callable. It also allows the run to
+select new activations. A nested reset inside reset-time initialization is
+ignored. Source `(clear)` removes facts and restarts public fact numbering at
+zero, then preserves constructs because they are in active use. It continues
+execution instead of stopping the run. Public host `reset()` and `clear()`
+retain their output-clearing and construct-removal contracts.
+
+Action queries return their last body value, `FALSE` when no body runs, or no
+value after `break`. Ordinary action queries stop selecting members after a
+reset; delayed queries retain their captured tuples and slot values. Old
+addresses remain stale. Mutation during rule match conditions remains
+unsupported, including through called functions. Modify/duplicate of already
+stale addresses cannot recover their old fact contents; retain field values
+explicitly when constructing a replacement.
+
 ## Typed fact addresses
 
 `Value` and `AtomKey` have a new `FactAddress` variant, and so does the
@@ -138,9 +165,12 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 6
+## Pre-1.0 snapshot schema 7
 
-Snapshots are written with schema 6. Schema 5 snapshots are rejected with
+Snapshots are written with schema 7. Schema 6 snapshots are rejected with
+`UnsupportedVersion(6)` because executable effects and immediate lifecycle
+semantics change restored behavior, and cleared fact chronology is now
+persisted. Schema 5 snapshots are rejected with
 `UnsupportedVersion(5)` because fact addresses now have a distinct persisted
 identity and reset epoch. Schema 4 snapshots are rejected with
 `UnsupportedVersion(4)` because generic methods now retain parameter queries
@@ -327,32 +357,25 @@ This matches CLIPS semantics, but is a common source of bugs when migrating.
 Use `=` for numeric comparisons and `eq` when you need exact type+value matching
 (e.g., comparing symbols or strings).
 
-## Step 6: Move Fact Mutation Out of Functions
+## Step 6: Review Execution Effects
 
-In Ferric, `deffunction` and `defmethod` bodies are evaluator expressions, not
-full RHS action lists. They can call expression functions such as `str-cat`,
-`format`, and `printout`, but fact mutation and agenda/focus control belong in
-the calling rule's RHS:
+Fact mutation works inside deffunctions, methods, and ordinary expressions:
 
 ```clp
-;; CLIPS (fact mutation inside deffunction)
 (deffunction record-and-double (?x)
     (assert (saw ?x))
     (* ?x 2))
 
-;; Ferric: split into expression + RHS action
-(deffunction double (?x) (* ?x 2))
-
 (defrule compute
     (value ?x)
     =>
-    (assert (saw ?x))
-    (printout t (double ?x) crlf))
+    (printout t (record-and-double ?x) crlf))
 ```
 
-Also note: `(run)` called from a rule's RHS is a documented no-op in Ferric.
-Use `(reset)` and `(clear)` from RHS with care -- they are deferred and take
-effect after the current action sequence completes.
+`(run)` called from a rule's RHS remains a documented no-op. Source `(reset)`
+executes immediately, preserves output and active locals, and can reactivate
+rules before the run ends. Source `(clear)` removes facts but preserves
+constructs in active use. Both continue the current action sequence.
 
 ## Step 7: Review String Handling
 
@@ -434,9 +457,9 @@ was never populated.
 | `=` vs `eq` | `=` is numeric (coerces types); `eq` is value+type sensitive |
 | `format` writes and returns | Use `nil` to format a string without also writing it |
 | `sub-string` positions | One-based, inclusive Unicode scalar positions; bounds clip to the text |
-| Function bodies are evaluator expressions | Put fact mutation and agenda/focus control in rule RHS code |
+| Function bodies can mutate facts | Effects complete immediately; earlier effects survive a later evaluation error |
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
-| `reset`/`clear` are deferred | Flag is set and checked after the current action sequence completes |
+| Source `reset`/`clear` continue execution | Reset immediately restores working state; clear removes facts and retains active constructs |
 | LHS guards belong in patterns/tests | Use RHS `if/then/else` for action control; use `(test ...)` CEs for match-time guards |
 | Activation order | Depth/breadth follow activation creation chronology; LEX/MEA are experimental |
 
@@ -449,10 +472,10 @@ was never populated.
 | `defrule` | Supported |
 | `deftemplate` | Supported |
 | `deffacts` | Supported |
-| `deffunction` | Supported (evaluator expressions; no fact mutation/control actions) |
+| `deffunction` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `defglobal` | Supported |
 | `defmodule` | Supported |
-| `defgeneric` / `defmethod` | Supported (evaluator expressions; no fact mutation/control actions) |
+| `defgeneric` / `defmethod` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
 | `printout` / `format` / `read` / `readline` | Supported |
 | `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |
@@ -504,10 +527,10 @@ constraint toggles.
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 6); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 7); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1, schema-2, schema-3, schema-4 and schema-5 snapshots
-  are rejected explicitly. Export durable application data through the
+  unversioned, schema-1, schema-2, schema-3, schema-4, schema-5 and schema-6
+  snapshots are rejected explicitly. Export durable application data through the
   producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.

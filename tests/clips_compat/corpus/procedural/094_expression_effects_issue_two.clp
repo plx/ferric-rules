@@ -1,0 +1,10 @@
+(deftemplate p (slot n) (slot v))
+(deffunction mk (?x) (assert (p (n f) (v ?x))) ?x)
+(defmethod mkg ((?x INTEGER)) (assert (p (n g) (v ?x))))
+(deffunction kill () (do-for-all-facts ((?q p)) TRUE (retract ?q)))
+(defrule r1 =>
+  (printout t "mk " (mk 5) crlf)
+  (mkg 7)
+  (kill)
+  (printout t "done" crlf)
+  (printout t "remaining:" (length$ (find-all-facts ((?q p)) TRUE)) crlf))

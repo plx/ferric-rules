@@ -1,0 +1,5 @@
+(defmodule OTHER)
+(defrule other => (printout t "other" crlf))
+(defmodule MAIN)
+(deffunction go () (printout t "focus:[" (focus OTHER) "] inner-after" crlf) done)
+(defrule main => (printout t "outer:[" (go) "]" crlf))

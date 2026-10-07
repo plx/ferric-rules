@@ -1,0 +1,7 @@
+(deftemplate p (slot v))
+(deffacts seed (p (v 1)) (p (v 2)))
+(deffunction values ()
+  (printout t "first:[" (do-for-fact ((?f p)) TRUE ?f:v) "] all:[" (do-for-all-facts ((?f p)) TRUE ?f:v) "] delayed:[" (delayed-do-for-all-facts ((?f p)) TRUE ?f:v) "]" crlf)
+  (printout t "empty:[" (do-for-fact ((?f p)) FALSE 7) ":" (do-for-all-facts ((?f p)) FALSE 7) ":" (delayed-do-for-all-facts ((?f p)) FALSE 7) "]" crlf)
+  (printout t "break:[" (do-for-fact ((?f p)) TRUE (break)) ":" (do-for-all-facts ((?f p)) TRUE (break)) ":" (delayed-do-for-all-facts ((?f p)) TRUE (break)) "]" crlf))
+(defrule run => (values))

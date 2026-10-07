@@ -132,7 +132,20 @@ def _waiting_read_during_run():
     fact_count = 20_000
     engine.assert_string(" ".join(f"(work {index})" for index in range(fact_count)))
 
-    result, worker_results = _with_worker_handoff(engine.run, lambda: engine.fact_count)
+    def read_after_run_admission():
+        deadline = time.monotonic() + 5
+        while True:
+            observed = engine.fact_count
+            # run releases the GIL before acquiring the engine mutex. A reader
+            # may therefore win admission and see the initial state; after run
+            # is admitted it must wait for the complete run, never a chunk.
+            assert observed in (fact_count, 0), f"read saw a partial run: {observed}"
+            if observed == 0:
+                return observed
+            assert time.monotonic() < deadline, "native run was not admitted"
+            time.sleep(0)
+
+    result, worker_results = _with_worker_handoff(engine.run, read_after_run_admission)
     assert result.rules_fired == fact_count
     assert result.halt_reason == ferric.HaltReason.AGENDA_EMPTY
     assert worker_results == [0], "the waiting read must observe the completed run"

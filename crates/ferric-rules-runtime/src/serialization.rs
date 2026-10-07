@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 6")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 7")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 6;
+const SCHEMA_VERSION: u16 = 7;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -210,6 +210,7 @@ struct EngineSnapshotRef<'a> {
     generic_modules: &'a ModuleNameMap<ModuleId>,
     initial_fact_id: &'a Option<ferric_rules_core::FactId>,
     fact_epoch: u64,
+    fact_index_starts_at_zero: bool,
     action_diagnostics: &'a Vec<ActionError>,
     halted: bool,
     input_buffer: &'a VecDeque<String>,
@@ -245,6 +246,7 @@ struct EngineSnapshotOwned {
     generic_modules: ModuleNameMap<ModuleId>,
     initial_fact_id: Option<ferric_rules_core::FactId>,
     fact_epoch: u64,
+    fact_index_starts_at_zero: bool,
     action_diagnostics: Vec<ActionError>,
     halted: bool,
     input_buffer: VecDeque<String>,
@@ -255,6 +257,7 @@ impl EngineSnapshotOwned {
         Engine {
             fact_base: self.fact_base,
             host: crate::host::HostState::new(),
+            reset_in_progress: false,
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,
@@ -277,8 +280,10 @@ impl EngineSnapshotOwned {
             generic_modules: self.generic_modules,
             initial_fact_id: self.initial_fact_id,
             fact_epoch: self.fact_epoch,
+            fact_index_starts_at_zero: self.fact_index_starts_at_zero,
             action_diagnostics: self.action_diagnostics,
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: self.halted,
             input_buffer: self.input_buffer,
         }
@@ -350,6 +355,7 @@ impl Engine {
             generic_modules: &self.generic_modules,
             initial_fact_id: &self.initial_fact_id,
             fact_epoch: self.fact_epoch,
+            fact_index_starts_at_zero: self.fact_index_starts_at_zero,
             action_diagnostics: &self.action_diagnostics,
             halted: self.halted,
             input_buffer: &self.input_buffer,
@@ -1615,11 +1621,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-6 fixture: ordered and template splits,
+    /// Source of the committed schema-7 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-6.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-7.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -1759,8 +1765,18 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_six_snapshot_resumes_matches_initializers_methods_and_addresses() {
+    fn committed_schema_six_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-6.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(6))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_seven_snapshot_resumes_matches_initializers_methods_addresses_and_effects()
+    {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-7.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         let address = engine.get_global("fixture-address").unwrap();
@@ -1775,6 +1791,14 @@ mod tests {
             integer_rows(&methods, "method-result"),
             [[0, 2], [1, -1], [2, -1]]
         );
+
+        let mut effects = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        effects.load_str("(assert (fixture-effect 41))").unwrap();
+        effects.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(effects.get_output("t"), Some("TRUE|TRUE|2\n"));
+        assert!(effects.find_facts("effect-created").unwrap().is_empty());
+        assert_eq!(integer_rows(&effects, "effect-method"), [[41]]);
+        assert!(effects.action_diagnostics().is_empty());
 
         // Persisted initializers resolve a replaced function instead of
         // replaying values computed before the snapshot was saved.
@@ -1814,12 +1838,70 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-6 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_six_fixture() {
+    #[ignore = "regenerates the committed schema-7 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_seven_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-6.cbor");
+            .join("tests/fixtures/snapshots/schema-7.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn refused_clear_preserves_zero_based_fact_indices_and_refraction_after_restore() {
+        let mut engine = Engine::with_rules(
+            r#"
+          (defglobal ?*address* = FALSE)
+          (defrule clear-once =>
+            (clear)
+            (bind ?*address* (assert (retained 42)))
+            (printout t (fact-index ?*address*) crlf))
+          (defrule later (continue) =>
+            (printout t (fact-index ?*address*) "|"
+              (fact-index (assert (next 43))) crlf))
+        "#,
+        )
+        .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("0\n"));
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            restored.load_str("(assert (continue))").unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(restored.get_output("t"), Some("0\n0|2\n"));
+            assert!(restored.action_diagnostics().is_empty());
+        }
+        let invalid = alter_state(&engine, |state| {
+            state["fact_index_starts_at_zero"] = serde_json::json!(false);
+        });
+        assert!(matches!(invalid, Err(SerializationError::InvalidState(_))));
+    }
+
+    #[test]
+    fn snapshot_rejects_unknown_raw_effect_calls() {
+        let engine = Engine::with_rules(
+            "(deffacts seed (value (if FALSE then (assert (nested 1)) else 0)))",
+        )
+        .unwrap();
+        let invalid = alter_state(&engine, |state| {
+            fn corrupt(value: &mut serde_json::Value) -> usize {
+                match value {
+                    serde_json::Value::Object(fields) => {
+                        let mut count = 0;
+                        if let Some(effect) = fields.get_mut("EffectCall") {
+                            effect["call"]["name"] = serde_json::json!("printout");
+                            count += 1;
+                        }
+                        count + fields.values_mut().map(corrupt).sum::<usize>()
+                    }
+                    serde_json::Value::Array(values) => values.iter_mut().map(corrupt).sum(),
+                    _ => 0,
+                }
+            }
+            assert!(corrupt(state) > 0);
+        });
+        assert!(matches!(invalid, Err(SerializationError::InvalidState(_))));
     }
 
     #[test]
