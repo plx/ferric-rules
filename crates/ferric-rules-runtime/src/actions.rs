@@ -136,12 +136,13 @@ impl ActionEvalEnv {
         allow_engine_effects: bool,
     ) -> crate::evaluator::EvalContext<'ctx> {
         let engine = &mut *context.engine;
+        let (call_depth, expression_depth) = engine.eval_depth_floor;
         crate::evaluator::EvalContext {
             engine,
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             callable_locals: None,
             current_module: context.current_module,
             method_chain: None,
@@ -229,12 +230,13 @@ impl ActionEvalEnv {
         locals: &mut crate::evaluator::CallableLocals,
     ) -> Result<Value, ActionError> {
         let engine = &mut *context.engine;
+        let (call_depth, expression_depth) = engine.eval_depth_floor;
         let mut ctx = crate::evaluator::EvalContext {
             engine,
             bindings,
             var_map,
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             callable_locals: Some(locals),
             current_module: context.current_module,
             method_chain: None,

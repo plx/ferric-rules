@@ -116,7 +116,32 @@ pub(crate) fn evaluated_arguments<'a>(
     arguments
 }
 
+/// Run an engine effect with the evaluator depth of its call site as the
+/// floor for every evaluation root the effect opens. A match condition,
+/// deffacts or defglobal initializer evaluated by the effect then counts
+/// against the same call and expression limits instead of starting at zero,
+/// which keeps the native stack bounded however effects nest.
+fn with_depth_floor(
+    ctx: &mut EvalContext<'_>,
+    effect: impl FnOnce(&mut EvalContext<'_>) -> Result<Value, EvalError>,
+) -> Result<Value, EvalError> {
+    let floor = (ctx.call_depth, ctx.expression_depth);
+    let previous = std::mem::replace(&mut ctx.engine.eval_depth_floor, floor);
+    let result = effect(ctx);
+    ctx.engine.eval_depth_floor = previous;
+    result
+}
+
 pub(crate) fn eval_call(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    with_depth_floor(ctx, |ctx| eval_call_inner(ctx, name, args, span))
+}
+
+fn eval_call_inner(
     ctx: &mut EvalContext<'_>,
     name: &str,
     args: &[RuntimeExpr],
@@ -284,6 +309,10 @@ pub(crate) fn eval_syntax(
     ctx: &mut EvalContext<'_>,
     call: &FunctionCall,
 ) -> Result<Value, EvalError> {
+    with_depth_floor(ctx, |ctx| eval_syntax_inner(ctx, call))
+}
+
+fn eval_syntax_inner(ctx: &mut EvalContext<'_>, call: &FunctionCall) -> Result<Value, EvalError> {
     let span = SourceSpan {
         line: call.span.start.line,
         column: call.span.start.column,

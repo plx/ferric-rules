@@ -283,6 +283,7 @@ impl EngineSnapshotOwned {
             fact_index_starts_at_zero: self.fact_index_starts_at_zero,
             action_diagnostics: self.action_diagnostics,
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: self.halted,
             input_buffer: self.input_buffer,
         }

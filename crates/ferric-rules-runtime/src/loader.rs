@@ -1931,14 +1931,15 @@ impl Engine {
             let value = {
                 let empty_bindings = ferric_rules_core::binding::BindingSet::new();
                 let empty_var_map = ferric_rules_core::binding::VarMap::new();
+                let (call_depth, expression_depth) = self.eval_depth_floor;
                 let mut ctx = crate::evaluator::EvalContext {
                     current_module: self.module_registry.current_module(),
                     engine: self,
                     bindings: &empty_bindings,
                     var_map: &empty_var_map,
                     callable_locals: None,
-                    call_depth: 0,
-                    expression_depth: 0,
+                    call_depth,
+                    expression_depth,
                     method_chain: None,
                     compact_fact_bindings: None,
                     allow_engine_effects: true,

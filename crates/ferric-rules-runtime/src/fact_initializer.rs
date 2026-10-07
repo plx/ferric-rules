@@ -429,14 +429,15 @@ impl Engine {
         };
         let bindings = ferric_rules_core::binding::BindingSet::new();
         let var_map = ferric_rules_core::binding::VarMap::new();
+        let (call_depth, expression_depth) = self.eval_depth_floor;
         let mut ctx = crate::evaluator::EvalContext {
             current_module: module,
             engine: self,
             bindings: &bindings,
             var_map: &var_map,
             callable_locals: Some(locals),
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             method_chain: None,
             compact_fact_bindings: None,
             allow_engine_effects: true,

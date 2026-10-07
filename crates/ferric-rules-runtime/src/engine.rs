@@ -195,6 +195,11 @@ pub struct Engine {
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
     pub(crate) processing_predicates: bool,
+    /// Evaluator depth `(call_depth, expression_depth)` of the active engine
+    /// effect. Evaluation roots that an effect opens (match conditions,
+    /// deffacts and defglobal initializers) start here instead of at zero, so
+    /// the evaluator limits still bound the native stack across them.
+    pub(crate) eval_depth_floor: (usize, usize),
     /// Whether a halt has been requested.
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
@@ -263,6 +268,7 @@ impl Engine {
             reset_in_progress: false,
             action_diagnostics: Vec::new(),
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: false,
             input_buffer: VecDeque::new(),
         }
@@ -1461,6 +1467,7 @@ impl Engine {
         self.initial_fact_id = None;
         self.action_diagnostics.clear();
         self.processing_predicates = false;
+        self.eval_depth_floor = (0, 0);
         self.halted = false;
         self.input_buffer.clear();
     }
