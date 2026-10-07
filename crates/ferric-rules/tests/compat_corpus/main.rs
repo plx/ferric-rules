@@ -728,6 +728,51 @@ fn assert_run_diagnostics_are_listed(case: &Case, expected: &[u8]) {
     }
 }
 
+/// A case that opts in to recoverable notices must succeed and its golden
+/// must hold at least one notice of each kind it allows.
+fn assert_recoverable_notices_are_present(case: &Case, expected: &[u8]) {
+    if case.recoverable_fact_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            (0..expected.len()).any(|index| fact_notice_length(&expected[index..]).is_some()),
+            "missing recoverable fact notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_control_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            (0..expected.len()).any(|index| control_notice_length(&expected[index..]).is_some()),
+            "missing recoverable control notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_random_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            (0..expected.len()).any(|index| random_notice_length(&expected[index..]).is_some()),
+            "missing recoverable random notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_build_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            !split_build_notices(expected).1.is_empty(),
+            "missing recoverable build notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_introspection_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            !split_introspection_notices(expected).1.is_empty(),
+            "missing recoverable introspection notice: {}",
+            case.path
+        );
+    }
+}
+
 #[test]
 fn manifest_covers_every_program() {
     let manifest = manifest();
@@ -776,47 +821,7 @@ fn manifest_covers_every_program() {
             "only a golden with a CLIPS diagnostic has an error phase: {}",
             case.path
         );
-        if case.recoverable_fact_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                (0..expected.len()).any(|index| fact_notice_length(&expected[index..]).is_some()),
-                "missing recoverable fact notice: {}",
-                case.path
-            );
-        }
-        if case.recoverable_control_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                (0..expected.len())
-                    .any(|index| control_notice_length(&expected[index..]).is_some()),
-                "missing recoverable control notice: {}",
-                case.path
-            );
-        }
-        if case.recoverable_random_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                (0..expected.len()).any(|index| random_notice_length(&expected[index..]).is_some()),
-                "missing recoverable random notice: {}",
-                case.path
-            );
-        }
-        if case.recoverable_build_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                !split_build_notices(&expected).1.is_empty(),
-                "missing recoverable build notice: {}",
-                case.path
-            );
-        }
-        if case.recoverable_introspection_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                !split_introspection_notices(&expected).1.is_empty(),
-                "missing recoverable introspection notice: {}",
-                case.path
-            );
-        }
+        assert_recoverable_notices_are_present(case, &expected);
         if case.error == Some(ErrorPhase::Run) {
             assert_run_diagnostics_are_listed(case, &expected);
         }
