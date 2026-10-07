@@ -396,8 +396,11 @@ impl Engine {
         fact: Fact,
     ) -> Result<FactAssertionResult<FactId>, EngineError> {
         if let Fact::Ordered(ordered) = &fact {
+            // Almost every relation is already declared. An unqualified name
+            // is its own local name, so check before allocating a copy.
             if let Some(name) = self
                 .resolve_core_symbol(ordered.relation)
+                .filter(|name| !self.template_declaration_names.contains(*name))
                 .map(str::to_owned)
             {
                 self.declare_implicit_template(&name, self.module_registry.current_module());
