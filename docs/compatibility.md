@@ -734,6 +734,11 @@ end of the load, it still counts as using the templates it references, so a
 `deftemplate` replacement later in the same source is refused with
 `[CSTRCPSR4]` where CLIPS accepts it.
 
+Known difference: an undefined global variable in a deffunction body, a
+defmethod body, or a method restriction query does not stop the load. Ferric
+reports it only when the expression is evaluated; CLIPS 6.30 rejects the
+construct at load with `[GLOBLPSR1]`.
+
 Embedding note: release recursion regressions run on 512 KiB native stacks;
 unoptimized development regressions use 2 MiB. These are supported test
 baselines, not a promise for arbitrarily small host stacks. Larger requested
@@ -805,7 +810,8 @@ query error stops dispatch instead of trying a fallback. Queries may bind
 globals, but cannot bind local variables or parameters. Undefined variables
 and templates unavailable when the method is defined are load errors. An
 undefined global in a query is reported only when the query runs, which stops
-dispatch; CLIPS 6.30 rejects it at load (`[GLOBLPSR1]`).
+dispatch; CLIPS 6.30 rejects the method at load (`[GLOBLPSR1]`), as it does
+for an undefined global in a deffunction or method body.
 
 ```clp
 (defgeneric classify)
