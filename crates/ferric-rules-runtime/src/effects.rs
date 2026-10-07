@@ -121,11 +121,12 @@ pub(crate) fn evaluated_arguments<'a>(
 /// floor for every evaluation root the effect opens. A match condition,
 /// deffacts or defglobal initializer evaluated by the effect then counts
 /// against the same call and expression limits instead of starting at zero,
-/// which keeps the native stack bounded however effects nest.
-fn with_depth_floor(
+/// which keeps the native stack bounded however effects nest. `build` uses it
+/// for the initializers and match conditions its loading evaluates.
+pub(crate) fn with_depth_floor<T>(
     ctx: &mut EvalContext<'_>,
-    effect: impl FnOnce(&mut EvalContext<'_>) -> Result<Value, EvalError>,
-) -> Result<Value, EvalError> {
+    effect: impl FnOnce(&mut EvalContext<'_>) -> T,
+) -> T {
     let floor = (ctx.call_depth, ctx.expression_depth);
     let previous = std::mem::replace(&mut ctx.engine.eval_depth_floor, floor);
     let result = effect(ctx);

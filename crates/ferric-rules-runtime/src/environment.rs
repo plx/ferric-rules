@@ -265,7 +265,11 @@ fn build(
     ctx.engine
         .module_registry
         .set_current_module(ctx.current_module);
-    let result = ctx.engine.load_str(&source[..first.span().end.offset]);
+    // Defglobal initializers, rule-priming conditions, template defaults and
+    // fact initializers evaluated by this load continue the caller's depth.
+    let result = crate::effects::with_depth_floor(ctx, |ctx| {
+        ctx.engine.load_str(&source[..first.span().end.offset])
+    });
     match result {
         Ok(_) => Ok(evaluator::clips_true(
             &mut ctx.engine.symbol_table,

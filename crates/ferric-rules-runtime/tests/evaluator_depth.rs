@@ -71,6 +71,28 @@ fn bounded_native_evaluation_child() {
             assert_eq!(engine.find_facts("done").unwrap().len(), 1);
         }
 
+        // `build` at depth loads a defglobal whose initializer recurses; the
+        // initializer continues the caller's depth instead of starting over.
+        let mut engine = Engine::with_rules(
+            r#"(deffunction deep (?n) (if (> ?n 0) then (if TRUE then (if TRUE then (deep (- ?n 1)))) else 0))
+              (deffunction outer (?n) (if (> ?n 0) then (+ 0 (outer (- ?n 1)))
+                else (if (build "(defglobal ?*g* = (deep 20))") then 1 else 0)))
+              (defrule run => (printout t "build=" (outer 19) crlf))"#,
+        ).unwrap();
+        engine.run(RunLimit::Count(10)).unwrap();
+        let werror = engine.get_output("werror").unwrap_or_default();
+        assert!(
+            engine.get_output("t") == Some("build=0\n")
+                || werror.contains("limit")
+                || engine.action_diagnostics().iter().any(|error| error.to_string().contains("limit")),
+            "{:?} {werror} {:?}", engine.get_output("t"), engine.action_diagnostics()
+        );
+        assert!(engine.get_global("g").is_none());
+        engine.clear();
+        engine.load_str("(defrule recovered => (assert (done)))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.find_facts("done").unwrap().len(), 1);
+
         let mut chain = "(defgeneric chain)".to_owned();
         for index in 1..35 {
             write!(chain, "(defmethod chain {index} () (call-next-method))").unwrap();
