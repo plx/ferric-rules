@@ -324,7 +324,11 @@ visits the tuples it captured before reset. A query returns its last body
 value, `FALSE` if no body ran, or no value after `break`.
 
 Each query member names one visible, unqualified deftemplate. Multiple-template
-restrictions and direct queries in global initializers remain unsupported.
+restrictions remain unsupported. Queries and engine effects in defglobal
+initializers run once at load; on reset Ferric restores the stored value
+instead of re-evaluating the initializer (CLIPS 6.30 re-evaluates;
+[#451](https://github.com/plx/ferric-rules/issues/451)), so captured fact
+addresses become stale and effects are not repeated.
 Binding a query member or a local in a query predicate is a load error.
 
 ### Activation Ordering Contract
@@ -347,7 +351,7 @@ Binding a query member or a local in a query predicate is a load error.
 | `duplicate` | Assert a template copy with slot overrides; return its address or `FALSE` for a duplicate |
 | `printout` | Write to a named channel (`t` for stdout) |
 | `halt` | Stop the run once the current RHS finishes (loops and queries in it run to completion) |
-| `focus` | Push one or more modules onto the focus stack; return `TRUE`, or `FALSE` for a missing module |
+| `focus` | Push one or more modules onto the focus stack; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
 | `agenda` | Print the current agenda |
@@ -378,10 +382,13 @@ remain when its last assertion returns `FALSE`.
 
 Reset preserves active parameters, local bindings, loop iterators, and output
 already written. It can repopulate the agenda, so a rule that resets must
-arrange to terminate. A nested reset during reset-time initialization is
-ignored. Clear during active execution emits a recoverable refusal, retains
-constructs and refraction, removes facts, and restarts public fact indices at
-zero. Later actions and eligible activations continue.
+arrange to terminate. A halt requested earlier in the same RHS, directly or in
+a callable, survives the reset: the RHS finishes and the run stops. A nested
+reset during reset-time initialization is ignored. Clear during active
+execution refuses construct removal without output (CLIPS prints
+`[CONSTRCT1]`; Ferric omits it), retains constructs and refraction, removes
+facts, and restarts public fact indices at zero. Later actions and eligible
+activations continue.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
@@ -672,7 +679,11 @@ never defined.
 
 ### Reset Behavior
 
-On `(reset)`, globals are restored to their declared initial values.
+On `(reset)`, globals are restored to their declared initial values. Ferric
+restores the value each initializer produced at load instead of re-evaluating
+it (CLIPS 6.30 re-evaluates; [#451](https://github.com/plx/ferric-rules/issues/451)),
+so an initializer's queries and engine effects are not repeated and a fact
+address it captured becomes stale.
 
 ---
 
