@@ -560,6 +560,10 @@ impl Engine {
 
         let mut result = LoadResult::default();
         let mut errors = Vec::new();
+        // Source offsets at which the current module changes. Each top-level
+        // assertion is prepared and evaluated in the module current at its
+        // position, as CLIPS does when it executes the form in place.
+        let mut module_transitions = vec![(0, self.module_registry.current_module())];
 
         // Separate top-level (assert ...) forms from constructs; asserts are
         // processed directly after the constructs load.
@@ -854,6 +858,7 @@ impl Engine {
                             module.imports.clone(),
                         );
                         self.module_registry.set_current_module(module_id);
+                        module_transitions.push((module.span.start.offset, module_id));
                         result.modules.push(module);
                     }
                     Construct::Generic(generic) => {
@@ -1015,14 +1020,24 @@ impl Engine {
             self.module_registry.set_current_module(saved_module);
         }
 
-        // Process assert forms AFTER rules are compiled so facts flow through rete
+        // Process assert forms AFTER rules are compiled so facts flow through rete.
+        // The last defmodule in the source stays current afterwards.
+        let loaded_module = self.module_registry.current_module();
         for expr in &assert_forms {
             if let Some(list) = expr.as_list() {
+                let offset = expr.span().start.offset;
+                let module = module_transitions
+                    .iter()
+                    .rev()
+                    .find(|(start, _)| *start <= offset)
+                    .map_or(loaded_module, |(_, module)| *module);
+                self.module_registry.set_current_module(module);
                 if let Err(e) = self.process_assert(&list[1..], &mut result) {
                     errors.push(e);
                 }
             }
         }
+        self.module_registry.set_current_module(loaded_module);
 
         self.host.prune(&self.fact_base);
         if errors.is_empty() {

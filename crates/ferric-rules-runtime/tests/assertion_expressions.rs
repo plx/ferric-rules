@@ -359,3 +359,80 @@ fn load_facts_stays_literal_only_and_preserves_earlier_facts_on_failure() {
         ));
     }
 }
+
+fn load_both_ways(source: &str, check: impl Fn(&Engine)) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.clp");
+    std::fs::write(&path, source).unwrap();
+    for from_file in [false, true] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let loaded = if from_file {
+            engine.load_file(&path)
+        } else {
+            engine.load_str(source)
+        };
+        assert!(loaded.is_ok(), "from_file={from_file}: {loaded:?}");
+        assert_eq!(engine.current_module(), "B", "from_file={from_file}");
+        check(&engine);
+    }
+}
+
+fn template_slot(engine: &Engine, slot: &str) -> Vec<Value> {
+    engine
+        .facts()
+        .unwrap()
+        .filter(|(_, fact)| matches!(fact, Fact::Template(_)))
+        .map(|(handle, _)| engine.get_fact_slot_by_name(handle, slot).unwrap().clone())
+        .collect()
+}
+
+/// A top-level assertion runs in the module current at its source position.
+/// CLIPS 6.30 batches this source and prints `f-1 (p 1)` for `(facts A)`,
+/// with B left current.
+#[test]
+fn source_assertions_call_functions_of_the_module_current_at_their_position() {
+    load_both_ways(
+        "(defmodule A (export ?ALL))
+         (deffunction value () 1)
+         (assert (p (value)))
+         (defmodule B)
+         (deffunction value () 2)",
+        |engine| assert_eq!(integers(engine, "p"), [1]),
+    );
+}
+
+/// CLIPS 6.30 prints `f-1 (item (n 3))` and `f-2 (item (n 1))` for `(facts A)`.
+#[test]
+fn source_assertions_resolve_templates_of_the_module_current_at_their_position() {
+    load_both_ways(
+        "(defmodule A (export ?ALL))
+         (deftemplate A::item (slot n))
+         (assert (item (n (+ 1 2))))
+         (assert (item (n 1)))
+         (defmodule B)",
+        |engine| {
+            let mut values = template_slot(engine, "n");
+            values.sort_by_key(|value| match value {
+                Value::Integer(n) => *n,
+                _ => panic!("expected an integer slot, got {value:?}"),
+            });
+            assert!(matches!(
+                values.as_slice(),
+                [Value::Integer(1), Value::Integer(3)]
+            ));
+        },
+    );
+}
+
+/// CLIPS 6.30 prints `f-1 (q 5)` for `(facts A)`.
+#[test]
+fn source_assertions_read_globals_of_the_module_current_at_their_position() {
+    load_both_ways(
+        "(defmodule A (export ?ALL))
+         (defglobal A ?*x* = 5)
+         (assert (q ?*x*))
+         (defmodule B)
+         (defglobal B ?*x* = 7)",
+        |engine| assert_eq!(integers(engine, "q"), [5]),
+    );
+}
