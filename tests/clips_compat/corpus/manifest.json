@@ -10782,6 +10782,43 @@
       ]
     },
     {
+      "path": "modules/398_auto_focus_nested_exists_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "deffacts",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_nested_exists_shared_entry_runtime.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_ncc_shared_entry_transient.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "not",
+        "ncc",
+        "focus",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
       "path": "modules/398_auto_focus_multi_exists_reset.clp",
       "level": "interaction",
       "covers": [

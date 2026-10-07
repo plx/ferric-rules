@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1058
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1061
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -336,8 +336,13 @@ accepted. Removing an activation does not undo its focus change. Both explicit
 `focus` and auto-focus skip a push when that module is already on top, while a
 module deeper in the stack may appear again. Predicate and NCC evaluation
 follow depth-first traversal order whether or not auto-focus is used, so
-declaring auto-focus on one rule does not reorder unrelated rules. Snapshots
-preserve the focus stack without replaying notices for existing activations.
+declaring auto-focus on one rule does not reorder unrelated rules. A rule
+guarded by `(exists (and ...))` pushes its module only once the conjunction
+holds, even when the conjunction's first join is shared with an older rule. A
+`(not (and ...))` whose first join is shared with an older rule still makes
+CLIPS's transient admission, and focus push, before that join blocks it.
+Snapshots preserve the focus stack without replaying notices for existing
+activations.
 
 Late installation of a blocked NCC rule follows CLIPS's transient focus push
 in two situations: when its fresh subnetwork shares the rule's left prefix with
