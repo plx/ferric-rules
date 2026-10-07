@@ -3836,6 +3836,17 @@
       ]
     },
     {
+      "path": "procedural/401_expression_effects_fact_slot_value_retract.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "fact-slot-value",
+        "retract"
+      ]
+    },
+    {
       "path": "procedural/401_expression_effects_halt_then_reset.clp",
       "level": "interaction",
       "covers": [
