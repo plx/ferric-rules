@@ -1,0 +1,7 @@
+
+[CSTRNCHK1] Literal slot values found in the assert command
+does not satisfy the cardinality restrictions for slot x.
+
+ERROR:
+(deffacts MAIN::seed
+   (p (x a b c)

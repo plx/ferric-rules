@@ -1,0 +1,6 @@
+
+[EXPRNPSR3] Missing function declaration for missing-function.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (default-dynamic (missing-function

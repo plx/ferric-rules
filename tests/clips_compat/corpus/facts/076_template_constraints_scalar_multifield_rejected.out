@@ -1,0 +1,6 @@
+
+[DEFAULT1] The default value for a single field slot must be a single field value
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (default-dynamic (create$ 7))

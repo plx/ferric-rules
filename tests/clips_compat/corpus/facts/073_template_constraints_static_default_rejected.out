@@ -1,0 +1,7 @@
+
+[CSTRNCHK1] An expression found in the default attribute
+does not fall in the allowed range 1 to 3 for slot x.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (type INTEGER) (range 1 3) (default (+ 3 1)))

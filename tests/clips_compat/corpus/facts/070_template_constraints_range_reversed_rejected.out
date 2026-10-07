@@ -1,0 +1,7 @@
+
+[CSTRNPSR2] Minimum range value must be less than
+or equal to the maximum range value
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (range 3 1)

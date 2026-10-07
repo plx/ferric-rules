@@ -1,0 +1,7 @@
+
+[CSTRNPSR3] The allowed-integers attribute cannot be used
+in conjunction with the allowed-number attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-numbers 1) (allowed-integers

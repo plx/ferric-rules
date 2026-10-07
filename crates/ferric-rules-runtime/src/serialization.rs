@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 7")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 8")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 7;
+const SCHEMA_VERSION: u16 = 8;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -452,6 +452,28 @@ impl Engine {
             }
         }
 
+        for (_, template) in &self.template_defs {
+            let values = template.defaults.iter().chain(
+                template
+                    .constraints
+                    .iter()
+                    .flat_map(|constraints| &constraints.allowed_values)
+                    .flat_map(|set| &set.values),
+            );
+            if values
+                .into_iter()
+                .any(|value| values_contain_external_address(std::slice::from_ref(value)))
+                || template
+                    .dynamic_defaults
+                    .iter()
+                    .flatten()
+                    .flat_map(|default| &default.expressions)
+                    .any(expression_contains_external_address)
+            {
+                return Err(SerializationError::ExternalAddressPresent);
+            }
+        }
+
         Ok(())
     }
 }
@@ -536,6 +558,229 @@ mod tests {
         )
         .unwrap();
         Engine::deserialize(&bytes, SerializationFormat::Json)
+    }
+
+    fn template_metadata(state: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+        if state.get("dynamic_defaults").is_some() {
+            return Some(state);
+        }
+        match state {
+            serde_json::Value::Array(entries) => entries.iter_mut().find_map(template_metadata),
+            serde_json::Value::Object(entries) => entries.values_mut().find_map(template_metadata),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn template_defaults_roundtrip_without_evaluation_or_losing_literal_aggregation() {
+        for &format in SerializationFormat::ALL {
+            let mut engine = Engine::new(EngineConfig::default());
+            engine
+                .load_str(
+                    "(deftemplate deferred
+                (slot x (type INTEGER) (default-dynamic ?*late*))
+                (multislot pair (type INTEGER) (cardinality 2 2)))
+                (deffacts seed (deferred (pair (create$ 1) (+ 1 1))))",
+                )
+                .unwrap();
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert!(restored.reset().is_err());
+            restored.load_str("(defglobal ?*late* = 7)").unwrap();
+            restored.reset().unwrap();
+            let facts: Vec<_> = restored
+                .facts()
+                .unwrap()
+                .filter_map(|(_, fact)| {
+                    if let Fact::Template(fact) = fact {
+                        Some(fact)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(facts.len(), 1);
+            assert!(facts[0].slots[0].structural_eq(&Value::Integer(7)));
+            assert!(matches!(&facts[0].slots[1], Value::Multifield(fields)
+                if fields.len() == 2 && fields[0].structural_eq(&Value::Integer(1))
+                  && fields[1].structural_eq(&Value::Integer(2))));
+        }
+    }
+
+    #[test]
+    fn snapshots_reject_malformed_template_constraints_and_dynamic_defaults() {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deftemplate guarded
+            (slot choice (allowed-symbols red green))
+            (multislot pair (type INTEGER) (cardinality 2 3))
+            (slot late (type INTEGER) (range 0 10) (default-dynamic (+ 1 1))))
+            (defmodule OTHER)",
+            )
+            .unwrap();
+        let other = engine.module_registry.get_by_name("OTHER").unwrap();
+        let changes = [
+            ("/constraints", serde_json::json!([]), "slot vectors"),
+            ("/dynamic_defaults", serde_json::json!([]), "slot vectors"),
+            (
+                "/constraints/0/allowed_values/0/values/0",
+                serde_json::json!({"Integer": 1}),
+                "allowed-values",
+            ),
+            (
+                "/constraints/1/cardinality/min",
+                serde_json::json!(u64::MAX),
+                "cardinality",
+            ),
+            (
+                "/constraints/2/range/min",
+                serde_json::json!({"Integer": 11}),
+                "range",
+            ),
+            (
+                "/constraints/2/allowed_values",
+                serde_json::json!([{"kind": "Integer", "values": []}]),
+                "numeric range conflicts",
+            ),
+            (
+                "/dynamic_defaults/2/module",
+                serde_json::to_value(other).unwrap(),
+                "owner module",
+            ),
+            (
+                "/dynamic_defaults/2/module",
+                serde_json::json!(u32::MAX),
+                "owner module",
+            ),
+            (
+                "/dynamic_defaults/2/expressions",
+                serde_json::json!([]),
+                "exactly one expression",
+            ),
+            (
+                "/defaults/2",
+                serde_json::json!({"Integer": 2}),
+                "static default value",
+            ),
+            (
+                "/dynamic_defaults/2/expressions/0",
+                serde_json::json!({"Literal": {"Integer": 20}}),
+                "allowed numeric range",
+            ),
+        ];
+        for (pointer, value, expected) in changes {
+            let result = alter_state(&engine, |state| {
+                *template_metadata(state)
+                    .unwrap()
+                    .pointer_mut(pointer)
+                    .unwrap() = value;
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(expected)),
+                "{pointer}: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshots_check_dynamic_default_expression_depth_and_value_encoding() {
+        use crate::evaluator::RuntimeExpr;
+        let engine =
+            Engine::with_rules("(deftemplate guarded (slot x (default-dynamic red)))").unwrap();
+        let result = alter_state(&engine, |state| {
+            let expression =
+                &mut template_metadata(state).unwrap()["dynamic_defaults"][0]["expressions"][0];
+            let mut nested = expression.clone();
+            for _ in 0..16 {
+                nested = serde_json::json!({"Call": {"name": "create$", "args": [nested], "span": null}});
+            }
+            *expression = nested;
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("expression-depth"))
+        );
+
+        let result = alter_state(&engine, |state| {
+            template_metadata(state).unwrap()["dynamic_defaults"][0]["expressions"][0] =
+                serde_json::to_value(RuntimeExpr::Literal(Value::String(
+                    ferric_rules_core::FerricString::Ascii(vec![0xff].into_boxed_slice()),
+                )))
+                .unwrap();
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("ASCII"))
+        );
+    }
+
+    #[test]
+    fn snapshots_reject_inline_return_in_dormant_dynamic_defaults() {
+        let engine =
+            Engine::with_rules("(deftemplate guarded (slot x (default-dynamic (+ 1 1))))").unwrap();
+        let result = alter_state(&engine, |state| {
+            template_metadata(state).unwrap()["dynamic_defaults"][0]["expressions"][0]["Call"]
+                ["name"] = serde_json::json!("return");
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("return"))
+        );
+    }
+
+    #[test]
+    fn snapshot_initializer_cardinality_uses_complete_literal_aggregate() {
+        let engine = Engine::with_rules(
+            "(deftemplate pair (multislot values (type INTEGER) (cardinality 2 2)))
+            (deffacts seed (pair (values (create$ 1) 2)))",
+        )
+        .unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            restored.reset().unwrap();
+        }
+        let result = alter_state(&engine, |state| {
+            state["registered_deffacts"][0]["facts"][0]["Template"]["slots"][0][1] =
+                serde_json::json!([{"Literal":{"Integer":1}}]);
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("cardinality"))
+        );
+    }
+
+    #[test]
+    fn serialization_rejects_external_values_in_template_defaults_and_constraints() {
+        use crate::evaluator::RuntimeExpr;
+        for corruption in 0..3 {
+            let mut engine = Engine::with_rules(
+                "(deftemplate guarded (slot x (allowed-symbols red)
+                (default-dynamic (if FALSE then red else red))))",
+            )
+            .unwrap();
+            let (_, template) = engine.template_defs.iter_mut().next().unwrap();
+            let template = Arc::make_mut(template);
+            let external = Value::ExternalAddress(ferric_rules_core::ExternalAddress {
+                type_id: ferric_rules_core::ExternalTypeId(1),
+                token: 42,
+            });
+            match corruption {
+                0 => template.defaults[0] = external,
+                1 => template.constraints[0].allowed_values[0].values[0] = external,
+                _ => {
+                    let RuntimeExpr::If { then_branch, .. } =
+                        &mut template.dynamic_defaults[0].as_mut().unwrap().expressions[0]
+                    else {
+                        panic!("expected if")
+                    };
+                    then_branch[0].1 = Some(Box::new(RuntimeExpr::Literal(external)));
+                }
+            }
+            for &format in SerializationFormat::ALL {
+                assert!(matches!(
+                    engine.serialize(format),
+                    Err(SerializationError::ExternalAddressPresent)
+                ));
+            }
+        }
     }
 
     #[test]
@@ -1621,11 +1866,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-7 fixture: ordered and template splits,
+    /// Source of the committed schema-8 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-7.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-8.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -1774,9 +2019,18 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_seven_snapshot_resumes_matches_initializers_methods_addresses_and_effects()
-    {
+    fn committed_schema_seven_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-7.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(7))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_eight_snapshot_resumes_matches_initializers_methods_addresses_and_defaults()
+    {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-8.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         let address = engine.get_global("fixture-address").unwrap();
@@ -1799,6 +2053,39 @@ mod tests {
         assert!(effects.find_facts("effect-created").unwrap().is_empty());
         assert_eq!(integer_rows(&effects, "effect-method"), [[41]]);
         assert!(effects.action_diagnostics().is_empty());
+
+        let mut defaults = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        assert!(matches!(
+            defaults.get_global("default-calls"),
+            Some(Value::Integer(1))
+        ));
+        defaults
+            .load_str(
+                "(deffunction fixture-weight () 8)
+            (assert (default-results
+              (fact-slot-value (assert (constrained)) weight)
+              (fact-slot-value (assert (constrained (serial 77))) serial)))",
+            )
+            .unwrap();
+        assert_eq!(integer_rows(&defaults, "default-results"), [[3, 77]]);
+        assert!(matches!(
+            defaults.get_global("default-calls"),
+            Some(Value::Integer(2))
+        ));
+        for invalid in [
+            "(constrained (color blue))",
+            "(constrained (weight (+ 9 1)))",
+            "(constrained (labels label))",
+        ] {
+            assert!(defaults.load_str(&format!("(assert {invalid})")).is_err());
+        }
+        defaults
+            .load_str(
+                "(deffunction fixture-next () 99)
+            (assert (replaced-default (fact-slot-value (assert (constrained)) serial)))",
+            )
+            .unwrap();
+        assert_eq!(integer_rows(&defaults, "replaced-default"), [[99]]);
 
         // Persisted initializers resolve a replaced function instead of
         // replaying values computed before the snapshot was saved.
@@ -1838,11 +2125,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-7 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_seven_fixture() {
+    #[ignore = "regenerates the committed schema-8 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_eight_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-7.cbor");
+            .join("tests/fixtures/snapshots/schema-8.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

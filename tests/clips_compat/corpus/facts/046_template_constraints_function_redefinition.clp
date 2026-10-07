@@ -1,0 +1,5 @@
+(deffunction value () first)
+(deftemplate sample (slot fixed (default (value))) (slot dynamic (default-dynamic (value))))
+(deffunction value () second)
+(deffacts seed (sample))
+(defrule show (sample (fixed ?a) (dynamic ?b)) => (printout t ?a ":" ?b crlf))

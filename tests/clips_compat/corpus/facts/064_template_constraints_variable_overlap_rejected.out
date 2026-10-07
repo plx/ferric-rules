@@ -1,0 +1,7 @@
+
+[CSTRNPSR3] The allowed-symbols attribute cannot be used
+in conjunction with the allowed-values attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-values ?VARIABLE) (allowed-symbols

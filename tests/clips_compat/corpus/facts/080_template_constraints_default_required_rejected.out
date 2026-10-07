@@ -1,0 +1,6 @@
+
+[TMPLTRHS1] Slot x requires a value because of its (default ?NONE) attribute.
+
+ERROR:
+(deffacts MAIN::seed
+   (p)

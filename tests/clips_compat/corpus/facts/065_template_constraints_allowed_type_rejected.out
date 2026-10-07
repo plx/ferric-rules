@@ -1,0 +1,6 @@
+
+[CSTRNPSR1] The type attribute conflicts with the allowed-floats/numbers attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (type INTEGER) (allowed-numbers 1))

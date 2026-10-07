@@ -153,6 +153,8 @@ impl Engine {
             ensure(
                 count == template.slot_types.len()
                     && count == template.allowed_types.len()
+                    && count == template.constraints.len()
+                    && count == template.dynamic_defaults.len()
                     && count == template.defaults.len()
                     && count == template.slot_index.len(),
                 "inconsistent template slot vectors",
@@ -168,8 +170,31 @@ impl Engine {
                         "noncanonical template type union",
                     )?;
                 }
+                template.constraints[index].validate_metadata(
+                    template.allowed_types[index].as_deref(),
+                    template.slot_types[index],
+                    &self.symbol_table,
+                )?;
                 self.validate_snapshot_value(&template.defaults[index])?;
-                if !matches!(template.defaults[index], Value::Void) {
+                if let Some(default) = &template.dynamic_defaults[index] {
+                    ensure(
+                        self.template_modules.get(id) == Some(&default.module),
+                        "dynamic default has inconsistent owner module",
+                    )?;
+                    ensure(
+                        matches!(template.defaults[index], Value::Void),
+                        "dynamic default has a static default value",
+                    )?;
+                    for expression in &default.expressions {
+                        self.validate_expression(expression)?;
+                        self.validate_snapshot_default_control(expression, default.module)?;
+                    }
+                    Self::validate_snapshot_slot_expressions(
+                        template,
+                        index,
+                        &default.expressions,
+                    )?;
+                } else if !matches!(template.defaults[index], Value::Void) {
                     template.validate_slot(index, &template.defaults[index])?;
                 }
             }
@@ -444,33 +469,15 @@ impl Engine {
                     .ok_or("fact initializer has dangling template")?;
                 let mut seen = rustc_hash::FxHashSet::default();
                 for (index, expressions) in slots {
-                    let kind = template
-                        .slot_types
-                        .get(*index)
-                        .ok_or("fact initializer has invalid slot index")?;
-                    ensure(seen.insert(*index), "fact initializer has duplicate slot")?;
                     ensure(
-                        *kind != SlotType::Single || expressions.len() == 1,
-                        "single-field initializer requires exactly one expression",
+                        *index < template.slot_types.len(),
+                        "fact initializer has invalid slot index",
                     )?;
-                    for expression in expressions {
-                        if let RuntimeExpr::Literal(value) = expression {
-                            match kind {
-                                SlotType::Single => template.validate_slot(*index, value)?,
-                                SlotType::Multi => {
-                                    let fields = match value {
-                                        Value::Multifield(fields) => fields.clone(),
-                                        Value::Void => Box::default(),
-                                        value => Box::new(std::iter::once(value.clone()).collect()),
-                                    };
-                                    template.validate_slot(*index, &Value::Multifield(fields))?;
-                                }
-                            }
-                        }
-                    }
+                    ensure(seen.insert(*index), "fact initializer has duplicate slot")?;
+                    Self::validate_snapshot_slot_expressions(template, *index, expressions)?;
                 }
                 for (index, default) in template.defaults.iter().enumerate() {
-                    if !seen.contains(&index) {
+                    if !seen.contains(&index) && template.dynamic_defaults[index].is_none() {
                         template.validate_slot(index, default)?;
                     }
                 }
@@ -478,6 +485,103 @@ impl Engine {
         }
         for expression in fact.expressions() {
             self.validate_expression(expression)?;
+        }
+        Ok(())
+    }
+
+    /// Validate literal elements independently, then a known complete aggregate length.
+    fn validate_snapshot_slot_expressions(
+        template: &crate::templates::RegisteredTemplate,
+        index: usize,
+        expressions: &[RuntimeExpr],
+    ) -> Result<(), String> {
+        if template.slot_types[index] == SlotType::Single {
+            ensure(
+                expressions.len() == 1,
+                "single-field initializer requires exactly one expression",
+            )?;
+            match &expressions[0] {
+                RuntimeExpr::Literal(value) => template.validate_slot(index, value)?,
+                RuntimeExpr::Call { name, .. } if name == "create$" => {
+                    return Err("single-field initializer requires one scalar value".to_owned());
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        let mut pending: Vec<_> = expressions.iter().collect();
+        let mut length = 0_usize;
+        let mut complete = true;
+        while let Some(expression) = pending.pop() {
+            match expression {
+                RuntimeExpr::Literal(Value::Void) => {}
+                RuntimeExpr::Literal(Value::Multifield(values)) => {
+                    for value in values.iter() {
+                        template.validate_field(index, value)?;
+                    }
+                    length = length
+                        .checked_add(values.len())
+                        .ok_or("initializer length overflow")?;
+                }
+                RuntimeExpr::Literal(value) => {
+                    template.validate_field(index, value)?;
+                    length = length.checked_add(1).ok_or("initializer length overflow")?;
+                }
+                RuntimeExpr::Call { name, args, .. } if name == "create$" => pending.extend(args),
+                _ => complete = false,
+            }
+        }
+        if complete {
+            template.constraints[index].validate_cardinality(length)?;
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_default_control(
+        &self,
+        root: &RuntimeExpr,
+        module: crate::modules::ModuleId,
+    ) -> Result<(), String> {
+        let mut actions = Vec::new();
+        for expression in crate::fact_initializer::RuntimeExpressions::new(root) {
+            let mut branches = Vec::new();
+            match expression {
+                RuntimeExpr::Call { name, .. } if name == "return" => {
+                    return Err("return is not valid in a template default".to_owned())
+                }
+                RuntimeExpr::EffectCall { call } => {
+                    actions.extend(crate::effects::evaluated_arguments(self, module, call));
+                }
+                RuntimeExpr::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => branches.extend([then_branch, else_branch]),
+                RuntimeExpr::While { body, .. }
+                | RuntimeExpr::LoopForCount { body, .. }
+                | RuntimeExpr::Progn { body, .. }
+                | RuntimeExpr::QueryAction { body, .. } => branches.push(body),
+                RuntimeExpr::Switch { cases, default, .. } => {
+                    branches.extend(cases.iter().map(|(_, body)| body));
+                    branches.extend(default.iter());
+                }
+                _ => {}
+            }
+            for branch in branches {
+                actions.extend(branch.iter().map(|(action, _)| action));
+            }
+        }
+        while let Some(expression) = actions.pop() {
+            match expression {
+                ActionExpr::FunctionCall(call) => {
+                    ensure(
+                        call.name != "return",
+                        "return is not valid in a template default",
+                    )?;
+                    actions.extend(crate::effects::evaluated_arguments(self, module, call));
+                }
+                expression => expression.push_children(&mut actions),
+            }
         }
         Ok(())
     }
@@ -549,7 +653,7 @@ impl Engine {
             }
             for branch in branches {
                 for (action, runtime) in branch {
-                    validate_action(action)?;
+                    validate_action_at_depth(action, depth + 1)?;
                     if let Some(runtime) = runtime {
                         pending.push((runtime, depth + 1));
                     }

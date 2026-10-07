@@ -1,0 +1,8 @@
+
+[CSTRNCHK1] A literal restriction value found in CE #1
+does not match the allowed values for slot x.
+
+ERROR:
+(defrule MAIN::bad
+   (p (x ~blue))
+   =>)

@@ -1,0 +1,6 @@
+
+[CSTRNPSR5] The cardinality attribute can only be used with multifield slots.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (cardinality

@@ -1,0 +1,7 @@
+
+[CSTRNPSR3] The range attribute cannot be used
+in conjunction with the allowed-integers attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-integers 1) (range

@@ -1,0 +1,6 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for default attribute.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (default ?missing

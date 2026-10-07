@@ -1,0 +1,7 @@
+
+[CSTRNCHK1] An expression found in the default-dynamic attribute
+does not satisfy the cardinality restrictions for slot x.
+
+ERROR:
+(deftemplate MAIN::p
+   (multislot x (cardinality 2 3) (default-dynamic a))

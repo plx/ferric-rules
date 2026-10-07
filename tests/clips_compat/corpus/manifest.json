@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "9cbdae1b4e36133ef1a70bfa7b7c322f03081fa5",
+    "ferric_revision": "2fe6579a0105daa4e27862bbc5c2a6fbcde83e76",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -352,6 +352,636 @@
         "deffacts",
         "printout"
       ]
+    },
+    {
+      "path": "facts/029_template_constraints_category_scope.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "allowed-strings",
+        "allowed-integers",
+        "allowed-numbers",
+        "primitive-types"
+      ]
+    },
+    {
+      "path": "facts/030_template_constraints_derived_priority.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "allowed-numbers",
+        "allowed-lexemes",
+        "derived-default"
+      ]
+    },
+    {
+      "path": "facts/031_template_constraints_range_defaults.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "range",
+        "derived-default"
+      ]
+    },
+    {
+      "path": "facts/032_template_constraints_cardinality_defaults.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "allowed-symbols",
+        "derived-default"
+      ]
+    },
+    {
+      "path": "facts/033_template_constraints_multislot_aggregation.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "default",
+        "default-dynamic",
+        "create$"
+      ]
+    },
+    {
+      "path": "facts/034_template_constraints_static_dynamic_timing.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default",
+        "default-dynamic",
+        "defglobal"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "facts/035_template_constraints_dynamic_suppression.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "deffunction",
+        "assert"
+      ]
+    },
+    {
+      "path": "facts/036_template_constraints_slot_order.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "assert",
+        "evaluation-order"
+      ]
+    },
+    {
+      "path": "facts/037_template_constraints_modify_duplicate_reuse.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "modify",
+        "duplicate"
+      ]
+    },
+    {
+      "path": "facts/038_template_constraints_reset_gensym.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "gensym*",
+        "reset"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "facts/039_template_constraints_late_global.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "facts/040_template_constraints_module_resolution.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "defmodule",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "facts/041_template_constraints_lexical_defaults.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default",
+        "default-dynamic",
+        "loop-for-count",
+        "progn$",
+        "do-for-fact"
+      ]
+    },
+    {
+      "path": "facts/042_template_constraints_none_supplied.clp",
+      "level": "basic",
+      "covers": [
+        "deftemplate",
+        "default",
+        "allowed-symbols"
+      ]
+    },
+    {
+      "path": "facts/043_template_constraints_variable_facets.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "allowed-numbers",
+        "allowed-symbols",
+        "range",
+        "cardinality"
+      ]
+    },
+    {
+      "path": "facts/044_template_constraints_address_values.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "fact-address"
+      ]
+    },
+    {
+      "path": "facts/045_template_constraints_instance_values.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "instance-name",
+        "derived-default"
+      ]
+    },
+    {
+      "path": "facts/046_template_constraints_function_redefinition.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default",
+        "default-dynamic",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "facts/047_template_constraints_valid_computed_values.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "range",
+        "cardinality",
+        "assert"
+      ]
+    },
+    {
+      "path": "facts/048_template_constraints_bind_destinations.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default",
+        "default-dynamic",
+        "bind"
+      ]
+    },
+    {
+      "path": "facts/049_template_constraints_static_once.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default",
+        "defglobal",
+        "deffunction",
+        "reset"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "facts/050_template_constraints_deffacts_allowed_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/051_template_constraints_deffacts_range_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "range",
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/052_template_constraints_deffacts_cardinality_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/053_template_constraints_lhs_allowed_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "pattern"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/054_template_constraints_lhs_disjunction_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "or-constraint"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/055_template_constraints_lhs_negated_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "not-constraint"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/056_template_constraints_lhs_cardinality_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "pattern"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/057_template_constraints_rhs_literal_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-strings",
+        "assert"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/058_template_constraints_numeric_kind_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-numbers",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/059_template_constraints_signed_zero_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-floats",
+        "float"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/060_template_constraints_instance_value_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "instance-name"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/061_template_constraints_allowed_overlap_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "allowed-symbols"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/062_template_constraints_category_overlap_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-numbers",
+        "allowed-integers"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/063_template_constraints_numeric_range_overlap_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-integers",
+        "range"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/064_template_constraints_variable_overlap_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-values",
+        "allowed-symbols"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/065_template_constraints_allowed_type_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-numbers",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/066_template_constraints_allowed_category_literal_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/067_template_constraints_allowed_empty_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/068_template_constraints_allowed_duplicate_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/069_template_constraints_range_kind_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "range",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/070_template_constraints_range_reversed_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "range"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/071_template_constraints_cardinality_scalar_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/072_template_constraints_cardinality_negative_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/073_template_constraints_static_default_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "range",
+        "default"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/074_template_constraints_dynamic_literal_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "default-dynamic"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/075_template_constraints_dynamic_cardinality_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "default-dynamic"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/076_template_constraints_scalar_multifield_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "create$"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/077_template_constraints_default_unknown_call_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "deffunction"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/078_template_constraints_default_bound_local_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "bind"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/079_template_constraints_default_free_local_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/080_template_constraints_default_required_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default",
+        "deffacts"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/081_template_constraints_static_return_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/082_template_constraints_dynamic_return_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/083_template_constraints_static_void_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default",
+        "printout"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/084_template_constraints_dynamic_void_return_isolation.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "printout",
+        "return",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "facts/085_template_constraints_issue_repro.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "range",
+        "cardinality",
+        "default-dynamic"
+      ]
+    },
+    {
+      "path": "facts/086_template_constraints_allowed_lists.clp",
+      "level": "basic",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "allowed-strings",
+        "allowed-lexemes",
+        "allowed-integers",
+        "allowed-floats",
+        "allowed-numbers",
+        "allowed-values"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_lhs_empty_multislot.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "multislot",
+        "not"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_mab_example.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "default",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_static_multislot_void_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "multislot",
+        "default",
+        "printout"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/397_template_default_self_reference_redefinition_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "compile-time-validation"
+      ],
+      "error": "load"
     },
     {
       "path": "generics/bare-method-parameter.clp",

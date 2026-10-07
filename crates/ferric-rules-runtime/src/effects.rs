@@ -8,6 +8,7 @@ use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
 use crate::fact_address::{live_fact_id, make_fact_address};
 use crate::loader::TemplateLookupError;
 use crate::modules::ModuleId;
+use crate::template_defaults;
 use crate::templates::RegisteredTemplate;
 
 pub(crate) fn is_effect(name: &str) -> bool {
@@ -253,7 +254,7 @@ fn apply_slots(
     span: Option<&SourceSpan>,
 ) -> Result<(), EvalError> {
     let overrides = template
-        .slot_overrides(overrides)
+        .slot_overrides(overrides, &ctx.engine.symbol_table)
         .map_err(|error| failure(name, error, span))?;
     for (index, call) in overrides {
         slots[index] = match template.slot_types[index] {
@@ -415,8 +416,21 @@ fn eval_assert(
         {
             Ok(id) => {
                 let definition = ctx.engine.template_defs[id].clone();
-                let mut slots = definition.defaults.clone();
-                apply_slots(ctx, name, &definition, &mut slots, &pattern.args, span)?;
+                let validated = definition
+                    .slot_overrides(&pattern.args, &ctx.engine.symbol_table)
+                    .map_err(|error| failure(name, error, span))?;
+                let mut sources = template_defaults::default_sources(&definition);
+                for (index, slot) in validated {
+                    sources[index] = template_defaults::SlotSource::Actions(&slot.args);
+                }
+                let slots = template_defaults::evaluate_slots(ctx, &definition, sources).map_err(
+                    |error| match error.failure {
+                        template_defaults::SlotFailure::Invalid(reason) => {
+                            failure(name, reason, span)
+                        }
+                        template_defaults::SlotFailure::Eval(error) => error,
+                    },
+                )?;
                 Fact::Template(TemplateFact {
                     template_id: id,
                     slots: slots.into_boxed_slice(),

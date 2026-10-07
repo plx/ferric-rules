@@ -50,12 +50,13 @@ pub use sexpr::{parse_sexprs, Atom, Connective, ParseResult, SExpr, MAX_SEXPR_NE
 pub use span::{FileId, Position, Span};
 pub use stage2::{
     interpret_action_expr, interpret_action_exprs, interpret_constructs, Action, ActionExpr,
-    Constraint, Construct, DefaultValue, FactBody, FactSlotValue, FactValue, FactsConstruct,
-    FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct, GlobalDefinition,
-    ImportSpec, InterpretError, InterpretErrorKind, InterpretResult, InterpreterConfig,
-    LiteralKind, LiteralValue, MethodConstruct, MethodParameter, ModuleConstruct, ModuleSpec,
-    OrderedFactBody, OrderedPattern, Pattern, RuleConstruct, SlotConstraint, SlotDefinition,
-    SlotType, SlotValueType, TemplateConstruct, TemplateFactBody, TemplatePattern,
+    AllowedValueSet, Cardinality, Constraint, Construct, DefaultValue, FactBody, FactSlotValue,
+    FactValue, FactsConstruct, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
+    GlobalDefinition, ImportSpec, InterpretError, InterpretErrorKind, InterpretResult,
+    InterpreterConfig, LiteralKind, LiteralValue, MethodConstruct, MethodParameter,
+    ModuleConstruct, ModuleSpec, NumericBound, NumericRange, OrderedFactBody, OrderedPattern,
+    Pattern, RuleConstruct, SlotConstraint, SlotConstraints, SlotDefinition, SlotType,
+    SlotValueType, TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
 #[cfg(test)]

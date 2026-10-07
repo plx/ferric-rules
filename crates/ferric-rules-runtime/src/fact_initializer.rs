@@ -52,7 +52,6 @@ pub(crate) struct RuntimeExpressions<'a> {
 }
 
 impl<'a> RuntimeExpressions<'a> {
-    #[cfg(feature = "serde")]
     pub(crate) fn new(root: &'a RuntimeExpr) -> Self {
         Self {
             pending: vec![root],
@@ -291,6 +290,43 @@ impl Engine {
         }
     }
 
+    pub(crate) fn prepare_default_expressions(
+        &mut self,
+        expressions: &[ActionExpr],
+        module: ModuleId,
+    ) -> Result<Vec<RuntimeExpr>, LoadError> {
+        expressions
+            .iter()
+            .map(|expression| {
+                self.validate_source_default_control(expression, module)?;
+                self.prepare_field(expression, module, false)
+            })
+            .collect()
+    }
+
+    fn validate_source_default_control(
+        &self,
+        root: &ActionExpr,
+        module: ModuleId,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![root];
+        while let Some(expression) = pending.pop() {
+            match expression {
+                ActionExpr::FunctionCall(call) => {
+                    if call.name == "return" {
+                        return Err(invalid_at(
+                            call.span,
+                            "[PRCDRPSR2] The return function is not valid in a template default.",
+                        ));
+                    }
+                    pending.extend(crate::effects::evaluated_arguments(self, module, call));
+                }
+                expression => expression.push_children(&mut pending),
+            }
+        }
+        Ok(())
+    }
+
     /// Top-level assertions report unbound local reads when they are evaluated
     /// (CLIPS `[EVALUATN1]`); dormant deffacts reject every local read at load.
     fn prepare_field(
@@ -355,11 +391,11 @@ impl Engine {
             .map(ActionExpr::FunctionCall)
             .collect();
         let validated = template
-            .slot_overrides(&overrides)
+            .slot_overrides(&overrides, &self.symbol_table)
             .map_err(LoadError::Compile)?;
         let assigned: HashSet<_> = validated.iter().map(|(index, _)| *index).collect();
         for (index, default) in template.defaults.iter().enumerate() {
-            if !assigned.contains(&index) {
+            if !assigned.contains(&index) && template.dynamic_defaults[index].is_none() {
                 template
                     .validate_slot(index, default)
                     .map_err(LoadError::Compile)?;
@@ -431,6 +467,7 @@ impl Engine {
         let var_map = ferric_rules_core::binding::VarMap::new();
         let (call_depth, expression_depth) = self.eval_depth_floor;
         let mut ctx = crate::evaluator::EvalContext {
+            global_module: None,
             current_module: module,
             engine: self,
             bindings: &bindings,
@@ -460,23 +497,17 @@ impl Engine {
             })),
             PreparedFact::Template { template_id, slots } => {
                 let template = template.expect("template resolved above");
-                let mut values = template.defaults.clone();
-                // CLIPS evaluates slot expressions in declaration order, not
-                // in the order the source wrote them. Sorting here also covers
-                // prepared facts restored from older snapshots.
-                let mut ordered: Vec<_> = slots.iter().collect();
-                ordered.sort_by_key(|(index, _)| *index);
-                for (index, fields) in ordered {
-                    values[*index] = match template.slot_types[*index] {
-                        SlotType::Single => evaluator::eval(&mut ctx, &fields[0])
-                            .map_err(|error| error.to_string())?,
-                        SlotType::Multi => Value::Multifield(Box::new(
-                            evaluate_fields(&mut ctx, fields)?.into_iter().collect(),
-                        )),
-                    };
-                    template.validate_slot(*index, &values[*index])?;
-                }
-                template.validate_slots(&values)?;
+                let values = crate::template_defaults::prepared_sources(&template, slots)
+                    .and_then(|sources| {
+                        crate::template_defaults::evaluate_slots(&mut ctx, &template, sources)
+                    })
+                    .map_err(|error| match error.failure {
+                        crate::template_defaults::SlotFailure::Invalid(reason) => reason,
+                        // Initializers evaluate at a root, as `evaluator::eval` does.
+                        crate::template_defaults::SlotFailure::Eval(error) => {
+                            evaluator::contain_control_signals(error).to_string()
+                        }
+                    })?;
                 Ok(Fact::Template(TemplateFact {
                     template_id: *template_id,
                     slots: values.into_boxed_slice(),

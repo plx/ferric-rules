@@ -1,0 +1,6 @@
+
+[CSTRNPSR4] Value does not match the expected type for the allowed-symbols attribute
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-symbols a 1 

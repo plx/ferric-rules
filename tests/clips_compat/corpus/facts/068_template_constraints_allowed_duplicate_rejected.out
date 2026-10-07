@@ -1,0 +1,6 @@
+
+[PRNTUTIL5] The allowed-symbols attribute has already been parsed.
+
+ERROR:
+(deftemplate MAIN::p
+   (slot x (allowed-symbols a) (allowed-symbols

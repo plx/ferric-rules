@@ -138,6 +138,7 @@ impl ActionEvalEnv {
         let engine = &mut *context.engine;
         let (call_depth, expression_depth) = engine.eval_depth_floor;
         crate::evaluator::EvalContext {
+            global_module: None,
             engine,
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
@@ -232,6 +233,7 @@ impl ActionEvalEnv {
         let engine = &mut *context.engine;
         let (call_depth, expression_depth) = engine.eval_depth_floor;
         let mut ctx = crate::evaluator::EvalContext {
+            global_module: None,
             engine,
             bindings,
             var_map,

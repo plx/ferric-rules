@@ -1,0 +1,11 @@
+(deftemplate sample
+ (slot sy (type SYMBOL) (allowed-symbols red green))
+ (slot st (type STRING) (allowed-strings "one" "two"))
+ (slot le (type LEXEME) (allowed-lexemes left "right"))
+ (slot in (type INTEGER) (allowed-integers 1 2))
+ (slot fl (type FLOAT) (allowed-floats 1.5 2.5))
+ (slot nu (type NUMBER) (allowed-numbers 3 4.5))
+ (slot va (allowed-values yes 7 "seven")))
+(deffacts seed (sample (sy green) (st "two") (le "right") (in 2) (fl 2.5) (nu 4.5) (va 7)))
+(defrule show (sample (sy ?a) (st ?b) (le ?c) (in ?d) (fl ?e) (nu ?f) (va ?g))
+ => (printout t ?a ":" ?b ":" ?c ":" ?d ":" ?e ":" ?f ":" ?g crlf))

@@ -72,14 +72,26 @@ fact address captured by the first firing. Restoration preserves that address,
 eight pending split matches, deferred seed expressions, and method restrictions.
 The previous fixture bytes remain unchanged.
 
-`schema-7.cbor` is the current format. `schema-7.clp` preserves a dormant
+`schema-7.cbor` preserves the previous format. `schema-7.clp` preserves a dormant
 assertion expression in its seed initializer and adds a function, method, and
 rule that exercise mutation and action-query return values after restoration.
 Separate round-trip tests preserve fact numbering and refraction after source
-clear refuses construct removal. All older fixture bytes remain unchanged.
+clear refuses construct removal. Schema 8 rejects these unchanged bytes with
+`UnsupportedVersion(7)` because template constraints and deferred dynamic defaults
+add persisted metadata.
 
-Regenerate schema 7 only after an intentional change to its unreleased layout:
+`schema-8.cbor` is the current format. Its source, `schema-8.clp`, retains the
+same one-fired/eight-pending checkpoint and adds a constrained template with
+allowed symbols, a numeric range, multislot cardinality, a computed static
+default, and a dynamic default. The latter increments a counter when an omitted
+slot is asserted. The resume test checks that restoration does not increment
+that counter, that supplied slots skip the dynamic call, that static values
+survive callable replacement, and that later dynamic calls use the replacement
+function. Invalid assertions continue to fail after restoration. All older
+fixture bytes remain unchanged.
+
+Regenerate schema 8 only after an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_seven_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_eight_fixture -- --ignored
 ```

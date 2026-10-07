@@ -1761,57 +1761,90 @@ impl Engine {
         ))
     }
 
-    /// Prepare one slot default without installing any template metadata.
+    /// Prepare defaults without installing a partially valid template.
+    ///
+    /// `redefining` is the definition this construct replaces. CLIPS removes
+    /// it before parsing the new body, so it rejects a slot-syntax assertion
+    /// or a fact query of it. Ferric rejects any reference to it, including an
+    /// ordered-form `(assert (item))` for which CLIPS instead creates a second,
+    /// implied template (a Ferric-only rejection). The check runs before this
+    /// slot's default is evaluated, leaving the previous definition installed
+    /// and redefinable.
     fn template_slot_default(
         &mut self,
-        slot_def: &ferric_rules_parser::SlotDefinition,
+        slot: &ferric_rules_parser::SlotDefinition,
+        constraints: &crate::slot_constraints::RuntimeSlotConstraints,
+        module: crate::modules::ModuleId,
+        redefining: Option<ferric_rules_core::TemplateId>,
         result: &mut LoadResult,
-    ) -> Result<Value, LoadError> {
-        let default_val = match &slot_def.default {
-            Some(ferric_rules_parser::DefaultValue::None) => Value::Void,
-            Some(ferric_rules_parser::DefaultValue::Value(literal)) => self
+    ) -> Result<(Value, Option<crate::templates::DynamicSlotDefault>), LoadError> {
+        use ferric_rules_parser::DefaultValue;
+        let reject_self_reference = |engine: &Self, compiled: &[crate::evaluator::RuntimeExpr]| {
+            if redefining
+                .is_some_and(|id| engine.runtime_expressions_use_template(compiled, module, id))
+            {
+                return Err(Self::compile_error_at(
+                    &slot.span,
+                    &format!(
+                        "default for slot `{}` refers to its own template while that template is being redefined",
+                        slot.name
+                    ),
+                ));
+            }
+            Ok(())
+        };
+        let value = match &slot.default {
+            Some(DefaultValue::None) => Value::Void,
+            Some(DefaultValue::Value(literal)) => self
                 .literal_to_value(&literal.value, literal.span.start.line, result)
                 .ok_or_else(|| Self::compile_error_at(&literal.span, "invalid template default"))?,
-            Some(ferric_rules_parser::DefaultValue::Values(literals)) => {
-                let mut values = Vec::with_capacity(literals.len());
-                for literal in literals {
-                    values.push(
+            Some(DefaultValue::Values(literals)) => {
+                let values = literals
+                    .iter()
+                    .map(|literal| {
                         self.literal_to_value(&literal.value, literal.span.start.line, result)
                             .ok_or_else(|| {
                                 Self::compile_error_at(&literal.span, "invalid template default")
-                            })?,
-                    );
-                }
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 Value::Multifield(Box::new(values.into_iter().collect()))
             }
-            None | Some(ferric_rules_parser::DefaultValue::Derive) => {
-                use ferric_rules_parser::SlotValueType;
-                if slot_def.slot_type == ferric_rules_parser::SlotType::Multi {
-                    Value::Multifield(Box::default())
-                } else {
-                    match slot_def.allowed_types.as_ref().and_then(|types| types.first()) {
-                    None | Some(SlotValueType::Symbol) => Value::Symbol(self.compile_symbol("nil")?),
-                    Some(SlotValueType::String) => Value::String(self.compile_string("")?),
-                    Some(SlotValueType::Integer) => Value::Integer(0),
-                    Some(SlotValueType::Float) => Value::Float(0.0),
-                    Some(SlotValueType::InstanceName) => Value::InstanceName(InstanceName::from_symbol(self.compile_symbol("nil")?)),
-                    Some(SlotValueType::FactAddress) => Value::FactAddress(ferric_rules_core::FactAddress::dummy()),
-                    Some(SlotValueType::ExternalAddress) => return Err(Self::compile_error_at(&slot_def.span, "an external-address slot requires (default ?NONE); Ferric cannot derive a host-owned token")),
-                }
-                }
+            Some(DefaultValue::Expressions(expressions)) => {
+                let compiled = self.prepare_default_expressions(expressions, module)?;
+                reject_self_reference(self, &compiled)?;
+                self.evaluate_static_default(slot.slot_type, &slot.name, &compiled, module)
+                    .map_err(|error| Self::compile_error_at(&slot.span, &error))?
             }
+            Some(DefaultValue::Dynamic(expressions)) => {
+                let expressions = self.prepare_default_expressions(expressions, module)?;
+                reject_self_reference(self, &expressions)?;
+                return Ok((
+                    Value::Void,
+                    Some(crate::templates::DynamicSlotDefault {
+                        module,
+                        expressions,
+                    }),
+                ));
+            }
+            None | Some(DefaultValue::Derive) => crate::slot_constraints::derive_default(
+                slot.slot_type,
+                slot.allowed_types.as_deref(),
+                constraints,
+                &mut self.symbol_table,
+                self.config.string_encoding,
+            )
+            .map_err(|error| Self::compile_error_at(&slot.span, &error))?,
         };
-        let default_val = match (slot_def.slot_type, default_val) {
+        let value = match (slot.slot_type, value) {
             (ferric_rules_parser::SlotType::Multi, Value::Void) => Value::Void,
-            (ferric_rules_parser::SlotType::Multi, Value::Multifield(fields)) => {
-                Value::Multifield(fields)
-            }
+            (ferric_rules_parser::SlotType::Multi, value @ Value::Multifield(_)) => value,
             (ferric_rules_parser::SlotType::Multi, value) => {
-                Value::Multifield(Box::new([value].into_iter().collect()))
+                Value::Multifield(Box::new(std::iter::once(value).collect()))
             }
             (_, value) => value,
         };
-        Ok(default_val)
+        Ok((value, None))
     }
 
     /// Install a validated new template or replace an unused definition in place.
@@ -1838,36 +1871,77 @@ impl Engine {
             return Err(Self::ordered_template_conflict(template));
         }
         let slot_count = template.slots.len();
-        let mut slot_names = Vec::with_capacity(slot_count);
         let mut slot_index = HashMap::default();
         slot_index.reserve(slot_count);
-        let mut defaults = Vec::with_capacity(slot_count);
-        let mut slot_types = Vec::with_capacity(slot_count);
-        let mut allowed_types = Vec::with_capacity(slot_count);
-
-        for (i, slot_def) in template.slots.iter().enumerate() {
-            slot_names.push(slot_def.name.clone());
-            slot_index.insert(slot_def.name.clone(), i);
-            slot_types.push(slot_def.slot_type);
-            allowed_types.push(slot_def.allowed_types.clone());
-
-            defaults.push(self.template_slot_default(slot_def, result)?);
-        }
-
         let mut registered = RegisteredTemplate {
             name: template.name.clone(),
-            slot_names,
-            slot_types,
-            allowed_types,
+            slot_names: Vec::with_capacity(slot_count),
+            slot_types: Vec::with_capacity(slot_count),
+            allowed_types: Vec::with_capacity(slot_count),
             slot_index,
-            defaults,
+            defaults: Vec::with_capacity(slot_count),
+            constraints: Vec::with_capacity(slot_count),
+            dynamic_defaults: Vec::with_capacity(slot_count),
         };
-        for (index, value) in registered.defaults.iter().enumerate() {
-            if !matches!(value, Value::Void) {
-                registered.validate_slot(index, value).map_err(|message| {
-                    Self::compile_error_at(&template.slots[index].span, &message)
-                })?;
+        for (index, slot) in template.slots.iter().enumerate() {
+            let constraints = crate::slot_constraints::compile_constraints(
+                &slot.constraints,
+                &mut self.symbol_table,
+                self.config.string_encoding,
+            )
+            .map_err(|error| Self::compile_error_at(&slot.span, &error))?;
+            constraints
+                .validate_metadata(
+                    slot.allowed_types.as_deref(),
+                    slot.slot_type,
+                    &self.symbol_table,
+                )
+                .map_err(|error| Self::compile_error_at(&slot.span, &error))?;
+            let (value, dynamic) =
+                self.template_slot_default(slot, &constraints, owning_module, existing, result)?;
+            // An ordered-form assertion of a new template's own name would
+            // stop working once the template is installed. CLIPS 6.30 instead
+            // creates a second, implied template, which Ferric does not model.
+            if existing.is_none()
+                && dynamic.as_ref().is_some_and(|default| {
+                    self.dynamic_default_uses_ordered_name(default, &local_name)
+                })
+            {
+                return Err(Self::compile_error_at(
+                    &slot.span,
+                    &format!(
+                        "default for slot `{}` uses its own template `{}` as an ordered relation",
+                        slot.name, template.name
+                    ),
+                ));
             }
+            registered.slot_names.push(slot.name.clone());
+            registered.slot_index.insert(slot.name.clone(), index);
+            registered.slot_types.push(slot.slot_type);
+            registered.allowed_types.push(slot.allowed_types.clone());
+            registered.defaults.push(value);
+            registered.dynamic_defaults.push(dynamic);
+            registered.constraints.push(constraints);
+
+            // A failing slot stops definition-time evaluation immediately;
+            // later defaults must not produce effects after that error.
+            if let Some(ferric_rules_parser::DefaultValue::Dynamic(expressions)) = &slot.default {
+                registered
+                    .validate_literal_expressions(index, expressions, &self.symbol_table)
+                    .map_err(|error| Self::compile_error_at(&slot.span, &error))?;
+            } else if !matches!(registered.defaults[index], Value::Void) {
+                registered
+                    .validate_slot(index, &registered.defaults[index])
+                    .map_err(|message| Self::compile_error_at(&slot.span, &message))?;
+            }
+        }
+        // Definition-time expressions may assert facts. Recheck consumers after
+        // evaluating defaults so an effect cannot invalidate a live fact layout.
+        if existing.is_some_and(|id| self.template_is_in_use(id)) {
+            return Err(Self::template_in_use_error(template));
+        }
+        if existing.is_none() && self.ordered_identity_is_live(&local_name) {
+            return Err(Self::ordered_template_conflict(template));
         }
         let template_id = if let Some(id) = existing {
             // The old ID and public spelling remain stable. No fact or compiled
@@ -1933,6 +2007,7 @@ impl Engine {
                 let empty_var_map = ferric_rules_core::binding::VarMap::new();
                 let (call_depth, expression_depth) = self.eval_depth_floor;
                 let mut ctx = crate::evaluator::EvalContext {
+                    global_module: None,
                     current_module: self.module_registry.current_module(),
                     engine: self,
                     bindings: &empty_bindings,
@@ -2219,11 +2294,13 @@ impl Engine {
                             self.resolve_template_id(&fact_pattern.name, current_module)
                         {
                             let registered = &self.template_defs[template_id];
-                            let slots = registered.slot_overrides(&fact_pattern.args).map_err(
-                                |message| Self::compile_error_at(&fact_pattern.span, &message),
-                            )?;
-                            for (index, default) in registered.defaults.iter().enumerate() {
-                                if matches!(default, Value::Void)
+                            let slots = registered
+                                .slot_overrides(&fact_pattern.args, &self.symbol_table)
+                                .map_err(|message| {
+                                    Self::compile_error_at(&fact_pattern.span, &message)
+                                })?;
+                            for index in 0..registered.defaults.len() {
+                                if registered.requires_value(index)
                                     && !slots.iter().any(|(slot, _)| *slot == index)
                                 {
                                     return Err(Self::compile_error_at(
@@ -4794,6 +4871,23 @@ impl Engine {
                             ));
                         }
                     }
+                    for constraint in &slot_constraint.constraints {
+                        self.validate_template_constraint(&registered, slot_idx, constraint)?;
+                    }
+                    // CLIPS 6.30 loads an empty multislot restriction such as
+                    // `(values)` whatever its cardinality; the runtime check
+                    // then keeps it from matching a valid fact.
+                    if registered.slot_types[slot_idx] == SlotType::Multi
+                        && !slot_constraint.constraints.is_empty()
+                        && !slot_constraint.constraints.iter().any(Self::constraint_is_multifield)
+                    {
+                        registered.constraints[slot_idx]
+                            .validate_cardinality(slot_constraint.constraints.len())
+                            .map_err(|reason| Self::compile_error_at(
+                                &slot_constraint.span,
+                                &format!("[CSTRNCHK1] {reason} for slot `{}` in template `{}`", slot_constraint.slot_name, template.template),
+                            ))?;
+                    }
                     slot_indices.push(slot_idx);
                 }
 
@@ -4902,6 +4996,38 @@ impl Engine {
                 span,
                 "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
+        }
+    }
+
+    /// Literal constraints must be valid even when negated or part of an OR.
+    /// A predicate or return-value expression is checked when its value exists.
+    fn validate_template_constraint(
+        &self,
+        template: &crate::templates::RegisteredTemplate,
+        slot_index: usize,
+        constraint: &Constraint,
+    ) -> Result<(), LoadError> {
+        match constraint {
+            Constraint::Literal(literal) => template
+                .validate_literal(slot_index, &literal.value, &self.symbol_table)
+                .map_err(|reason| {
+                    Self::compile_error_at(&literal.span, &format!("[CSTRNCHK1] {reason}"))
+                }),
+            Constraint::Not(inner, _) => {
+                self.validate_template_constraint(template, slot_index, inner)
+            }
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                for part in parts {
+                    self.validate_template_constraint(template, slot_index, part)?;
+                }
+                Ok(())
+            }
+            Constraint::Variable(..)
+            | Constraint::MultiVariable(..)
+            | Constraint::Wildcard(_)
+            | Constraint::MultiWildcard(_)
+            | Constraint::Predicate(..)
+            | Constraint::ReturnValue(..) => Ok(()),
         }
     }
 

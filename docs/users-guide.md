@@ -146,9 +146,21 @@ fn assert_person(engine: &mut Engine, name: &str, age: i64) -> anyhow::Result<()
 }
 ```
 
-Unspecified slots pick up their declared defaults (or an empty multifield
-for `multislot`). The `person` template above will assert with
-`(age 0)` if you leave `age` out.
+Unspecified slots use their declared defaults. `(default (+ 1 2))` evaluates
+once when the template is defined; `(default-dynamic (gensym*))` evaluates
+for each assertion that omits that slot. Supplied slots skip their defaults,
+and `modify`/`duplicate` preserve existing values in omitted slots. Fields and
+defaults evaluate in slot declaration order.
+
+Templates can constrain types, allowed values, numeric ranges and multislot
+lengths, for example `(slot age (type INTEGER) (range 0 150))` or
+`(multislot labels (allowed-symbols red green) (cardinality 1 3))`.
+`?DERIVE` (also the implicit default) chooses values satisfying these
+constraints; a multislot repeats its derived value to its minimum length.
+`(default ?NONE)` requires callers to supply the slot. Known invalid literals
+fail at load time; computed values are checked before the fact is published.
+See [template constraint compatibility](compatibility.md#163-deftemplates) for details and
+allocation limits on automatically expanded defaults.
 
 Fact duplication is disabled by default, matching CLIPS. Reasserting the same
 ordered relation and fields—or the same template and fully resolved slot

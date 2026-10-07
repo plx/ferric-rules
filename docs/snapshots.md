@@ -25,7 +25,13 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 7. Expressions retain executable engine effects, and
+The current schema is 8. Templates retain allowed-value lists, numeric ranges,
+multislot cardinality constraints, evaluated static defaults, and deferred dynamic
+defaults with their defining module. Restoring a snapshot does not execute
+defaults; omitted slots evaluate dynamic defaults when a fact is asserted.
+Schema 7 lacks this metadata and is rejected with `UnsupportedVersion(7)`.
+
+Expressions retain executable engine effects, and
 source reset/clear now apply immediately while preserving active execution.
 The chronology flag used after a refused source clear is persisted so restored
 fact indices continue from zero. Schema 6 lacks this flag and the corrected
@@ -87,7 +93,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`7`) |
+| 8–9 | Little-endian schema version (`8`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -109,6 +115,11 @@ beta parent paths 66 nodes (including root
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
+Derived template defaults have separate expansion bounds of 1,000,000 fields and
+32 MiB of estimated storage, including repeated string payloads. These bounds are
+checked before allocation and do not limit a declared maximum cardinality or
+facts supplied explicitly. Static values already stored in a snapshot remain
+subject to the ordinary snapshot byte and item limits.
 A multifield join token is checked by rebuilding its recorded split; other splits
 are not re-enumerated. The facts recorded as supporting a negated or existential
 multifield pattern must be exactly those that match through some split. Each
@@ -135,13 +146,18 @@ and rejected rather than changed to null.
 ## Validation and errors
 
 Restoration checks symbol pools and value references; fact identities, timestamps
-and indexes; template slot cardinalities and indexes; module and construct
+and indexes; template slot types, allowed values, ranges, cardinalities, defaults
+and indexes; module and construct
 ownership; runtime rule metadata; graph ancestry and memory ownership; exact
 positive joins and their bindings; complete negative/exists support and NCC
 ownership; token reverse indexes; activation identity, chronology, recency and
 strategy keys; and compiler-cache references. It rejects unfinished predicate
 work. Historical predicate outcomes are retained, since re-evaluating a predicate
 against globals changed later would alter refraction and resume behavior.
+Dynamic default expressions receive the same value-identity and depth checks as
+other compiled expressions, and their owning module must match their template.
+Literal portions of initializers are checked without executing calls or reading
+globals; unresolved globals can remain deferred until assertion or reset.
 
 These checks run at snapshot boundaries, not on ordinary evaluation paths.
 Decoding creates a separate engine; an error cannot partially replace the caller's
