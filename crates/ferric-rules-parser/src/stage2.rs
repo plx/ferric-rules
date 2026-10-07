@@ -2879,6 +2879,23 @@ pub fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError>
     interpret_action_expr_inner(expr)
 }
 
+/// Interpret a sequence of operands, such as the fields of an asserted fact,
+/// using the same syntax as rule action arguments.
+///
+/// Compact `?fact:slot` references span three lexer atoms and are consumed as
+/// one expression. Every element passes the shared nesting check first.
+///
+/// # Errors
+/// Returns an error for malformed expression syntax or excessive nesting.
+pub fn interpret_action_exprs(exprs: &[SExpr]) -> Result<Vec<ActionExpr>, InterpretError> {
+    for expr in exprs {
+        if let Some((depth, span)) = expr.nesting_depth_violation() {
+            return Err(InterpretError::nesting_depth_exceeded(depth, span));
+        }
+    }
+    interpret_action_expr_sequence(exprs)
+}
+
 /// Interpret an expression after the containing source has passed depth checks.
 fn interpret_action_expr_inner(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
     // Check if it's a list (nested function call or special form)
@@ -4291,6 +4308,16 @@ mod tests {
         } else {
             panic!("expected Rule construct");
         }
+    }
+
+    #[test]
+    fn interpret_action_exprs_consumes_compact_references_as_one_operand() {
+        let parsed = parse_sexprs("(bind ?x:y 7) ?x:y tail", file());
+        let expressions = interpret_action_exprs(&parsed.exprs).unwrap();
+        assert_eq!(expressions.len(), 3);
+        assert!(
+            matches!(&expressions[1], ActionExpr::FunctionCall(call) if call.name == "__fact_slot_ref")
+        );
     }
 
     #[test]

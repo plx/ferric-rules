@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use ferric_rules_core::{Fact, OrderedFact, Symbol, TemplateFact, TemplateId, Value};
 use ferric_rules_parser::{
-    interpret_action_expr, ActionExpr, FactBody, FactValue, FunctionCall, SExpr, SlotType, Span,
+    interpret_action_exprs, ActionExpr, FactBody, FactValue, FunctionCall, SExpr, SlotType, Span,
 };
 
 use crate::engine::Engine;
@@ -264,22 +264,14 @@ impl Engine {
                     })?;
                     Ok(FunctionCall {
                         name: name.to_owned(),
-                        args: values[1..]
-                            .iter()
-                            .map(interpret_action_expr)
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(LoadError::Interpret)?,
+                        args: interpret_action_exprs(&values[1..]).map_err(LoadError::Interpret)?,
                         span: slot.span(),
                     })
                 })
                 .collect::<Result<Vec<_>, LoadError>>()?;
             self.prepare_template_initializer(template_id, &slots, module, true)
         } else {
-            let values = fields[1..]
-                .iter()
-                .map(interpret_action_expr)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(LoadError::Interpret)?;
+            let values = interpret_action_exprs(&fields[1..]).map_err(LoadError::Interpret)?;
             self.prepare_ordered_initializer(name, &values, module, true)
         }
     }

@@ -477,3 +477,26 @@ fn an_evaluation_error_keeps_the_facts_already_asserted() {
         assert!(engine.find_facts("bad").unwrap().is_empty(), "{source}");
     }
 }
+
+/// A local named with a colon is one operand, as in rule actions. CLIPS 6.30
+/// asserts `(row 7 7)` and `(item (n 3) (tags 3))`.
+#[test]
+fn colon_named_locals_are_single_assertion_operands() {
+    let mut engine = Engine::with_rules("(deftemplate item (slot n) (multislot tags))").unwrap();
+    engine
+        .load_str("(assert (row (bind ?x:y 7) ?x:y))")
+        .unwrap();
+    engine
+        .load_str("(assert (item (n (bind ?a:b 3)) (tags ?a:b)))")
+        .unwrap();
+    assert_eq!(integers(&engine, "row"), [7, 7]);
+    assert!(matches!(
+        template_slot(&engine, "n").as_slice(),
+        [Value::Integer(3)]
+    ));
+    let tags = template_slot(&engine, "tags");
+    let [Value::Multifield(tags)] = tags.as_slice() else {
+        panic!("expected one multislot value");
+    };
+    assert!(matches!(tags.as_slice(), [Value::Integer(3)]));
+}
