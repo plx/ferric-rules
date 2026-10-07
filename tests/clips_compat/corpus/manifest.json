@@ -3846,6 +3846,31 @@
       ]
     },
     {
+      "path": "procedural/401_expression_effects_negative_mutation_target.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "duplicate",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/401_expression_effects_negative_mutation_target_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "modify",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
       "path": "procedural/402_callable_rejected_function_caller_rejected.clp",
       "level": "boundary",
       "covers": [
