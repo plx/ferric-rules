@@ -63,6 +63,9 @@ pub(crate) struct NccResultBatch {
     results: Vec<PendingNccResult>,
     parents: rustc_hash::FxHashMap<(NodeId, TokenId), PendingNccParent>,
     reserved_orders: rustc_hash::FxHashMap<(NodeId, TokenId), u64>,
+    /// Reservations of enclosing drains, set aside while a nested drain runs.
+    /// They stay live, so counter rebasing must renumber them too.
+    suspended_reserved: Vec<rustc_hash::FxHashMap<(NodeId, TokenId), u64>>,
 }
 
 /// Right notifications share one construction chronology across join kinds.
@@ -165,11 +168,14 @@ impl ReteNetwork {
                         .iter_mut()
                         .flat_map(crate::ncc::NccMemory::block_orders_mut),
                 )
-                .chain(
-                    self.pending_ncc_results
-                        .iter_mut()
-                        .flat_map(|batch| batch.reserved_orders.values_mut()),
-                )
+                .chain(self.pending_ncc_results.iter_mut().flat_map(|batch| {
+                    batch.reserved_orders.values_mut().chain(
+                        batch
+                            .suspended_reserved
+                            .iter_mut()
+                            .flat_map(|reserved| reserved.values_mut()),
+                    )
+                }))
                 .collect();
             orders.sort_unstable_by_key(|order| **order);
             for (index, order) in orders.iter_mut().enumerate() {
@@ -1558,11 +1564,13 @@ impl ReteNetwork {
                 let batch = self.pending_ncc_results.as_mut().expect("active NCC batch");
                 if !batch.results.is_empty() {
                     let reserved = std::mem::take(&mut batch.reserved_orders);
+                    batch.suspended_reserved.push(reserved);
                     self.drain_ncc_results(fact_base, new_activations);
-                    self.pending_ncc_results
-                        .as_mut()
-                        .expect("active NCC batch")
-                        .reserved_orders = reserved;
+                    let batch = self.pending_ncc_results.as_mut().expect("active NCC batch");
+                    batch.reserved_orders = batch
+                        .suspended_reserved
+                        .pop()
+                        .expect("suspended NCC reservations");
                 }
             }
             self.pending_ncc_results
@@ -4612,6 +4620,58 @@ mod tests {
         assert!(rete.agenda.is_empty());
         assert!(rete.next_block_order < u64::MAX - 1);
         assert!(rete.pending_ncc_results.is_none());
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+    }
+
+    #[test]
+    fn nested_ncc_drain_rebases_suspended_outer_reservations() {
+        use crate::compiler::{CompilableCondition, CompilablePattern, ReteCompiler};
+
+        let mut symbols = SymbolTable::new();
+        let mut rete = ReteNetwork::new();
+        let mut compiler = ReteCompiler::new();
+        let rule_id = compiler.allocate_rule_id();
+        let [seed, a, b] = ["s", "a", "b"].map(|name| make_symbol(&mut symbols, name));
+        let var_x = make_symbol(&mut symbols, "x");
+        let pattern = |relation, variable_slots| CompilablePattern {
+            sequence: None,
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            variable_slots,
+            negated_variable_slots: Vec::new(),
+            negated: false,
+            exists: false,
+        };
+        let exists = |inner| CompilableCondition::Ncc(vec![CompilableCondition::Ncc(inner)]);
+        // (s ?x) (exists (exists (a) (b)))
+        let conditions = vec![
+            CompilableCondition::Pattern(pattern(seed, vec![(SlotIndex::Ordered(0), var_x)])),
+            exists(vec![exists(vec![
+                CompilableCondition::Pattern(pattern(a, vec![])),
+                CompilableCondition::Pattern(pattern(b, vec![])),
+            ])]),
+        ];
+        let mut facts = FactBase::new();
+        compiler
+            .compile_conditions(&mut rete, &facts, rule_id, Salience::DEFAULT, &conditions)
+            .expect("nested exists rule should compile");
+        for value in 1..=3 {
+            let id = facts.assert_ordered(seed, smallvec![Value::Integer(value)]);
+            rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+        }
+        let id = facts.assert_ordered(a, smallvec![]);
+        rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+        assert!(rete.agenda.is_empty());
+
+        // The inner NCC's blocking drains as a nested batch while the outer
+        // batch still holds reservations; the counter exhausts inside it.
+        rete.next_block_order = u64::MAX - 3;
+        let id = facts.assert_ordered(b, smallvec![]);
+        rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+        assert_eq!(rete.agenda.len(), 3);
+        assert!(rete.next_block_order < u64::MAX - 3);
+        assert!(rete.pending_ncc_results.is_none());
+        rete.validate_block_orders().unwrap();
         rete.validate_snapshot(&facts, &symbols).unwrap();
     }
 
