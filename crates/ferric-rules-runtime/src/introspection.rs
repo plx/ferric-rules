@@ -212,6 +212,33 @@ fn type_names(ctx: &mut EvalContext<'_>, allowed: Option<&[SlotValueType]>) -> V
     )
 }
 
+/// Evaluate a slot's dynamic default and check it against the slot's constraints.
+fn dynamic_default_value(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    template: &RegisteredTemplate,
+    index: usize,
+    default: &crate::templates::DynamicSlotDefault,
+) -> Result<Value, EvalError> {
+    let invalid = |reason| EvalError::UnsupportedOperation {
+        operation: name.to_owned(),
+        reason,
+        span: None,
+    };
+    let value = crate::template_defaults::evaluate_dynamic(
+        ctx,
+        default,
+        template.slot_types[index],
+        &template.slot_names[index],
+    )
+    .map_err(|failure| match failure {
+        crate::template_defaults::SlotFailure::Eval(error) => error,
+        crate::template_defaults::SlotFailure::Invalid(reason) => invalid(reason),
+    })?;
+    template.validate_slot(index, &value).map_err(invalid)?;
+    Ok(value)
+}
+
 fn slot_metadata(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -249,30 +276,7 @@ fn slot_metadata(
             if template.requires_value(index) {
                 symbol(ctx, "?NONE")
             } else if let Some(default) = &template.dynamic_defaults[index] {
-                let value = crate::template_defaults::evaluate_dynamic(
-                    ctx,
-                    default,
-                    template.slot_types[index],
-                    &template.slot_names[index],
-                )
-                .map_err(|failure| match failure {
-                    crate::template_defaults::SlotFailure::Eval(error) => error,
-                    crate::template_defaults::SlotFailure::Invalid(reason) => {
-                        EvalError::UnsupportedOperation {
-                            operation: name.to_owned(),
-                            reason,
-                            span: None,
-                        }
-                    }
-                })?;
-                template.validate_slot(index, &value).map_err(|reason| {
-                    EvalError::UnsupportedOperation {
-                        operation: name.to_owned(),
-                        reason,
-                        span: None,
-                    }
-                })?;
-                value
+                dynamic_default_value(ctx, name, template, index, default)?
             } else {
                 template.defaults[index].clone()
             }
