@@ -4833,7 +4833,11 @@ impl Engine {
                     for constraint in &slot_constraint.constraints {
                         self.validate_template_constraint(&registered, slot_idx, constraint)?;
                     }
+                    // CLIPS 6.30 loads an empty multislot restriction such as
+                    // `(values)` whatever its cardinality; the runtime check
+                    // then keeps it from matching a valid fact.
                     if registered.slot_types[slot_idx] == SlotType::Multi
+                        && !slot_constraint.constraints.is_empty()
                         && !slot_constraint.constraints.iter().any(Self::constraint_is_multifield)
                     {
                         registered.constraints[slot_idx]

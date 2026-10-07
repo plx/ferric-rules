@@ -943,6 +943,26 @@
       ]
     },
     {
+      "path": "facts/397_template_constraints_lhs_empty_multislot.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "multislot",
+        "not"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_mab_example.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "default",
+        "deffacts"
+      ]
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [

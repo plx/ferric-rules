@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 835
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 837
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -138,7 +138,10 @@ and multifield rules as ordered patterns. `(tags ?value)` requires exactly one
 value and binds a scalar; `(tags $?values)` binds the entire multifield, and
 `(tags head $?values tail)` captures the values between the fixed fields.
 An explicit `(tags)` requires an empty multislot; omitting `tags` leaves it
-unconstrained. Ambiguous splits in multiple multislots produce every valid
+unconstrained. A restriction with only fixed fields whose count violates the
+slot's `cardinality` rejects the rule (`[CSTRNCHK1]`). As in CLIPS 6.30, an
+empty `(tags)` still loads when the minimum cardinality is above zero; it can
+never match a valid fact, so its `(not ...)` form is always satisfied. Ambiguous splits in multiple multislots produce every valid
 combination, in written slot-constraint order. Single-valued slots require one
 field constraint and cannot bind a named multifield capture.
 
