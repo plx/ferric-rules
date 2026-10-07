@@ -100,7 +100,9 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
 fn literal_matches(value: &LiteralKind, restriction: u8) -> bool {
     match restriction {
         b'n' => matches!(value, LiteralKind::Integer(_) | LiteralKind::Float(_)),
-        b'i' | b'z' => matches!(value, LiteralKind::Integer(_)),
+        b'i' => matches!(value, LiteralKind::Integer(_)),
+        // A symbol may name `*` or be checked once the designator is evaluated.
+        b'z' => matches!(value, LiteralKind::Integer(_) | LiteralKind::Symbol(_)),
         b'w' => matches!(value, LiteralKind::Symbol(_)),
         b's' => matches!(value, LiteralKind::String(_)),
         b'p' => matches!(value, LiteralKind::InstanceName(_)),
@@ -125,8 +127,8 @@ fn type_description(restriction: u8) -> &'static str {
         b'k' => "symbol or string",
         b'q' => "multifield, symbol, or string",
         b'm' => "multifield",
-        b'y' => "fact address",
-        b'z' => "fact address or integer",
+        b'y' => "fact-address",
+        b'z' => "fact-address, integer, or symbol",
         _ => "value",
     }
 }

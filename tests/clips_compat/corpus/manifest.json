@@ -9383,6 +9383,20 @@
         "evaluation-order"
       ],
       "recoverable_random_notices": true
+    },
+    {
+      "path": "stdlib/403b_fact_designator_symbol_literals.clp",
+      "level": "boundary",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "fact-existp",
+        "fact-relation",
+        "fact-slot-names",
+        "fact-slot-value",
+        "issue-403"
+      ],
+      "recoverable_fact_notices": true
     }
   ]
 }
