@@ -10681,7 +10681,7 @@
       }
     },
     {
-      "path": "modules/398_gap_late_ncc_shared_deferred.clp",
+      "path": "modules/398_auto_focus_late_ncc_shared_deferred.clp",
       "level": "interaction",
       "covers": [
         "auto-focus",
@@ -10690,19 +10690,45 @@
         "build",
         "ncc",
         "test"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/398",
-          "https://github.com/plx/ferric-rules/issues/400"
-        ],
-        "summary": "Late-install topology boundary: sharing an already populated NCC whose support contains a deferred test produces a transient auto-focus push while backfilling in Ferric; CLIPS 6.30 retains MAIN because the rule is fully blocked.",
-        "observed": {
-          "phase": "complete",
-          "output": "before:(MAIN)\nbuilt:TRUE\ninstalled:(WATCH MAIN)\nreleased:(WATCH MAIN)\nlate1\n",
-          "diagnostics": []
-        }
-      }
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_join_test.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "test",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_nested_ncc_shared_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "not",
+        "activation-order"
+      ]
     }
   ]
 }

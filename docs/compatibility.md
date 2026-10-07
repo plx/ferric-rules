@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1046
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1049
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -334,14 +334,15 @@ module deeper in the stack may appear again. Deferred predicate matches retain
 network traversal order for these focus events. Snapshots preserve the focus
 stack without replaying notices for existing activations.
 
-Late installation of NCC rules has two characterized focus differences:
-fresh subnetworks do not reconstruct every transient activation from the
-historical fact assertion order, and rule-specific deferred predicates do not
-share CLIPS's existing NCC subnetwork. A fresh blocked rule can therefore miss
-a historical focus push, while a blocked rule with a deferred predicate can
-push focus during installation where CLIPS does not. The corpus records both
-observations under #398/#400. Ordinary assertion, reset, and blocker-retraction
-focus behavior is covered separately.
+Late installation of a blocked NCC rule follows CLIPS's transient focus push
+when its fresh subnetwork shares the rule's left prefix with an older rule, and
+no push when the subnetwork extends an already populated join, including one
+followed by a deferred test. One characterized difference remains: a fresh
+subnetwork with no shared prefix does not reconstruct every transient
+activation from the historical fact assertion order, so such a rule can miss a
+historical focus push. The corpus records that observation under #398/#400.
+Ordinary assertion, reset, and blocker-retraction focus behavior is covered
+separately.
 
 `when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,
 and `refresh-agenda` remain unsupported. Invalid or duplicate declarations

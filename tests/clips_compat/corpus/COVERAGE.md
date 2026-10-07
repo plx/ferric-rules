@@ -122,8 +122,8 @@ COOL, certainty factors, distributed evaluation, and truth maintenance via
 strategies remain deferred. Triple-nested negation, `exists (not ...)`, and
 nested forall remain unsupported. Identical negative/NCC join sharing, selected multi-pattern `exists` ties,
 and CLIPS's transient nested NCC refire remain characterized topology gaps.
-Late-installed auto-focus NCC rules also retain characterized differences in
-fresh-subnetwork activation history and deferred-predicate sharing.
+Late-installed auto-focus NCC rules also retain a characterized difference in
+fresh-subnetwork activation history.
 General cross-engine replay-identical activation order is not promised; use
 explicit salience/phases when application precedence must be independent of
 network construction. These exclusions should not be

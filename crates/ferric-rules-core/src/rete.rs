@@ -542,13 +542,12 @@ impl ReteNetwork {
     ) {
         let root_id = self.beta.root_id();
         let mut new_activations = Vec::new();
-        // NCC subnetworks are primed before their NCC (see
-        // `ncc_subnetworks_first`), and existing shared results must reach a
-        // new NCC partner before its left frontier is admitted. Otherwise a blocked match transiently activates
+        // Existing shared results must reach a new NCC partner before its left
+        // frontier is admitted. Otherwise a blocked match transiently activates
         // and emits an incorrect historical auto-focus notice. Fresh subnetworks
-        // retain their original order: CLIPS can emit that transient notice
-        // when the right results are first computed during installation.
-        let mut frontier = self.ncc_subnetworks_first(first_new_node);
+        // retain their original order: CLIPS emits that transient notice when
+        // the right results are first computed during installation.
+        let mut frontier = self.ncc_shared_results_first(first_new_node);
         frontier.sort_by_key(|(_, child)| {
             !matches!(
                 self.beta.get_node(*child),
@@ -593,26 +592,40 @@ impl ReteNetwork {
         }
     }
 
-    /// Order frontier edges as CLIPS builds joins: an NCC's subnetwork, whose
-    /// node IDs follow the NCC's and end at its partner, is primed before the
-    /// NCC itself, so the NCC never decides before its results are known.
-    fn ncc_subnetworks_first(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
+    /// Order frontier edges so an NCC decides after the parts of its
+    /// subnetwork that stand for already-populated CLIPS joins. A subnetwork's
+    /// node IDs follow its NCC's and end at its partner. A frontier edge into
+    /// a predicate or partner there extends an existing (shared) subnetwork
+    /// node: CLIPS attaches a test to the preceding join, so its results exist
+    /// before the NCC is primed and CLIPS never passes the NCC through. Other
+    /// subnetwork edges keep their position after the NCC, as CLIPS primes the
+    /// NCC's left input before computing a fresh right subnetwork.
+    fn ncc_shared_results_first(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
         let edges = self.beta.installation_frontier(first_new_node);
+        let mut emitted = vec![false; edges.len()];
         let mut ordered = Vec::with_capacity(edges.len());
-        let mut pending: Vec<((NodeId, NodeId), NodeId)> = Vec::new();
-        for edge in edges {
-            while pending
-                .last()
-                .is_some_and(|&(_, partner)| partner.0 < edge.1 .0)
-            {
-                ordered.push(pending.pop().expect("pending NCC edge").0);
+        for (index, &edge) in edges.iter().enumerate() {
+            if emitted[index] {
+                continue;
             }
-            match self.beta.get_node(edge.1) {
-                Some(BetaNode::Ncc { partner, .. }) => pending.push((edge, *partner)),
-                _ => ordered.push(edge),
+            if let Some(BetaNode::Ncc { partner, .. }) = self.beta.get_node(edge.1) {
+                let subnetwork = edge.1 .0 + 1..=partner.0;
+                for (later, &candidate) in edges.iter().enumerate().skip(index + 1) {
+                    if !emitted[later]
+                        && subnetwork.contains(&candidate.1 .0)
+                        && matches!(
+                            self.beta.get_node(candidate.1),
+                            Some(BetaNode::Predicate { .. } | BetaNode::NccPartner { .. })
+                        )
+                    {
+                        emitted[later] = true;
+                        ordered.push(candidate);
+                    }
+                }
             }
+            emitted[index] = true;
+            ordered.push(edge);
         }
-        ordered.extend(pending.into_iter().rev().map(|(edge, _)| edge));
         ordered
     }
 
