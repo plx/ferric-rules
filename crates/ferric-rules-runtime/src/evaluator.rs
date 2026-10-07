@@ -4111,7 +4111,7 @@ fn builtin_asin(
     check_arity_exact("asin", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "asin", span)?;
-    reject_out_of_domain("asin", f < -1.0 || f > 1.0, span)?;
+    reject_out_of_domain("asin", outside_unit_interval(f), span)?;
     Ok(Value::Float(f.asin()))
 }
 
@@ -4123,7 +4123,7 @@ fn builtin_acos(
     check_arity_exact("acos", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "acos", span)?;
-    reject_out_of_domain("acos", f < -1.0 || f > 1.0, span)?;
+    reject_out_of_domain("acos", outside_unit_interval(f), span)?;
     Ok(Value::Float(f.acos()))
 }
 
@@ -4268,6 +4268,13 @@ fn builtin_pow(
         span,
     )?;
     Ok(Value::Float(base.powf(exp)))
+}
+
+/// Whether `f` is out of the `asin`/`acos` domain. Unlike
+/// `!(-1.0..=1.0).contains(&f)`, NaN is not out of the domain.
+#[allow(clippy::manual_range_contains)]
+fn outside_unit_interval(f: f64) -> bool {
+    f < -1.0 || f > 1.0
 }
 
 /// Like CLIPS, each caller tests for an out-of-domain argument rather than
