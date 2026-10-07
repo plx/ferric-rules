@@ -66,10 +66,31 @@ fn missing_negative_and_raw_key_integers_do_not_retract_a_fact_or_stop_the_rule(
 }
 
 #[test]
-fn bad_retract_operands_still_stop_execution() {
+fn missing_mutation_indices_and_negative_retract_indices_continue_the_rule() {
+    // CLIPS 6.30: a missing index makes modify/duplicate a no-op without
+    // evaluating the overrides; a negative retract index stops that retract
+    // before later targets are evaluated, and the rule continues.
+    let engine = run(r#"
+        (deftemplate item (slot value))
+        (deffacts seed (item (value 1)))
+        (deffunction boom () (printout t "evaluated|") 1)
+        (defrule inspect ?f <- (item (value 1)) =>
+          (bind ?i 9)
+          (modify ?i (value (boom)))
+          (duplicate ?i (value (boom)))
+          (retract -1 ?f (boom))
+          (printout t (fact-existp ?f) ":continued" crlf))
+        "#);
+    assert_eq!(engine.get_output("t"), Some("TRUE:continued\n"));
+    assert_eq!(engine.fact_count(), 1);
+}
+
+#[test]
+fn negative_and_wrong_type_mutation_targets_still_stop_execution() {
     for action in [
-        "(funcall retract 9 \"not an address\")",
-        "(retract -1 (/ 1 0))",
+        "(bind ?i -1) (modify ?i (value 2))",
+        "(bind ?i -1) (duplicate ?i (value 2))",
+        "(bind ?i \"x\") (modify ?i (value 2))",
     ] {
         let mut engine = Engine::new(EngineConfig::default());
         engine
@@ -89,6 +110,64 @@ fn bad_retract_operands_still_stop_execution() {
         assert_eq!(engine.fact_count(), 1);
         assert_eq!(engine.action_diagnostics().len(), 1);
     }
+}
+
+#[test]
+fn wrong_type_retract_targets_stop_the_rule_after_retracting_later_targets() {
+    // CLIPS 6.30 reports the wrong-type operand, keeps retracting the
+    // remaining targets, and then halts the rule.
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(deffacts seed (item))
+             (defrule inspect ?f <- (item) =>
+               (printout t before)
+               (retract \"not an address\" ?f)
+               (printout t after))",
+        )
+        .unwrap();
+    engine.reset().unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Count(10)).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert_eq!(engine.get_output("t"), Some("before"));
+    assert_eq!(engine.fact_count(), 0);
+    assert_eq!(engine.action_diagnostics().len(), 1);
+}
+
+#[test]
+fn wrong_type_retract_skips_later_user_callable_targets() {
+    // After a wrong-type target, CLIPS 6.30 returns FALSE from later
+    // deffunction and generic calls without running them, so their facts
+    // stay; variable and builtin targets are still retracted.
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(deffacts seed (a) (b) (c) (d))
+             (deffunction boom (?f) (printout t boom) ?f)
+             (defgeneric gen)
+             (defmethod gen ((?f FACT-ADDRESS)) (printout t gen) ?f)
+             (defrule inspect ?a <- (a) ?b <- (b) ?c <- (c) =>
+               (printout t before)
+               (retract x (boom ?a) (MAIN::gen ?b) ?c (+ 0 4))
+               (printout t after))",
+        )
+        .unwrap();
+    engine.reset().unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Count(10)).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert_eq!(engine.get_output("t"), Some("before"));
+    for (relation, remaining) in [("a", 1), ("b", 1), ("c", 0), ("d", 0)] {
+        assert_eq!(
+            engine.find_facts(relation).unwrap().len(),
+            remaining,
+            "{relation}"
+        );
+    }
+    assert_eq!(engine.action_diagnostics().len(), 1);
 }
 
 #[test]

@@ -8,6 +8,7 @@ use crate::engine::Engine;
 use crate::evaluator::RuntimeExpr;
 use crate::fact_initializer::{PreparedFact, RuntimeExpressions};
 use crate::modules::ModuleId;
+use crate::templates::DynamicSlotDefault;
 use ferric_rules_core::{AlphaEntryType, Fact};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
 
@@ -23,19 +24,11 @@ impl Engine {
             })
             || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(|fact| matches!(fact, PreparedFact::Ordered { relation, .. } if self.resolve_core_symbol(*relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name))))
             || self.template_defs.values().any(|template| {
-                template.dynamic_defaults.iter().flatten().any(|default| {
-                    default.expressions.iter().any(|expression| {
-                        RuntimeExpressions::new(expression).any(|expression| match expression {
-                            RuntimeExpr::QueryAction { bindings, .. } => bindings
-                                .iter()
-                                .any(|(_, raw)| self.ordered_name_is(raw, default.module, name)),
-                            RuntimeExpr::EffectCall { call } => {
-                                self.call_uses_ordered_name(call, default.module, name)
-                            }
-                            _ => false,
-                        })
-                    })
-                })
+                template
+                    .dynamic_defaults
+                    .iter()
+                    .flatten()
+                    .any(|default| self.dynamic_default_uses_ordered_name(default, name))
             })
         {
             return true;
@@ -67,6 +60,25 @@ impl Engine {
                         .any(|expr| self.expr_uses_ordered_name(expr, module, name))
                 })
             })
+    }
+
+    /// Whether a dynamic default asserts or queries `name` as an ordered relation.
+    pub(crate) fn dynamic_default_uses_ordered_name(
+        &self,
+        default: &DynamicSlotDefault,
+        name: &str,
+    ) -> bool {
+        default.expressions.iter().any(|expression| {
+            RuntimeExpressions::new(expression).any(|expression| match expression {
+                RuntimeExpr::QueryAction { bindings, .. } => bindings
+                    .iter()
+                    .any(|(_, raw)| self.ordered_name_is(raw, default.module, name)),
+                RuntimeExpr::EffectCall { call } => {
+                    self.call_uses_ordered_name(call, default.module, name)
+                }
+                _ => false,
+            })
+        })
     }
 
     pub(crate) fn ordered_relation_name_is(raw: &str, name: &str) -> bool {

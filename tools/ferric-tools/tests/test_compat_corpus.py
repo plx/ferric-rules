@@ -238,7 +238,9 @@ def test_recoverable_fact_notices_require_explicit_success_case_and_stay_in_orac
         "[ARGACCES5] Function fact-slot-value expected argument #1 "
         "to be of type fact-address or fact-index\n"
         "[ARGACCES5] Function retract expected argument #2 "
-        "to be of type fact-address, fact-index, or the symbol *\ncontinued\n"
+        "to be of type fact-address, fact-index, or the symbol *\n"
+        "[ARGACCES5] Function fact-index expected argument #1 to be of type fact-address\n"
+        "-1\ncontinued\n"
     )
     assert (
         extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_fact_notices=True)
@@ -256,6 +258,9 @@ def test_recoverable_fact_notices_require_explicit_success_case_and_stay_in_orac
         "[PRNTUTIL1] Unable to find fact f-9. extra\n",
         "[ARGACCES5] Function + expected argument #1 to be of type integer or float\n",
         "[ARGACCES5] Function fact-slot-value expected argument #2 to be of type symbol\n",
+        "[ARGACCES5] Function fact-index expected argument #1 to be of type fact-address or "
+        "fact-index\n",
+        "[ARGACCES5] Function fact-index expected argument #2 to be of type fact-address\n",
         "[PRCCODE4] Execution halted.\n",
     ],
 )

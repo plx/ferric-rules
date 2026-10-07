@@ -4,7 +4,7 @@
 //! state instead of maintaining another serialized reference-count registry.
 
 use ferric_rules_core::{AlphaEntryType, RuleId, TemplateId};
-use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
+use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern, RuleConstruct};
 
 use crate::engine::{rule_index_get, Engine};
 use crate::evaluator::RuntimeExpr;
@@ -28,11 +28,7 @@ impl Engine {
             })
             || self.template_defs.values().any(|template| {
                 template.dynamic_defaults.iter().flatten().any(|default| {
-                    default.expressions.iter().any(|expression| {
-                        RuntimeExpressions::new(expression).any(|expression| {
-                            self.runtime_expression_uses_template(expression, default.module, id)
-                        })
-                    })
+                    self.runtime_expressions_use_template(&default.expressions, default.module, id)
                 })
             })
         {
@@ -69,6 +65,19 @@ impl Engine {
         self.resolve_template_id(name, module).ok() == Some(id)
     }
 
+    /// Whether compiled expressions, including nested ones, assert or query `id`.
+    pub(crate) fn runtime_expressions_use_template(
+        &self,
+        expressions: &[RuntimeExpr],
+        module: ModuleId,
+        id: TemplateId,
+    ) -> bool {
+        expressions.iter().any(|expression| {
+            RuntimeExpressions::new(expression)
+                .any(|expression| self.runtime_expression_uses_template(expression, module, id))
+        })
+    }
+
     fn runtime_expression_uses_template(
         &self,
         expression: &RuntimeExpr,
@@ -81,6 +90,33 @@ impl Engine {
                 .any(|(_, name)| self.template_name_is(name, module, id)),
             RuntimeExpr::EffectCall { call } => self.call_uses_template(call, module, id),
             _ => false,
+        }
+    }
+
+    /// A deffacts body that is still queued in the current load uses a template
+    /// through its head or through a fact query in one of its initializers.
+    pub(crate) fn fact_body_uses_template(
+        &self,
+        fact: &FactBody,
+        module: ModuleId,
+        id: TemplateId,
+    ) -> bool {
+        let initializer_uses = |value: &FactValue| matches!(value, FactValue::Expression(expr) if self.expr_uses_template(expr, module, id));
+        match fact {
+            FactBody::Ordered(fact) => {
+                self.template_name_is(&fact.relation, module, id)
+                    || fact.values.iter().any(initializer_uses)
+            }
+            FactBody::Template(fact) => {
+                self.template_name_is(&fact.template, module, id)
+                    || fact.slot_values.iter().any(|slot| {
+                        slot.values.iter().any(initializer_uses)
+                            || slot
+                                .ordered_expression
+                                .as_deref()
+                                .is_some_and(|expr| self.expr_uses_template(expr, module, id))
+                    })
+            }
         }
     }
 

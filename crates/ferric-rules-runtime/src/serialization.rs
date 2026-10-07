@@ -297,6 +297,7 @@ impl EngineSnapshotOwned {
             fact_index_starts_at_zero: self.fact_index_starts_at_zero,
             action_diagnostics: self.action_diagnostics,
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: self.halted,
             input_buffer: self.input_buffer,
         }
@@ -827,7 +828,7 @@ mod tests {
             }
         }
         let engine = Engine::with_rules("(defmethod choose ((?x INTEGER (eq ?x 1))) ?x)").unwrap();
-        for corruption in 0..6 {
+        for corruption in 0..7 {
             let result = alter_state(&engine, |state| {
                 let method = method(state).unwrap();
                 match corruption {
@@ -842,6 +843,11 @@ mod tests {
                         method["parameter_queries"][0]["FunctionCall"]["args"][0]["Variable"][0] =
                             serde_json::json!("missing");
                     }
+                    6 => {
+                        let call = &mut method["parameter_queries"][0]["FunctionCall"];
+                        call["name"] = serde_json::json!("return");
+                        call["args"] = serde_json::json!([]);
+                    }
                     _ => {
                         let call = &mut method["parameter_queries"][0]["FunctionCall"];
                         call["name"] = serde_json::json!("break");
@@ -854,6 +860,7 @@ mod tests {
                 1 | 2 => "wildcard restrictions without a wildcard parameter",
                 4 => "GENRCPSR12",
                 5 => "PRCCODE3",
+                6 => "[PRCDRPSR2] The return function",
                 _ => "PRCDRPSR2",
             };
             assert!(

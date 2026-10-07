@@ -8,6 +8,7 @@ use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
 use crate::fact_address::{live_fact_id, make_fact_address};
 use crate::loader::TemplateLookupError;
 use crate::modules::ModuleId;
+use crate::template_defaults;
 use crate::templates::RegisteredTemplate;
 
 pub(crate) fn is_effect(name: &str) -> bool {
@@ -116,7 +117,32 @@ pub(crate) fn evaluated_arguments<'a>(
     arguments
 }
 
+/// Run an engine effect with the evaluator depth of its call site as the
+/// floor for every evaluation root the effect opens. A match condition,
+/// deffacts or defglobal initializer evaluated by the effect then counts
+/// against the same call and expression limits instead of starting at zero,
+/// which keeps the native stack bounded however effects nest.
+fn with_depth_floor(
+    ctx: &mut EvalContext<'_>,
+    effect: impl FnOnce(&mut EvalContext<'_>) -> Result<Value, EvalError>,
+) -> Result<Value, EvalError> {
+    let floor = (ctx.call_depth, ctx.expression_depth);
+    let previous = std::mem::replace(&mut ctx.engine.eval_depth_floor, floor);
+    let result = effect(ctx);
+    ctx.engine.eval_depth_floor = previous;
+    result
+}
+
 pub(crate) fn eval_call(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    with_depth_floor(ctx, |ctx| eval_call_inner(ctx, name, args, span))
+}
+
+fn eval_call_inner(
     ctx: &mut EvalContext<'_>,
     name: &str,
     args: &[RuntimeExpr],
@@ -142,13 +168,31 @@ pub(crate) fn eval_call(
         }
         "retract" => {
             arity(name, args.len(), 1, false, span)?;
+            // CLIPS 6.30's `retract` skips a missing fact, stops at a negative
+            // index without evaluating later targets (execution continues),
+            // and reports a wrong-type target only after retracting the
+            // remaining targets.
+            let mut wrong_type = None;
             for expression in args {
+                // Once a wrong-type target has set CLIPS's halt flag, a later
+                // deffunction or generic target returns FALSE without running.
+                // Builtins, variables and literals still evaluate. Only a
+                // top-level call is checked: a user callable nested inside a
+                // builtin target or called through `funcall` still runs.
+                if wrong_type.is_some() && calls_user_callable(ctx, expression) {
+                    continue;
+                }
                 let value = evaluator::eval_inner(ctx, expression)?;
-                if let Some(id) = resolve_target(ctx, name, &value, span)? {
-                    retract(ctx.engine, id);
+                match resolve_target(ctx, name, &value, span)? {
+                    FactTarget::Live(id) => retract(ctx.engine, id),
+                    FactTarget::MissingIndex | FactTarget::StaleAddress => {}
+                    FactTarget::NegativeIndex => break,
+                    FactTarget::WrongType => {
+                        wrong_type.get_or_insert_with(|| wrong_target_type(name, &value, span));
+                    }
                 }
             }
-            Ok(Value::Void)
+            wrong_type.map_or(Ok(Value::Void), Err)
         }
         "focus" => {
             arity(name, args.len(), 1, false, span)?;
@@ -266,6 +310,10 @@ pub(crate) fn eval_syntax(
     ctx: &mut EvalContext<'_>,
     call: &FunctionCall,
 ) -> Result<Value, EvalError> {
+    with_depth_floor(ctx, |ctx| eval_syntax_inner(ctx, call))
+}
+
+fn eval_syntax_inner(ctx: &mut EvalContext<'_>, call: &FunctionCall) -> Result<Value, EvalError> {
     let span = SourceSpan {
         line: call.span.start.line,
         column: call.span.start.column,
@@ -278,8 +326,19 @@ pub(crate) fn eval_syntax(
         "assert" => eval_assert(ctx, call, span),
         "modify" | "duplicate" => {
             let target = eval_source(ctx, &call.args[0])?;
-            let Some(id) = resolve_target(ctx, name, &target, span)? else {
-                return boolean(ctx, false);
+            // CLIPS 6.30 reports a missing index and continues without
+            // evaluating or applying the slot overrides; other unresolved
+            // targets stop execution.
+            let id = match resolve_target(ctx, name, &target, span)? {
+                FactTarget::Live(id) => id,
+                FactTarget::MissingIndex => return boolean(ctx, false),
+                FactTarget::StaleAddress => {
+                    return Err(failure(name, "target fact does not exist", span))
+                }
+                FactTarget::NegativeIndex => {
+                    return Err(failure(name, "fact index must not be negative", span))
+                }
+                FactTarget::WrongType => return Err(wrong_target_type(name, &target, span)),
             };
             let address = make_fact_address(
                 &ctx.engine.fact_base,
@@ -360,25 +419,18 @@ fn eval_assert(
                 let validated = definition
                     .slot_overrides(&pattern.args, &ctx.engine.symbol_table)
                     .map_err(|error| failure(name, error, span))?;
-                let overrides = validated
-                    .into_iter()
-                    .map(|(index, slot)| {
-                        let fields = slot
-                            .args
-                            .iter()
-                            .map(|field| {
-                                evaluator::from_action_expr(
-                                    field,
-                                    &mut ctx.engine.symbol_table,
-                                    &ctx.engine.config,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        Ok((index, fields))
-                    })
-                    .collect::<Result<Vec<_>, EvalError>>()?;
-                let slots = crate::template_defaults::evaluate_slots(ctx, &definition, &overrides)
-                    .map_err(|error| error.error)?;
+                let mut sources = template_defaults::default_sources(&definition);
+                for (index, slot) in validated {
+                    sources[index] = template_defaults::SlotSource::Actions(&slot.args);
+                }
+                let slots = template_defaults::evaluate_slots(ctx, &definition, sources).map_err(
+                    |error| match error.failure {
+                        template_defaults::SlotFailure::Invalid(reason) => {
+                            failure(name, reason, span)
+                        }
+                        template_defaults::SlotFailure::Eval(error) => error,
+                    },
+                )?;
                 Fact::Template(TemplateFact {
                     template_id: id,
                     slots: slots.into_boxed_slice(),
@@ -408,20 +460,41 @@ fn eval_assert(
     Ok(result)
 }
 
+/// What a fact-effect target designates. Each effect decides which of the
+/// non-live outcomes are recoverable, following CLIPS 6.30.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FactTarget {
+    Live(FactId),
+    /// A non-negative INTEGER index that names no live fact.
+    MissingIndex,
+    /// A fact address whose fact was retracted (or a dummy address).
+    StaleAddress,
+    NegativeIndex,
+    /// Neither a fact address nor an INTEGER index.
+    WrongType,
+}
+
+fn wrong_target_type(name: &str, value: &Value, span: Option<&SourceSpan>) -> EvalError {
+    EvalError::TypeError {
+        function: name.into(),
+        expected: "fact-address or INTEGER fact index".into(),
+        actual: value.type_name().into(),
+        span: span.cloned(),
+    }
+}
+
 fn resolve_target(
     ctx: &EvalContext<'_>,
     name: &str,
     value: &Value,
     span: Option<&SourceSpan>,
-) -> Result<Option<FactId>, EvalError> {
-    if !matches!(value, Value::Integer(_) | Value::FactAddress(_)) {
-        return Err(EvalError::TypeError {
-            function: name.into(),
-            expected: "fact-address or INTEGER fact index".into(),
-            actual: value.type_name().into(),
-            span: span.cloned(),
-        });
-    }
+) -> Result<FactTarget, EvalError> {
+    let missing = match value {
+        Value::FactAddress(_) => FactTarget::StaleAddress,
+        Value::Integer(index) if *index < 0 => return Ok(FactTarget::NegativeIndex),
+        Value::Integer(_) => FactTarget::MissingIndex,
+        _ => return Ok(FactTarget::WrongType),
+    };
     let id = evaluator::designated_fact(
         &ctx.engine.fact_base,
         ctx.engine.initial_fact_id,
@@ -436,7 +509,14 @@ fn resolve_target(
             span,
         ));
     }
-    Ok(id)
+    Ok(id.map_or(missing, FactTarget::Live))
+}
+
+/// Whether `expression` is a top-level call that runs a deffunction or
+/// defgeneric rather than a builtin.
+fn calls_user_callable(ctx: &EvalContext<'_>, expression: &RuntimeExpr) -> bool {
+    matches!(expression, RuntimeExpr::Call { name, .. }
+        if evaluator::call_names_user_callable(ctx, name))
 }
 
 fn retract(engine: &mut Engine, id: FactId) {

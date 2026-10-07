@@ -51,6 +51,7 @@ FACT_NOTICE = re.compile(
     r"\[PRNTUTIL1\] Unable to find fact f-[0-9]+\.\n"
     r"|\[ARGACCES5\] Function (?:fact-existp|fact-relation|fact-slot-names|fact-slot-value) "
     r"expected argument #1 to be of type fact-address or fact-index\n"
+    r"|\[ARGACCES5\] Function fact-index expected argument #1 to be of type fact-address\n"
     r"|\[ARGACCES5\] Function retract expected argument #[1-9][0-9]* "
     r"to be of type fact-address, fact-index, or the symbol \*\n"
 )

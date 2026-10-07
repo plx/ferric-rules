@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
+use ferric_rules_runtime::{Engine, EngineConfig, RunLimit, Value};
 
 fn many_templates_source(template_count: usize, slot_count: usize) -> String {
     let mut source = String::new();
@@ -220,11 +220,80 @@ fn bench_host_assert_retract(c: &mut Criterion) {
     case::<8>(c);
 }
 
+/// Host template assertion is how bindings ingest facts. Each sample asserts
+/// and retracts one fact so working memory stays empty between iterations.
+fn bench_host_assert_template_retract(c: &mut Criterion) {
+    fn case(c: &mut Criterion, label: &str, source: &str, slots: &[&str], values: &[Value]) {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(source)
+            .expect("load host assertion template");
+        c.bench_function(&format!("host_assert_template_retract_{label}"), |b| {
+            let id = engine
+                .assert_template("item", slots, values.to_vec())
+                .unwrap();
+            let ferric_rules_core::Fact::Template(fact) = engine.get_fact(id).unwrap().unwrap()
+            else {
+                panic!("host input must remain a template fact");
+            };
+            assert_eq!(fact.slots.len(), values.len());
+            assert!(fact
+                .slots
+                .iter()
+                .zip(values)
+                .all(|(a, b)| a.structural_eq(b)));
+            engine.retract(id).unwrap();
+            assert_eq!(engine.fact_count(), 0);
+            b.iter(|| {
+                let id = engine
+                    .assert_template("item", black_box(slots), black_box(values.to_vec()))
+                    .unwrap();
+                engine.retract(id).unwrap();
+                black_box(id)
+            });
+        });
+    }
+
+    let names: Vec<String> = (0..8).map(|index| format!("s{index}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let integers: Vec<Value> = (0..8).map(Value::Integer).collect();
+    case(
+        c,
+        "8_slots",
+        &many_templates_source(1, 8).replace("t0", "item"),
+        &names,
+        &integers,
+    );
+
+    let multislot: Value = Value::Multifield(Box::new((0..32).map(Value::Integer).collect()));
+    case(
+        c,
+        "multislot_32",
+        "(deftemplate item (slot id) (multislot values))",
+        &["id", "values"],
+        &[Value::Integer(1), multislot],
+    );
+
+    let mut constrained = String::from("(deftemplate item");
+    // CLIPS rejects a range combined with allowed numeric values on one slot.
+    for index in 0..8 {
+        let facet = if index < 4 {
+            "(type INTEGER) (range 0 100)"
+        } else {
+            "(allowed-values 0 1 2 3 4 5 6 7 8 9)"
+        };
+        let _ = write!(constrained, " (slot s{index} {facet})");
+    }
+    constrained.push(')');
+    case(c, "constrained_8_slots", &constrained, &names, &integers);
+}
+
 criterion_group!(
     benches,
     bench_template_registry,
     bench_owned_template_fact,
     bench_first_sparse_host_export,
-    bench_host_assert_retract
+    bench_host_assert_retract,
+    bench_host_assert_template_retract
 );
 criterion_main!(benches);

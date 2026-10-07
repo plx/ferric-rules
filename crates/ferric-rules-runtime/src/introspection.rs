@@ -254,7 +254,17 @@ fn slot_metadata(
                     default,
                     template.slot_types[index],
                     &template.slot_names[index],
-                )?;
+                )
+                .map_err(|failure| match failure {
+                    crate::template_defaults::SlotFailure::Eval(error) => error,
+                    crate::template_defaults::SlotFailure::Invalid(reason) => {
+                        EvalError::UnsupportedOperation {
+                            operation: name.to_owned(),
+                            reason,
+                            span: None,
+                        }
+                    }
+                })?;
                 template.validate_slot(index, &value).map_err(|reason| {
                     EvalError::UnsupportedOperation {
                         operation: name.to_owned(),

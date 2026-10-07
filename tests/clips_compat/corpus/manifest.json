@@ -334,28 +334,23 @@
       ]
     },
     {
-      "path": "facts/027_template_constraints_issue_repro.clp",
+      "path": "facts/027_deffacts_expression_query_template_redefinition_rejected.clp",
       "level": "interaction",
       "covers": [
+        "assertion-expression",
+        "deffacts",
         "deftemplate",
-        "allowed-symbols",
-        "range",
-        "cardinality",
-        "default-dynamic"
-      ]
+        "compile-time-validation"
+      ],
+      "error": "load"
     },
     {
-      "path": "facts/028_template_constraints_allowed_lists.clp",
-      "level": "basic",
+      "path": "facts/028_deffacts_expression_void_fields.clp",
+      "level": "interaction",
       "covers": [
-        "deftemplate",
-        "allowed-symbols",
-        "allowed-strings",
-        "allowed-lexemes",
-        "allowed-integers",
-        "allowed-floats",
-        "allowed-numbers",
-        "allowed-values"
+        "assertion-expression",
+        "deffacts",
+        "printout"
       ]
     },
     {
@@ -923,6 +918,72 @@
       ]
     },
     {
+      "path": "facts/085_template_constraints_issue_repro.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "range",
+        "cardinality",
+        "default-dynamic"
+      ]
+    },
+    {
+      "path": "facts/086_template_constraints_allowed_lists.clp",
+      "level": "basic",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "allowed-strings",
+        "allowed-lexemes",
+        "allowed-integers",
+        "allowed-floats",
+        "allowed-numbers",
+        "allowed-values"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_lhs_empty_multislot.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "cardinality",
+        "multislot",
+        "not"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_mab_example.clp",
+      "level": "interaction",
+      "covers": [
+        "deftemplate",
+        "allowed-symbols",
+        "default",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "facts/397_template_constraints_static_multislot_void_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "multislot",
+        "default",
+        "printout"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/397_template_default_self_reference_redefinition_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [
@@ -1299,6 +1360,28 @@
       "error": "run"
     },
     {
+      "path": "generics/callable-query-return-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-return-nested-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
       "path": "generics/callable-query-unknown-variable-rejected.clp",
       "level": "boundary",
       "covers": [
@@ -1340,6 +1423,80 @@
         "parameter-query",
         "global-bind",
         "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-query-wildcard-per-argument.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "zero-arguments"
+      ]
+    },
+    {
+      "path": "generics/callable-query-argument-order.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "lazy-dispatch",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-wildcard-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence-many.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-type-list-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-query-global-variable.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "defglobal"
       ]
     },
     {
@@ -1550,7 +1707,7 @@
         "summary": "Documented divergence: CLIPS stores the byte of an escaped end of input, which is not UTF-8; Ferric strings are UTF-8 and hold U+FFFD",
         "observed": {
           "phase": "complete",
-          "output": "first:FALSE:FALSE:TRUE:FALSE:[unfinished\ufffd]\neof:FALSE:FALSE:FALSE:TRUE:[EOF]\n",
+          "output": "first:FALSE:FALSE:TRUE:FALSE:[unfinished�]\neof:FALSE:FALSE:FALSE:TRUE:[EOF]\n",
           "notices": "\n[SCANNER1] Encountered End-Of-File while scanning a string\n",
           "diagnostics": []
         }
@@ -1665,6 +1822,17 @@
         "defglobal"
       ],
       "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-template-slot-order.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "deffunction",
+        "defglobal"
+      ]
     },
     {
       "path": "modules/focus-argument-order.clp",
@@ -2871,7 +3039,143 @@
       ]
     },
     {
-      "path": "patterns/111_source_scanner_numeric_table.clp",
+      "path": "patterns/111_field_disjunction_not_exists_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "exists",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/112_field_disjunction_wide_mixed_alternatives.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/113_complex_predicate_ncc_child.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not",
+        "and",
+        "ncc",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/114_complex_predicate_multi_exists.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/115_complex_predicate_forall_condition.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "forall",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/116_field_disjunction_sequence_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "multifield",
+        "not",
+        "exists",
+        "join",
+        "variable-binding",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/117_field_disjunction_template_multislot_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multislot",
+        "not",
+        "exists",
+        "forall",
+        "join",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/118_field_disjunction_multifield_leading_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "multifield",
+        "predicate-constraint",
+        "variable-binding",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/119_field_disjunction_template_slot_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "not",
+        "exists",
+        "join",
+        "variable-binding",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/120_field_disjunction_alpha_budget_later_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multifield",
+        "not",
+        "variable-binding",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/121_source_scanner_numeric_table.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2882,7 +3186,7 @@
       ]
     },
     {
-      "path": "patterns/112_source_scanner_signed_zero_exponents.clp",
+      "path": "patterns/122_source_scanner_signed_zero_exponents.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2893,7 +3197,7 @@
       ]
     },
     {
-      "path": "patterns/113_source_scanner_ordered_numeric_symbols.clp",
+      "path": "patterns/123_source_scanner_ordered_numeric_symbols.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2904,7 +3208,7 @@
       ]
     },
     {
-      "path": "patterns/114_source_scanner_incomplete_exponent_patterns.clp",
+      "path": "patterns/124_source_scanner_incomplete_exponent_patterns.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2914,7 +3218,7 @@
       ]
     },
     {
-      "path": "patterns/115_source_scanner_integer_overflow.clp",
+      "path": "patterns/125_source_scanner_integer_overflow.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2924,7 +3228,7 @@
       ]
     },
     {
-      "path": "patterns/116_source_scanner_cr_comments.clp",
+      "path": "patterns/126_source_scanner_cr_comments.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2933,7 +3237,7 @@
       ]
     },
     {
-      "path": "patterns/117_source_scanner_connective_delimiters.clp",
+      "path": "patterns/127_source_scanner_connective_delimiters.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2943,13 +3247,33 @@
       ]
     },
     {
-      "path": "patterns/118_source_scanner_signed_numeric_symbols.clp",
+      "path": "patterns/128_source_scanner_signed_numeric_symbols.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
         "explode$",
         "symbolp"
       ]
+    },
+    {
+      "path": "patterns/129_source_scanner_symbol_continuations.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "symbolp",
+        "create$"
+      ]
+    },
+    {
+      "path": "patterns/402_break_lhs_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "test-ce",
+        "break"
+      ],
+      "error": "load"
     },
     {
       "path": "procedural/001_function_zero_arguments.clp",
@@ -4129,6 +4453,86 @@
         "partial-effects"
       ],
       "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/401_expression_effects_fact_slot_value_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "fact-slot-value",
+        "reset"
+      ]
+    },
+    {
+      "path": "procedural/401_expression_effects_fact_slot_value_retract.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "fact-slot-value",
+        "retract"
+      ]
+    },
+    {
+      "path": "procedural/401_expression_effects_halt_then_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "halt",
+        "reset"
+      ]
+    },
+    {
+      "path": "procedural/401_expression_effects_halt_then_reset_top_level.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "halt",
+        "reset"
+      ]
+    },
+    {
+      "path": "procedural/401_expression_effects_negative_mutation_target.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "duplicate",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/401_expression_effects_negative_mutation_target_callable.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "modify",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/402_callable_rejected_function_caller_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "unknown-call",
+        "deffunction",
+        "defrule"
+      ],
+      "error": "load"
     },
     {
       "path": "queries/any-factp-empty.clp",
@@ -5733,6 +6137,85 @@
       ]
     },
     {
+      "path": "queries/typed-fact-address-designator-evaluation-order.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "fact-slot-value",
+        "fact-index",
+        "wrong-type-designator",
+        "evaluation-order",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-retract-negative-stops.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "negative-index",
+        "evaluation-order",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-modify-missing-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "modify",
+        "duplicate",
+        "missing-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-modify-negative-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "modify",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-retract-wrong-type-callable.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "wrong-type",
+        "deffunction",
+        "defgeneric",
+        "evaluation-order",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-joins-and-duplicates.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "joins",
+        "negation",
+        "exists",
+        "duplicate-suppression"
+      ]
+    },
+    {
       "path": "stdlib/001_add_integers.clp",
       "level": "basic",
       "covers": [
@@ -6762,7 +7245,7 @@
         "summary": "Documented divergence: %.1s cuts a UTF-8 character; CLIPS emits the partial byte, Ferric U+FFFD",
         "observed": {
           "phase": "complete",
-          "output": "[  \u00e9|\u00e9|\ufffd]\n",
+          "output": "[  é|é|�]\n",
           "diagnostics": []
         }
       }
@@ -6822,7 +7305,7 @@
         "summary": "Documented divergence: %c of a byte of 128 or more; CLIPS emits the raw byte, Ferric U+FFFD",
         "observed": {
           "phase": "complete",
-          "output": "precision:[A|A|   A|A   ]\nempty:[|   |:end]\nzero:[|   |:end]\nbytes:[\ufffd|  \ufffd|\ufffd|\ufffd]\n",
+          "output": "precision:[A|A|   A|A   ]\nempty:[|   |:end]\nzero:[|   |:end]\nbytes:[�|  �|�|�]\n",
           "diagnostics": []
         }
       }
@@ -8012,6 +8495,31 @@
         "format",
         "printout",
         "deffunction"
+      ]
+    },
+    {
+      "path": "stdlib/244_format_output_printout_nil_skips_operands.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/245_format_output_nested_body_direct_write.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "if",
+        "loop-for-count",
+        "while",
+        "switch",
+        "do-for-all-facts",
+        "list-focus-stack"
       ]
     },
     {
