@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 988
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1002
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -291,8 +291,11 @@ strategy through the host API. Bindings reject unknown enum/name values.
 For equal salience, activation creation order breaks ties: depth selects the
 newest activation and breadth the oldest. Shared beta successors and mixed
 positive/negative/exists subscriptions are visited newest first. Retraction
-unblocks simple negative and NCC matches in reverse primary-blocker attachment
-order; moving to another blocker updates that attachment order. See the
+handles the fact's pattern matches one alpha memory at a time, oldest memory
+first. Within a memory, the positive cascade unblocks NCC matches first, then
+that memory's blocked simple negative matches are released in reverse
+primary-blocker attachment order; moving to another blocker updates that
+attachment order. See the
 [activation ordering contract](#activation-ordering-contract) for the remaining
 node-sharing boundary.
 
@@ -354,9 +357,11 @@ Depth and breadth follow CLIPS 6.30 for the reference-verified shared-positive,
 mixed-subscription, empty-LHS, OR-variant, and blocker-retraction cases in the
 corpus. Creation order follows network traversal, rather than rule name or
 source order alone. Each blocked match initially attaches to its oldest
-support. Deleting that support processes its blocked matches newest first;
-matches with another support attach to the oldest survivor. This history
-survives snapshots and is cleared on reset.
+support. Retracting a fact processes its pattern matches as CLIPS does: alpha
+memories in creation order, and within each memory the positive cascade (NCC
+unblocks) before that memory's block list, newest attachment first. Matches
+with another support attach to the oldest survivor. This history survives
+snapshots and is cleared on reset.
 
 CLIPS also shares identical negative and NCC joins between rules; Ferric
 currently shares positive joins only. Equal-salience ties involving those

@@ -9789,6 +9789,165 @@
       ]
     },
     {
+      "path": "patterns/400o_retract_ncc_before_negative_shared_memory_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_ncc_before_negative_shared_memory_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_generic_then_literal_memories_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_generic_then_literal_memories_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_literal_then_generic_memories_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_literal_then_generic_memories_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_blockers_asserted_last_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_blockers_asserted_last_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_three_memories_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_three_memories_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_negative_older_memory_ncc_newer_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_negative_older_memory_ncc_newer_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_ncc_negative_shared_and_second_memory_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_ncc_negative_shared_and_second_memory_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
       "path": "patterns/400o_gap_shared_negative_assert_depth.clp",
       "level": "interaction",
       "covers": [

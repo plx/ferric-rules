@@ -348,15 +348,39 @@ impl ReteNetwork {
         let affected_alpha_mems = self.alpha.memories_containing_fact(fact_id);
         self.alpha.retract_fact(fact_id, fact);
 
-        let mut transitions: Vec<_> = self
-            .collect_ncc_result_retractions(&all_removed_tokens)
+        // CLIPS retracts the fact's pattern matches one at a time, oldest
+        // memory first. Each match's positive cascade unblocks NCC parents
+        // before the match's own LIFO block list releases negative parents.
+        let ncc_events = self.collect_ncc_result_retractions(&all_removed_tokens);
+        let removed_by_id: rustc_hash::FxHashMap<_, _> = if ncc_events.is_empty() {
+            rustc_hash::FxHashMap::default()
+        } else {
+            all_removed_tokens
+                .iter()
+                .map(|(id, token)| (*id, token))
+                .collect()
+        };
+        let mut transitions: Vec<_> = ncc_events
             .into_iter()
-            .map(|event| (event.order, Transition::Ncc(event)))
+            .map(|event| {
+                let memory = self
+                    .retracted_fact_memory(&removed_by_id, event.result, fact_id)
+                    .unwrap_or(u32::MAX);
+                (
+                    (memory, 0, std::cmp::Reverse(event.order)),
+                    Transition::Ncc(event),
+                )
+            })
             .collect();
         transitions.extend(
             self.collect_negative_retractions(fact_id, &affected_alpha_mems)
                 .into_iter()
-                .map(|(order, node, parent)| (order, Transition::Negative(node, parent))),
+                .map(|(memory, order, node, parent)| {
+                    (
+                        (memory.0, 1, std::cmp::Reverse(order)),
+                        Transition::Negative(node, parent),
+                    )
+                }),
         );
 
         // Remove stale memory references before newly unblocked paths propagate.
@@ -370,7 +394,7 @@ impl ReteNetwork {
             }
             self.cleanup_negative_memories_for_token(*token_id, token.owner_node);
         }
-        transitions.sort_unstable_by_key(|(order, _)| std::cmp::Reverse(*order));
+        transitions.sort_unstable_by_key(|(key, _)| *key);
         for (_, transition) in transitions {
             match transition {
                 Transition::Negative(node, parent) => self.apply_negative_retraction(
@@ -393,6 +417,34 @@ impl ReteNetwork {
         );
 
         removed_activations
+    }
+
+    /// The oldest alpha memory through which a removed NCC result holds the
+    /// retracted fact; that pattern match's positive cascade removes it first.
+    fn retracted_fact_memory(
+        &self,
+        removed: &rustc_hash::FxHashMap<TokenId, &Token>,
+        result: TokenId,
+        fact_id: FactId,
+    ) -> Option<u32> {
+        let mut oldest: Option<u32> = None;
+        let mut current = removed.get(&result).copied();
+        // Only removed tokens contain the fact, so the walk stops at the
+        // first surviving ancestor.
+        while let Some(token) = current {
+            if token.fact == Some(fact_id) {
+                if let Some(BetaNode::Join { alpha_memory, .. }) =
+                    self.beta.get_node(token.owner_node)
+                {
+                    oldest =
+                        Some(oldest.map_or(alpha_memory.0, |memory| memory.min(alpha_memory.0)));
+                }
+            }
+            current = token
+                .parent
+                .and_then(|parent| removed.get(&parent).copied());
+        }
+        oldest
     }
 
     /// Clear all runtime state (facts, tokens, activations) while preserving the compiled network structure.
@@ -1098,7 +1150,7 @@ impl ReteNetwork {
         &mut self,
         fact_id: FactId,
         affected_alpha_mems: &[AlphaMemoryId],
-    ) -> Vec<(u64, NodeId, TokenId)> {
+    ) -> Vec<(AlphaMemoryId, u64, NodeId, TokenId)> {
         let mut events = Vec::new();
         for &alpha in affected_alpha_mems {
             let nodes: SmallVec<[NodeId; 4]> =
@@ -1118,6 +1170,7 @@ impl ReteNetwork {
                     };
                     if memory.primary_blocker(parent) == Some(fact_id) {
                         events.push((
+                            alpha,
                             memory
                                 .block_order(parent)
                                 .expect("blocked parent has chronology"),
