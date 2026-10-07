@@ -3970,12 +3970,17 @@ fn builtin_mod(
             span: span.cloned(),
         });
     }
-    Ok(match (lhs, rhs) {
-        (Numeric::Int(lhs), Numeric::Int(rhs)) => Value::Integer(lhs.checked_rem(rhs).unwrap_or(0)),
-        (Numeric::Int(lhs), Numeric::Flt(rhs)) => Value::Float(lhs as f64 % rhs),
-        (Numeric::Flt(lhs), Numeric::Int(rhs)) => Value::Float(lhs % rhs as f64),
-        (Numeric::Flt(lhs), Numeric::Flt(rhs)) => Value::Float(lhs % rhs),
-    })
+    if let (Numeric::Int(lhs), Numeric::Int(rhs)) = (&lhs, &rhs) {
+        return Ok(Value::Integer(lhs.checked_rem(*rhs).unwrap_or(0)));
+    }
+    // CLIPS 6.30 computes `a - trunc(a / b) * b`, not C's `fmod`: the two
+    // differ when the quotient is inexact or overflows.
+    let float = |value| match value {
+        Numeric::Int(value) => value as f64,
+        Numeric::Flt(value) => value,
+    };
+    let (lhs, rhs) = (float(lhs), float(rhs));
+    Ok(Value::Float(lhs - (lhs / rhs).trunc() * rhs))
 }
 
 /// `abs` (1 arg)

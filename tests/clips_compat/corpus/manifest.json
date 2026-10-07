@@ -9408,6 +9408,15 @@
         "deftemplate-slot-names",
         "issue-403"
       ]
+    },
+    {
+      "path": "stdlib/403b_mod_float_formula.clp",
+      "level": "boundary",
+      "covers": [
+        "stdlib",
+        "mod",
+        "issue-403"
+      ]
     }
   ]
 }

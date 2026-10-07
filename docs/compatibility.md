@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 934
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 935
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1094,7 +1094,7 @@ its fields have been expanded.
 | `*` | Multiplication | `(* 4 5)` => `20` |
 | `/` | Division | `(/ 10 3)` => `3.333...` |
 | `div` | Integer division | `(div 10 3)` => `3` |
-| `mod` | Remainder; FLOAT if either operand is FLOAT | `(mod 7.5 2)` => `1.5` |
+| `mod` | Remainder; FLOAT `a - trunc(a / b) * b` if either operand is FLOAT, as in CLIPS (not C `fmod`) | `(mod 7.5 2)` => `1.5` |
 | `abs` | Absolute value | `(abs -5)` => `5` |
 | `min` | Minimum | `(min 3 7)` => `3` |
 | `max` | Maximum | `(max 3 7)` => `7` |
