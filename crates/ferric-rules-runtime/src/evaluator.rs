@@ -6264,23 +6264,16 @@ pub(crate) fn designated_fact(
         .find(|&id| public_fact_index(fact_base, initial_fact_id, id) == Some(index))
 }
 
-/// Evaluate a fact-function argument that must be an address or an index.
-/// `None` means no fact base is available, or no live fact has the index.
+/// Evaluate a fact-function designator argument. `None` means no fact base is
+/// available or the value names no live fact: a missing or negative index, a
+/// stale or dummy address, or a value of another type. CLIPS 6.30 reports each
+/// of these with a recoverable notice and returns `FALSE`, so none of them
+/// stops the rule.
 fn eval_fact_designator(
     ctx: &mut EvalContext<'_>,
-    function: &str,
     arg: &RuntimeExpr,
-    span: Option<&SourceSpan>,
 ) -> Result<Option<FactId>, EvalError> {
     let value = eval_inner(ctx, arg)?;
-    if !matches!(value, Value::Integer(_) | Value::FactAddress(_)) {
-        return Err(EvalError::TypeError {
-            function: function.into(),
-            expected: "fact-address or INTEGER fact index".into(),
-            actual: generic_value_type_name(&value).into(),
-            span: span.cloned(),
-        });
-    }
     Ok(ctx.fact_base.and_then(|fact_base| {
         designated_fact(fact_base, ctx.initial_fact_id, ctx.fact_epoch, &value)
     }))
@@ -6293,7 +6286,7 @@ fn builtin_fact_existp(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-existp", args, 1, span)?;
-    let fact = eval_fact_designator(ctx, "fact-existp", &args[0], span)?;
+    let fact = eval_fact_designator(ctx, &args[0])?;
     let exists = fact
         .zip(ctx.fact_base)
         .is_some_and(|(fact_id, fact_base)| fact_base.get(fact_id).is_some());
@@ -6305,7 +6298,8 @@ fn builtin_fact_existp(
 }
 
 /// `(fact-index <fact-address>)` — return the public assertion index, or -1
-/// when the addressed fact has been retracted.
+/// when the addressed fact has been retracted. Like CLIPS 6.30, any other
+/// argument type (including an INTEGER index) also returns -1 and continues.
 fn builtin_fact_index(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6313,14 +6307,8 @@ fn builtin_fact_index(
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-index", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
-    let invalid_address = || EvalError::TypeError {
-        function: "fact-index".into(),
-        expected: "fact-address".into(),
-        actual: generic_value_type_name(&val).into(),
-        span: span.cloned(),
-    };
     let Value::FactAddress(address) = &val else {
-        return Err(invalid_address());
+        return Ok(Value::Integer(-1));
     };
     let Some(fact_base) = ctx.fact_base else {
         return Ok(Value::Integer(-1));
@@ -6350,7 +6338,7 @@ fn builtin_fact_relation(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-relation", args, 1, span)?;
-    let fact = eval_fact_designator(ctx, "fact-relation", &args[0], span)?;
+    let fact = eval_fact_designator(ctx, &args[0])?;
     let Some((fact_id, fb)) = fact.zip(ctx.fact_base) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
@@ -6475,29 +6463,23 @@ fn builtin_compact_fact_slot_ref(
 ///
 /// For template facts, returns the value at the named slot position.
 /// For ordered facts, the only valid slot name is `"implied"`, which returns
-/// a multifield of all field values. Missing evaluator metadata returns FALSE;
-/// missing/stale facts return FALSE; invalid slots on live facts report an error.
+/// a multifield of all field values. Missing evaluator metadata returns FALSE.
+///
+/// As in CLIPS 6.30, the designator is resolved before the slot argument is
+/// evaluated: a missing or negative index, a stale or dummy address, or a
+/// value of another type returns FALSE without evaluating the slot argument.
+/// Only an invalid slot, or slot argument type, on a live fact is an error.
 fn builtin_fact_slot_value(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-slot-value", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    if !matches!(values[0], Value::Integer(_) | Value::FactAddress(_)) {
-        return Err(EvalError::TypeError {
-            function: "fact-slot-value".into(),
-            expected: "fact-address or INTEGER fact index".into(),
-            actual: generic_value_type_name(&values[0]).into(),
-            span: span.cloned(),
-        });
-    }
-    let slot_name = as_lexeme_str(&values[1], ctx.symbol_table, "fact-slot-value", span)?;
-    let Some(fact_id) = ctx.fact_base.and_then(|fact_base| {
-        designated_fact(fact_base, ctx.initial_fact_id, ctx.fact_epoch, &values[0])
-    }) else {
+    let Some(fact_id) = eval_fact_designator(ctx, &args[0])? else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
+    let slot = eval_inner(ctx, &args[1])?;
+    let slot_name = as_lexeme_str(&slot, ctx.symbol_table, "fact-slot-value", span)?;
     let value = read_fact_slot_value(ctx, fact_id, &slot_name, "fact-slot-value", span, || {
         "fact does not exist".into()
     })?;
@@ -6601,7 +6583,7 @@ fn builtin_fact_slot_names(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("fact-slot-names", args, 1, span)?;
-    let fact = eval_fact_designator(ctx, "fact-slot-names", &args[0], span)?;
+    let fact = eval_fact_designator(ctx, &args[0])?;
     let Some((fact_id, fb)) = fact.zip(ctx.fact_base) else {
         return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
     };
@@ -8419,7 +8401,7 @@ mod tests {
     }
 
     #[test]
-    fn fact_index_rejects_nonaddresses_without_normalizing_them_into_live_keys() {
+    fn fact_index_returns_minus_one_for_nonaddresses_without_normalizing_them_into_live_keys() {
         let mut engine = crate::Engine::with_rules("").unwrap();
         engine.assert_ordered("item", 7_i64).unwrap();
         for value in [
@@ -8433,18 +8415,14 @@ mod tests {
             Value::Float(1.0),
             Value::String(FerricString::new("1", StringEncoding::Utf8).unwrap()),
         ] {
-            let error = eval_index(
+            // CLIPS 6.30 reports a recoverable notice and returns -1.
+            let index = eval_index(
                 Some(&engine.fact_base),
                 engine.initial_fact_id,
                 value.clone(),
             )
-            .unwrap_err();
-            assert!(
-                matches!(error, EvalError::TypeError {
-                ref function, ref expected, span: Some(SourceSpan { line: 4, column: 7 }), ..
-            } if function == "fact-index" && expected == "fact-address"),
-                "{value:?}: {error:?}"
-            );
+            .unwrap();
+            assert_eq!(index, -1, "{value:?}");
         }
     }
 

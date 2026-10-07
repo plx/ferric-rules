@@ -5125,6 +5125,20 @@
       ]
     },
     {
+      "path": "queries/typed-fact-address-designator-evaluation-order.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "fact-slot-value",
+        "fact-index",
+        "wrong-type-designator",
+        "evaluation-order",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
       "path": "stdlib/001_add_integers.clp",
       "level": "basic",
       "covers": [

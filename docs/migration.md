@@ -115,10 +115,14 @@ public index retained at assertion time; FACT-ADDRESS slot defaults print
 `<Dummy Fact>`. Integer fact designators always mean public indices.
 
 Addresses are neither INTEGER nor NUMBER. Arithmetic, `str-cat`, and `sym-cat`
-reject them. Missing or negative indices make `retract` a no-op and
-`fact-slot-value` return `FALSE`; invalid operand types and live invalid slots
-still report errors. `FactAddress` equality uses the assertion identity and
-working-memory epoch, so stale addresses cannot alias facts created after reset.
+reject them. Missing or negative indices, stale addresses, and designators of
+any other type make `fact-existp`, `fact-relation`, `fact-slot-names`, and
+`fact-slot-value` return `FALSE` (`fact-index` returns `-1` for anything but an
+address), and the rule continues; `fact-slot-value` does not evaluate its slot
+argument in that case. Only an invalid slot, or slot argument type, on a live
+fact stops the rule. Missing or negative indices make `retract` a no-op.
+`FactAddress` equality uses the assertion identity and working-memory epoch, so
+stale addresses cannot alias facts created after reset.
 
 Rust host assertions reject fact-address values even when nested or copied from
 an owned fact. C, Python, and Node value conversion also rejects them. Use host

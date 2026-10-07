@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 738
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 739
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1146,12 +1146,19 @@ replacement fact. A runtime assertion using the derived default for a
 `FACT-ADDRESS` slot receives `<Dummy Fact>`, a distinct address value with no
 referenced fact; its introspection results are the same as a stale address.
 
-A missing or negative fact index also returns `FALSE` from `fact-existp`,
-`fact-relation`, `fact-slot-names`, and `fact-slot-value`; `retract` does
-nothing. Evaluation continues with later
-operands and actions. CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]`
-notices for some of these calls; Ferric omits those notices. Invalid slots
-and unsupported operand types keep their ordinary error behavior.
+A missing or negative fact index, or a designator that is neither an address
+nor an INTEGER, also returns `FALSE` from `fact-existp`, `fact-relation`,
+`fact-slot-names`, and `fact-slot-value`, and the rule continues. `fact-index`
+returns `-1` for any argument that is not a fact address, including an INTEGER.
+`fact-slot-value` resolves its designator before evaluating the slot argument,
+so the slot argument is not evaluated when the designator names no live fact.
+Only an invalid slot name, or a slot argument that is not a symbol or string,
+on a live fact stops the rule.
+
+A missing or negative fact index makes `retract` do nothing.
+
+CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]` notices for these
+calls; Ferric omits those notices.
 
 `save-facts` renders addresses as quoted strings, such as `"<Fact-1>"` or
 `"<Dummy Fact>"`, matching CLIPS. These fact files do not preserve address

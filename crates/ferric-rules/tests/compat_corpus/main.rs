@@ -167,6 +167,9 @@ fn fact_notice_length(bytes: &[u8]) -> Option<usize> {
         return digits_then(index, b".\n", false).then_some(length);
     }
     let function = line.strip_prefix(b"[ARGACCES5] Function ")?;
+    if function == b"fact-index expected argument #1 to be of type fact-address\n" {
+        return Some(length);
+    }
     if let Some(argument) = function.strip_prefix(b"retract expected argument #") {
         return digits_then(
             argument,
@@ -738,9 +741,11 @@ fn golden_fact_notices_preserve_exact_partial_output() {
     let source = b"before:[PRNTUTIL1] Unable to find fact f-9.\nFALSE\n\
         [ARGACCES5] Function fact-slot-value expected argument #1 to be of type fact-address or fact-index\n\
         [ARGACCES5] Function retract expected argument #2 to be of type fact-address, fact-index, or the symbol *\n\
+        [ARGACCES5] Function fact-index expected argument #1 to be of type fact-address\n\
+        -1\n\
         continued\n";
     let expected = golden(source, None, true);
-    assert_eq!(expected.output, b"before:FALSE\ncontinued\n");
+    assert_eq!(expected.output, b"before:FALSE\n-1\ncontinued\n");
     assert!(expected.notices.is_empty());
     assert_eq!(golden(source, None, false).output, source);
 }
@@ -751,6 +756,7 @@ fn golden_fact_notices_retain_fatal_errors_and_literal_near_matches() {
         prefix [PRNTUTIL1] Unable to find fact f-9. extra\n\
         [ARGACCES5] Function + expected argument #1 to be of type integer or float\n\
         [ARGACCES5] Function fact-slot-value expected argument #2 to be of type symbol\n\
+        [ARGACCES5] Function fact-index expected argument #1 to be of type fact-address or fact-index\n\
         [PRCCODE4] Execution halted.\n[USER123] literal\n";
     assert_eq!(golden(source, None, true).output, source);
 }
