@@ -381,7 +381,11 @@ fn nested_exists_waits_for_every_postponed_entry() {
         assert_eq!(engine.agenda_len(), 0, "{condition}: (a) was retracted");
         engine.assert_ordered("a", ()).unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("fired\nfired\n"), "{condition}");
+        assert_eq!(
+            engine.get_output("t"),
+            Some("fired\nfired\n"),
+            "{condition}"
+        );
         engine.rete().debug_assert_consistency();
     }
 }
