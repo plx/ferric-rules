@@ -826,15 +826,18 @@ generic registration preserves the previous registry state.
 
 Known difference: match conditions and deffacts or defglobal initializers
 evaluated by an engine effect (`assert`, `retract`, `modify`, `duplicate`,
-`reset`) continue that effect's call and expression depth rather than starting
-from zero. An effect run from deep inside nested calls can therefore push such
+`reset`), or by the source loading of `build`, continue that call's depth
+rather than starting from zero. An effect run from deep inside nested calls can therefore push such
 a condition or initializer past these limits. Ferric reports that as a
 diagnostic, and an affected match condition does not match; CLIPS 6.30 has no
 such limit and evaluates them normally.
 
 Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
 the deffunction, so later callers are rejected at load; Ferric keeps the
-previous body and its callers still load. Both keep the previous method when
+previous body and its callers still load. Likewise, CLIPS 6.30 removes an
+existing defrule before parsing its redefinition, so a replacement that fails
+any load check leaves no rule of that name; Ferric keeps the previous rule
+installed and it still fires. Both keep the previous method when
 a `defmethod` redefinition fails. Until a rejected callable is removed at the
 end of the load, it still counts as using the templates it references, so a
 `deftemplate` replacement later in the same source is refused with
@@ -1079,10 +1082,16 @@ this is not a claim that every built-in or argument combination is identical.
 
 Known arity and literal argument types are checked while loading constructs.
 For example, `(abs 1 2)`, `(eq a)`, and `(min 1 a)` reject the containing rule
-with an `ARGACCES4` or `ARGACCES5` diagnostic. An invalid replacement retains
-the previous rule or callable, and independent later definitions can still
-load. Computed values and dynamically selected `funcall` targets retain runtime
-checks. An explicit `expand$` defers the surrounding call's arity check until
+with an `ARGACCES4` or `ARGACCES5` diagnostic. An invalid replacement leaves
+Ferric's previous rule or callable installed; CLIPS 6.30 removes the old
+defrule or deffunction before parsing its redefinition, so its rule no longer
+fires (see the known difference in Recursive Calls). Independent later
+definitions can still load. Computed values and dynamically selected `funcall`
+targets retain runtime checks. Ferric does not check the declared result type
+of a nested built-in call at load: CLIPS rejects `(abs (str-cat a))`,
+`(str-length (+ 1 2))` or `(+ 1 (sym-cat a))` with the containing rule, and
+later rules still run, whereas Ferric loads the rule and stops the run when the
+call is evaluated. An explicit `expand$` defers the surrounding call's arity check until
 its fields have been expanded.
 
 ### Math Functions
@@ -1311,10 +1320,11 @@ cannot be replaced, including through a helper's `build` call; the original
 definition remains installed.
 
 Each engine owns its random state, and snapshots preserve that state. Seeded
-explicit draws match the pinned glibc-based CLIPS 6.30 reference. Ferric does
-not consume this stream to assign random agenda activation ties: CLIPS code
-that interleaves random draws with activation creation can therefore observe a
-different sequence. This does not add support for the Random conflict strategy.
+explicit draws match the pinned glibc-based CLIPS 6.30 reference. CLIPS 6.30
+also draws one value for every new activation, whatever the strategy; Ferric
+consumes the stream only for explicit `random` calls. A seeded sequence
+therefore matches only while no activation is created between `seed` and a
+draw (see §16.11). This does not add support for the Random conflict strategy.
 `time` is inherently nondeterministic. Reversed `random` bounds produce a
 recoverable `MISCFUN3` notice and return the unbounded draw. A wrong argument
 count that reaches execution likewise consumes and returns a draw, emits
@@ -1352,6 +1362,13 @@ replacement fact. A runtime assertion using the derived default for a
 `FACT-ADDRESS` slot receives `<Dummy Fact>`, a distinct address value with no
 referenced fact; its introspection results are the same as a stale address.
 
+The run-time rules below apply to computed designators and slot names. As in
+CLIPS 6.30, a literal STRING or FLOAT designator to `retract`, `fact-existp`,
+`fact-relation`, `fact-slot-names` or `fact-slot-value`, any literal argument
+to `fact-index`, and a literal STRING slot name to `fact-slot-value` reject the
+containing rule at load with `ARGACCES5`. A SYMBOL literal designator loads and
+is checked when evaluated.
+
 A missing or negative fact index, or a designator that is neither an address
 nor an INTEGER, also returns `FALSE` from `fact-existp`, `fact-relation`,
 `fact-slot-names`, and `fact-slot-value`, and the rule continues. `fact-index`
@@ -1361,8 +1378,9 @@ so the slot argument is not evaluated when the designator names no live fact.
 As in CLIPS, a slot argument that resets or retracts the fact still reads the
 record the designator named, not a fact asserted afterwards. On a live fact, an invalid slot name or a slot argument that is not a symbol,
 string, or instance name stops the rule. CLIPS 6.30 accepts only a SYMBOL slot
-argument: it rejects a literal STRING at load and stops the rule for a computed
-one, whereas Ferric also accepts a STRING or INSTANCE-NAME slot name.
+argument: it rejects a literal STRING at load, as Ferric does, and stops the
+rule for a computed one, whereas Ferric also accepts a computed STRING or
+INSTANCE-NAME slot name.
 
 `retract` skips a missing index or a stale address and goes on to its next
 target. A negative index ends that `retract` call: later targets are neither
@@ -1459,6 +1477,8 @@ The following features are explicitly out of scope.
 | Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
 | Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
 | `set-salience-evaluation` | Not supported | Salience is static; dynamic salience evaluation is unavailable |
+| Random draws consumed by activation creation | Not supported | CLIPS 6.30 draws once per new activation; Ferric's seeded stream matches only when no activation is created between `seed` and a draw |
+| Load-time result-type checks of nested built-in calls | Not supported | CLIPS rejects e.g. `(abs (str-cat a))` at load; Ferric checks the value when evaluated, so the run stops there |
 | Reentrant `build` during construct initialization | Explicitly rejected | Invoke it after loading; the pinned reference crashes on these initializer cases |
 | Generic and method redefinition through `build` or source loading | Partial support | Repeated `defgeneric` declarations and an occupied explicit method index are rejected. An implicit method with equivalent restrictions is added with a new index instead of replacing the prior method, unlike CLIPS. New methods with distinct restrictions are supported. |
 | Other absent non-COOL built-ins | Not supported | A name omitted from the supported surface is not implicitly provided; unknown calls report `EXPRNPSR3` |
