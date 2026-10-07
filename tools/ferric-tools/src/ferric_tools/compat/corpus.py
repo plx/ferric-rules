@@ -67,6 +67,16 @@ BUILD_NOTICE = re.compile(
     r"\n\[CSTRCPSR4\] Cannot redefine deftemplate ([A-Za-z0-9_-]+) while it is in use\.\n"
     r"\nERROR:\n\(deftemplate [A-Za-z0-9_-]+::\1\n"
 )
+# A missing deftemplate, or a first argument to template or construct
+# introspection that does not name a deftemplate or defmodule.
+INTROSPECTION_NOTICE = re.compile(
+    r"\[PRNTUTIL1\] Unable to find deftemplate [A-Za-z0-9_:-]+\.\n"
+    r"|\[ARGACCES5\] Function deftemplate-slot-(?:names|allowed-values|types|default-value"
+    r"|defaultp|existp|multip|singlep|range|cardinality) "
+    r"expected argument #1 to be of type deftemplate name\n"
+    r"|\[ARGACCES5\] Function get-(?:defrule|deftemplate|defglobal)-list "
+    r"expected argument #1 to be of type defmodule name\n"
+)
 
 
 def extract_output(
@@ -79,6 +89,7 @@ def extract_output(
     recoverable_control_notices: bool = False,
     recoverable_random_notices: bool = False,
     recoverable_build_notices: bool = False,
+    recoverable_introspection_notices: bool = False,
 ) -> str:
     """Require exactly one complete frame and check reference diagnostics.
 
@@ -130,6 +141,10 @@ def extract_output(
         checked, count = BUILD_NOTICE.subn("", checked)
         if count == 0:
             raise ReferenceFailure("expected a recoverable CLIPS build notice")
+    if recoverable_introspection_notices:
+        checked, count = INTROSPECTION_NOTICE.subn("", checked)
+        if count == 0:
+            raise ReferenceFailure("expected a recoverable CLIPS introspection notice")
     if error == "run" and not DIAGNOSTIC.search(checked):
         raise ReferenceFailure(f"expected a CLIPS runtime diagnostic:\n{output}")
     # Unanchored, unlike DIAGNOSTIC: a diagnostic printed after other text on
@@ -259,6 +274,11 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         recoverable_build_notices and error is not None
     ):
         raise ReferenceFailure("recoverable_build_notices requires a successful run")
+    recoverable_introspection_notices = case.get("recoverable_introspection_notices", False)
+    if not isinstance(recoverable_introspection_notices, bool) or (
+        recoverable_introspection_notices and error is not None
+    ):
+        raise ReferenceFailure("recoverable_introspection_notices requires a successful run")
     source = batch_source(f"tests/clips_compat/corpus/{case['path']}", begin, end, resets, error)
     strategy = case.get("strategy")
     if strategy not in (None, "breadth"):
@@ -320,6 +340,7 @@ def run_reference(root: Path, case: dict, image: str, timeout: float) -> str:
         recoverable_control_notices,
         recoverable_random_notices,
         recoverable_build_notices,
+        recoverable_introspection_notices,
     )
     return extract_runs(output, begin, end, resets)
 

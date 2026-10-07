@@ -287,3 +287,36 @@ fn dynamic_default_value_query_keeps_void_and_multifield_results() {
     assert_eq!(engine.get_output("t"), Some("[]\n(1 2) 2\n(1 2 3)\n"));
     assert!(format!("{:?}", engine.action_diagnostics()).contains("single-field slot `x`"));
 }
+
+// CLIPS 6.30 recovers from a missing template and from a first argument that
+// is not a SYMBOL: it prints a notice, returns `()` for the multifield-valued
+// template queries and the construct lists and FALSE otherwise, and keeps
+// running the rule. A slot name that is not a SYMBOL still halts it.
+#[test]
+fn introspection_recovers_from_missing_templates_and_invalid_first_arguments() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate p (slot x))
+         (deffunction s () \"p\")
+         (defrule report =>
+           (printout t (deftemplate-slot-types missing x) (deftemplate-slot-range missing x)
+             (deftemplate-slot-multip missing x) (deftemplate-slot-cardinality (s) x)
+             (deftemplate-slot-names (s)) (get-defglobal-list (s)) crlf)
+           (printout t (deftemplate-slot-existp p (s)) crlf)
+           (printout t after crlf))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(engine.get_output("t"), Some("()()FALSE()FALSE()\n"));
+    assert_eq!(
+        engine.get_output("werror"),
+        Some(
+            "[PRNTUTIL1] Unable to find deftemplate missing.\n\
+             [PRNTUTIL1] Unable to find deftemplate missing.\n\
+             [PRNTUTIL1] Unable to find deftemplate missing.\n\
+             [ARGACCES5] Function deftemplate-slot-cardinality expected argument #1 to be of type deftemplate name\n\
+             [ARGACCES5] Function deftemplate-slot-names expected argument #1 to be of type deftemplate name\n\
+             [ARGACCES5] Function get-defglobal-list expected argument #1 to be of type defmodule name\n"
+        )
+    );
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("deftemplate-slot-existp"));
+}

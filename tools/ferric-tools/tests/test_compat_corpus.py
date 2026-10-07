@@ -470,3 +470,60 @@ def test_build_notice_flag_requires_success_and_boolean(tmp_path, value, error):
             "unused",
             1,
         )
+
+
+INTROSPECTION_NOTICES = (
+    "[PRNTUTIL1] Unable to find deftemplate missing.\n"
+    "[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type "
+    "deftemplate name\n"
+    "[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name\n"
+)
+
+
+def test_introspection_notice_requires_opt_in_and_remains_in_captured_output():
+    output = f"{INTROSPECTION_NOTICES}()\n"
+    assert (
+        extract_output(
+            f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_introspection_notices=True
+        )
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output(
+            "BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_introspection_notices=True
+        )
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        "[PRNTUTIL1] Unable to find deftemplate missing. extra\n",
+        "[ARGACCES5] Function deftemplate-slot-types expected argument #2 to be of type symbol\n",
+        "[ARGACCES5] Function get-defrule-list expected argument #1 to be of type "
+        "deftemplate name\n",
+        "[ARGACCES5] Function focus expected argument #1 to be of type defmodule name\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_introspection_notice_allowance_does_not_mask_changed_messages(unexpected):
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{INTROSPECTION_NOTICES}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_introspection_notices=True,
+        )
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_introspection_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "stdlib/a.clp", "recoverable_introspection_notices": value, "error": error},
+            "unused",
+            1,
+        )

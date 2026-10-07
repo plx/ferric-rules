@@ -1302,8 +1302,12 @@ slot's default is returned as is, and a multislot default omits void elements.
 Merely listing slots or asking the default kind does not evaluate it.
 
 `deftemplate-slot-names` loads with an INTEGER or SYMBOL literal argument, as
-in CLIPS 6.30. A template name that is not a SYMBOL when evaluated stops the
-rule in Ferric, whereas CLIPS prints an `ARGACCES5` notice and returns FALSE.
+in CLIPS 6.30. As in CLIPS, a missing deftemplate prints a `PRNTUTIL1` notice,
+and a template or module argument that is not a SYMBOL when evaluated prints an
+`ARGACCES5` notice; the rule continues. The query then returns `()` for
+`deftemplate-slot-types`, `-allowed-values`, `-range`, `-cardinality` and the
+construct lists, and FALSE for the other template queries. A slot name that is
+not a SYMBOL stops the rule.
 
 ### Dynamic Source, Randomness, and Time
 

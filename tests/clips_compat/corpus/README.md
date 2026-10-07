@@ -110,6 +110,13 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   for the same deftemplate or ordered relation is compared as that line, so
   the number and order of rejected builds and their names must still agree.
   Such a case must otherwise succeed.
+- Cases marked `recoverable_introspection_notices: true` allow only CLIPS's
+  exact recoverable introspection notices: `[PRNTUTIL1] Unable to find
+  deftemplate NAME.` and the `[ARGACCES5]` notice for a first argument of a
+  `deftemplate-slot-*` function or a construct list that is not a deftemplate
+  or defmodule name. The oracle retains them; comparison moves them to the
+  expected notices, so Ferric must print the same notices, in order, on
+  `werror`. Such a case must otherwise succeed.
 - A separate exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error
   routers, interleaved with `t` in the oracle; the runner removes them from the

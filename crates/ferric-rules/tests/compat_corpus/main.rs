@@ -49,6 +49,8 @@ struct Case {
     #[serde(default)]
     recoverable_build_notices: bool,
     #[serde(default)]
+    recoverable_introspection_notices: bool,
+    #[serde(default)]
     gap: Option<Gap>,
 }
 
@@ -340,12 +342,82 @@ fn normalize_ferric_build_notices(notices: &str) -> String {
         .collect()
 }
 
+/// CLIPS's recoverable template and construct introspection notices: a
+/// missing deftemplate, or a first argument that does not name a deftemplate
+/// or defmodule. Return the notice's length.
+fn introspection_notice_length(bytes: &[u8]) -> Option<usize> {
+    const TEMPLATE: &[u8] = b"[PRNTUTIL1] Unable to find deftemplate ";
+    const ARGUMENT: &[u8] = b"[ARGACCES5] Function ";
+    const TEMPLATE_QUERIES: [&str; 10] = [
+        "deftemplate-slot-names",
+        "deftemplate-slot-allowed-values",
+        "deftemplate-slot-types",
+        "deftemplate-slot-default-value",
+        "deftemplate-slot-defaultp",
+        "deftemplate-slot-existp",
+        "deftemplate-slot-multip",
+        "deftemplate-slot-singlep",
+        "deftemplate-slot-range",
+        "deftemplate-slot-cardinality",
+    ];
+    const CONSTRUCT_LISTS: [&str; 3] = [
+        "get-defrule-list",
+        "get-deftemplate-list",
+        "get-defglobal-list",
+    ];
+    let length = bytes.iter().position(|&byte| byte == b'\n')? + 1;
+    let line = &bytes[..length];
+    if let Some(name) = line.strip_prefix(TEMPLATE) {
+        let name = name.strip_suffix(b".\n")?;
+        return (!name.is_empty()
+            && name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_:-".contains(byte)))
+        .then_some(length);
+    }
+    let function = line.strip_prefix(ARGUMENT)?;
+    let expected = |functions: &[&str], kind: &[u8]| {
+        functions.iter().any(|name| {
+            function
+                .strip_prefix(name.as_bytes())
+                .and_then(|rest| rest.strip_prefix(b" expected argument #1 to be of type "))
+                .and_then(|rest| rest.strip_suffix(b" name\n"))
+                == Some(kind)
+        })
+    };
+    (expected(&TEMPLATE_QUERIES, b"deftemplate") || expected(&CONSTRUCT_LISTS, b"defmodule"))
+        .then_some(length)
+}
+
+/// Move CLIPS's recoverable introspection notices out of a golden: return the
+/// golden without them and the notices, in order. Ferric prints them on
+/// `werror`, so they are compared exactly.
+fn split_introspection_notices(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (mut output, mut notices) = (Vec::new(), Vec::new());
+    let mut rest = bytes;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let Some(length) = introspection_notice_length(rest) {
+            notices.extend_from_slice(&rest[..length]);
+            rest = &rest[length..];
+        } else {
+            output.push(first);
+            rest = tail;
+        }
+    }
+    (output, notices)
+}
+
 /// The golden a corpus case's program is compared with.
 fn case_golden(case: &Case, bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
     let (bytes, build_notices) = if case.recoverable_build_notices {
         split_build_notices(bytes)
     } else {
         (bytes.to_vec(), Vec::new())
+    };
+    let (bytes, introspection_notices) = if case.recoverable_introspection_notices {
+        split_introspection_notices(&bytes)
+    } else {
+        (bytes, Vec::new())
     };
     let mut expected = golden(
         &bytes,
@@ -355,6 +427,7 @@ fn case_golden(case: &Case, bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
         case.recoverable_random_notices,
     );
     expected.notices.extend(build_notices);
+    expected.notices.extend(introspection_notices);
     expected
 }
 
@@ -736,6 +809,14 @@ fn manifest_covers_every_program() {
                 case.path
             );
         }
+        if case.recoverable_introspection_notices {
+            assert!(case.error.is_none(), "recoverable notices require success");
+            assert!(
+                !split_introspection_notices(&expected).1.is_empty(),
+                "missing recoverable introspection notice: {}",
+                case.path
+            );
+        }
         if case.error == Some(ErrorPhase::Run) {
             assert_run_diagnostics_are_listed(case, &expected);
         }
@@ -1113,6 +1194,34 @@ fn golden_build_notices_become_exact_notices() {
         b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n",
     ] {
         assert_eq!(split_build_notices(near_match), (near_match.to_vec(), Vec::new()));
+    }
+}
+
+#[test]
+fn golden_introspection_notices_become_exact_notices() {
+    let missing = b"[PRNTUTIL1] Unable to find deftemplate missing.\n".as_slice();
+    let template =
+        b"[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type deftemplate name\n"
+            .as_slice();
+    let module =
+        b"[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name\n"
+            .as_slice();
+    let source = [missing, b"()\n", template, b"()\n", module, b"()\nafter\n"].concat();
+    let (output, notices) = split_introspection_notices(&source);
+    assert_eq!(output, b"()\n()\n()\nafter\n");
+    assert_eq!(notices, [missing, template, module].concat());
+    for near_match in [
+        b"[PRNTUTIL1] Unable to find deftemplate missing. extra\n".as_slice(),
+        b"[PRNTUTIL1] Unable to find fact f-9.\n",
+        b"[ARGACCES5] Function deftemplate-slot-types expected argument #2 to be of type symbol\n",
+        b"[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type defmodule name\n",
+        b"[ARGACCES5] Function get-defrule-list expected argument #1 to be of type deftemplate name\n",
+        b"[ARGACCES5] Function focus expected argument #1 to be of type defmodule name\n",
+    ] {
+        assert_eq!(
+            split_introspection_notices(near_match),
+            (near_match.to_vec(), Vec::new())
+        );
     }
 }
 
