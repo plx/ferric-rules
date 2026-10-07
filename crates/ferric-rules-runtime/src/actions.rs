@@ -2764,34 +2764,29 @@ fn execute_fact_mutation(
     } else {
         "duplicate"
     };
-    let fact_id = match resolve_target_fact_id(
-        target,
-        token,
-        rule_info,
-        context,
-        eval_env,
-        collected_facts,
-    )? {
-        FactTarget::Live(fact_id) => fact_id,
-        // CLIPS 6.30 reports a missing index and continues the rule without
-        // evaluating or applying the slot overrides.
-        FactTarget::MissingIndex => return Ok(()),
-        FactTarget::StaleAddress => {
-            return Err(ActionError::EvalError(format!(
-                "{action}: target fact does not exist"
-            )));
-        }
-        FactTarget::NegativeIndex => {
-            return Err(ActionError::EvalError(format!(
-                "{action}: fact index must not be negative"
-            )));
-        }
-        FactTarget::WrongType => {
-            return Err(ActionError::EvalError(format!(
-                "{action}: target must be a fact-address or fact index"
-            )));
-        }
-    };
+    let fact_id =
+        match resolve_target_fact_id(target, token, rule_info, context, eval_env, collected_facts)?
+        {
+            FactTarget::Live(fact_id) => fact_id,
+            // CLIPS 6.30 reports a missing index and continues the rule without
+            // evaluating or applying the slot overrides.
+            FactTarget::MissingIndex => return Ok(()),
+            FactTarget::StaleAddress => {
+                return Err(ActionError::EvalError(format!(
+                    "{action}: target fact does not exist"
+                )));
+            }
+            FactTarget::NegativeIndex => {
+                return Err(ActionError::EvalError(format!(
+                    "{action}: fact index must not be negative"
+                )));
+            }
+            FactTarget::WrongType => {
+                return Err(ActionError::EvalError(format!(
+                    "{action}: target must be a fact-address or fact index"
+                )));
+            }
+        };
     if Some(fact_id) == context.engine.initial_fact_id {
         return Err(ActionError::EvalError(
             "the internal initial-fact is protected and cannot be modified or duplicated"
