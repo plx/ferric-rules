@@ -490,21 +490,21 @@ fn outer_ncc(network: &Network, id: u32) -> crate::NodeId {
 #[test]
 fn only_a_nested_ncc_feeding_the_partner_is_a_pure_double_negation() {
     let mut network = Network::new(ConflictResolutionStrategy::Depth);
-    let [p, a, b, c, d] =
+    let [item, first, second, third, fourth] =
         ["p", "a", "b", "c", "d"].map(|relation| network.pattern(relation, false));
     let nested = || {
         CompilableCondition::Ncc(vec![
-            CompilableCondition::Pattern(a.clone()),
-            CompilableCondition::Pattern(b.clone()),
+            CompilableCondition::Pattern(first.clone()),
+            CompilableCondition::Pattern(second.clone()),
         ])
     };
-    let mut negated = d.clone();
+    let mut negated = fourth.clone();
     negated.negated = true;
     // `exists` is rejected inside an NCC, so it needs no shape here.
     let shapes: [(Vec<CompilableCondition>, bool); 5] = [
         (vec![nested()], true),
         (
-            vec![nested(), CompilableCondition::Pattern(c.clone())],
+            vec![nested(), CompilableCondition::Pattern(third.clone())],
             false,
         ),
         (
@@ -519,8 +519,8 @@ fn only_a_nested_ncc_feeding_the_partner_is_a_pure_double_negation() {
             vec![
                 nested(),
                 CompilableCondition::Ncc(vec![
-                    CompilableCondition::Pattern(c),
-                    CompilableCondition::Pattern(d),
+                    CompilableCondition::Pattern(third),
+                    CompilableCondition::Pattern(fourth),
                 ]),
             ],
             false,
@@ -530,7 +530,7 @@ fn only_a_nested_ncc_feeding_the_partner_is_a_pure_double_negation() {
         network.install_conditions(
             id,
             &[
-                CompilableCondition::Pattern(p.clone()),
+                CompilableCondition::Pattern(item.clone()),
                 CompilableCondition::Ncc(subconditions),
             ],
         );
