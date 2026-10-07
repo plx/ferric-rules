@@ -29,6 +29,7 @@ struct Manifest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // Independent manifest opt-ins.
 struct Case {
     path: String,
     level: String,
@@ -45,6 +46,8 @@ struct Case {
     recoverable_control_notices: bool,
     #[serde(default)]
     recoverable_random_notices: bool,
+    #[serde(default)]
+    recoverable_build_notices: bool,
     #[serde(default)]
     gap: Option<Gap>,
 }
@@ -255,6 +258,104 @@ fn control_notice_length(bytes: &[u8]) -> Option<usize> {
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_:-".contains(byte)))
     .then_some(MODULE.len() + end + 1)
+}
+
+/// CLIPS rejects a `build` that would redefine a deftemplate in use with
+/// CSTRCPSR4 and echoes the construct up to its module-qualified name.
+/// Return the block's length and the deftemplate name.
+fn build_notice(bytes: &[u8]) -> Option<(usize, &[u8])> {
+    const MESSAGE: &[u8] = b"\n[CSTRCPSR4] Cannot redefine deftemplate ";
+    const ECHO: &[u8] = b" while it is in use.\n\nERROR:\n(deftemplate ";
+    let is_name = |name: &[u8]| {
+        !name.is_empty()
+            && name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(byte))
+    };
+    let rest = bytes.strip_prefix(MESSAGE)?;
+    let name = &rest[..rest.iter().position(|&byte| byte == b' ')?];
+    let echo = rest[name.len()..].strip_prefix(ECHO)?;
+    let line = &echo[..echo.iter().position(|&byte| byte == b'\n')?];
+    let module = line.strip_suffix(name)?.strip_suffix(b"::")?;
+    (is_name(name) && is_name(module)).then_some((
+        MESSAGE.len() + name.len() + ECHO.len() + line.len() + 1,
+        name,
+    ))
+}
+
+/// The notice a recoverable build rejection is compared as.
+fn build_notice_line(name: &[u8]) -> Vec<u8> {
+    [
+        b"[CSTRCPSR4] Cannot redefine deftemplate ".as_slice(),
+        name,
+        b" while it is in use.\n",
+    ]
+    .concat()
+}
+
+/// Move CLIPS's recoverable build rejections out of a golden: return the
+/// golden without them and their notices, in order.
+fn split_build_notices(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (mut output, mut notices) = (Vec::new(), Vec::new());
+    let mut rest = bytes;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let Some((length, name)) = build_notice(rest) {
+            notices.extend(build_notice_line(name));
+            rest = &rest[length..];
+        } else {
+            output.push(first);
+            rest = tail;
+        }
+    }
+    (output, notices)
+}
+
+/// Ferric reports a rejected `build` with its own load error text, one line
+/// per rejection. Compare each such line as CLIPS's notice for the same
+/// deftemplate, so the count and names must still agree.
+fn normalize_ferric_build_notices(notices: &str) -> String {
+    fn rejected_name(line: &str) -> Option<&str> {
+        let rest = line.strip_prefix("compile error: ")?;
+        let (rest, suffix) = match rest.strip_prefix("[CSTRCPSR4] cannot redefine template `") {
+            Some(rest) => (rest, "` while it is in use by facts or constructs at line "),
+            None => (
+                rest.strip_prefix("cannot define template `")?,
+                "` while its ordered relation is in use by facts or constructs at line ",
+            ),
+        };
+        let (name, location) = rest.split_once(suffix)?;
+        let (line, column) = location.strip_suffix('\n')?.split_once(", column ")?;
+        let number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+        (!name.is_empty() && !name.contains(char::is_whitespace) && number(line) && number(column))
+            .then_some(name)
+    }
+    notices
+        .split_inclusive('\n')
+        .map(|line| {
+            rejected_name(line).map_or_else(
+                || line.to_owned(),
+                |name| String::from_utf8(build_notice_line(name.as_bytes())).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The golden a corpus case's program is compared with.
+fn case_golden(case: &Case, bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
+    let (bytes, build_notices) = if case.recoverable_build_notices {
+        split_build_notices(bytes)
+    } else {
+        (bytes.to_vec(), Vec::new())
+    };
+    let mut expected = golden(
+        &bytes,
+        error,
+        case.recoverable_fact_notices,
+        case.recoverable_control_notices,
+        case.recoverable_random_notices,
+    );
+    expected.notices.extend(build_notices);
+    expected
 }
 
 fn strip_control_notices(bytes: &[u8]) -> Vec<u8> {
@@ -595,16 +696,10 @@ fn manifest_covers_every_program() {
         );
         assert_eq!(
             case.error.is_some(),
-            golden(
-                &expected,
-                None,
-                case.recoverable_fact_notices,
-                case.recoverable_control_notices,
-                case.recoverable_random_notices,
-            )
-            .output
-            .split(|&byte| byte == b'\n')
-            .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
+            case_golden(case, &expected, None)
+                .output
+                .split(|&byte| byte == b'\n')
+                .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
             "only a golden with a CLIPS diagnostic has an error phase: {}",
             case.path
         );
@@ -630,6 +725,14 @@ fn manifest_covers_every_program() {
             assert!(
                 (0..expected.len()).any(|index| random_notice_length(&expected[index..]).is_some()),
                 "missing recoverable random notice: {}",
+                case.path
+            );
+        }
+        if case.recoverable_build_notices {
+            assert!(case.error.is_none(), "recoverable notices require success");
+            assert!(
+                !split_build_notices(&expected).1.is_empty(),
+                "missing recoverable build notice: {}",
                 case.path
             );
         }
@@ -683,12 +786,10 @@ fn selected_programs() -> Vec<Program> {
                 input: input_path
                     .is_file()
                     .then(|| std::fs::read_to_string(input_path).unwrap()),
-                expected: golden(
+                expected: case_golden(
+                    &case,
                     &std::fs::read(root.join(&case.path).with_extension("out")).unwrap(),
                     case.error,
-                    case.recoverable_fact_notices,
-                    case.recoverable_control_notices,
-                    case.recoverable_random_notices,
                 ),
                 case,
             }
@@ -707,6 +808,9 @@ impl Program {
         if self.case.recoverable_control_notices {
             observation.notices =
                 String::from_utf8(strip_control_notices(observation.notices.as_bytes())).unwrap();
+        }
+        if self.case.recoverable_build_notices {
+            observation.notices = normalize_ferric_build_notices(&observation.notices);
         }
         if self.case.recoverable_random_notices {
             for notice in [RANDOM_NOTICE, RANDOM_ARITY_NOTICE] {
@@ -984,5 +1088,45 @@ fn golden_random_notice_is_exact_and_requires_opt_in() {
     assert_eq!(
         golden(near_match, None, false, false, true).output,
         near_match
+    );
+}
+
+#[test]
+fn golden_build_notices_become_exact_notices() {
+    let block = b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\nERROR:\n(deftemplate MAIN::p\n";
+    let source = [
+        b"before".as_slice(),
+        block,
+        b"<Fact-1>\n",
+        block,
+        b"after\n",
+    ]
+    .concat();
+    let (output, notices) = split_build_notices(&source);
+    assert_eq!(output, b"before<Fact-1>\nafter\n");
+    let line = b"[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n";
+    assert_eq!(notices, [line.as_slice(), line].concat());
+    for near_match in [
+        b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\nERROR:\n(deftemplate MAIN::q\n".as_slice(),
+        b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\nERROR:\n(deftemplate p\n",
+        b"\n[CSTRCPSR4] Cannot redefine defrule p while it is in use.\n\nERROR:\n(defrule MAIN::p\n",
+        b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n",
+    ] {
+        assert_eq!(split_build_notices(near_match), (near_match.to_vec(), Vec::new()));
+    }
+}
+
+#[test]
+fn ferric_build_rejections_normalize_to_their_clips_notice() {
+    let notices = "compile error: [CSTRCPSR4] cannot redefine template `p` while it is in use by facts or constructs at line 1, column 1\n\
+        compile error: cannot define template `q` while its ordered relation is in use by facts or constructs at line 1, column 1\n\
+        compile error: unknown template `q` at line 1, column 1\n\
+        compile error: cannot define template `q` while its ordered relation is in use by facts or constructs\n";
+    assert_eq!(
+        normalize_ferric_build_notices(notices),
+        "[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\
+        [CSTRCPSR4] Cannot redefine deftemplate q while it is in use.\n\
+        compile error: unknown template `q` at line 1, column 1\n\
+        compile error: cannot define template `q` while its ordered relation is in use by facts or constructs\n"
     );
 }

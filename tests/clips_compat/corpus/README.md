@@ -101,6 +101,15 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   `MISCFUN2` wrong-count and `MISCFUN3` reversed-bounds notices. The oracle
   retains them; comparison removes them from ordinary output and from Ferric's
   notice router while requiring successful execution and the correct draws.
+- Cases marked `recoverable_build_notices: true` allow only CLIPS's exact
+  rejection of a `build` that would redefine a deftemplate in use: the
+  `[CSTRCPSR4] Cannot redefine deftemplate NAME while it is in use.` message
+  with its leading newline, and the `ERROR:` echo of the construct up to its
+  module-qualified name. The oracle retains them. Comparison moves each one to
+  the expected notices as its message line, and Ferric's own rejection text
+  for the same deftemplate or ordered relation is compared as that line, so
+  the number and order of rejected builds and their names must still agree.
+  Such a case must otherwise succeed.
 - A separate exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error
   routers, interleaved with `t` in the oracle; the runner removes them from the

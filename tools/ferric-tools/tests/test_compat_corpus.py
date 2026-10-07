@@ -411,3 +411,62 @@ def test_random_notice_flag_requires_success_and_boolean(tmp_path, value, error)
             "unused",
             1,
         )
+
+
+BUILD_NOTICE = (
+    "\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n"
+    "\nERROR:\n(deftemplate MAIN::p\n"
+)
+
+
+def test_build_notice_requires_opt_in_and_remains_in_captured_output():
+    output = f"before{BUILD_NOTICE}<Fact-1>\n"
+    assert (
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_build_notices=True)
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output("BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_build_notices=True)
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        BUILD_NOTICE.replace("MAIN::p", "MAIN::q"),
+        BUILD_NOTICE.replace("ERROR:\n", ""),
+        BUILD_NOTICE.replace("deftemplate p", "defrule p"),
+        "\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_build_notice_allowance_does_not_mask_changed_messages(unexpected):
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{BUILD_NOTICE}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_build_notices=True,
+        )
+
+
+def test_build_notice_allowance_is_confined_to_execution_frame():
+    for stdout in (
+        f"{BUILD_NOTICE}BEGIN\n{BUILD_NOTICE}END\n",
+        f"BEGIN\n{BUILD_NOTICE}END\n{BUILD_NOTICE}",
+    ):
+        with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+            extract_output(stdout, "", "BEGIN", "END", recoverable_build_notices=True)
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_build_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "stdlib/a.clp", "recoverable_build_notices": value, "error": error},
+            "unused",
+            1,
+        )
