@@ -1,0 +1,9 @@
+n3 fired
+add-ab
+r1 fired
+r2 fired
+drop-a
+n3 fired
+readd-a
+r1 fired
+r2 fired

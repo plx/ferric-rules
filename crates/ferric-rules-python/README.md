@@ -63,7 +63,11 @@ float, and lists/tuples to nested multifields. Fact inputs reject `None` (void),
 including nested values, because void represents an absent result and cannot be
 persisted as fact data. Use an explicit symbol such as `Symbol("nil")` when the
 application needs a stored sentinel. Conversion rejects unsupported objects and
-external identities explicitly. Host multifields are
+external identities explicitly. Rule-created fact addresses (`?f`, including
+`<Dummy Fact>` slot defaults and addresses inside multifields) have no Python
+representation: reading a global or fact holding one raises `TypeError`, and
+`facts()` fails as a whole while any fact holds one (`find_facts()` when one of
+its facts does). Use fact IDs and application keys instead. Host multifields are
 limited to 32 levels and 1,000,000 total values in an assertion.
 
 Returned symbol/string/instance-name values use owned `Symbol`/`String`/`InstanceName` wrappers. Equality

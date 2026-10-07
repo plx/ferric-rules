@@ -64,6 +64,35 @@ impl Network {
             .unwrap();
     }
 
+    fn install_conditions(&mut self, id: u32, conditions: &[CompilableCondition]) {
+        self.compiler
+            .compile_conditions(
+                &mut self.rete,
+                &self.facts,
+                RuleId(id),
+                Salience::DEFAULT,
+                conditions,
+            )
+            .unwrap();
+    }
+
+    fn assert_with_activations(&mut self, relation: &str, fields: &[i64]) -> usize {
+        let relation = self
+            .symbols
+            .intern_symbol(relation, StringEncoding::Ascii)
+            .unwrap();
+        let id = self.facts.assert_ordered(
+            relation,
+            fields.iter().copied().map(Value::Integer).collect(),
+        );
+        let created = self
+            .rete
+            .assert_fact(id, &self.facts.get(id).unwrap().fact, &self.facts)
+            .len();
+        self.rete.debug_assert_consistency();
+        created
+    }
+
     fn assert(&mut self, relation: &str, fields: &[i64]) -> FactId {
         let relation = self
             .symbols
@@ -273,4 +302,55 @@ fn unified_right_pass_keeps_prepropagation_positive_parent_capture() {
         3,
         "the new fact produces precisely the three new ordered pairs"
     );
+}
+
+#[test]
+fn nested_ncc_waits_for_shared_subnetwork_entry() {
+    for (strategy, rebuild_index) in [
+        (ConflictResolutionStrategy::Depth, false),
+        (ConflictResolutionStrategy::Breadth, false),
+        (ConflictResolutionStrategy::Depth, true),
+        (ConflictResolutionStrategy::Breadth, true),
+    ] {
+        let mut network = Network::new(strategy);
+        let [a, b, c] = ["a", "b", "c"].map(|relation| network.pattern(relation, false));
+        // helper: (a) (b) (c); nested: (not (and (a) (not (and (b) (c))))).
+        network.install(1, vec![a.clone(), b.clone(), c.clone()]);
+        network.install_conditions(
+            2,
+            &[CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(a),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(b),
+                    CompilableCondition::Pattern(c),
+                ]),
+            ])],
+        );
+        // Only the inner NCC is nested. The compiler's registration must
+        // match the graph-derived index that snapshot restore rebuilds.
+        let compiled = network.rete.beta.nested_ncc_entries.clone().unwrap();
+        assert_eq!(compiled.len(), 1);
+        network.rete.beta.nested_ncc_entries = None;
+        network.rete.beta.ensure_nested_ncc_index();
+        assert_eq!(network.rete.beta.nested_ncc_entries, Some(compiled));
+        if rebuild_index {
+            // Exercise propagation's own rebuild of a dropped index.
+            network.rete.beta.nested_ncc_entries = None;
+        }
+
+        network.rete.clear_working_memory();
+        network.assert("b", &[]);
+        network.assert("c", &[]);
+        assert_eq!(network.rules(), vec![2]);
+
+        // The inner subnetwork shares helper's (b) join, so (a) must reach
+        // it before the inner NCC decides. Otherwise a transient inner
+        // pass-through retracts and recreates the fired outer match.
+        assert_eq!(
+            network.assert_with_activations("a", &[]),
+            1,
+            "only helper is activated; nested is neither added nor removed"
+        );
+        assert_eq!(network.rules(), vec![1]);
+    }
 }

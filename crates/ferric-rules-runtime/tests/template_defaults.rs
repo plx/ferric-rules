@@ -164,16 +164,94 @@ fn static_default_failure_preserves_previous_template_and_flushes_output() {
 }
 
 #[test]
-fn definition_effects_cannot_replace_a_template_they_make_live() {
+fn static_default_cannot_assert_the_template_it_redefines() {
+    // A Ferric-only rejection: for this ordered-form assert, CLIPS 6.30 creates
+    // a second, implied `item` template instead (see docs/compatibility.md).
     let mut engine = Engine::with_rules("(deftemplate item (slot n (default 7)))").unwrap();
-    assert!(engine
+    let error = engine
         .load_str(
             "(deftemplate item (slot other
-      (default (fact-index (assert (item))))))"
+      (default (fact-index (assert (item))))))",
         )
-        .is_err());
-    let fact = engine.facts().unwrap().next().unwrap().0;
+        .unwrap_err();
+    assert!(
+        error
+            .iter()
+            .any(|error| error.to_string().contains("being redefined")),
+        "{error:?}"
+    );
+    // The reference is rejected before the default runs, so nothing was asserted.
+    assert_eq!(engine.fact_count(), 0);
+    let fact = engine.assert_template("item", &[], ()).unwrap();
     assert_eq!(integer(&engine, fact, "n"), 7);
+}
+
+#[test]
+fn dynamic_default_cannot_reference_the_template_it_redefines() {
+    for default in [
+        "(assert (item (original 7)))",
+        "(find-all-facts ((?f item)) TRUE)",
+        "(if FALSE then (any-factp ((?f item)) TRUE) else 0)",
+    ] {
+        let mut engine = Engine::with_rules("(deftemplate item (slot original))").unwrap();
+        let error = engine
+            .load_str(&format!(
+                "(deftemplate item (slot replacement (default-dynamic {default})))"
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .iter()
+                .any(|error| error.to_string().contains("being redefined")),
+            "{default}: {error:?}"
+        );
+
+        // The previous layout stays installed and asserts as before.
+        let fact = engine
+            .assert_template("item", &["original"], [Value::Integer(8)])
+            .unwrap();
+        assert_eq!(integer(&engine, fact, "original"), 8);
+        engine.retract(fact).unwrap();
+
+        // Because the rejected default was never installed, it does not keep
+        // the template in use, and a valid redefinition still succeeds.
+        engine
+            .load_str("(deftemplate item (slot fixed (default-dynamic (+ 1 2))))")
+            .unwrap();
+        let fact = engine.assert_template("item", &[], ()).unwrap();
+        assert_eq!(integer(&engine, fact, "fixed"), 3, "{default}");
+    }
+}
+
+#[test]
+fn new_template_dynamic_default_cannot_assert_its_own_ordered_relation() {
+    // A Ferric-only rejection: CLIPS 6.30 accepts this definition and creates a
+    // second, implied `item` template that shadows the explicit one.
+    let mut engine = Engine::new(EngineConfig::default());
+    for default in [
+        "(assert (item 7))",
+        "(if FALSE then (assert (item)) else 0)",
+    ] {
+        let error = engine
+            .load_str(&format!(
+                "(deftemplate item (slot value (default-dynamic {default})))"
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .iter()
+                .any(|error| error.to_string().contains("as an ordered relation")),
+            "{default}: {error:?}"
+        );
+        assert!(engine.template_slot_names("item").is_none(), "{default}");
+    }
+
+    // Nothing was installed, so a plain definition still loads and asserts.
+    engine.load_str("(deftemplate item (slot value))").unwrap();
+    let fact = engine
+        .assert_template("item", &["value"], [Value::Integer(3)])
+        .unwrap();
+    assert_eq!(integer(&engine, fact, "value"), 3);
 }
 
 #[test]
@@ -301,6 +379,40 @@ fn dynamic_scalar_void_defaults_become_nil_but_static_void_defaults_are_invalid(
 }
 
 #[test]
+fn static_multislot_void_elements_are_invalid_but_dynamic_ones_are_omitted() {
+    let mut engine = Engine::with_rules("(deftemplate item (multislot m (default 9)))").unwrap();
+    // CLIPS evaluates every element, then rejects the default (CSTRNCHK1).
+    assert!(engine
+        .load_str(
+            "(deffunction nothing () (printout t nothing crlf))
+      (deftemplate item (multislot m (default 1 (nothing) (printout t after crlf) 2)))"
+        )
+        .is_err());
+    assert_eq!(engine.get_output("t"), Some("nothing\nafter\n"));
+    let multifield = |engine: &Engine, fact| match engine.get_fact_slot_by_name(fact, "m").unwrap()
+    {
+        Value::Multifield(values) => values
+            .iter()
+            .map(|value| match value {
+                Value::Integer(value) => *value,
+                value => panic!("expected integer, got {value:?}"),
+            })
+            .collect::<Vec<_>>(),
+        value => panic!("expected multifield, got {value:?}"),
+    };
+    // The previous definition stays installed.
+    let fact = engine.assert_template("item", &[], ()).unwrap();
+    assert_eq!(multifield(&engine, fact), [9]);
+    engine.retract(fact).unwrap();
+
+    engine
+        .load_str("(deftemplate item (multislot m (default-dynamic 1 (nothing) 2)))")
+        .unwrap();
+    let fact = engine.assert_template("item", &[], ()).unwrap();
+    assert_eq!(multifield(&engine, fact), [1, 2]);
+}
+
+#[test]
 fn computed_constraint_failures_preserve_original_facts_across_all_mutations() {
     for (slot, computed, initial) in [
         ("(slot n (type INTEGER) (range 1 5))", "(+ 5 1)", "3"),
@@ -360,4 +472,133 @@ fn invalid_earlier_default_prevents_later_definition_effects() {
             Err(EngineError::TemplateNotFound(_))
         ));
     }
+}
+
+fn diagnostics(engine: &Engine) -> String {
+    engine
+        .action_diagnostics()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn funcall_return_in_a_dynamic_default_does_not_return_from_the_asserting_function() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n (default-dynamic (funcall return 7))))
+      (deffunction make () (assert (item)) (printout t after crlf) 1)
+      (defrule run => (printout t result \" \" (make) crlf))",
+    )
+    .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    let output = engine.get_output("t").unwrap_or_default();
+    assert!(!output.contains("result 7"), "{output}");
+    assert!(!output.contains("after"), "{output}");
+    let diagnostics = diagnostics(&engine);
+    assert!(
+        diagnostics.contains("not valid outside a callable"),
+        "{diagnostics}"
+    );
+    assert!(!diagnostics.contains("internal"), "{diagnostics}");
+    assert!(engine.find_facts("item").unwrap().is_empty());
+}
+
+#[test]
+fn funcall_break_in_a_dynamic_default_does_not_end_the_enclosing_loop() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n (default-dynamic (funcall break))))
+      (defrule run =>
+        (loop-for-count (?i 1 3) (assert (item)) (printout t ?i crlf))
+        (printout t done crlf))",
+    )
+    .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert!(!engine.get_output("t").unwrap_or_default().contains("done"));
+    let diagnostics = diagnostics(&engine);
+    assert!(
+        diagnostics.contains("not valid outside a loop"),
+        "{diagnostics}"
+    );
+    assert!(engine.find_facts("item").unwrap().is_empty());
+}
+
+#[test]
+fn funcall_return_in_root_defaults_and_deffacts_reports_the_user_error() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let error = engine
+        .load_str("(deftemplate item (slot n (default (funcall return 7))))")
+        .unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("not valid outside a callable"),
+        "{message}"
+    );
+    assert!(!message.contains("internal"), "{message}");
+
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(deftemplate item (slot n))
+      (deffacts seed (item (n (funcall return 7))))",
+        )
+        .unwrap();
+    let message = engine
+        .reset()
+        .map_err(|error| error.to_string())
+        .unwrap_err();
+    assert!(
+        message.contains("not valid outside a callable"),
+        "{message}"
+    );
+    assert!(!message.contains("internal"), "{message}");
+}
+
+#[test]
+fn slot_violations_report_their_entry_point_without_a_template_slot_wrapper() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n (range 1 3)))
+      (defrule bad => (assert (item (n (+ 2 2)))))",
+    )
+    .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    let diagnostics = diagnostics(&engine);
+    assert!(diagnostics.contains("`assert`"), "{diagnostics}");
+    assert!(diagnostics.contains("line"), "{diagnostics}");
+    assert!(!diagnostics.contains("template slot"), "{diagnostics}");
+
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(deftemplate item (slot n (range 1 3)))
+      (deffacts seed (item (n (+ 2 2))))",
+        )
+        .unwrap();
+    let message = engine
+        .reset()
+        .map_err(|error| error.to_string())
+        .unwrap_err();
+    assert!(!message.contains("unsupported operation"), "{message}");
+    assert!(message.contains("range"), "{message}");
+
+    let mut engine =
+        Engine::with_rules("(deftemplate item (slot n (range 1 3) (default-dynamic (+ 2 2))))")
+            .unwrap();
+    let Err(EngineError::InvalidSlotValue { slot, reason, .. }) =
+        engine.assert_template("item", &[], ())
+    else {
+        panic!("a computed violation must be an invalid slot value");
+    };
+    assert_eq!(slot, "n");
+    assert!(!reason.contains("unsupported operation"), "{reason}");
+    assert!(reason.contains("range"), "{reason}");
 }

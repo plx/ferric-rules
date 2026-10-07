@@ -85,6 +85,9 @@ pub(crate) struct NccResultBatch {
     results: Vec<PendingNccResult>,
     parents: rustc_hash::FxHashMap<(NodeId, TokenId), PendingNccParent>,
     reserved_orders: rustc_hash::FxHashMap<(NodeId, TokenId), u64>,
+    /// Reservations of enclosing drains, set aside while a nested drain runs.
+    /// They stay live, so counter rebasing must renumber them too.
+    suspended_reserved: Vec<rustc_hash::FxHashMap<(NodeId, TokenId), u64>>,
 }
 
 /// Right notifications share one construction chronology across join kinds.
@@ -196,11 +199,14 @@ impl ReteNetwork {
                         .iter_mut()
                         .flat_map(crate::ncc::NccMemory::block_orders_mut),
                 )
-                .chain(
-                    self.pending_ncc_results
-                        .iter_mut()
-                        .flat_map(|batch| batch.reserved_orders.values_mut()),
-                )
+                .chain(self.pending_ncc_results.iter_mut().flat_map(|batch| {
+                    batch.reserved_orders.values_mut().chain(
+                        batch
+                            .suspended_reserved
+                            .iter_mut()
+                            .flat_map(|reserved| reserved.values_mut()),
+                    )
+                }))
                 .collect();
             orders.sort_unstable_by_key(|order| **order);
             for (index, order) in orders.iter_mut().enumerate() {
@@ -306,8 +312,10 @@ impl ReteNetwork {
             );
         }
         // Node IDs increase across installation and are not recycled when rules
-        // are removed. CLIPS visits the newest subscriber first, regardless of
-        // alpha-memory placement or whether the node is positive/negative/exists.
+        // are removed. Ferric visits every subscriber newest node first, in one
+        // order across alpha memories and positive/negative/exists kinds. CLIPS
+        // instead walks each pattern's subscribers in turn, so ties between
+        // subscribers of different patterns can differ.
         right_activations.sort_unstable_by_key(|activation| std::cmp::Reverse(activation.node().0));
         for activation in right_activations {
             match activation {
@@ -381,15 +389,39 @@ impl ReteNetwork {
         let affected_alpha_mems = self.alpha.memories_containing_fact(fact_id);
         self.alpha.retract_fact(fact_id, fact);
 
-        let mut transitions: Vec<_> = self
-            .collect_ncc_result_retractions(&all_removed_tokens)
+        // CLIPS retracts the fact's pattern matches one at a time, oldest
+        // memory first. Each match's positive cascade unblocks NCC parents
+        // before the match's own LIFO block list releases negative parents.
+        let ncc_events = self.collect_ncc_result_retractions(&all_removed_tokens);
+        let removed_by_id: rustc_hash::FxHashMap<_, _> = if ncc_events.is_empty() {
+            rustc_hash::FxHashMap::default()
+        } else {
+            all_removed_tokens
+                .iter()
+                .map(|(id, token)| (*id, token))
+                .collect()
+        };
+        let mut transitions: Vec<_> = ncc_events
             .into_iter()
-            .map(|event| (event.order, Transition::Ncc(event)))
+            .map(|event| {
+                let memory = self
+                    .retracted_fact_memory(&removed_by_id, event.result, fact_id)
+                    .unwrap_or(u32::MAX);
+                (
+                    (memory, 0, std::cmp::Reverse(event.order)),
+                    Transition::Ncc(event),
+                )
+            })
             .collect();
         transitions.extend(
             self.collect_negative_retractions(fact_id, &affected_alpha_mems)
                 .into_iter()
-                .map(|(order, node, parent)| (order, Transition::Negative(node, parent))),
+                .map(|(memory, order, node, parent)| {
+                    (
+                        (memory.0, 1, std::cmp::Reverse(order)),
+                        Transition::Negative(node, parent),
+                    )
+                }),
         );
 
         // Remove stale memory references before newly unblocked paths propagate.
@@ -403,7 +435,7 @@ impl ReteNetwork {
             }
             self.cleanup_negative_memories_for_token(*token_id, token.owner_node);
         }
-        transitions.sort_unstable_by_key(|(order, _)| std::cmp::Reverse(*order));
+        transitions.sort_unstable_by_key(|(key, _)| *key);
         for (_, transition) in transitions {
             match transition {
                 Transition::Negative(node, parent) => self.apply_negative_retraction(
@@ -426,6 +458,34 @@ impl ReteNetwork {
         );
 
         removed_activations
+    }
+
+    /// The oldest alpha memory through which a removed NCC result holds the
+    /// retracted fact; that pattern match's positive cascade removes it first.
+    fn retracted_fact_memory(
+        &self,
+        removed: &rustc_hash::FxHashMap<TokenId, &Token>,
+        result: TokenId,
+        fact_id: FactId,
+    ) -> Option<u32> {
+        let mut oldest: Option<u32> = None;
+        let mut current = removed.get(&result).copied();
+        // Only removed tokens contain the fact, so the walk stops at the
+        // first surviving ancestor.
+        while let Some(token) = current {
+            if token.fact == Some(fact_id) {
+                if let Some(BetaNode::Join { alpha_memory, .. }) =
+                    self.beta.get_node(token.owner_node)
+                {
+                    oldest =
+                        Some(oldest.map_or(alpha_memory.0, |memory| memory.min(alpha_memory.0)));
+                }
+            }
+            current = token
+                .parent
+                .and_then(|parent| removed.get(&parent).copied());
+        }
+        oldest
     }
 
     /// Clear all runtime state (facts, tokens, activations) while preserving the compiled network structure.
@@ -482,12 +542,13 @@ impl ReteNetwork {
     ) {
         let root_id = self.beta.root_id();
         let mut new_activations = Vec::new();
-        let mut frontier = self.beta.installation_frontier(first_new_node);
-        // Existing shared results must reach a new NCC partner before its left
-        // frontier is admitted. Otherwise a blocked match transiently activates
+        // NCC subnetworks are primed before their NCC (see
+        // `ncc_subnetworks_first`), and existing shared results must reach a
+        // new NCC partner before its left frontier is admitted. Otherwise a blocked match transiently activates
         // and emits an incorrect historical auto-focus notice. Fresh subnetworks
         // retain their original order: CLIPS can emit that transient notice
         // when the right results are first computed during installation.
+        let mut frontier = self.ncc_subnetworks_first(first_new_node);
         frontier.sort_by_key(|(_, child)| {
             !matches!(
                 self.beta.get_node(*child),
@@ -530,6 +591,29 @@ impl ReteNetwork {
                 self.flush_ncc_result_batch(fact_base, &mut new_activations);
             }
         }
+    }
+
+    /// Order frontier edges as CLIPS builds joins: an NCC's subnetwork, whose
+    /// node IDs follow the NCC's and end at its partner, is primed before the
+    /// NCC itself, so the NCC never decides before its results are known.
+    fn ncc_subnetworks_first(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
+        let edges = self.beta.installation_frontier(first_new_node);
+        let mut ordered = Vec::with_capacity(edges.len());
+        let mut pending: Vec<((NodeId, NodeId), NodeId)> = Vec::new();
+        for edge in edges {
+            while pending
+                .last()
+                .is_some_and(|&(_, partner)| partner.0 < edge.1 .0)
+            {
+                ordered.push(pending.pop().expect("pending NCC edge").0);
+            }
+            match self.beta.get_node(edge.1) {
+                Some(BetaNode::Ncc { partner, .. }) => pending.push((edge, *partner)),
+                _ => ordered.push(edge),
+            }
+        }
+        ordered.extend(pending.into_iter().rev().map(|(edge, _)| edge));
+        ordered
     }
 
     /// Ensure the root beta memory contains its single empty-prefix token.
@@ -1223,7 +1307,7 @@ impl ReteNetwork {
         &mut self,
         fact_id: FactId,
         affected_alpha_mems: &[AlphaMemoryId],
-    ) -> Vec<(u64, NodeId, TokenId)> {
+    ) -> Vec<(AlphaMemoryId, u64, NodeId, TokenId)> {
         let mut events = Vec::new();
         for &alpha in affected_alpha_mems {
             let nodes: SmallVec<[NodeId; 4]> =
@@ -1243,6 +1327,7 @@ impl ReteNetwork {
                     };
                     if memory.primary_blocker(parent) == Some(fact_id) {
                         events.push((
+                            alpha,
                             memory
                                 .block_order(parent)
                                 .expect("blocked parent has chronology"),
@@ -1541,6 +1626,17 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        self.drain_ncc_results(fact_base, new_activations);
+        debug_assert!(self
+            .pending_ncc_results
+            .as_ref()
+            .unwrap()
+            .parents
+            .is_empty());
+        self.pending_ncc_results = None;
+    }
+
+    fn drain_ncc_results(&mut self, fact_base: &FactBase, new_activations: &mut Vec<ActivationId>) {
         loop {
             let pending = std::mem::take(
                 &mut self
@@ -1550,13 +1646,6 @@ impl ReteNetwork {
                     .results,
             );
             if pending.is_empty() {
-                debug_assert!(self
-                    .pending_ncc_results
-                    .as_ref()
-                    .unwrap()
-                    .parents
-                    .is_empty());
-                self.pending_ncc_results = None;
                 return;
             }
             let mut groups = rustc_hash::FxHashMap::default();
@@ -1636,14 +1725,27 @@ impl ReteNetwork {
                         self.ncc_left_activate(event.ncc, event.parent, fact_base, new_activations);
                     }
                 }
+                // Blocking a nested NCC may complete another subnetwork. Like
+                // CLIPS's depth-first propagation, settle those notifications
+                // as their own batch before this batch's next event, so a
+                // shallower sibling chain cannot overtake a deeper one.
+                let batch = self.pending_ncc_results.as_mut().expect("active NCC batch");
+                if !batch.results.is_empty() {
+                    let reserved = std::mem::take(&mut batch.reserved_orders);
+                    batch.suspended_reserved.push(reserved);
+                    self.drain_ncc_results(fact_base, new_activations);
+                    let batch = self.pending_ncc_results.as_mut().expect("active NCC batch");
+                    batch.reserved_orders = batch
+                        .suspended_reserved
+                        .pop()
+                        .expect("suspended NCC reservations");
+                }
             }
             self.pending_ncc_results
                 .as_mut()
                 .unwrap()
                 .reserved_orders
                 .clear();
-            // Blocking a nested NCC may complete another subnetwork. Its new
-            // notifications form the next batch rather than escaping the queue.
         }
     }
 
@@ -2118,93 +2220,152 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_propagate", token = ?token_id);
+        self.beta.ensure_nested_ncc_index();
         // Child arrays retain attachment order; CLIPS links new successors at
         // the head, so every propagation visits them newest first.
-        for &child_id in children.iter().rev() {
-            let Some(child_node) = self.beta.get_node(child_id) else {
-                continue;
-            };
-
-            match child_node {
-                BetaNode::Terminal { rule, salience, .. } => {
-                    if self.disabled_rules.contains(rule) {
-                        continue;
-                    }
-                    // Create activation (guard: skip if the token was concurrently removed)
-                    if self.token_store.get(token_id).is_none() {
-                        continue;
-                    }
-
-                    // Build recency vector: timestamps of facts in pattern order
-                    let all_facts = self.token_store.collect_all_facts(token_id);
-                    let recency: SmallVec<[Timestamp; 4]> = all_facts
+        //
+        // CLIPS visits an NCC behind its parent's newest successor when
+        // linked, which precedes a shared subnetwork entry from an older rule.
+        // A top-level NCC keeps that position: a transient pass-through there
+        // only adds and removes new activations. A nested NCC's pass-through is
+        // a result for the enclosing NCC, so deciding before its own subnetwork
+        // has seen the token would retract and recreate the enclosing match,
+        // refiring it. Such an NCC waits until its not-yet-visited entry has
+        // run. Both maps are built only once a nested NCC is met, keeping
+        // each child visit O(1).
+        let mut positions: Option<rustc_hash::FxHashMap<NodeId, usize>> = None;
+        let mut postponed: Option<rustc_hash::FxHashMap<NodeId, SmallVec<[NodeId; 2]>>> = None;
+        for (index, &child_id) in children.iter().enumerate().rev() {
+            if let Some(entry) = self.beta.nested_ncc_entry(child_id) {
+                let positions = positions.get_or_insert_with(|| {
+                    children
                         .iter()
-                        .filter_map(|&fid| fact_base.get(fid))
-                        .map(|entry| entry.timestamp)
-                        .collect();
-
-                    // Get timestamp from the most recent fact in the token
-                    let timestamp = recency.iter().max().copied().unwrap_or(Timestamp::new(0));
-
-                    let activation = Activation {
-                        id: ActivationId::default(), // Will be set by agenda.add()
-                        rule: *rule,
-                        token: token_id,
-                        salience: *salience,
-                        timestamp,
-                        activation_seq: ActivationSeq::ZERO, // Will be set by agenda.add()
-                        recency,
-                    };
-
-                    let act_id = self.agenda.add(activation);
-                    new_activations.push(act_id);
-                    if !self.auto_focus_rules.is_empty() && self.auto_focus_rules.contains(rule) {
-                        self.pending_events
-                            .push_back(PendingReteEvent::AutoFocus(*rule));
-                        self.pending_auto_focus_count += 1;
+                        .enumerate()
+                        .map(|(position, &child)| (child, position))
+                        .collect()
+                });
+                if positions
+                    .get(&entry)
+                    .is_some_and(|&position| position < index)
+                {
+                    postponed
+                        .get_or_insert_with(rustc_hash::FxHashMap::default)
+                        .entry(entry)
+                        .or_default()
+                        .push(child_id);
+                    continue;
+                }
+            }
+            self.propagate_to_child(token_id, child_id, fact_base, new_activations);
+            // A released NCC can itself be the entry another nested NCC waits
+            // for (`(exists (exists ...))`), so release transitively, depth
+            // first, keeping each waiting list's order. Every entry is removed
+            // once, so the extra work stays proportional to the postponed NCCs.
+            if let Some(waiting) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
+                let mut ready: SmallVec<[NodeId; 4]> = waiting.into_iter().rev().collect();
+                while let Some(ncc) = ready.pop() {
+                    self.propagate_to_child(token_id, ncc, fact_base, new_activations);
+                    if let Some(next) = postponed.as_mut().and_then(|p| p.remove(&ncc)) {
+                        ready.extend(next.into_iter().rev());
                     }
                 }
-                BetaNode::Join { .. } => {
-                    // Perform left activation: token enters as parent for this join
-                    self.left_activate(child_id, token_id, fact_base, new_activations);
+            }
+        }
+        debug_assert!(
+            !postponed.as_ref().is_some_and(|p| !p.is_empty()),
+            "every postponed nested NCC must be released after its entry"
+        );
+    }
+
+    fn propagate_to_child(
+        &mut self,
+        token_id: TokenId,
+        child_id: NodeId,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(child_node) = self.beta.get_node(child_id) else {
+            return;
+        };
+
+        match child_node {
+            BetaNode::Terminal { rule, salience, .. } => {
+                if self.disabled_rules.contains(rule) {
+                    return;
                 }
-                BetaNode::Predicate {
-                    rule,
-                    condition_index,
-                    ..
-                } => {
-                    self.pending_events.push_back(PendingReteEvent::Predicate(
-                        PendingPredicateMatch {
-                            node: child_id,
-                            parent_token: token_id,
-                            rule: *rule,
-                            condition_index: *condition_index,
-                        },
-                    ));
+                // Create activation (guard: skip if the token was concurrently removed)
+                if self.token_store.get(token_id).is_none() {
+                    return;
                 }
-                BetaNode::Negative { .. } => {
-                    // Perform negative left activation: token enters as parent for
-                    // this negative node. It will be blocked or allowed through.
-                    self.negative_left_activate(child_id, token_id, fact_base, new_activations);
+
+                // Build recency vector: timestamps of facts in pattern order
+                let all_facts = self.token_store.collect_all_facts(token_id);
+                let recency: SmallVec<[Timestamp; 4]> = all_facts
+                    .iter()
+                    .filter_map(|&fid| fact_base.get(fid))
+                    .map(|entry| entry.timestamp)
+                    .collect();
+
+                // Get timestamp from the most recent fact in the token
+                let timestamp = recency.iter().max().copied().unwrap_or(Timestamp::new(0));
+
+                let activation = Activation {
+                    id: ActivationId::default(), // Will be set by agenda.add()
+                    rule: *rule,
+                    token: token_id,
+                    salience: *salience,
+                    timestamp,
+                    activation_seq: ActivationSeq::ZERO, // Will be set by agenda.add()
+                    recency,
+                };
+
+                let act_id = self.agenda.add(activation);
+                new_activations.push(act_id);
+                if !self.auto_focus_rules.is_empty() && self.auto_focus_rules.contains(rule) {
+                    self.pending_events
+                        .push_back(PendingReteEvent::AutoFocus(*rule));
+                    self.pending_auto_focus_count += 1;
                 }
-                BetaNode::Ncc { .. } => {
-                    // Perform NCC left activation: token enters as parent for
-                    // this NCC node. If the subnetwork has no results, it propagates.
-                    self.ncc_left_activate(child_id, token_id, fact_base, new_activations);
-                }
-                BetaNode::NccPartner { .. } => {
-                    // NCC partner nodes receive tokens from subnetwork joins.
-                    // Signal the NCC node about this result.
-                    self.ncc_partner_receive_result(child_id, token_id, fact_base, new_activations);
-                }
-                BetaNode::Exists { .. } => {
-                    // Perform exists left activation: token enters as parent for
-                    // this exists node. If alpha memory has supporting facts, it propagates.
-                    self.exists_left_activate(child_id, token_id, fact_base, new_activations);
-                }
-                BetaNode::Root { .. } => {
-                    // Root nodes shouldn't be children.
-                }
+            }
+            BetaNode::Join { .. } => {
+                // Perform left activation: token enters as parent for this join
+                self.left_activate(child_id, token_id, fact_base, new_activations);
+            }
+            BetaNode::Predicate {
+                rule,
+                condition_index,
+                ..
+            } => {
+                self.pending_events
+                    .push_back(PendingReteEvent::Predicate(PendingPredicateMatch {
+                        node: child_id,
+                        parent_token: token_id,
+                        rule: *rule,
+                        condition_index: *condition_index,
+                    }));
+            }
+            BetaNode::Negative { .. } => {
+                // Perform negative left activation: token enters as parent for
+                // this negative node. It will be blocked or allowed through.
+                self.negative_left_activate(child_id, token_id, fact_base, new_activations);
+            }
+            BetaNode::Ncc { .. } => {
+                // Perform NCC left activation: token enters as parent for
+                // this NCC node. If the subnetwork has no results, it propagates.
+                self.ncc_left_activate(child_id, token_id, fact_base, new_activations);
+            }
+            BetaNode::NccPartner { .. } => {
+                // NCC partner nodes receive tokens from subnetwork joins.
+                // Signal the NCC node about this result.
+                self.ncc_partner_receive_result(child_id, token_id, fact_base, new_activations);
+            }
+            BetaNode::Exists { .. } => {
+                // Perform exists left activation: token enters as parent for
+                // this exists node. If alpha memory has supporting facts, it propagates.
+                self.exists_left_activate(child_id, token_id, fact_base, new_activations);
+            }
+            BetaNode::Root { .. } => {
+                // Root nodes shouldn't be children.
             }
         }
     }
@@ -4648,6 +4809,58 @@ mod tests {
         assert!(rete.agenda.is_empty());
         assert!(rete.next_block_order < u64::MAX - 1);
         assert!(rete.pending_ncc_results.is_none());
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+    }
+
+    #[test]
+    fn nested_ncc_drain_rebases_suspended_outer_reservations() {
+        use crate::compiler::{CompilableCondition, CompilablePattern, ReteCompiler};
+
+        let mut symbols = SymbolTable::new();
+        let mut rete = ReteNetwork::new();
+        let mut compiler = ReteCompiler::new();
+        let rule_id = compiler.allocate_rule_id();
+        let [seed, a, b] = ["s", "a", "b"].map(|name| make_symbol(&mut symbols, name));
+        let var_x = make_symbol(&mut symbols, "x");
+        let pattern = |relation, variable_slots| CompilablePattern {
+            sequence: None,
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            variable_slots,
+            negated_variable_slots: Vec::new(),
+            negated: false,
+            exists: false,
+        };
+        let exists = |inner| CompilableCondition::Ncc(vec![CompilableCondition::Ncc(inner)]);
+        // (s ?x) (exists (exists (a) (b)))
+        let conditions = vec![
+            CompilableCondition::Pattern(pattern(seed, vec![(SlotIndex::Ordered(0), var_x)])),
+            exists(vec![exists(vec![
+                CompilableCondition::Pattern(pattern(a, vec![])),
+                CompilableCondition::Pattern(pattern(b, vec![])),
+            ])]),
+        ];
+        let mut facts = FactBase::new();
+        compiler
+            .compile_conditions(&mut rete, &facts, rule_id, Salience::DEFAULT, &conditions)
+            .expect("nested exists rule should compile");
+        for value in 1..=3 {
+            let id = facts.assert_ordered(seed, smallvec![Value::Integer(value)]);
+            rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+        }
+        let id = facts.assert_ordered(a, smallvec![]);
+        rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+        assert!(rete.agenda.is_empty());
+
+        // The inner NCC's blocking drains as a nested batch while the outer
+        // batch still holds reservations; the counter exhausts inside it.
+        rete.next_block_order = u64::MAX - 3;
+        let id = facts.assert_ordered(b, smallvec![]);
+        rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+        assert_eq!(rete.agenda.len(), 3);
+        assert!(rete.next_block_order < u64::MAX - 3);
+        assert!(rete.pending_ncc_results.is_none());
+        rete.validate_block_orders().unwrap();
         rete.validate_snapshot(&facts, &symbols).unwrap();
     }
 

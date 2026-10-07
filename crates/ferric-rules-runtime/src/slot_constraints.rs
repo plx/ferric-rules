@@ -200,6 +200,10 @@ impl RuntimeSlotConstraints {
     }
 
     pub(crate) fn validate_field(&self, value: &Value) -> Result<(), String> {
+        // Most slots carry no value restriction; skip the per-field lookups.
+        if self.allowed_values.is_empty() && self.range.is_none() {
+            return Ok(());
+        }
         if let Some(allowed) = value_kind(value).and_then(|kind| self.allowed(kind)) {
             if !allowed
                 .iter()
