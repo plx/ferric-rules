@@ -1,0 +1,6 @@
+
+[PRCDRPSR2] The return function is not valid in this context.
+
+ERROR:
+(defmethod MAIN::rejected
+   ((?x INTEGER (return

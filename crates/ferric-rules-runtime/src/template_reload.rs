@@ -4,7 +4,7 @@
 //! state instead of maintaining another serialized reference-count registry.
 
 use ferric_rules_core::{AlphaEntryType, RuleId, TemplateId};
-use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
+use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern, RuleConstruct};
 
 use crate::engine::{rule_index_get, Engine};
 use crate::fact_initializer::PreparedFact;
@@ -65,6 +65,33 @@ impl Engine {
 
     pub(crate) fn template_name_is(&self, name: &str, module: ModuleId, id: TemplateId) -> bool {
         self.resolve_template_id(name, module).ok() == Some(id)
+    }
+
+    /// A deffacts body that is still queued in the current load uses a template
+    /// through its head or through a fact query in one of its initializers.
+    pub(crate) fn fact_body_uses_template(
+        &self,
+        fact: &FactBody,
+        module: ModuleId,
+        id: TemplateId,
+    ) -> bool {
+        let initializer_uses = |value: &FactValue| matches!(value, FactValue::Expression(expr) if self.expr_uses_template(expr, module, id));
+        match fact {
+            FactBody::Ordered(fact) => {
+                self.template_name_is(&fact.relation, module, id)
+                    || fact.values.iter().any(initializer_uses)
+            }
+            FactBody::Template(fact) => {
+                self.template_name_is(&fact.template, module, id)
+                    || fact.slot_values.iter().any(|slot| {
+                        slot.values.iter().any(initializer_uses)
+                            || slot
+                                .ordered_expression
+                                .as_deref()
+                                .is_some_and(|expr| self.expr_uses_template(expr, module, id))
+                    })
+            }
+        }
     }
 
     pub(crate) fn rule_uses_template(

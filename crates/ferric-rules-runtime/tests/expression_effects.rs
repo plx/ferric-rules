@@ -67,7 +67,7 @@ fn duplicate_suppression_and_missing_mutation_targets_return_false() {
         (bind ?b (assert (p (v 2))))
         (printout t (assert (p (v 1))) " " (duplicate ?a) " ")
         (printout t (modify ?b (v 1)) " " (fact-existp ?b) crlf)
-        (printout t (modify 99 (v 3)) " " (duplicate -1 (v 4)) " continued" crlf)
+        (printout t (modify 99 (v 3)) " " (duplicate 98 (v 4)) " continued" crlf)
         (bind ?c (modify ?a (v 1)))
         (printout t (fact-index ?a) " " (fact-index ?c) crlf))
     "#);
@@ -76,6 +76,37 @@ fn duplicate_suppression_and_missing_mutation_targets_return_false() {
         Some("FALSE FALSE FALSE FALSE\nFALSE FALSE continued\n-1 3\n")
     );
     assert_eq!(engine.fact_count(), 1);
+}
+
+#[test]
+fn negative_and_stale_mutation_targets_stop_expression_evaluation() {
+    // CLIPS 6.30 halts the rule for a negative index after earlier operands
+    // have printed. Ferric also stops for a stale source address, where CLIPS
+    // copies the retracted fact's data (a documented boundary).
+    for (target, expected) in [
+        ("(bind ?t -1)", "FALSE "),
+        ("(bind ?t (assert (p (v 9)))) (retract ?t)", "FALSE "),
+    ] {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(&format!(
+                "(deftemplate p (slot v))
+                 (defrule probe =>
+                   {target}
+                   (bind ?m 99)
+                   (printout t (modify ?m (v 3)) \" \" (duplicate ?t (v 4)) \" continued\" crlf)
+                   (printout t unexpected crlf))"
+            ))
+            .unwrap();
+        engine.reset().unwrap();
+        assert_eq!(
+            engine.run(RunLimit::Count(10)).unwrap().halt_reason,
+            HaltReason::ActionError,
+            "{target}"
+        );
+        assert_eq!(engine.get_output("t"), Some(expected), "{target}");
+        assert_eq!(engine.fact_count(), 0, "{target}");
+    }
 }
 
 #[test]

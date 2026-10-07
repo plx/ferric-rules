@@ -15,7 +15,7 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
-    ConditionCompilationPlan, ConstantTest, ConstantTestType, FactId, FerricString, InstanceName,
+    ConditionCompilationPlan, ConstantTest, ConstantTestType, FerricString, InstanceName,
     JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment, SequenceSource,
     SlotIndex, Value,
 };
@@ -246,6 +246,17 @@ struct PreparedRuleInstallation {
     plan: ConditionCompilationPlan,
     info: Arc<CompiledRuleInfo>,
     module: crate::modules::ModuleId,
+}
+
+/// A field disjunction compiled as one alpha `Any` test, kept so the pattern
+/// can move it to a match-time predicate if its alpha path is over budget.
+struct AlphaDisjunction {
+    /// Position of the `Any` test in the pattern's constant tests.
+    index: usize,
+    slot: SlotIndex,
+    constraint: Constraint,
+    /// Where its predicate goes among the generated tests, in field order.
+    generated_at: usize,
 }
 
 struct RuleRhsScope<'a> {
@@ -808,6 +819,7 @@ impl Engine {
                 CallableDefinition::Function(function) => self.validate_callable_body(
                     &function.body,
                     candidate.module,
+                    "deffunction",
                     &function.name,
                     selected.is_some(),
                 ),
@@ -962,7 +974,13 @@ impl Engine {
         module: crate::modules::ModuleId,
         validate_visibility: bool,
     ) -> Result<(), LoadError> {
-        self.validate_callable_body(&method.body, module, &method.name, validate_visibility)?;
+        self.validate_callable_body(
+            &method.body,
+            module,
+            "defmethod",
+            &method.name,
+            validate_visibility,
+        )?;
         let parameters = method
             .parameters
             .iter()
@@ -1008,6 +1026,7 @@ impl Engine {
             existential: &HashSet::new(),
             allow_local_reads: true,
         };
+        let context = format!("defmethod `{name}`");
         for query in queries {
             crate::evaluator::validate_action_depth(query)
                 .map_err(|error| LoadError::Compile(error.to_string()))?;
@@ -1032,6 +1051,14 @@ impl Engine {
                             "[GENRCPSR12] Binds are not allowed in query expressions.",
                         ));
                     }
+                    // A query runs outside the method body, so CLIPS rejects
+                    // `return` anywhere in it.
+                    if call.name == "return" {
+                        return Err(Self::compile_error_at(
+                            &call.span,
+                            "[PRCDRPSR2] The return function is not valid in this context.",
+                        ));
+                    }
                 }
                 if let ActionExpr::FunctionCall(call) = expression {
                     pending.extend(crate::effects::evaluated_arguments(self, module, call));
@@ -1039,13 +1066,13 @@ impl Engine {
                     expression.push_children(&mut pending);
                 }
             }
-            Self::validate_rule_rhs_expr(name, query, &scope, &mut HashSet::new())?;
+            Self::validate_rule_rhs_expr(&context, query, &scope, &mut HashSet::new())?;
             if validate_visibility {
                 self.validate_expression_query_declarations(query, module, Some(name))?;
             } else {
                 self.validate_expression_query_structure(query, module)?;
             }
-            self.validate_action_expr_as_expression(query, module, name, &HashSet::new())?;
+            self.validate_action_expr_as_expression(query, module, &context, &HashSet::new())?;
         }
         Ok(())
     }
@@ -1054,15 +1081,17 @@ impl Engine {
         &self,
         body: &[ActionExpr],
         module: crate::modules::ModuleId,
+        construct: &str,
         name: &str,
         validate_visibility: bool,
     ) -> Result<(), LoadError> {
+        let context = format!("{construct} `{name}`");
         crate::callable_validation::validate_breaks_with_templates(body, &|name| {
             self.resolve_template_id(name, module).is_ok()
         })
         .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
         for expression in body {
-            self.validate_action_expr_as_action(expression, module, name, &HashSet::new())?;
+            self.validate_action_expr_as_action(expression, module, &context, &HashSet::new())?;
             if validate_visibility {
                 self.validate_expression_query_declarations(expression, module, Some(name))?;
             }
@@ -1124,6 +1153,10 @@ impl Engine {
 
         let mut result = LoadResult::default();
         let mut errors = Vec::new();
+        // Source offsets at which the current module changes. Each top-level
+        // assertion is prepared and evaluated in the module current at its
+        // position, as CLIPS does when it executes the form in place.
+        let mut module_transitions = vec![(0, self.module_registry.current_module())];
 
         // Separate top-level (assert ...) forms from constructs; asserts are
         // processed directly after the constructs load.
@@ -1266,23 +1299,19 @@ impl Engine {
                                         })
                                     })
                             });
-                        let pending_use = self
-                            .template_definition_identity(&template)
-                            .ok()
-                            .and_then(|(_, id)| id)
-                            .is_some_and(|id| {
-                                rules_with_module.iter().any(|(rule, module)| {
-                                    self.rule_uses_template(rule, *module, id)
-                                }) || deffacts_constructs.iter().any(|(facts, module)| {
-                                    facts.facts.iter().any(|fact| {
-                                        let name = match fact {
-                                            FactBody::Ordered(fact) => &fact.relation,
-                                            FactBody::Template(fact) => &fact.template,
-                                        };
-                                        self.template_name_is(name, *module, id)
+                        let pending_use =
+                            self.template_definition_identity(&template)
+                                .ok()
+                                .and_then(|(_, id)| id)
+                                .is_some_and(|id| {
+                                    rules_with_module.iter().any(|(rule, module)| {
+                                        self.rule_uses_template(rule, *module, id)
+                                    }) || deffacts_constructs.iter().any(|(facts, module)| {
+                                        facts.facts.iter().any(|fact| {
+                                            self.fact_body_uses_template(fact, *module, id)
+                                        })
                                     })
-                                })
-                            });
+                                });
                         if pending_ordered_use {
                             errors.push(Self::ordered_template_conflict(&template));
                         } else if pending_use {
@@ -1398,6 +1427,7 @@ impl Engine {
                             module.imports.clone(),
                         );
                         self.module_registry.set_current_module(module_id);
+                        module_transitions.push((module.span.start.offset, module_id));
                         result.modules.push(module);
                     }
                     Construct::Generic(generic) => {
@@ -1506,14 +1536,24 @@ impl Engine {
             self.module_registry.set_current_module(saved_module);
         }
 
-        // Process assert forms AFTER rules are compiled so facts flow through rete
+        // Process assert forms AFTER rules are compiled so facts flow through rete.
+        // The last defmodule in the source stays current afterwards.
+        let loaded_module = self.module_registry.current_module();
         for expr in &assert_forms {
             if let Some(list) = expr.as_list() {
+                let offset = expr.span().start.offset;
+                let module = module_transitions
+                    .iter()
+                    .rev()
+                    .find(|(start, _)| *start <= offset)
+                    .map_or(loaded_module, |(_, module)| *module);
+                self.module_registry.set_current_module(module);
                 if let Err(e) = self.process_assert(&list[1..], &mut result) {
                     errors.push(e);
                 }
             }
         }
+        self.module_registry.set_current_module(loaded_module);
 
         self.host.prune(&self.fact_base);
         if errors.is_empty() {
@@ -1941,38 +1981,30 @@ impl Engine {
 
     /// Process an `(assert ...)` form.
     ///
-    /// Each sub-list after `assert` is treated as a fact to assert.
+    /// Like CLIPS, every fact is parsed before any is evaluated, so a static
+    /// error in a later fact asserts nothing. Evaluation errors stop the
+    /// command and keep the facts already asserted.
     fn process_assert(&mut self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
         if args.is_empty() {
             return Err(LoadError::InvalidAssert(
                 "assert requires at least one fact".to_owned(),
             ));
         }
-        let mut local_names = HashSet::new();
+        let prepared = args
+            .iter()
+            .map(|fact_expr| self.prepare_assertion(fact_expr))
+            .collect::<Result<Vec<_>, _>>()?;
+        let module = self.module_registry.current_module();
         let mut locals = crate::evaluator::CallableLocals::default();
-        for fact_expr in args {
-            let fact_id = self.process_assert_fact(fact_expr, &mut local_names, &mut locals)?;
+        for fact in &prepared {
+            // Each fact is evaluated completely before it is published.
+            let fact = self
+                .evaluate_prepared_fact_with_locals(fact, module, &mut locals)
+                .map_err(LoadError::InvalidAssert)?;
+            let fact_id = self.assert_fact_internal(fact)?.fact_id();
             result.asserted_facts.push(self.host.export(fact_id));
         }
         Ok(())
-    }
-
-    /// Prepare and evaluate each fact completely before publishing it.
-    fn process_assert_fact(
-        &mut self,
-        fact_expr: &SExpr,
-        local_names: &mut HashSet<String>,
-        locals: &mut crate::evaluator::CallableLocals,
-    ) -> Result<FactId, LoadError> {
-        let prepared = self.prepare_assertion(fact_expr, local_names)?;
-        let fact = self
-            .evaluate_prepared_fact_with_locals(
-                &prepared,
-                self.module_registry.current_module(),
-                locals,
-            )
-            .map_err(LoadError::InvalidAssert)?;
-        Ok(self.assert_fact_internal(fact)?.fact_id())
     }
 
     fn warned_string_value(
@@ -2150,11 +2182,12 @@ impl Engine {
             self.resolve_template_id(name, current_module).is_ok()
         })
         .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+        let context = format!("rule `{}`", rule.name);
         for action in &rule.actions {
             self.validate_rule_action_call(
                 &action.call,
                 current_module,
-                &rule.name,
+                &context,
                 &HashSet::new(),
             )?;
         }
@@ -2166,7 +2199,7 @@ impl Engine {
         &self,
         call: &FunctionCall,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         Self::validate_query_member_rebinding(call, query_members)?;
@@ -2206,7 +2239,7 @@ impl Engine {
                                     self.validate_action_expr_as_expression(
                                         value_expr,
                                         current_module,
-                                        rule_name,
+                                        context,
                                         query_members,
                                     )?;
                                 }
@@ -2216,7 +2249,7 @@ impl Engine {
                                 self.validate_action_expr_as_expression(
                                     field_expr,
                                     current_module,
-                                    rule_name,
+                                    context,
                                     query_members,
                                 )?;
                             }
@@ -2225,7 +2258,7 @@ impl Engine {
                         self.validate_action_expr_as_expression(
                             arg,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2239,7 +2272,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         target,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2249,7 +2282,7 @@ impl Engine {
                             self.validate_action_expr_as_expression(
                                 value_expr,
                                 current_module,
-                                rule_name,
+                                context,
                                 query_members,
                             )?;
                         }
@@ -2257,7 +2290,7 @@ impl Engine {
                         self.validate_action_expr_as_expression(
                             slot_override,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2269,7 +2302,7 @@ impl Engine {
                     self.validate_action_expr_as_action(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2280,7 +2313,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2291,13 +2324,13 @@ impl Engine {
                     &call.name,
                     &call.span,
                     current_module,
-                    rule_name,
+                    context,
                 )?;
                 for arg in &call.args {
                     self.validate_action_expr_as_expression(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2311,7 +2344,7 @@ impl Engine {
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
@@ -2323,7 +2356,7 @@ impl Engine {
                     return self.validate_rule_action_call(
                         call,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     );
                 }
@@ -2332,13 +2365,13 @@ impl Engine {
                     &call.name,
                     &call.span,
                     current_module,
-                    rule_name,
+                    context,
                 )?;
                 for arg in &call.args {
                     self.validate_action_expr_as_expression(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2353,14 +2386,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in then_actions {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2368,7 +2401,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2380,14 +2413,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2399,20 +2432,20 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     start,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 self.validate_action_expr_as_expression(
                     end,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2424,14 +2457,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     list_expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2451,14 +2484,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     query,
                     current_module,
-                    rule_name,
+                    context,
                     &nested_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         &nested_members,
                     )?;
                 }
@@ -2473,21 +2506,21 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for (case_expr, actions) in cases {
                     self.validate_action_expr_as_expression(
                         case_expr,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                     for action in actions {
                         self.validate_action_expr_as_expression(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2497,7 +2530,7 @@ impl Engine {
                         self.validate_action_expr_as_expression(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2512,7 +2545,7 @@ impl Engine {
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
@@ -2520,7 +2553,7 @@ impl Engine {
             | ActionExpr::Variable(_, _)
             | ActionExpr::GlobalVariable(_, _) => Ok(()),
             ActionExpr::FunctionCall(call) => {
-                self.validate_rule_action_call(call, current_module, rule_name, query_members)
+                self.validate_rule_action_call(call, current_module, context, query_members)
             }
             ActionExpr::If {
                 condition,
@@ -2531,14 +2564,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in then_actions {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2546,7 +2579,7 @@ impl Engine {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2558,14 +2591,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2577,20 +2610,20 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     start,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 self.validate_action_expr_as_expression(
                     end,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2602,14 +2635,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     list_expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2626,7 +2659,7 @@ impl Engine {
                     return self.validate_action_expr_as_expression(
                         expr,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     );
                 }
@@ -2637,14 +2670,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     query,
                     current_module,
-                    rule_name,
+                    context,
                     &nested_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         &nested_members,
                     )?;
                 }
@@ -2659,21 +2692,21 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for (case_expr, actions) in cases {
                     self.validate_action_expr_as_expression(
                         case_expr,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                     for action in actions {
                         self.validate_action_expr_as_action(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2683,7 +2716,7 @@ impl Engine {
                         self.validate_action_expr_as_action(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2878,7 +2911,7 @@ impl Engine {
         callable: &str,
         span: &Span,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
     ) -> Result<(), LoadError> {
         if callable == "refresh-agenda" {
             return Err(Self::compile_error_at(
@@ -2890,7 +2923,7 @@ impl Engine {
             return Ok(());
         }
         Err(Self::missing_function_declaration_error(
-            callable, span, rule_name,
+            callable, span, context,
         ))
     }
 
@@ -2934,13 +2967,9 @@ impl Engine {
         }
     }
 
-    fn missing_function_declaration_error(
-        callable: &str,
-        span: &Span,
-        rule_name: &str,
-    ) -> LoadError {
+    fn missing_function_declaration_error(callable: &str, span: &Span, context: &str) -> LoadError {
         LoadError::Compile(format!(
-            "[EXPRNPSR3] Missing function declaration for {callable} in rule `{rule_name}` at line {}, column {}",
+            "[EXPRNPSR3] Missing function declaration for {callable} in {context} at line {}, column {}",
             span.start.line, span.start.column
         ))
     }
@@ -3245,6 +3274,62 @@ impl Engine {
         Ok(())
     }
 
+    /// CLIPS rejects `break` in test CEs and in `:`/`=` constraints with
+    /// PRCDRPSR2; no loop surrounds an LHS expression.
+    fn validate_lhs_breaks(pattern: &Pattern) -> Result<(), LoadError> {
+        let constraints: Vec<&Constraint> = match pattern {
+            Pattern::Ordered(ordered) => ordered.constraints.iter().collect(),
+            Pattern::Template(template) => template
+                .slot_constraints
+                .iter()
+                .flat_map(|slot| &slot.constraints)
+                .collect(),
+            Pattern::Assigned { pattern, .. } => return Self::validate_lhs_breaks(pattern),
+            Pattern::Not(inner, _) => return Self::validate_lhs_breaks(inner),
+            Pattern::And(children, _)
+            | Pattern::Logical(children, _)
+            | Pattern::Exists(children, _)
+            | Pattern::Forall(children, _)
+            | Pattern::Or(children, _) => {
+                return children.iter().try_for_each(Self::validate_lhs_breaks);
+            }
+            Pattern::Test(expression, _) => {
+                return Self::validate_lhs_expression_breaks(expression)
+            }
+        };
+        constraints
+            .into_iter()
+            .try_for_each(Self::validate_constraint_breaks)
+    }
+
+    fn validate_constraint_breaks(constraint: &Constraint) -> Result<(), LoadError> {
+        match constraint {
+            Constraint::Predicate(expression, _) | Constraint::ReturnValue(expression, _) => {
+                Self::validate_lhs_expression_breaks(expression)
+            }
+            Constraint::Not(inner, _) => Self::validate_constraint_breaks(inner),
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                parts.iter().try_for_each(Self::validate_constraint_breaks)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_lhs_expression_breaks(expression: &SExpr) -> Result<(), LoadError> {
+        // Expressions the action interpreter cannot read keep their existing
+        // translation diagnostics.
+        let Ok(expression) = ferric_rules_parser::interpret_action_expr(expression) else {
+            return Ok(());
+        };
+        // No loop body is in scope here, so every `break` is invalid whether a
+        // fact head is read as a template or as an ordered relation.
+        crate::callable_validation::validate_breaks_with_templates(
+            std::slice::from_ref(&expression),
+            &|_| false,
+        )
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))
+    }
+
     fn validate_constraint_disjunction_bindings(
         constraint: &Constraint,
         bound: &mut HashSet<String>,
@@ -3356,18 +3441,19 @@ impl Engine {
             allow_local_reads: true,
         };
 
+        let context = format!("rule `{}`", rule.name);
         let mut rhs_locals = HashSet::new();
         for action in &rule.actions {
-            Self::validate_rule_rhs_call(&rule.name, &action.call, &scope, &mut rhs_locals)?;
+            Self::validate_rule_rhs_call(&context, &action.call, &scope, &mut rhs_locals)?;
         }
         Ok(())
     }
 
+    /// Dormant fact initializers may bind locals but never read them; only
+    /// iteration variables are visible inside their loop bodies.
     pub(crate) fn validate_fact_initializer_bindings(
         &self,
         expression: &ActionExpr,
-        locals: &mut HashSet<String>,
-        allow_local_reads: bool,
         module: crate::modules::ModuleId,
     ) -> Result<(), LoadError> {
         let empty = HashSet::new();
@@ -3376,9 +3462,9 @@ impl Engine {
             module,
             exported: &empty,
             existential: &empty,
-            allow_local_reads,
+            allow_local_reads: false,
         };
-        Self::validate_rule_rhs_expr("fact initializer", expression, &scope, locals)
+        Self::validate_rule_rhs_expr("fact initializer", expression, &scope, &mut HashSet::new())
     }
 
     fn existential_scope_variable_name(name: &str) -> &str {
@@ -3386,7 +3472,7 @@ impl Engine {
     }
 
     fn validate_rule_rhs_call(
-        rule_name: &str,
+        context: &str,
         call: &FunctionCall,
         scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
@@ -3408,7 +3494,7 @@ impl Engine {
         if call.name == "bind" {
             if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
                 for value in call.args.iter().skip(1) {
-                    Self::validate_rule_rhs_expr(rule_name, value, scope, rhs_locals)?;
+                    Self::validate_rule_rhs_expr(context, value, scope, rhs_locals)?;
                 }
                 if scope.allow_local_reads {
                     rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
@@ -3418,14 +3504,14 @@ impl Engine {
         }
 
         for arg in crate::effects::evaluated_arguments(scope.engine, scope.module, call) {
-            Self::validate_rule_rhs_expr(rule_name, arg, scope, rhs_locals)?;
+            Self::validate_rule_rhs_expr(context, arg, scope, rhs_locals)?;
         }
         Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // Mirrors every structured RHS scope in ActionExpr.
     fn validate_rule_rhs_expr(
-        rule_name: &str,
+        context: &str,
         expr: &ActionExpr,
         scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
@@ -3445,14 +3531,14 @@ impl Engine {
                         "is an unbound RHS variable"
                     };
                     return Err(LoadError::Compile(format!(
-                        "[PRCCODE3] rule `{rule_name}` variable {display_name} at line {} {reason}",
+                        "[PRCCODE3] {context} variable {display_name} at line {} {reason}",
                         span.start.line
                     )));
                 }
                 Ok(())
             }
             ActionExpr::FunctionCall(call) => {
-                Self::validate_rule_rhs_call(rule_name, call, scope, rhs_locals)
+                Self::validate_rule_rhs_call(context, call, scope, rhs_locals)
             }
             ActionExpr::If {
                 condition,
@@ -3460,14 +3546,14 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, condition, scope, rhs_locals)?;
                 let mut then_locals = rhs_locals.clone();
                 for action in then_actions {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut then_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut then_locals)?;
                 }
                 let mut else_locals = rhs_locals.clone();
                 for action in else_actions {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut else_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut else_locals)?;
                 }
                 rhs_locals.extend(then_locals);
                 rhs_locals.extend(else_locals);
@@ -3476,10 +3562,10 @@ impl Engine {
             ActionExpr::While {
                 condition, body, ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, condition, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut body_locals)?;
                 }
                 rhs_locals.extend(body_locals);
                 Ok(())
@@ -3491,14 +3577,14 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, start, scope, rhs_locals)?;
-                Self::validate_rule_rhs_expr(rule_name, end, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, start, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, end, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 if let Some(name) = var_name {
                     body_locals.insert(name.clone());
                 }
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut body_locals)?;
                 }
                 if let Some(name) = var_name {
                     body_locals.remove(name);
@@ -3512,12 +3598,12 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, list_expr, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, list_expr, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 body_locals.insert(var_name.clone());
                 body_locals.insert(format!("{var_name}-index"));
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut body_locals)?;
                 }
                 body_locals.remove(var_name);
                 body_locals.remove(&format!("{var_name}-index"));
@@ -3532,9 +3618,9 @@ impl Engine {
             } => {
                 let mut query_locals = rhs_locals.clone();
                 query_locals.extend(bindings.iter().map(|(name, _)| name.clone()));
-                Self::validate_rule_rhs_expr(rule_name, query, scope, &mut query_locals)?;
+                Self::validate_rule_rhs_expr(context, query, scope, &mut query_locals)?;
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut query_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut query_locals)?;
                 }
                 for (name, _) in bindings {
                     query_locals.remove(name);
@@ -3548,24 +3634,19 @@ impl Engine {
                 default,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, expr, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, expr, scope, rhs_locals)?;
                 for (case_expr, actions) in cases {
-                    Self::validate_rule_rhs_expr(rule_name, case_expr, scope, rhs_locals)?;
+                    Self::validate_rule_rhs_expr(context, case_expr, scope, rhs_locals)?;
                     let mut case_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_rule_rhs_expr(rule_name, action, scope, &mut case_locals)?;
+                        Self::validate_rule_rhs_expr(context, action, scope, &mut case_locals)?;
                     }
                     rhs_locals.extend(case_locals);
                 }
                 if let Some(actions) = default {
                     let mut default_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_rule_rhs_expr(
-                            rule_name,
-                            action,
-                            scope,
-                            &mut default_locals,
-                        )?;
+                        Self::validate_rule_rhs_expr(context, action, scope, &mut default_locals)?;
                     }
                     rhs_locals.extend(default_locals);
                 }
@@ -3993,27 +4074,6 @@ impl Engine {
         }
     }
 
-    fn pattern_has_field_disjunction(pattern: &Pattern) -> bool {
-        fn has_or(constraint: &Constraint) -> bool {
-            match constraint {
-                Constraint::Or(..) => true,
-                Constraint::And(parts, _) => parts.iter().any(has_or),
-                Constraint::Not(inner, _) => has_or(inner),
-                _ => false,
-            }
-        }
-        match pattern {
-            Pattern::Ordered(pattern) => pattern.constraints.iter().any(has_or),
-            Pattern::Template(pattern) => pattern
-                .slot_constraints
-                .iter()
-                .flat_map(|slot| &slot.constraints)
-                .any(has_or),
-            Pattern::Assigned { pattern, .. } => Self::pattern_has_field_disjunction(pattern),
-            _ => false,
-        }
-    }
-
     /// Expand only a top-level `or` CE (possibly wrapped in a fact assignment).
     fn pattern_disjunction_options(pattern: &Pattern) -> Vec<Pattern> {
         match pattern {
@@ -4043,6 +4103,7 @@ impl Engine {
         let mut bound = HashSet::new();
         for pattern in &rule.patterns {
             Self::validate_disjunction_bindings(pattern, &mut bound)?;
+            Self::validate_lhs_breaks(pattern)?;
         }
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
@@ -4133,24 +4194,15 @@ impl Engine {
                 test_conditions.len(),
                 &mut embedded_generated_tests,
             )?;
-            if matches!(
-                &condition,
-                CompilableCondition::Pattern(compilable) if compilable.exists
-            ) && !generated_tests.is_empty()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside existential patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
-            if matches!(condition, CompilableCondition::Ncc(_))
-                && generated_tests.len() != embedded_generated_tests.len()
-            {
-                return Err(LoadError::Compile(
-                    "complex constraints inside NCC patterns are not supported at match time"
-                        .to_string(),
-                ));
-            }
+            // Quantified translation embeds every test it generates in its own
+            // subnetwork; only a plain positive pattern leaves tests to follow it.
+            debug_assert!(
+                matches!(
+                    &condition,
+                    CompilableCondition::Pattern(compilable)
+                        if !compilable.negated && !compilable.exists
+                ) || generated_tests.len() == embedded_generated_tests.len()
+            );
             if let Some(name) = var_name {
                 if !is_negated && Self::condition_has_fact_address(&condition) {
                     fact_address_vars.insert(name, fact_index);
@@ -4416,6 +4468,7 @@ impl Engine {
             _ => Ok(CompilableCondition::Pattern(self.translate_pattern(
                 pattern,
                 generated_tests,
+                &mut 0,
                 internal_slot_var_seed,
                 false,
             )?)),
@@ -4470,21 +4523,33 @@ impl Engine {
         embedded_generated_tests: &mut HashSet<usize>,
     ) -> Result<Vec<CompilableCondition>, LoadError> {
         let first_test = generated_tests.len();
-        let mut compiled =
-            self.translate_pattern(pattern, generated_tests, internal_slot_var_seed, negated)?;
+        let mut disjunction_tests = 0;
+        let mut compiled = self.translate_pattern(
+            pattern,
+            generated_tests,
+            &mut disjunction_tests,
+            internal_slot_var_seed,
+            negated,
+        )?;
         if first_test == generated_tests.len() {
             compiled.negated = negated;
             compiled.exists = exists;
             return Ok(vec![CompilableCondition::Pattern(compiled)]);
         }
         // Preserve the explicitly unsupported general existential-expression
-        // boundary; this lowering is for connected field disjunctions.
-        if exists && !Self::pattern_has_field_disjunction(pattern) {
+        // boundary; this lowering is for connected field disjunctions, so any
+        // other generated test keeps the pattern unsupported.
+        if exists && generated_tests.len() - first_test != disjunction_tests {
             return Err(LoadError::Compile(
                 "complex constraints inside existential patterns are not supported at match time"
                     .to_owned(),
             ));
         }
+        // The positive child carries the predicates; the wrappers below come
+        // only from this call's quantifier, not from an inner `exists` that
+        // `translate_pattern` reports on the pattern itself.
+        compiled.negated = false;
+        compiled.exists = false;
         let mut conditions = vec![CompilableCondition::Pattern(compiled)];
         for index in first_test..generated_tests.len() {
             let condition_index = test_condition_base
@@ -4511,6 +4576,7 @@ impl Engine {
         &mut self,
         pattern: &Pattern,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
     ) -> Result<CompilablePattern, LoadError> {
@@ -4541,6 +4607,7 @@ impl Engine {
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
+                let mut alpha_disjunctions = Vec::new();
 
                 for (i, constraint) in ordered.constraints.iter().enumerate() {
                     let slot = SlotIndex::Ordered(i);
@@ -4552,11 +4619,23 @@ impl Engine {
                         &mut negated_variable_slots,
                         &mut seen_variable_slots,
                         generated_tests,
+                        disjunction_tests,
+                        &mut alpha_disjunctions,
                         &mut slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
                 }
+                self.fit_alpha_disjunctions(
+                    alpha_disjunctions,
+                    &mut constant_tests,
+                    &mut variable_slots,
+                    &mut seen_variable_slots,
+                    generated_tests,
+                    disjunction_tests,
+                    &mut slot_runtime_vars,
+                    internal_slot_var_seed,
+                )?;
 
                 let sequence = ordered
                     .constraints
@@ -4610,6 +4689,7 @@ impl Engine {
                 self.translate_pattern(
                     pattern,
                     generated_tests,
+                    disjunction_tests,
                     internal_slot_var_seed,
                     in_negated_pattern,
                 )
@@ -4617,7 +4697,13 @@ impl Engine {
             Pattern::Not(inner, _span) => {
                 // Unwrap the inner pattern and set negated flag
                 let mut compilable =
-                    self.translate_pattern(inner, generated_tests, internal_slot_var_seed, true)?;
+                    self.translate_pattern(
+                        inner,
+                        generated_tests,
+                        disjunction_tests,
+                        internal_slot_var_seed,
+                        true,
+                    )?;
                 compilable.negated = true;
                 Ok(compilable)
             }
@@ -4627,6 +4713,7 @@ impl Engine {
                     let mut compilable = self.translate_pattern(
                         &patterns[0],
                         generated_tests,
+                        disjunction_tests,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
@@ -4727,6 +4814,7 @@ impl Engine {
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
                 let mut slot_runtime_vars = HashMap::new();
+                let mut alpha_disjunctions = Vec::new();
                 let mut segments = Vec::new();
                 let mut logical_offset = 0;
 
@@ -4757,6 +4845,8 @@ impl Engine {
                             &mut negated_variable_slots,
                             &mut seen_variable_slots,
                             generated_tests,
+                            disjunction_tests,
+                            &mut alpha_disjunctions,
                             &mut slot_runtime_vars,
                             internal_slot_var_seed,
                             in_negated_pattern,
@@ -4764,6 +4854,16 @@ impl Engine {
                         logical_offset += 1;
                     }
                 }
+                self.fit_alpha_disjunctions(
+                    alpha_disjunctions,
+                    &mut constant_tests,
+                    &mut variable_slots,
+                    &mut seen_variable_slots,
+                    generated_tests,
+                    disjunction_tests,
+                    &mut slot_runtime_vars,
+                    internal_slot_var_seed,
+                )?;
 
                 let sequence = needs_sequence.then(|| {
                     let tests = std::mem::take(&mut constant_tests);
@@ -4859,6 +4959,8 @@ impl Engine {
         negated_variable_slots: &mut Vec<(SlotIndex, ferric_rules_core::Symbol, JoinTestType)>,
         seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
+        alpha_disjunctions: &mut Vec<AlphaDisjunction>,
         slot_runtime_vars: &mut HashMap<SlotIndex, String>,
         internal_slot_var_seed: &mut usize,
         in_negated_pattern: bool,
@@ -4942,6 +5044,8 @@ impl Engine {
                         negated_variable_slots,
                         seen_variable_slots,
                         generated_tests,
+                        disjunction_tests,
+                        alpha_disjunctions,
                         slot_runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
@@ -4976,8 +5080,12 @@ impl Engine {
                 // Preserve each alternative as a conjunction, without leaking
                 // its bindings or comparisons into the other alternatives.
                 // Constant and same-fact comparisons can run in alpha memory,
-                // including inside not/exists and sequence plans.
+                // including inside not/exists and sequence plans. Every
+                // alternative is translated, so each one is held to the same
+                // restrictions as a standalone constraint in this position,
+                // whatever its order.
                 let mut alternatives = Vec::with_capacity(constraints.len());
+                let mut alpha_only = true;
                 for sub in constraints {
                     let mut tests = Vec::new();
                     let mut vars = variable_slots.clone();
@@ -4993,20 +5101,40 @@ impl Engine {
                         &mut joins,
                         &mut seen,
                         &mut predicates,
+                        &mut 0,
+                        &mut Vec::new(),
                         &mut runtime_vars,
                         internal_slot_var_seed,
                         in_negated_pattern,
                     )?;
                     if vars != *variable_slots || !joins.is_empty() || !predicates.is_empty() {
-                        break;
+                        alpha_only = false;
+                    } else if alpha_only {
+                        alternatives.push(tests);
                     }
-                    alternatives.push(tests);
                 }
-                if alternatives.len() == constraints.len() {
-                    constant_tests.push(ConstantTest {
+                let candidate = ConstantTest {
+                    slot,
+                    test_type: ConstantTestType::Any(alternatives),
+                };
+                // A field too wide for the alpha path budget is evaluated as
+                // one match-time predicate instead of failing to load. Later
+                // fields can still exceed the budget, so the pattern rechecks
+                // it once all of its fields are translated.
+                let fits_alpha_budget = ferric_rules_core::alpha::constant_test_count(
+                    constant_tests,
+                )
+                .saturating_add(ferric_rules_core::alpha::constant_test_count(
+                    std::slice::from_ref(&candidate),
+                )) <= ferric_rules_core::compiler::MAX_ALPHA_TESTS;
+                if alpha_only && fits_alpha_budget {
+                    alpha_disjunctions.push(AlphaDisjunction {
+                        index: constant_tests.len(),
                         slot,
-                        test_type: ConstantTestType::Any(alternatives),
+                        constraint: constraint.clone(),
+                        generated_at: generated_tests.len(),
                     });
+                    constant_tests.push(candidate);
                 } else {
                     let slot_var = self.ensure_slot_runtime_variable(
                         slot,
@@ -5016,6 +5144,7 @@ impl Engine {
                         internal_slot_var_seed,
                     )?;
                     generated_tests.push(self.constraint_runtime_expr(constraint, &slot_var)?);
+                    *disjunction_tests += 1;
                 }
             }
             Constraint::Predicate(expr, span) => {
@@ -5095,6 +5224,65 @@ impl Engine {
                     span: None,
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Decide the alpha budget once the whole pattern is translated: while its
+    /// constant tests exceed `MAX_ALPHA_TESTS`, the widest alpha disjunctions
+    /// become match-time predicates. An alpha-only disjunction binds nothing,
+    /// so the swap leaves the pattern's bindings unchanged.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_alpha_disjunctions(
+        &mut self,
+        mut disjunctions: Vec<AlphaDisjunction>,
+        constant_tests: &mut Vec<ConstantTest>,
+        variable_slots: &mut Vec<(SlotIndex, ferric_rules_core::Symbol)>,
+        seen_variable_slots: &mut HashMap<ferric_rules_core::Symbol, SlotIndex>,
+        generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
+        disjunction_tests: &mut usize,
+        slot_runtime_vars: &mut HashMap<SlotIndex, String>,
+        internal_slot_var_seed: &mut usize,
+    ) -> Result<(), LoadError> {
+        use ferric_rules_core::alpha::constant_test_count;
+        use std::cmp::Reverse;
+        // Sequence plans split these tests between alpha selectors and
+        // sequence tests without changing the total, and the field-count
+        // test is added later and not counted, so this total is the budget.
+        let mut count = constant_test_count(constant_tests);
+        if count <= ferric_rules_core::compiler::MAX_ALPHA_TESTS {
+            return Ok(());
+        }
+        let size = |disjunction: &AlphaDisjunction| {
+            constant_test_count(std::slice::from_ref(&constant_tests[disjunction.index]))
+        };
+        disjunctions.sort_by_cached_key(|disjunction| Reverse(size(disjunction)));
+        let mut fallbacks = Vec::new();
+        for disjunction in disjunctions {
+            if count <= ferric_rules_core::compiler::MAX_ALPHA_TESTS {
+                break;
+            }
+            count -= size(&disjunction);
+            fallbacks.push(disjunction);
+        }
+        // Remove from the back so the recorded positions stay valid.
+        fallbacks.sort_by_key(|disjunction| Reverse(disjunction.index));
+        for disjunction in &fallbacks {
+            constant_tests.remove(disjunction.index);
+        }
+        // Insert later fields first so the predicates keep field order.
+        fallbacks.sort_by_key(|disjunction| Reverse((disjunction.generated_at, disjunction.index)));
+        for disjunction in fallbacks {
+            let slot_var = self.ensure_slot_runtime_variable(
+                disjunction.slot,
+                variable_slots,
+                seen_variable_slots,
+                slot_runtime_vars,
+                internal_slot_var_seed,
+            )?;
+            let test = self.constraint_runtime_expr(&disjunction.constraint, &slot_var)?;
+            generated_tests.insert(disjunction.generated_at, test);
+            *disjunction_tests += 1;
         }
         Ok(())
     }
@@ -6643,18 +6831,31 @@ mod tests {
               (v 2)
               (v 3))
             (defrule branchy
-              (v ?x&2|?x&~2)
+              (v ?x&2|?x&:(> ?x 1))
               =>
               (assert (hit ?x)))
             ",
         );
+        assert_eq!(engine.rules().len(), 1);
         engine.reset().unwrap();
 
+        // (v 2) satisfies both alternatives; a duplicated rule would fire
+        // for it twice.
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 2);
 
-        let hits = find_facts_by_relation(&engine, "hit");
-        assert_eq!(hits.len(), 2);
+        let mut hits: Vec<_> = find_facts_by_relation(&engine, "hit")
+            .into_iter()
+            .map(|handle| match engine.get_fact(handle).unwrap().unwrap() {
+                Fact::Ordered(ordered) => match ordered.fields.as_slice() {
+                    [Value::Integer(value)] => *value,
+                    fields => panic!("unexpected hit fields {fields:?}"),
+                },
+                Fact::Template(_) => panic!("expected ordered fact"),
+            })
+            .collect();
+        hits.sort_unstable();
+        assert_eq!(hits, [2, 3]);
     }
 
     #[test]
@@ -7056,6 +7257,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -7100,6 +7303,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -7137,6 +7342,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -7174,6 +7381,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,
@@ -7188,6 +7397,8 @@ mod tests {
                 &mut negated_variable_slots,
                 &mut seen_variable_slots,
                 &mut generated_tests,
+                &mut 0,
+                &mut Vec::new(),
                 &mut slot_runtime_vars,
                 &mut internal_slot_var_seed,
                 false,

@@ -1,0 +1,16 @@
+(defmethod query-after-different ((?x INTEGER SYMBOL)) first)
+(defmethod query-after-different ((?x INTEGER STRING (eq ?x 1))) second)
+(defmethod slot-after-different ((?x INTEGER SYMBOL) ?y) first)
+(defmethod slot-after-different ((?x INTEGER STRING) (?y INTEGER)) second)
+(defmethod subclass-first ((?x NUMBER)) number)
+(defmethod subclass-first ((?x INTEGER SYMBOL)) int-sym)
+(defmethod subclass-later ((?x LEXEME)) lexeme)
+(defmethod subclass-later ((?x SYMBOL INTEGER FLOAT)) sym-int-float)
+(defmethod reordered ((?x INTEGER SYMBOL)) a)
+(defmethod reordered ((?x SYMBOL INTEGER)) b)
+(defmethod instance-name ((?x LEXEME)) lexeme)
+(defmethod instance-name ((?x INSTANCE-NAME SYMBOL)) name-sym)
+(defrule run
+   =>
+   (printout t (query-after-different 1) " " (slot-after-different 1 1) crlf)
+   (printout t (subclass-first 1) " " (subclass-later abc) " " (reordered 1) " " (instance-name abc) crlf))
