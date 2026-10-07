@@ -5177,6 +5177,18 @@
       "error": "run"
     },
     {
+      "path": "queries/typed-fact-address-joins-and-duplicates.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "joins",
+        "negation",
+        "exists",
+        "duplicate-suppression"
+      ]
+    },
+    {
       "path": "stdlib/001_add_integers.clp",
       "level": "basic",
       "covers": [
