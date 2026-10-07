@@ -126,9 +126,10 @@ that is not a symbol, string, or instance name stops the rule; CLIPS 6.30
 accepts only a symbol there. `retract` skips missing targets, stops evaluating
 its targets at a negative index, and stops the rule for a wrong-type target
 after retracting the rest; later deffunction and generic-function targets are
-not called, while other targets are still retracted. `modify` and `duplicate`
-given a missing index do nothing; negative indices, stale addresses, and
-wrong-type targets stop the rule.
+not called, while other targets are still retracted, including builtin targets
+such as `progn$`, `switch`, and `funcall` that CLIPS 6.30 skips. `modify` and
+`duplicate` given a missing index do nothing; negative indices, stale
+addresses, and wrong-type targets stop the rule.
 `FactAddress` equality uses the assertion identity and working-memory epoch, so
 stale addresses cannot alias facts created after reset.
 

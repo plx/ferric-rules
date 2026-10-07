@@ -2674,8 +2674,9 @@ fn execute_retract(
         // deffunction or generic target returns FALSE without running (another
         // wrong-type target). Builtins, variables and literals still evaluate.
         // Only a top-level call is checked: a user callable nested inside a
-        // builtin target still runs, as do builtins such as `progn` that
-        // CLIPS also fails while halted.
+        // builtin target or called through `funcall` still runs, as do
+        // builtins such as `progn$`, `switch` and `funcall` that CLIPS also
+        // fails while halted.
         if wrong_type.is_some() && eval_env.calls_user_callable(token, rule_info, arg, context) {
             continue;
         }

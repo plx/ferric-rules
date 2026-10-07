@@ -1166,12 +1166,15 @@ stops the rule, after the remaining targets have been retracted. As in CLIPS,
 a later target that calls a deffunction or generic function is not called and
 retracts nothing, while variables, literals, and builtin calls are still
 evaluated and retracted. CLIPS 6.30 also fails some builtin targets in that
-state, such as `progn`, which Ferric still evaluates and retracts. `modify` and
-`duplicate` given a missing index do nothing, without evaluating their slot
-overrides, and the rule continues; a negative index or a target of another type
-stops the rule, as in CLIPS. Given a stale address, `modify` and `duplicate`
-also stop the rule, whereas CLIPS 6.30 asserts a new fact from the retracted
-fact's data.
+state, such as `progn$`, `switch`, `funcall`, or `(nth$ 1 (create$ ?f))`, and
+keeps their facts, whereas Ferric still evaluates and retracts them. A
+deffunction or generic function reached through such a builtin, whether nested
+in it or called through `funcall`, still runs in Ferric; CLIPS 6.30 does not
+call it. `modify` and `duplicate` given a missing index do nothing, without
+evaluating their slot overrides, and the rule continues; a negative index or a
+target of another type stops the rule, as in CLIPS. Given a stale address,
+`modify` and `duplicate` also stop the rule, whereas CLIPS 6.30 asserts a new
+fact from the retracted fact's data.
 
 CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]` notices for these
 calls; Ferric omits those notices.
