@@ -820,11 +820,13 @@ Known differences:
 - A `defmethod` whose restrictions are identical to an existing method's adds
   a second method after it, where CLIPS 6.30 replaces the existing method.
 - Only `INTEGER`, `FLOAT`, `NUMBER`, `SYMBOL`, `STRING`, `LEXEME`,
-  `INSTANCE-NAME`, `MULTIFIELD` and `EXTERNAL-ADDRESS` match as type
-  restrictions. Other CLIPS class names, such as `PRIMITIVE`, `OBJECT`,
-  `ADDRESS`, `INSTANCE`, `FACT-ADDRESS` and `INSTANCE-ADDRESS`, load as method
+  `INSTANCE-NAME`, `MULTIFIELD`, `EXTERNAL-ADDRESS` and `FACT-ADDRESS` match
+  as type restrictions. Other CLIPS class names, such as `PRIMITIVE`,
+  `OBJECT`, `ADDRESS`, `INSTANCE` and `INSTANCE-ADDRESS`, load as method
   restrictions but never match, so a restriction that names only such classes
-  makes its method never applicable.
+  makes its method never applicable. In particular, an `ADDRESS`, `PRIMITIVE`
+  or `OBJECT` restriction does not match a fact address in Ferric, although
+  CLIPS 6.30 matches it.
 
 A parameter query follows its optional type restrictions. It is a function
 call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is

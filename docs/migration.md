@@ -108,8 +108,10 @@ The existing `GenericRegistry::register_method` API retains its signature;
 
 ## Typed fact addresses
 
-`Value` and `AtomKey` have a new `FactAddress` variant. Exhaustive matches must
-handle it. Rule variables bound to facts and fact-query results now carry this
+`Value` and `AtomKey` have a new `FactAddress` variant, and so does the
+parser's `SlotValueType`. `EngineError` has a new `FactEpochExhausted` variant,
+which `reset` returns when the working-memory epoch counter is exhausted.
+Exhaustive matches on these enums need new arms. Rule variables bound to facts and fact-query results now carry this
 type instead of integers containing arena keys. It prints `<Fact-N>` using the
 public index retained at assertion time; FACT-ADDRESS slot defaults print
 `<Dummy Fact>`. Integer fact designators always mean public indices.
@@ -461,7 +463,8 @@ was never populated.
 ## Primitive template slot types
 
 Ferric now retains `(type ...)` declarations for `SYMBOL`, `STRING`, `INTEGER`,
-`FLOAT`, `NUMBER`, `LEXEME`, and `EXTERNAL-ADDRESS`. Type lists form a union;
+`FLOAT`, `NUMBER`, `LEXEME`, `INSTANCE-NAME`, `FACT-ADDRESS`, and
+`EXTERNAL-ADDRESS`. Type lists form a union;
 `NUMBER` means integer or float, and `LEXEME` means symbol or string. Omitted
 constraints and `(type ?VARIABLE)` permit any supported value kind. Each field
 of a constrained multislot must satisfy its declared union.
@@ -483,10 +486,12 @@ intact; a failed RHS action produces an action diagnostic and stops that RHS.
 Previously ignored `range`, `allowed-*`, `cardinality`, `default-dynamic`, and
 other optional slot attributes now produce an explicit unsupported error.
 Arbitrary computed defaults are also unsupported; use literal defaults or
-`?DERIVE`, and calculate dynamic values before assertion. `FACT-ADDRESS` and
-instance type declarations are rejected because the supported value model has
-no corresponding tagged value. These restrictions do not add CLIPS class
-constraints, general static type inference, or dynamic constraint toggles.
+`?DERIVE`, and calculate dynamic values before assertion. `INSTANCE-ADDRESS`
+and instance-class type declarations are rejected because the supported value
+model has no corresponding tagged value. `FACT-ADDRESS` declarations are
+accepted; their derived default is `<Dummy Fact>`. These restrictions do not
+add CLIPS class constraints, general static type inference, or dynamic
+constraint toggles.
 
 ## September 2026 embedding API changes
 
@@ -497,9 +502,9 @@ constraints, general static type inference, or dynamic constraint toggles.
   See [host-api.md](host-api.md).
 - Snapshots use a bounded, versioned envelope (schema 6); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1, schema-2, schema-3 and schema-4 snapshots are rejected
-  explicitly. Export durable application data through the producing version
-  before upgrading; see
+  unversioned, schema-1, schema-2, schema-3, schema-4 and schema-5 snapshots
+  are rejected explicitly. Export durable application data through the
+  producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
