@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 837
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 838
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -477,6 +477,11 @@ function's module. Ordinary local variable reads are invalid in defaults;
 lexical loop and fact-query bindings are supported. Direct `return` expressions
 in defaults are rejected; a called function may return normally. A static void
 default is invalid, while a dynamic scalar void result fills the slot with `nil`.
+A default in a template redefinition cannot assert or query the template it
+replaces, because CLIPS 6.30 removes the old definition before it parses the
+new body. Both engines reject such a redefinition at load. Ferric checks before
+evaluating any default and keeps the previous definition, which stays
+redefinable; CLIPS has already removed it.
 
 Without an explicit default, or with `(default ?DERIVE)`, Ferric derives a value
 from the constraints. Allowed lists retain their order within a value kind;

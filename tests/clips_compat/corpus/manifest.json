@@ -963,6 +963,16 @@
       ]
     },
     {
+      "path": "facts/397_template_default_self_reference_redefinition_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "default-dynamic",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [
