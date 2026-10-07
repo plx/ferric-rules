@@ -209,6 +209,19 @@ new engine; see [snapshots.md](snapshots.md).
   unchanged when the module is already on top, as CLIPS does. Pushing `A`
   twice now gives `[A, MAIN]`, not `[A, A, MAIN]`; a module deeper in the
   stack may still be pushed again.
+- `ferric_rules_parser::stage2::RuleConstruct` has two new public fields for
+  `(declare (salience <expression>) (auto-focus TRUE|FALSE))`. Struct
+  literals must add `salience_expression: None, auto_focus: false` to keep the
+  previous meaning.
+- Hosts that drive `ferric_rules_core::ReteNetwork` directly must drain its
+  unified event queue in order with `pop_pending_event`: resolve each
+  `PendingReteEvent::Predicate` with `resolve_predicate_match`, each
+  `PendingReteEvent::NccLeft` with `resolve_ncc_left_activation`, and handle
+  `PendingReteEvent::AutoFocus` notices, until the queue is empty. NCC
+  admissions are queued behind pending predicates whether or not any rule uses
+  auto-focus, so NCC rules never activate for a host that only drains
+  predicates. `pop_pending_predicate_match` remains for compatibility but
+  returns `None` while an NCC admission precedes the next predicate.
 
 ## Pre-1.0 CLIPS behavior fixes
 
@@ -588,7 +601,7 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
 - Snapshots use a bounded, versioned envelope (schema 11); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6,
-  schema-7, schema-8 and schema-9 snapshots are rejected explicitly. Export durable application data through the
+  schema-7, schema-8, schema-9 and schema-10 snapshots are rejected explicitly. Export durable application data through the
   producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.

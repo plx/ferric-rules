@@ -231,7 +231,8 @@ including all commonly used conditional elements and RHS actions.
 ```clp
 (defrule rule-name
     "optional comment"
-    (declare (salience <integer>))
+    ;; salience is evaluated once, when the rule is defined
+    (declare (salience <integer-expression>) (auto-focus TRUE|FALSE))
     ;; LHS patterns
     (pattern-1)
     ?var <- (pattern-2)
