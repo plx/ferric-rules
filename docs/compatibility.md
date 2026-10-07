@@ -782,8 +782,8 @@ CLIPS 6.30, the two type lists are compared in written order:
   outranks an otherwise unrestricted parameter with a query.
 - At the first position where one listed type is a subclass of the other in
   the CLIPS class hierarchy, the subclass wins: `INTEGER` and `FLOAT` under
-  `NUMBER`, `SYMBOL` and `STRING` under `LEXEME`, and every primitive type
-  under `PRIMITIVE`. `INSTANCE-NAME` is not a subclass of `SYMBOL`. So
+  `NUMBER`, and `SYMBOL` and `STRING` under `LEXEME`. `INSTANCE-NAME` is not
+  a subclass of `SYMBOL`. So
   `((?x INTEGER SYMBOL))` outranks `((?x NUMBER))`, although it covers more
   types.
 - Otherwise the shorter list wins: `((?x INTEGER))` outranks
@@ -818,6 +818,12 @@ Known differences:
   `(g 1)` and Ferric returns `B`.
 - A `defmethod` whose restrictions are identical to an existing method's adds
   a second method after it, where CLIPS 6.30 replaces the existing method.
+- Only `INTEGER`, `FLOAT`, `NUMBER`, `SYMBOL`, `STRING`, `LEXEME`,
+  `INSTANCE-NAME`, `MULTIFIELD` and `EXTERNAL-ADDRESS` match as type
+  restrictions. Other CLIPS class names, such as `PRIMITIVE`, `OBJECT`,
+  `ADDRESS`, `INSTANCE`, `FACT-ADDRESS` and `INSTANCE-ADDRESS`, load as method
+  restrictions but never match, so a restriction that names only such classes
+  makes its method never applicable.
 
 A parameter query follows its optional type restrictions. It is a function
 call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
