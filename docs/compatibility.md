@@ -611,6 +611,15 @@ one `defglobal` group remain available to later initializers. If an initializer
 fails, its name and later names in that group are not installed; earlier globals
 and following top-level constructs retain their incremental load behavior.
 
+Known difference: callable bodies are validated after the whole source is
+read, but initializers run in source order. An initializer can therefore call
+a deffunction or method defined earlier in the same load before that
+callable's validation finishes. If the callable is then rejected (for
+example, for an unknown call in a branch that never ran), the global keeps
+the initializer's value and any side effects of the call remain. CLIPS 6.30
+rejects the callable first and then rejects the initializer, so the global is
+never defined.
+
 ```clp
 (defglobal ?*count* = 0)
 (defglobal ?*label* = "default")
@@ -717,6 +726,14 @@ or load diagnostic before continuing recursive evaluation. Callable bodies
 are checked before registration; a failed function redefinition or implicit
 generic registration preserves the previous registry state.
 
+Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
+the deffunction, so later callers are rejected at load; Ferric keeps the
+previous body and its callers still load. Both keep the previous method when
+a `defmethod` redefinition fails. Until a rejected callable is removed at the
+end of the load, it still counts as using the templates it references, so a
+`deftemplate` replacement later in the same source is refused with
+`[CSTRCPSR4]` where CLIPS accepts it.
+
 Embedding note: release recursion regressions run on 512 KiB native stacks;
 unoptimized development regressions use 2 MiB. These are supported test
 baselines, not a promise for arbitrarily small host stacks. Larger requested
@@ -763,19 +780,21 @@ wildcard wins, then the method with more restrictions. For example,
 
 A parameter query follows its optional type restrictions. It is a function
 call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
-read again at each dispatch. A query can reference
-any method parameter, including later ones: all arguments are bound before
-queries run. Queries use CLIPS truthiness and are evaluated only as dispatch
-searches for the next applicable method. For each candidate, dispatch walks
+read again at each dispatch. A query can reference any method parameter,
+including later ones: all arguments are bound before queries run. Queries
+use CLIPS truthiness and are evaluated only as dispatch searches for the next
+applicable method. For each candidate, dispatch walks
 the arguments left to right: it checks the argument's type and then runs its
 restriction's query, stopping at the first failure. A query therefore runs,
 with its side effects, even when a later argument's type rules the method
 out. Excess arguments share the wildcard restriction, so a wildcard query
 runs once per excess argument and not at all when there are none.
-Lower-priority method queries are not evaluated after a match is found. A query error stops dispatch instead
-of trying a fallback. Queries may bind globals, but cannot bind local variables
-or parameters. Undefined variables and templates unavailable when the method
-is defined are load errors.
+Lower-priority method queries are not evaluated after a match is found. A
+query error stops dispatch instead of trying a fallback. Queries may bind
+globals, but cannot bind local variables or parameters. Undefined variables
+and templates unavailable when the method is defined are load errors. An
+undefined global in a query is reported only when the query runs, which stops
+dispatch; CLIPS 6.30 rejects it at load (`[GLOBLPSR1]`).
 
 ```clp
 (defgeneric classify)
