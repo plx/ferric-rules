@@ -2328,6 +2328,12 @@ fn from_action_expr_inner(
         }),
         ferric_rules_parser::ActionExpr::FunctionCall(call) => {
             if matches!(call.name.as_str(), "assert" | "modify" | "duplicate") {
+                // Fact and slot heads translate as plain calls, so this only
+                // surfaces literal encoding errors at load time. The effect
+                // itself evaluates the raw syntax.
+                for arg in &call.args {
+                    from_action_expr_inner(arg, symbol_table, config)?;
+                }
                 return Ok(RuntimeExpr::EffectCall {
                     call: Box::new(call.clone()),
                 });

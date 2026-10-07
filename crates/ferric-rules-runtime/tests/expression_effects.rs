@@ -509,3 +509,23 @@ fn syntax_slots_do_not_declare_phantom_callable_query_variables() {
         }
     }
 }
+
+#[test]
+fn effect_action_literals_are_encoded_at_load() {
+    // A literal the encoding rejects fails the replacement at load time and
+    // leaves the original rule in place.
+    let mut engine = Engine::new(EngineConfig::ascii());
+    engine
+        .load_str("(defrule r => (printout t ok crlf))")
+        .unwrap();
+    for source in [
+        r#"(defrule r => (assert (new "é")))"#,
+        r#"(defrule r ?f <- (x) => (modify ?f (v "é")))"#,
+        r#"(defrule r ?f <- (x) => (duplicate ?f (v "é")))"#,
+    ] {
+        assert!(engine.load_str(source).is_err(), "{source}");
+    }
+    engine.reset().unwrap();
+    assert_eq!(engine.run(RunLimit::Count(5)).unwrap().rules_fired, 1);
+    assert_eq!(engine.get_output("t"), Some("ok\n"));
+}
