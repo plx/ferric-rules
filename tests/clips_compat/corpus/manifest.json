@@ -9417,6 +9417,17 @@
         "mod",
         "issue-403"
       ]
+    },
+    {
+      "path": "procedural/403p_expand_dedicated_actions.clp",
+      "level": "interaction",
+      "covers": [
+        "expand$",
+        "undefrule",
+        "undeffacts",
+        "issue-403"
+      ],
+      "resets": 2
     }
   ]
 }
