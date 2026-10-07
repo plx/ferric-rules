@@ -480,11 +480,15 @@ default is invalid, including a void element of a static multislot default
 (CLIPS 6.30 reports `[CSTRNCHK1]` after evaluating every element). A dynamic
 scalar void result fills the slot with `nil`, and dynamic multislot defaults
 omit void elements.
-A default in a template redefinition cannot assert or query the template it
-replaces, because CLIPS 6.30 removes the old definition before it parses the
-new body. Both engines reject such a redefinition at load. Ferric checks before
-evaluating any default and keeps the previous definition, which stays
-redefinable; CLIPS has already removed it.
+CLIPS 6.30 removes a template's old definition before it parses a redefinition's
+body, so a default there that asserts the replaced template with slot syntax
+(`[EXPRNPSR3]`) or queries it (`[PRNTUTIL1]`) is rejected at load in both
+engines. An ordered-form `(assert (item))` is different: CLIPS creates a second,
+implied `item` deftemplate, a state Ferric does not model, so Ferric rejects any
+assertion or query of the template being redefined. Ferric checks each slot's
+default before evaluating it; static defaults of earlier slots have already run,
+as in CLIPS. Ferric keeps the previous definition installed and redefinable,
+where CLIPS has already removed it.
 
 Without an explicit default, or with `(default ?DERIVE)`, Ferric derives a value
 from the constraints. Allowed lists retain their order within a value kind;

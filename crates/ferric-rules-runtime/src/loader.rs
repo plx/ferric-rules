@@ -1764,9 +1764,12 @@ impl Engine {
     /// Prepare defaults without installing a partially valid template.
     ///
     /// `redefining` is the definition this construct replaces. CLIPS removes
-    /// it before parsing the new body, so a default cannot assert or query it;
-    /// such a reference is rejected before any default is evaluated, leaving
-    /// the previous definition installed and redefinable.
+    /// it before parsing the new body, so it rejects a slot-syntax assertion
+    /// or a fact query of it. Ferric rejects any reference to it, including an
+    /// ordered-form `(assert (item))` for which CLIPS instead creates a second,
+    /// implied template (a Ferric-only rejection). The check runs before this
+    /// slot's default is evaluated, leaving the previous definition installed
+    /// and redefinable.
     fn template_slot_default(
         &mut self,
         slot: &ferric_rules_parser::SlotDefinition,

@@ -165,6 +165,8 @@ fn static_default_failure_preserves_previous_template_and_flushes_output() {
 
 #[test]
 fn static_default_cannot_assert_the_template_it_redefines() {
+    // A Ferric-only rejection: for this ordered-form assert, CLIPS 6.30 creates
+    // a second, implied `item` template instead (see docs/compatibility.md).
     let mut engine = Engine::with_rules("(deftemplate item (slot n (default 7)))").unwrap();
     let error = engine
         .load_str(
