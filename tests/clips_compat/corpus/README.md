@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 1049 small programs progress from individual features to
+CLIPS subset. Its 1053 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 1039 clean conformance cases, 192 of which
+CLIPS-verified output oracle. There are 1043 clean conformance cases, 192 of which
 reproduce a CLIPS error, and 10 active characterizations of documented
 differences: CLIPS output that is not UTF-8, malformed `format` directives,
 equal-salience ties involving identical negative/NCC joins or multi-pattern

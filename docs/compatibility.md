@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1049
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1053
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -330,9 +330,10 @@ activation is created, including during reset, assertion, retraction, or online
 rule installation. `FALSE` is the default; only these two literal symbols are
 accepted. Removing an activation does not undo its focus change. Both explicit
 `focus` and auto-focus skip a push when that module is already on top, while a
-module deeper in the stack may appear again. Deferred predicate matches retain
-network traversal order for these focus events. Snapshots preserve the focus
-stack without replaying notices for existing activations.
+module deeper in the stack may appear again. Predicate and NCC evaluation
+follow depth-first traversal order whether or not auto-focus is used, so
+declaring auto-focus on one rule does not reorder unrelated rules. Snapshots
+preserve the focus stack without replaying notices for existing activations.
 
 Late installation of a blocked NCC rule follows CLIPS's transient focus push
 when its fresh subnetwork shares the rule's left prefix with an older rule, and

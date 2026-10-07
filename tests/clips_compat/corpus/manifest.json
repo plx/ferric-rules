@@ -10729,6 +10729,45 @@
         "not",
         "activation-order"
       ]
+    },
+    {
+      "path": "agenda/398_test_join_tie_order.clp",
+      "level": "interaction",
+      "covers": [
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "agenda/398_test_chain_tie_order.clp",
+      "level": "interaction",
+      "covers": [
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "agenda/398_ncc_after_pending_test_order.clp",
+      "level": "interaction",
+      "covers": [
+        "ncc",
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_unrelated_tie_order.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "ncc",
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
     }
   ]
 }
