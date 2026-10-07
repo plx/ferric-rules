@@ -584,3 +584,57 @@ fn ncc_with_conditions_after_its_nested_ncc_keeps_transient_admission() {
         assert!(network.rete.agenda.is_empty());
     }
 }
+
+#[test]
+fn online_positive_double_negation_is_primed_after_its_subnetwork() {
+    let mut network = Network::new(ConflictResolutionStrategy::Depth);
+    let [p, a, b] = ["p", "a", "b"].map(|relation| network.pattern(relation, false));
+    network.install(1, vec![p.clone()]);
+    network.assert("p", &[]);
+    assert_eq!(network.rules(), vec![1]);
+
+    // watched: (p) (exists (and (a) (b))), installed while (p) exists.
+    let first_new = network.rete.beta.next_node_id();
+    network.rete.set_rule_auto_focus(RuleId(2), true);
+    network.install_conditions(
+        2,
+        &[
+            CompilableCondition::Pattern(p.clone()),
+            CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(a.clone()),
+                CompilableCondition::Pattern(b.clone()),
+            ])]),
+        ],
+    );
+    let outer = outer_ncc(&network, 2);
+    let frontier = network.rete.beta.installation_frontier(first_new);
+    assert_eq!(frontier.first().map(|edge| edge.1), Some(outer));
+    let ordered = network.rete.ncc_shared_results_first(first_new);
+    assert_eq!(ordered.len(), frontier.len());
+    assert_eq!(
+        ordered.last().map(|edge| edge.1),
+        Some(outer),
+        "the outer NCC is primed after the nested NCC and its conjunction"
+    );
+    assert!(network.auto_focus_notices().is_empty());
+    assert!(network.rete.agenda.is_empty());
+
+    // A negation inside the conjunction keeps the original frontier order.
+    let mut negated = b;
+    negated.negated = true;
+    let first_new = network.rete.beta.next_node_id();
+    network.install_conditions(
+        3,
+        &[
+            CompilableCondition::Pattern(p),
+            CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(a),
+                CompilableCondition::Pattern(negated),
+            ])]),
+        ],
+    );
+    assert_eq!(
+        network.rete.ncc_shared_results_first(first_new),
+        network.rete.beta.installation_frontier(first_new)
+    );
+}

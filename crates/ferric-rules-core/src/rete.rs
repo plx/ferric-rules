@@ -602,6 +602,14 @@ impl ReteNetwork {
     /// before the NCC is primed and CLIPS never passes the NCC through. Other
     /// subnetwork edges keep their position after the NCC, as CLIPS primes the
     /// NCC's left input before computing a fresh right subnetwork.
+    ///
+    /// A pure double negation over a positive conjunction (`(exists (and
+    /// ...))` without a negation inside) is instead primed after every
+    /// frontier edge of its subnetwork, so the nested NCC and its conjunction
+    /// have produced the result that blocks it before it admits a token.
+    /// CLIPS makes no transient activation (or focus push) for that shape at
+    /// installation. A conjunction holding a negation keeps the order above:
+    /// CLIPS pushes there for some shapes and not others (tracked in #480).
     fn ncc_shared_results_first(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
         let edges = self.beta.installation_frontier(first_new_node);
         let mut emitted = vec![false; edges.len()];
@@ -628,7 +636,72 @@ impl ReteNetwork {
             emitted[index] = true;
             ordered.push(edge);
         }
+        self.prime_positive_double_negations_last(&mut ordered);
         ordered
+    }
+
+    /// Move each pure positive double-negation NCC edge behind the last
+    /// frontier edge inside its subnetwork (see `ncc_shared_results_first`).
+    fn prime_positive_double_negations_last(&self, edges: &mut Vec<(NodeId, NodeId)>) {
+        let deferred: SmallVec<[NodeId; 2]> = edges
+            .iter()
+            .map(|&(_, child)| child)
+            .filter(|&child| self.is_positive_double_negation(child))
+            .collect();
+        for ncc in deferred {
+            let Some(BetaNode::Ncc { partner, .. }) = self.beta.get_node(ncc) else {
+                continue;
+            };
+            let subnetwork = ncc.0 + 1..=partner.0;
+            let Some(from) = edges.iter().position(|&(_, child)| child == ncc) else {
+                continue;
+            };
+            let Some(last) = edges
+                .iter()
+                .rposition(|&(_, child)| subnetwork.contains(&child.0))
+            else {
+                continue;
+            };
+            if last > from {
+                let edge = edges.remove(from);
+                edges.insert(last, edge);
+            }
+        }
+    }
+
+    /// Whether an NCC is a pure double negation whose nested NCC's
+    /// subnetwork holds no negation: no negative, exists or further NCC
+    /// node between the nested NCC's parent and its partner.
+    fn is_positive_double_negation(&self, ncc: NodeId) -> bool {
+        if !self.beta.ncc_is_pure_double_negation(ncc) {
+            return false;
+        }
+        let Some(inner) = self.beta.ncc_subnetwork_entry(ncc) else {
+            return false;
+        };
+        let Some(BetaNode::Ncc {
+            parent, partner, ..
+        }) = self.beta.get_node(inner)
+        else {
+            return false;
+        };
+        let mut current = self.beta.get_node(*partner).and_then(BetaNode::parent_node);
+        while let Some(node_id) = current {
+            if node_id == *parent {
+                return true;
+            }
+            let Some(node) = self.beta.get_node(node_id) else {
+                return false;
+            };
+            if matches!(
+                node,
+                BetaNode::Negative { .. } | BetaNode::Exists { .. } | BetaNode::Ncc { .. }
+            ) {
+                return false;
+            }
+            current = node.parent_node();
+        }
+        false
     }
 
     /// Ensure the root beta memory contains its single empty-prefix token.

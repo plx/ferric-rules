@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1066
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1074
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -47,9 +47,9 @@ Docker image.
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
 direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and seven track network
+[#394](https://github.com/plx/ferric-rules/issues/394), and eight track network
 topology and installation-history differences: five equal-salience ties
-described with [#400](https://github.com/plx/ferric-rules/issues/400) and two
+described with [#400](https://github.com/plx/ferric-rules/issues/400) and three
 late-installation focus histories tracked in
 [#480](https://github.com/plx/ferric-rules/issues/480):
 
@@ -61,6 +61,7 @@ late-installation focus histories tracked in
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
 | Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
+| Late-installed `(exists (and ...))` holding a negation | Building an auto-focus rule whose `(exists (and ...))` conjunction contains a `not` and does not hold when it is installed can make a transient focus push that CLIPS does not make. | `modules/398_gap_late_exists_conjunction_negation` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
@@ -340,7 +341,9 @@ declaring auto-focus on one rule does not reorder unrelated rules. A rule
 guarded by a pure double negation, `(exists (and ...))` or the equivalent
 `(not (and (not (and ...))))`, pushes its module during reset and assertion
 only once the conjunction holds, even when the conjunction's first join is
-shared with an older rule. An outer `(not (and ...))` with more conditions
+shared with an older rule. Online installation of such a rule does the same
+when the conjunction holds no negation; one with a `not` inside can still
+push transiently when it is installed blocked (see below). An outer `(not (and ...))` with more conditions
 after its nested one, such as `(not (and (not (and (a) (b))) (c)))`, keeps
 CLIPS's transient admission and focus push before those conditions block it.
 A `(not (and ...))` whose first join is shared with an older rule also makes
@@ -360,7 +363,10 @@ a trailing test CE, the test is only queued before the fresh subnetwork blocks
 the token, so the transient activation and its focus push never happen; and a
 fresh subnetwork with no shared prefix does not reconstruct every transient
 activation from the historical fact assertion order, so such a rule can miss a
-historical focus push. Ordinary assertion, reset, and blocker-retraction focus
+historical focus push. A third is an extra push: a rule guarded by
+`(exists (and ...))` whose conjunction contains a `not` and does not hold at
+installation can admit its token before the conjunction is primed, making a
+transient focus push that CLIPS does not make. Ordinary assertion, reset, and blocker-retraction focus
 behavior is covered separately.
 
 `when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,

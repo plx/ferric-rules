@@ -10940,6 +10940,125 @@
         "get-focus-stack",
         "activation-order"
       ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_holds.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_partial.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_negated_join.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "not",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_nested_ncc.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_double_negation_explicit_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_gap_late_exists_conjunction_negation.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "not",
+        "ncc",
+        "get-focus-stack"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Late-install boundary: an auto-focus rule built online whose (exists (and ...)) conjunction holds a negation and is blocked at installation makes a transient focus push that CLIPS 6.30 does not; the outer NCC admits the token before the conjunction's subnetwork has been primed.",
+        "observed": {
+          "phase": "complete",
+          "output": "stack:(WATCH MAIN)\nplain\n",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }
