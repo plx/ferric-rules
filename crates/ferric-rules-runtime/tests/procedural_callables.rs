@@ -107,6 +107,28 @@ fn invalid_new_callable_invalidates_its_callers_without_removing_valid_definitio
 }
 
 #[test]
+fn rule_calling_a_function_rejected_in_the_same_source_is_rejected() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let errors = engine
+        .load_str(
+            r"
+            (deffunction f (?x) (+ (nosuch ?x) 1))
+            (defrule r => (printout t (f 1) crlf))
+            ",
+        )
+        .expect_err("invalid function and its caller should be rejected");
+    let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    for name in ["nosuch", "f"] {
+        let expected = format!("[EXPRNPSR3] Missing function declaration for {name} ");
+        assert!(
+            messages.iter().any(|message| message.contains(&expected)),
+            "{name}: {messages:?}"
+        );
+    }
+    assert!(engine.rules().is_empty(), "{:?}", engine.rules());
+}
+
+#[test]
 fn rejected_method_does_not_change_existing_dispatch() {
     let mut engine = Engine::new(EngineConfig::default());
     engine

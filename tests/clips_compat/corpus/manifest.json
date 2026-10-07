@@ -3459,6 +3459,18 @@
       "error": "load"
     },
     {
+      "path": "procedural/402_callable_rejected_function_caller_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "unknown-call",
+        "deffunction",
+        "defrule"
+      ],
+      "error": "load"
+    },
+    {
       "path": "queries/any-factp-empty.clp",
       "level": "boundary",
       "covers": [
