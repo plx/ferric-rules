@@ -436,3 +436,44 @@ fn source_assertions_read_globals_of_the_module_current_at_their_position() {
         |engine| assert_eq!(integers(engine, "q"), [5]),
     );
 }
+
+/// CLIPS 6.30 parses a whole `(assert ...)` before executing it. Static errors
+/// assert nothing: `[TMPLTDEF2] The single field slot n can only contain a
+/// single field value.`, `[EXPRNPSR3] Missing function declaration for
+/// missing-function.` and `[TMPLTDEF1] Invalid slot zz not defined in
+/// corresponding deftemplate item.` each leave only `(initial-fact)`.
+#[test]
+fn a_static_error_in_any_fact_rejects_the_whole_assert() {
+    for source in [
+        "(assert (a) (item (n (create$ 3))) (b))",
+        "(assert (before (+ 1 2)) (bad (missing-function)) (after))",
+        "(assert (g) (item (zz 1)) (h))",
+    ] {
+        let mut engine = Engine::with_rules("(deftemplate item (slot n))").unwrap();
+        assert!(engine.load_str(source).is_err(), "{source}");
+        assert_eq!(engine.fact_count(), 0, "{source}");
+    }
+}
+
+/// Evaluation errors stop the command and keep earlier facts. CLIPS 6.30
+/// reports `[PRNTUTIL7] Attempt to divide by zero in / function.`,
+/// `[EVALUATN1] Variable missing is unbound` and `[GLOBLDEF1] Global variable
+/// ?*undefined* is unbound.` and keeps `(e)`, `(before 3)` and `(i)`. It also
+/// keeps the failing fact truncated (`(bad)`, `(bad2)`); Ferric does not.
+#[test]
+fn an_evaluation_error_keeps_the_facts_already_asserted() {
+    for (source, kept) in [
+        ("(assert (e) (bad (/ 1 0)) (f))", "e"),
+        (
+            "(assert (before (+ 1 2)) (bad prefix ?missing suffix) (after))",
+            "before",
+        ),
+        ("(assert (i) (bad ?*undefined*) (j))", "i"),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        assert!(engine.load_str(source).is_err(), "{source}");
+        assert_eq!(engine.fact_count(), 1, "{source}");
+        assert_eq!(engine.find_facts(kept).unwrap().len(), 1, "{source}");
+        assert!(engine.find_facts("bad").unwrap().is_empty(), "{source}");
+    }
+}

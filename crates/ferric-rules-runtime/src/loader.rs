@@ -15,7 +15,7 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
-    ConditionCompilationPlan, ConstantTest, ConstantTestType, FactId, FerricString, InstanceName,
+    ConditionCompilationPlan, ConstantTest, ConstantTestType, FerricString, InstanceName,
     JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment, SequenceSource,
     SlotIndex, Value,
 };
@@ -1474,38 +1474,30 @@ impl Engine {
 
     /// Process an `(assert ...)` form.
     ///
-    /// Each sub-list after `assert` is treated as a fact to assert.
+    /// Like CLIPS, every fact is parsed before any is evaluated, so a static
+    /// error in a later fact asserts nothing. Evaluation errors stop the
+    /// command and keep the facts already asserted.
     fn process_assert(&mut self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
         if args.is_empty() {
             return Err(LoadError::InvalidAssert(
                 "assert requires at least one fact".to_owned(),
             ));
         }
-        let mut local_names = HashSet::new();
+        let prepared = args
+            .iter()
+            .map(|fact_expr| self.prepare_assertion(fact_expr))
+            .collect::<Result<Vec<_>, _>>()?;
+        let module = self.module_registry.current_module();
         let mut locals = crate::evaluator::CallableLocals::default();
-        for fact_expr in args {
-            let fact_id = self.process_assert_fact(fact_expr, &mut local_names, &mut locals)?;
+        for fact in &prepared {
+            // Each fact is evaluated completely before it is published.
+            let fact = self
+                .evaluate_prepared_fact_with_locals(fact, module, &mut locals)
+                .map_err(LoadError::InvalidAssert)?;
+            let fact_id = self.assert_fact_internal(fact)?.fact_id();
             result.asserted_facts.push(self.host.export(fact_id));
         }
         Ok(())
-    }
-
-    /// Prepare and evaluate each fact completely before publishing it.
-    fn process_assert_fact(
-        &mut self,
-        fact_expr: &SExpr,
-        local_names: &mut HashSet<String>,
-        locals: &mut crate::evaluator::CallableLocals,
-    ) -> Result<FactId, LoadError> {
-        let prepared = self.prepare_assertion(fact_expr, local_names)?;
-        let fact = self
-            .evaluate_prepared_fact_with_locals(
-                &prepared,
-                self.module_registry.current_module(),
-                locals,
-            )
-            .map_err(LoadError::InvalidAssert)?;
-        Ok(self.assert_fact_internal(fact)?.fact_id())
     }
 
     fn warned_string_value(
@@ -2810,18 +2802,18 @@ impl Engine {
         Ok(())
     }
 
+    /// Dormant fact initializers may bind locals but never read them; only
+    /// iteration variables are visible inside their loop bodies.
     pub(crate) fn validate_fact_initializer_bindings(
         expression: &ActionExpr,
-        locals: &mut HashSet<String>,
-        allow_local_reads: bool,
     ) -> Result<(), LoadError> {
         let empty = HashSet::new();
         let scope = RuleRhsScope {
             exported: &empty,
             existential: &empty,
-            allow_local_reads,
+            allow_local_reads: false,
         };
-        Self::validate_rule_rhs_expr("fact initializer", expression, &scope, locals)
+        Self::validate_rule_rhs_expr("fact initializer", expression, &scope, &mut HashSet::new())
     }
 
     fn existential_scope_variable_name(name: &str) -> &str {

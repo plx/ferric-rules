@@ -179,33 +179,20 @@ impl Engine {
         literal_only: bool,
     ) -> Result<PreparedFact, LoadError> {
         let module = self.module_registry.current_module();
-        let mut locals = HashSet::new();
         match body {
             FactBody::Ordered(fact) => {
                 if let Some(template_id) = self.initializer_template(&fact.relation, module)? {
                     if !fact.values.is_empty() {
                         return Err(invalid_at(fact.span, "template facts require named slots"));
                     }
-                    return self.prepare_template_initializer(
-                        template_id,
-                        &[],
-                        module,
-                        &mut locals,
-                        false,
-                    );
+                    return self.prepare_template_initializer(template_id, &[], module, false);
                 }
                 let fields = fact
                     .values
                     .iter()
                     .map(|value| fact_expression(value, literal_only))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.prepare_ordered_initializer(
-                    &fact.relation,
-                    &fields,
-                    module,
-                    &mut locals,
-                    false,
-                )
+                self.prepare_ordered_initializer(&fact.relation, &fields, module, false)
             }
             FactBody::Template(fact) => {
                 if let Some(template_id) = self.initializer_template(&fact.template, module)? {
@@ -224,13 +211,7 @@ impl Engine {
                             })
                         })
                         .collect::<Result<Vec<_>, LoadError>>()?;
-                    self.prepare_template_initializer(
-                        template_id,
-                        &slots,
-                        module,
-                        &mut locals,
-                        false,
-                    )
+                    self.prepare_template_initializer(template_id, &slots, module, false)
                 } else {
                     let fields = fact
                         .slot_values
@@ -250,13 +231,7 @@ impl Engine {
                             })
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    self.prepare_ordered_initializer(
-                        &fact.template,
-                        &fields,
-                        module,
-                        &mut locals,
-                        false,
-                    )
+                    self.prepare_ordered_initializer(&fact.template, &fields, module, false)
                 }
             }
         }
@@ -267,7 +242,6 @@ impl Engine {
     pub(crate) fn prepare_assertion(
         &mut self,
         expression: &SExpr,
-        locals: &mut HashSet<String>,
     ) -> Result<PreparedFact, LoadError> {
         let fields = expression
             .as_list()
@@ -299,14 +273,14 @@ impl Engine {
                     })
                 })
                 .collect::<Result<Vec<_>, LoadError>>()?;
-            self.prepare_template_initializer(template_id, &slots, module, locals, true)
+            self.prepare_template_initializer(template_id, &slots, module, true)
         } else {
             let values = fields[1..]
                 .iter()
                 .map(interpret_action_expr)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(LoadError::Interpret)?;
-            self.prepare_ordered_initializer(name, &values, module, locals, true)
+            self.prepare_ordered_initializer(name, &values, module, true)
         }
     }
 
@@ -324,14 +298,17 @@ impl Engine {
         }
     }
 
+    /// Top-level assertions report unbound local reads when they are evaluated
+    /// (CLIPS `[EVALUATN1]`); dormant deffacts reject every local read at load.
     fn prepare_field(
         &mut self,
         expression: &ActionExpr,
         module: ModuleId,
-        locals: &mut HashSet<String>,
         allow_local_reads: bool,
     ) -> Result<RuntimeExpr, LoadError> {
-        Self::validate_fact_initializer_bindings(expression, locals, allow_local_reads)?;
+        if !allow_local_reads {
+            Self::validate_fact_initializer_bindings(expression)?;
+        }
         crate::callable_validation::validate_iterator_binds(std::slice::from_ref(expression))
             .map_err(|(span, message)| invalid_at(span, &message))?;
         self.validate_expression_query_declarations(expression, module, None)?;
@@ -350,7 +327,6 @@ impl Engine {
         name: &str,
         fields: &[ActionExpr],
         module: ModuleId,
-        locals: &mut HashSet<String>,
         allow_local_reads: bool,
     ) -> Result<PreparedFact, LoadError> {
         let relation = self
@@ -359,7 +335,7 @@ impl Engine {
             .map_err(|error| LoadError::Engine(error.into()))?;
         let fields = fields
             .iter()
-            .map(|expression| self.prepare_field(expression, module, locals, allow_local_reads))
+            .map(|expression| self.prepare_field(expression, module, allow_local_reads))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(PreparedFact::Ordered { relation, fields })
     }
@@ -369,7 +345,6 @@ impl Engine {
         template_id: TemplateId,
         slots: &[FunctionCall],
         module: ModuleId,
-        locals: &mut HashSet<String>,
         allow_local_reads: bool,
     ) -> Result<PreparedFact, LoadError> {
         let template = self.template_defs[template_id].clone();
@@ -401,7 +376,7 @@ impl Engine {
                 let fields = slot
                     .args
                     .iter()
-                    .map(|expression| self.prepare_field(expression, module, locals, allow_local_reads))
+                    .map(|expression| self.prepare_field(expression, module, allow_local_reads))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok((index, fields))
             })
