@@ -1452,6 +1452,17 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        self.drain_ncc_results(fact_base, new_activations);
+        debug_assert!(self
+            .pending_ncc_results
+            .as_ref()
+            .unwrap()
+            .parents
+            .is_empty());
+        self.pending_ncc_results = None;
+    }
+
+    fn drain_ncc_results(&mut self, fact_base: &FactBase, new_activations: &mut Vec<ActivationId>) {
         loop {
             let pending = std::mem::take(
                 &mut self
@@ -1461,13 +1472,6 @@ impl ReteNetwork {
                     .results,
             );
             if pending.is_empty() {
-                debug_assert!(self
-                    .pending_ncc_results
-                    .as_ref()
-                    .unwrap()
-                    .parents
-                    .is_empty());
-                self.pending_ncc_results = None;
                 return;
             }
             let mut groups = rustc_hash::FxHashMap::default();
@@ -1547,14 +1551,25 @@ impl ReteNetwork {
                         self.ncc_left_activate(event.ncc, event.parent, fact_base, new_activations);
                     }
                 }
+                // Blocking a nested NCC may complete another subnetwork. Like
+                // CLIPS's depth-first propagation, settle those notifications
+                // as their own batch before this batch's next event, so a
+                // shallower sibling chain cannot overtake a deeper one.
+                let batch = self.pending_ncc_results.as_mut().expect("active NCC batch");
+                if !batch.results.is_empty() {
+                    let reserved = std::mem::take(&mut batch.reserved_orders);
+                    self.drain_ncc_results(fact_base, new_activations);
+                    self.pending_ncc_results
+                        .as_mut()
+                        .expect("active NCC batch")
+                        .reserved_orders = reserved;
+                }
             }
             self.pending_ncc_results
                 .as_mut()
                 .unwrap()
                 .reserved_orders
                 .clear();
-            // Blocking a nested NCC may complete another subnetwork. Its new
-            // notifications form the next batch rather than escaping the queue.
         }
     }
 
