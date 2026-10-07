@@ -676,3 +676,58 @@ fn test_scaling_sequence_negative_admission() {
         8.0,
     );
 }
+
+/// N rules sharing `(item ?x)` leave N NCC siblings under one join. Visiting
+/// each top-level NCC must not scan its older siblings for a subnetwork entry
+/// it never waits for, or each parent token costs O(N²).
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_shared_parent_ncc_fanout() {
+    const ITEMS: i64 = 32;
+    fn measure(n: usize) -> Duration {
+        let mut source = String::new();
+        for rule in 0..n {
+            writeln!(
+                source,
+                "(defrule absent-{rule} (item ?x) (not (and (blocker ?x) (other ?x))) =>)"
+            )
+            .unwrap();
+        }
+        let mut engine = Engine::with_rules(&source).unwrap();
+        for key in 0..ITEMS {
+            engine.assert_ordered("blocker", key).unwrap();
+            engine.assert_ordered("other", key).unwrap();
+        }
+        // Time only the assertions: every item is blocked, so each token
+        // reaches all N NCCs and creates no activations. Untimed retraction
+        // restores the starting state between samples.
+        let mut times = Vec::with_capacity(SAMPLES);
+        for sample in 0..WARMUP + SAMPLES {
+            let start = Instant::now();
+            let items: Vec<_> = (0..ITEMS)
+                .map(|key| engine.assert_ordered("item", key).unwrap())
+                .collect();
+            let elapsed = start.elapsed();
+            if sample >= WARMUP {
+                times.push(elapsed);
+            }
+            assert_eq!(engine.agenda_len(), 0);
+            for item in items {
+                engine.retract(item).unwrap();
+            }
+        }
+        black_box(engine);
+        times.sort();
+        times[SAMPLES / 2]
+    }
+
+    let (small, large) = (2000, 8000);
+    assert_scaling(
+        "shared_parent_ncc_fanout",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
