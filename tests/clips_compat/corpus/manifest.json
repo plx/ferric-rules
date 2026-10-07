@@ -10768,6 +10768,41 @@
         "activation-order",
         "deffacts"
       ]
+    },
+    {
+      "path": "modules/398_auto_focus_multi_exists_unsupported.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_multi_exists_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "reset",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_multi_exists_late_support.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "assert",
+        "get-focus-stack"
+      ]
     }
   ]
 }

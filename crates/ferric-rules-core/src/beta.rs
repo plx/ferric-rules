@@ -997,11 +997,29 @@ impl BetaNetwork {
     /// entry is shared with an older rule, the NCC lands behind whichever
     /// successor was newest instead. Beta-root NCCs are primed like CLIPS's
     /// left-prime joins, newest first, and keep their attachment position.
+    ///
+    /// The NCC is linked just before the oldest of its own subnetwork's
+    /// children of the parent, so every node of its subnetwork sees a parent
+    /// token before the NCC decides. For a plain subnetwork that child is the
+    /// newest successor, giving the CLIPS position above. When the subnetwork
+    /// begins with a nested NCC (`(exists (and ...))`), the nested NCC and its
+    /// own entry are both newer children; linking second would let the outer
+    /// NCC admit a token before the nested NCC produced the result that blocks
+    /// it, creating a transient activation CLIPS never makes. The subnetwork
+    /// is identified by node ID: `compile_ncc_condition` allocates the NCC
+    /// before its subnetwork and the partner last, so its fresh nodes are
+    /// exactly the IDs in `ncc + 1..=partner`. A subnetwork whose entry is
+    /// shared with an older rule has no child in that range and keeps the
+    /// second-in-visit-order position.
     pub fn link_ncc_after_subnetwork(&mut self, ncc_node_id: NodeId) {
-        let Some(BetaNode::Ncc { parent, .. }) = self.nodes.get(&ncc_node_id) else {
+        let Some(BetaNode::Ncc {
+            parent, partner, ..
+        }) = self.nodes.get(&ncc_node_id)
+        else {
             return;
         };
         let parent = *parent;
+        let subnetwork = ncc_node_id.0 + 1..=partner.0;
         if parent == self.root_id {
             return;
         }
@@ -1020,7 +1038,11 @@ impl BetaNetwork {
                 .collect();
             // Children are stored oldest first and visited in reverse, so the
             // slot before the last element is second in visit order.
-            linked.insert(linked.len().saturating_sub(1), ncc_node_id);
+            let slot = linked
+                .iter()
+                .position(|child| subnetwork.contains(&child.0))
+                .unwrap_or_else(|| linked.len().saturating_sub(1));
+            linked.insert(slot, ncc_node_id);
             *children = linked.into();
         }
     }

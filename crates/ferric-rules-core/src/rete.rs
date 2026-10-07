@@ -7142,4 +7142,38 @@ mod auto_focus_tests {
         assert_eq!(orders[0], vec![RuleId(1), RuleId(2), RuleId(3)]);
         assert_eq!(orders[0], orders[1], "an auto-focus flag elsewhere");
     }
+
+    #[test]
+    fn auto_focus_exists_conjunction_creates_no_transient_activation() {
+        let mut symbols = SymbolTable::new();
+        let item = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let blocker = symbols
+            .intern_symbol("blocker", StringEncoding::Ascii)
+            .unwrap();
+        let other = symbols
+            .intern_symbol("other", StringEncoding::Ascii)
+            .unwrap();
+        let mut rete = ReteNetwork::new();
+        let mut facts = FactBase::new();
+        let mut compiler = ReteCompiler::new();
+        rete.set_rule_auto_focus(RuleId(1), true);
+        // `(exists (and (blocker) (other)))` lowers to an NCC whose
+        // subnetwork begins with a nested NCC.
+        let conditions = vec![
+            pattern(item),
+            CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                pattern(blocker),
+                pattern(other),
+            ])]),
+        ];
+        compiler
+            .compile_conditions(&mut rete, &facts, RuleId(1), Salience::DEFAULT, &conditions)
+            .unwrap();
+        assert_relation(&mut rete, &mut facts, item);
+        assert!(drain_events(&mut rete, &facts, true).is_empty());
+        assert!(rete.agenda.is_empty());
+        rete.validate_snapshot(&facts, &symbols).unwrap();
+    }
 }
