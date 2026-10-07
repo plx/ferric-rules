@@ -195,6 +195,11 @@ pub struct Engine {
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
     pub(crate) processing_predicates: bool,
+    /// Evaluator depth `(call_depth, expression_depth)` of the active engine
+    /// effect. Evaluation roots that an effect opens (match conditions,
+    /// deffacts and defglobal initializers) start here instead of at zero, so
+    /// the evaluator limits still bound the native stack across them.
+    pub(crate) eval_depth_floor: (usize, usize),
     /// Whether a halt has been requested.
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
@@ -263,6 +268,7 @@ impl Engine {
             reset_in_progress: false,
             action_diagnostics: Vec::new(),
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: false,
             input_buffer: VecDeque::new(),
         }
@@ -1337,27 +1343,34 @@ impl Engine {
     ///
     /// Evaluation errors stop reset before publishing the failing fact.
     pub fn reset(&mut self) -> Result<(), EngineError> {
-        self.reset_with_output(false)
+        self.reset_with_output(false, true)
     }
 
+    /// A source `reset` keeps output and a pending halt: CLIPS 6.30 finishes
+    /// the current RHS after `(halt)` and stops the run even when an RHS or a
+    /// callable resets afterwards.
     pub(crate) fn reset_for_evaluation(&mut self) -> Result<(), EngineError> {
         self.flush_expression_output();
-        self.reset_with_output(true)
+        self.reset_with_output(true, false)
     }
 
-    fn reset_with_output(&mut self, preserve_output: bool) -> Result<(), EngineError> {
+    fn reset_with_output(
+        &mut self,
+        preserve_output: bool,
+        clear_halt: bool,
+    ) -> Result<(), EngineError> {
         // CLIPS ignores a reset invoked by a reset-time initializer. Do not
         // create a fresh evaluation root that could evade the recursion limit.
         if self.reset_in_progress {
             return Ok(());
         }
         self.reset_in_progress = true;
-        let result = self.reset_state(preserve_output);
+        let result = self.reset_state(preserve_output, clear_halt);
         self.reset_in_progress = false;
         result
     }
 
-    fn reset_state(&mut self, preserve_output: bool) -> Result<(), EngineError> {
+    fn reset_state(&mut self, preserve_output: bool, clear_halt: bool) -> Result<(), EngineError> {
         self.fact_epoch = self
             .fact_epoch
             .checked_add(1)
@@ -1374,7 +1387,9 @@ impl Engine {
             self.router.clear();
             self.action_diagnostics.clear();
         }
-        self.halted = false;
+        if clear_halt {
+            self.halted = false;
+        }
         // Note: input_buffer is intentionally NOT cleared on reset.
         // Input is live I/O state that should persist across resets.
 
@@ -1455,6 +1470,7 @@ impl Engine {
         self.initial_fact_id = None;
         self.action_diagnostics.clear();
         self.processing_predicates = false;
+        self.eval_depth_floor = (0, 0);
         self.halted = false;
         self.input_buffer.clear();
     }

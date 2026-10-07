@@ -37,6 +37,40 @@ fn bounded_native_evaluation_child() {
             assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
             assert_eq!(engine.find_facts("done").unwrap().len(), 1);
         }
+        // Engine effects at depth open further evaluation roots: a match
+        // condition drained by assert or retract, and deffacts initializers
+        // run by reset. Those roots continue the effect's depth.
+        let deep = "(deffunction deep (?n) (if (> ?n 0) then (+ 0 (deep (- ?n 1))) else TRUE))";
+        for source in [
+            format!("(deftemplate t (slot v)) {deep}
+              (defrule watch (t (v ?x)) (test (deep 20)) =>)
+              (deffunction outer (?n) (if (> ?n 0) then (+ 0 (outer (- ?n 1))) else (assert (t (v 1)))))
+              (defrule run => (outer 19))"),
+            format!("(deftemplate t (slot v)) {deep}
+              (deffacts seed (t (v 1)))
+              (defrule watch (not (t (v ?x))) (test (deep 20)) =>)
+              (deffunction outer (?n) (if (> ?n 0) then (+ 0 (outer (- ?n 1))) else (retract 1)))
+              (defrule run => (outer 19))"),
+            format!("(deftemplate t (slot v)) (deftemplate u (slot v)) {deep}
+              (deffunction mid (?n) (if (> ?n 0) then (+ 0 (mid (- ?n 1))) else (assert (u (v 1))) 1))
+              (deffacts d (t (v (mid 19))))
+              (defrule watch (declare (salience -10)) (u (v ?x)) (test (deep 19)) => (halt))
+              (deffunction outer (?n) (if (> ?n 0) then (+ 0 (outer (- ?n 1))) else (reset) 0))
+              (defrule run (not (t (v ?))) => (outer 19))"),
+        ] {
+            let mut engine = Engine::new(EngineConfig::default());
+            engine.load_str(&source).unwrap();
+            if source.contains("deffacts seed") {
+                engine.reset().unwrap();
+            }
+            engine.run(RunLimit::Count(10)).unwrap();
+            assert!(engine.action_diagnostics().iter().any(|error| error.to_string().contains("limit exceeded")), "{source}: {:?}", engine.action_diagnostics());
+            engine.clear();
+            engine.load_str("(defrule recovered => (assert (done)))").unwrap();
+            assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(engine.find_facts("done").unwrap().len(), 1);
+        }
+
         let mut chain = "(defgeneric chain)".to_owned();
         for index in 1..35 {
             write!(chain, "(defmethod chain {index} () (call-next-method))").unwrap();

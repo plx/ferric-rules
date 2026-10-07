@@ -45,3 +45,8 @@ for parallel work, create one `Engine` per goroutine. See the package examples
 - Most convenience methods that drop errors (for example `Rules`,
   `AgendaSize`, `GetOutput`) have `...E` variants that also report errors
   such as `ErrEngineClosed`.
+- Rule-created fact addresses (`?f`, including `<Dummy Fact>` slot defaults
+  and addresses inside multifields) have no Go representation; the C ABI
+  rejects them. `GetGlobal` and `GetFact` return an error for a value holding
+  one, and `Facts` fails as a whole while any fact holds one (`FindFacts` when
+  one of its facts does). Use fact IDs and application keys instead.

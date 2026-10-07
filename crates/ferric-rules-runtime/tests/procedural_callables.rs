@@ -107,6 +107,28 @@ fn invalid_new_callable_invalidates_its_callers_without_removing_valid_definitio
 }
 
 #[test]
+fn rule_calling_a_function_rejected_in_the_same_source_is_rejected() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let errors = engine
+        .load_str(
+            r"
+            (deffunction f (?x) (+ (nosuch ?x) 1))
+            (defrule r => (printout t (f 1) crlf))
+            ",
+        )
+        .expect_err("invalid function and its caller should be rejected");
+    let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    for name in ["nosuch", "f"] {
+        let expected = format!("[EXPRNPSR3] Missing function declaration for {name} ");
+        assert!(
+            messages.iter().any(|message| message.contains(&expected)),
+            "{name}: {messages:?}"
+        );
+    }
+    assert!(engine.rules().is_empty(), "{:?}", engine.rules());
+}
+
+#[test]
 fn rejected_method_does_not_change_existing_dispatch() {
     let mut engine = Engine::new(EngineConfig::default());
     engine
@@ -306,6 +328,102 @@ fn fact_and_slot_heads_do_not_create_callable_recovery_cycles() {
             run_output(&mut engine, "(printout t (caller) crlf)"),
             "TRUE\n",
             "{data_action}"
+        );
+    }
+}
+
+#[test]
+fn cyclic_method_precedence_follows_definition_order() {
+    // A outranks B by type, B outranks C by type, and C outranks A because a
+    // wildcard slot loses to a method without one. CLIPS 6.30 inserts each
+    // method before the first one it outranks.
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            r"
+            (defmethod g (($?x INTEGER)) A)
+            (defmethod g ((?x NUMBER) $?y) B)
+            (defmethod g (?x) C)
+            (defmethod h (?x) C)
+            (defmethod h (($?x INTEGER)) A)
+            (defmethod h ((?x NUMBER) $?y) B)
+            ",
+        )
+        .unwrap();
+    assert_eq!(
+        run_output(&mut engine, r#"(printout t (g 1) " " (h 1) crlf)"#),
+        "C B\n"
+    );
+}
+
+#[test]
+fn many_cyclic_methods_dispatch_without_a_total_order() {
+    // More than twenty applicable methods whose precedence relation has
+    // cycles; sorting them by that relation can panic.
+    let methods = [
+        "(($?x INTEGER LEXEME))",
+        "(($?x NUMBER LEXEME))",
+        "((?x INTEGER FLOAT SYMBOL) $?y)",
+        "($?x)",
+        "(($?x INTEGER STRING))",
+        "(?x)",
+        "((?x NUMBER) $?y)",
+        "(($?x INTEGER SYMBOL))",
+        "((?x NUMBER))",
+        "((?x NUMBER LEXEME) $?y)",
+        "((?x INTEGER SYMBOL) $?y)",
+        "((?x INTEGER STRING) $?y)",
+        "((?x NUMBER SYMBOL) $?y)",
+        "(($?x INTEGER FLOAT SYMBOL))",
+        "((?x INTEGER))",
+        "(($?x INTEGER))",
+        "((?x INTEGER) $?y)",
+        "(($?x NUMBER SYMBOL))",
+        "((?x INTEGER LEXEME) $?y)",
+        "(($?x NUMBER))",
+        "(?x $?y)",
+    ];
+    let source = methods
+        .iter()
+        .enumerate()
+        .map(|(label, parameters)| format!("(defmethod g {parameters} {label})"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut engine = Engine::new(EngineConfig::default());
+    engine.load_str(&source).unwrap();
+    assert_eq!(run_output(&mut engine, "(printout t (g 1) crlf)"), "14\n");
+}
+
+#[test]
+fn callable_body_diagnostics_name_their_construct() {
+    for (definition, label) in [
+        (
+            "(deffunction has-one () (missing))",
+            "in deffunction `has-one`",
+        ),
+        (
+            "(defmethod picks ((?x INTEGER)) (missing))",
+            "in defmethod `picks`",
+        ),
+        (
+            "(defmethod picks ((?x INTEGER (missing ?x))) ?x)",
+            "in defmethod `picks`",
+        ),
+        (
+            "(defmethod picks ((?x INTEGER (> ?unbound 0))) ?x)",
+            "defmethod `picks` variable ?unbound",
+        ),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let errors = engine.load_str(definition).expect_err(definition);
+        let messages: Vec<_> = errors.iter().map(ToString::to_string).collect();
+        assert!(
+            messages.iter().any(|message| message.contains(label)),
+            "{definition}: {messages:?}"
+        );
+        assert!(
+            messages.iter().all(|message| !message.contains("rule `")),
+            "{definition}: {messages:?}"
         );
     }
 }

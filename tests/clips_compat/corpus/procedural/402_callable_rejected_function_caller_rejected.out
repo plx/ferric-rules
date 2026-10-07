@@ -1,0 +1,14 @@
+
+[EXPRNPSR3] Missing function declaration for nosuch.
+
+ERROR:
+(deffunction MAIN::f
+   (?x)
+   (+ (nosuch
+
+[EXPRNPSR3] Missing function declaration for f.
+
+ERROR:
+(defrule MAIN::r
+   =>
+   (printout t (f

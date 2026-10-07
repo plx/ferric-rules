@@ -63,6 +63,13 @@ fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
     }
 }
 
+/// Write action output directly to the router, after any output that
+/// evaluation has queued, so a direct write never overtakes earlier text.
+fn write_output(context: &mut ActionExecutionContext<'_>, channel: &str, text: &str) {
+    flush_deferred_printout(context);
+    context.engine.router.write(channel, text);
+}
+
 impl ActionEvalEnv {
     /// Mask outer RHS locals while query/loop bindings are in scope, then
     /// restore them even when the body returns an error or a rule return.
@@ -129,13 +136,14 @@ impl ActionEvalEnv {
         allow_engine_effects: bool,
     ) -> crate::evaluator::EvalContext<'ctx> {
         let engine = &mut *context.engine;
+        let (call_depth, expression_depth) = engine.eval_depth_floor;
         crate::evaluator::EvalContext {
             global_module: None,
             engine,
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             callable_locals: None,
             current_module: context.current_module,
             method_chain: None,
@@ -223,13 +231,14 @@ impl ActionEvalEnv {
         locals: &mut crate::evaluator::CallableLocals,
     ) -> Result<Value, ActionError> {
         let engine = &mut *context.engine;
+        let (call_depth, expression_depth) = engine.eval_depth_floor;
         let mut ctx = crate::evaluator::EvalContext {
             global_module: None,
             engine,
             bindings,
             var_map,
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             callable_locals: Some(locals),
             current_module: context.current_module,
             method_chain: None,
@@ -658,13 +667,17 @@ fn execute_single_action(
             collected_facts,
         ),
         "list-focus-stack" => {
+            flush_deferred_printout(context);
             execute_list_focus_stack(&mut context.engine.router, &context.engine.module_registry)
         }
-        "agenda" => execute_agenda(
-            &context.engine.rete,
-            &mut context.engine.router,
-            &context.engine.rule_info,
-        ),
+        "agenda" => {
+            flush_deferred_printout(context);
+            execute_agenda(
+                &context.engine.rete,
+                &mut context.engine.router,
+                &context.engine.rule_info,
+            )
+        }
         "rules" => execute_rules(
             token,
             rule_info,
@@ -1337,6 +1350,7 @@ fn execute_loop_body(
                 } else {
                     eval_env.eval_expr(token, rule_info, action_expr, context, collected_facts)?;
                 }
+                flush_deferred_printout(context);
                 continue;
             }
         };
@@ -1349,6 +1363,8 @@ fn execute_loop_body(
             eval_env,
             collected_facts,
         )?;
+        // Queued output belongs to this item, not the enclosing action.
+        flush_deferred_printout(context);
     }
     Ok(())
 }
@@ -1563,7 +1579,7 @@ fn execute_rules(
     if output.is_empty() {
         output.push_str("(no rules)\n");
     }
-    context.engine.router.write("t", &output);
+    write_output(context, "t", &output);
     Ok(())
 }
 
@@ -1754,7 +1770,7 @@ fn execute_ppdefrule(
     }
 
     if !output.is_empty() {
-        context.engine.router.write("t", &output);
+        write_output(context, "t", &output);
     }
 
     Ok(())
@@ -2235,13 +2251,12 @@ fn execute_printout(
     let mut output = String::new();
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
         crate::value_print::append_printout_value(
             &value,
             &context.engine.symbol_table,
             &mut output,
         );
-        context.engine.router.write(&channel, &output);
+        write_output(context, &channel, &output);
         output.clear();
     }
     Ok(())
@@ -2264,16 +2279,15 @@ fn execute_println(
     let mut output = String::new();
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
-        flush_deferred_printout(context);
         crate::value_print::append_printout_value(
             &value,
             &context.engine.symbol_table,
             &mut output,
         );
-        context.engine.router.write("t", &output);
+        write_output(context, "t", &output);
         output.clear();
     }
-    context.engine.router.write("t", "\n");
+    write_output(context, "t", "\n");
     Ok(())
 }
 

@@ -177,14 +177,17 @@ impl Engine {
         let bindings = BindingSet::new();
         let variables = VarMap::new();
         let mut locals = CallableLocals::default();
+        // A template defined or asserted by an engine effect counts against
+        // the effect's evaluator depth instead of starting a fresh root.
+        let (call_depth, expression_depth) = self.eval_depth_floor;
         let mut ctx = EvalContext {
             global_module: None,
             engine: self,
             bindings: &bindings,
             var_map: &variables,
             callable_locals: Some(&mut locals),
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             current_module: module,
             method_chain: None,
             compact_fact_bindings: None,
