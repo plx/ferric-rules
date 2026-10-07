@@ -27,8 +27,6 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
         | "multifieldp"
         | "set-fact-duplication" => b"11",
         "symbol-to-instance-name" | "undefrule" | "ppdefrule" => b"11w",
-        // CLIPS 6.30 registers this one with the fact-designator code.
-        "deftemplate-slot-names" => b"11z",
         "instance-name-to-symbol" => b"11p",
         "evenp" | "oddp" | "setgen" | "seed" => b"11i",
         "str-cat" | "sym-cat" | "printout" => b"1*",
@@ -90,7 +88,8 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
         | "deftemplate-slot-cardinality" => b"22w",
         "retract" => b"1*z",
         "focus" => b"1*w",
-        "fact-existp" | "fact-relation" | "fact-slot-names" => b"11z",
+        // CLIPS 6.30 registers deftemplate-slot-names with the designator code.
+        "fact-existp" | "fact-relation" | "fact-slot-names" | "deftemplate-slot-names" => b"11z",
         "fact-index" => b"11y",
         "fact-slot-value" => b"22*zw",
         "save-facts" => b"1*wk",
