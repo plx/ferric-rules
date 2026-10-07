@@ -1781,5 +1781,6 @@ literal pattern restrictions are validated before their construct is installed;
 runtime values and host template assertions are always validated.
 Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects
 runtime values that violate a declared slot constraint. See
-[the migration notes](migration.md#primitive-template-slot-types) for default
-priority, external token handling, and explicit unsupported optional attributes.
+[the migration notes](migration.md#template-constraints-and-computed-defaults)
+for default derivation, external-address handling, and the remaining
+unsupported class attributes (`allowed-classes`, `allowed-instance-names`).

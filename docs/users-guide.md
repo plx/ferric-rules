@@ -159,7 +159,7 @@ lengths, for example `(slot age (type INTEGER) (range 0 150))` or
 constraints; a multislot repeats its derived value to its minimum length.
 `(default ?NONE)` requires callers to supply the slot. Known invalid literals
 fail at load time; computed values are checked before the fact is published.
-See [template constraint compatibility](compatibility.md) for details and
+See [template constraint compatibility](compatibility.md#163-deftemplates) for details and
 allocation limits on automatically expanded defaults.
 
 Fact duplication is disabled by default, matching CLIPS. Reasserting the same
