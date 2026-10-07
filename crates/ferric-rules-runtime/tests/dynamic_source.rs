@@ -201,3 +201,49 @@ fn host_template_assertion_keeps_its_template_while_defaults_build() {
     assert_eq!(engine.get_output("t"), Some("FALSE (x)\n"));
     assert!(format!("{:?}", engine.action_diagnostics()).contains("modify"));
 }
+
+// The same holds for an ordered relation that only dynamically evaluated
+// source names: its fact keeps the relation implied while its fields run
+// `build`. CLIPS 6.30 prints the following; Ferric reports its own rejection
+// text on werror instead of the CSTRCPSR4 diagnostic and construct echo:
+//
+//   [CSTRCPSR4] Cannot redefine deftemplate p while it is in use.
+//
+//   ERROR:
+//   (deftemplate MAIN::p
+//   p (implied) (implied)
+//   later FALSE
+#[test]
+fn eval_assert_keeps_its_ordered_relation_implied_while_fields_build() {
+    let engine = run(r#"(defrule r =>
+      (bind ?f (eval "(assert (p (build \"(deftemplate p (slot x))\")))"))
+      (printout t (fact-relation ?f) " " (fact-slot-names ?f) " "
+        (deftemplate-slot-names p) crlf)
+      (build "(defrule later (p ?x) => (printout t later \" \" ?x crlf))"))"#);
+    assert_eq!(
+        engine.get_output("t"),
+        Some("p (implied) (implied)\nlater FALSE\n")
+    );
+    assert!(engine
+        .get_output("werror")
+        .is_some_and(|text| text.contains("ordered relation is in use")));
+}
+
+// A top-level assertion holds its relation the same way. CLIPS 6.30 rejects
+// the build and `(deftemplate-slot-names p)` is then `(implied)`.
+#[test]
+fn top_level_assert_keeps_its_ordered_relation_implied_while_fields_build() {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str(r#"(assert (p (build "(deftemplate p (slot x))")))"#)
+        .unwrap();
+    assert!(engine
+        .get_output("werror")
+        .is_some_and(|text| text.contains("ordered relation is in use")));
+    engine
+        .load_str("(defrule show => (printout t (deftemplate-slot-names p) crlf))")
+        .unwrap();
+    engine.reset().unwrap();
+    engine.run(RunLimit::Count(30)).unwrap();
+    assert_eq!(engine.get_output("t"), Some("(implied)\n"));
+}

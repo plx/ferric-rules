@@ -266,6 +266,7 @@ impl EngineSnapshotOwned {
             active_rules: Vec::new(),
             active_callables: Vec::new(),
             active_templates: Vec::new(),
+            active_ordered_relations: Vec::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,

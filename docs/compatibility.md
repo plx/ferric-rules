@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 939
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 940
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1317,7 +1317,9 @@ these reentrant initializer cases. Use a host load call or a later RHS action.
 A failed `build` returns FALSE and reports its load diagnostics; earlier effects
 of incremental loading are retained. A currently executing rule or callable
 cannot be replaced, including through a helper's `build` call; the original
-definition remains installed.
+definition remains installed. Likewise, while a fact is being asserted,
+modified, or duplicated, a `build` in its slot or field expressions cannot
+redefine its template or give its ordered relation an explicit template.
 
 Each engine owns its random state, and snapshots preserve that state. Seeded
 explicit draws match the pinned glibc-based CLIPS 6.30 reference. CLIPS 6.30

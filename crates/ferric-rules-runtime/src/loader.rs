@@ -1725,7 +1725,7 @@ impl Engine {
             if let Construct::Facts(definition) = construct {
                 for body in definition.facts {
                     let prepared = self.prepare_fact_body(&body, true)?;
-                    self.with_active_template(prepared.template_id(), |engine| {
+                    self.with_active_fact(prepared.identity(), |engine| {
                         let module = engine.module_registry.current_module();
                         let fact = engine
                             .evaluate_prepared_fact(&prepared, module)
@@ -2155,7 +2155,7 @@ impl Engine {
         for fact in &prepared {
             // Each fact is evaluated completely before it is published.
             let fact_id = self
-                .with_active_template(fact.template_id(), |engine| {
+                .with_active_fact(fact.identity(), |engine| {
                     let fact = engine
                         .evaluate_prepared_fact_with_locals(fact, module, &mut locals)
                         .map_err(LoadError::InvalidAssert)?;

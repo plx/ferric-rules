@@ -7,7 +7,7 @@ use ferric_rules_parser::{
     interpret_action_exprs, ActionExpr, FactBody, FactValue, FunctionCall, SExpr, SlotType, Span,
 };
 
-use crate::engine::Engine;
+use crate::engine::{Engine, FactIdentity};
 use crate::evaluator::{self, EvalContext, RuntimeExpr};
 use crate::loader::{LoadError, TemplateLookupError};
 use crate::modules::ModuleId;
@@ -28,10 +28,10 @@ pub(crate) enum PreparedFact {
 }
 
 impl PreparedFact {
-    pub(crate) fn template_id(&self) -> Option<TemplateId> {
+    pub(crate) fn identity(&self) -> FactIdentity {
         match self {
-            Self::Ordered { .. } => None,
-            Self::Template { template_id, .. } => Some(*template_id),
+            Self::Ordered { relation, .. } => FactIdentity::Ordered(*relation),
+            Self::Template { template_id, .. } => FactIdentity::Template(*template_id),
         }
     }
 

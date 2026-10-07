@@ -17,6 +17,17 @@ impl Engine {
         if name == "initial-fact" {
             return true;
         }
+        let is_relation = |relation| {
+            self.resolve_core_symbol(relation)
+                .is_some_and(|raw| Self::ordered_relation_name_is(raw, name))
+        };
+        if self
+            .active_ordered_relations
+            .iter()
+            .any(|relation| is_relation(*relation))
+        {
+            return true;
+        }
         let matches_fact = |fact: &Fact| matches!(fact, Fact::Ordered(fact) if self.resolve_core_symbol(fact.relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)));
         if self.fact_base.iter().any(|(_, entry)| matches_fact(&entry.fact))
             || self.rete.alpha.entry_types().any(|entry| {

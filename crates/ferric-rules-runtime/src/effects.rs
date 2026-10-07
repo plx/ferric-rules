@@ -3,7 +3,7 @@
 use ferric_rules_core::{Fact, FactId, OrderedFact, TemplateFact, Value};
 use ferric_rules_parser::{ActionExpr, FunctionCall, SlotType};
 
-use crate::engine::{Engine, FactAssertionResult};
+use crate::engine::{Engine, FactAssertionResult, FactIdentity};
 use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
 use crate::fact_address::{live_fact_id, make_fact_address};
 use crate::loader::TemplateLookupError;
@@ -292,17 +292,22 @@ fn apply_slots(
         .map_err(|error| failure(name, error, span))
 }
 
-/// Hold `template` in use from the moment a fact of it is captured until the
-/// fact is published (see [`Engine::with_active_template`]).
-fn with_active_template<T>(
+/// Hold a fact's template or ordered relation in use from the moment the
+/// fact is captured until it is published (see [`Engine::with_active_fact`]).
+fn with_active_fact<T>(
     ctx: &mut EvalContext<'_>,
-    template: Option<ferric_rules_core::TemplateId>,
+    identity: FactIdentity,
     assemble: impl FnOnce(&mut EvalContext<'_>) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
-    let depth = ctx.engine.active_templates.len();
-    ctx.engine.active_templates.extend(template);
+    let templates = ctx.engine.active_templates.len();
+    let relations = ctx.engine.active_ordered_relations.len();
+    match identity {
+        FactIdentity::Template(id) => ctx.engine.active_templates.push(id),
+        FactIdentity::Ordered(relation) => ctx.engine.active_ordered_relations.push(relation),
+    }
     let result = assemble(ctx);
-    ctx.engine.active_templates.truncate(depth);
+    ctx.engine.active_templates.truncate(templates);
+    ctx.engine.active_ordered_relations.truncate(relations);
     result
 }
 
@@ -380,12 +385,9 @@ fn eval_syntax_inner(ctx: &mut EvalContext<'_>, call: &FunctionCall) -> Result<V
                 .fact
                 .clone();
             // A slot expression may retract the original first, so the live
-            // fact alone does not keep its template in use until publication.
-            let template = match &fact {
-                Fact::Template(fact) => Some(fact.template_id),
-                Fact::Ordered(_) => None,
-            };
-            with_active_template(ctx, template, |ctx| {
+            // fact alone does not keep its template or relation in use until
+            // publication.
+            with_active_fact(ctx, FactIdentity::of(&fact), |ctx| {
                 replace_fact(ctx, name, call, fact, &address, span)
             })
         }
@@ -457,7 +459,7 @@ fn eval_assert(
             .engine
             .resolve_template_id(&pattern.name, ctx.current_module)
         {
-            Ok(id) => with_active_template(ctx, Some(id), |ctx| {
+            Ok(id) => with_active_fact(ctx, FactIdentity::Template(id), |ctx| {
                 let definition = ctx.engine.template_defs[id].clone();
                 let validated = definition
                     .slot_overrides(&pattern.args, &ctx.engine.symbol_table)
@@ -486,11 +488,13 @@ fn eval_assert(
                     .symbol_table
                     .intern_symbol(&pattern.name, ctx.engine.config.string_encoding)
                     .map_err(|error| failure(name, error.to_string(), span))?;
-                let fact = Fact::Ordered(OrderedFact {
-                    relation,
-                    fields: eval_fields(ctx, &pattern.args)?.into(),
-                });
-                assert_result(ctx, name, fact, span)?
+                with_active_fact(ctx, FactIdentity::Ordered(relation), |ctx| {
+                    let fact = Fact::Ordered(OrderedFact {
+                        relation,
+                        fields: eval_fields(ctx, &pattern.args)?.into(),
+                    });
+                    assert_result(ctx, name, fact, span)
+                })?
             }
             Err(error) => {
                 return Err(failure(

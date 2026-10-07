@@ -9458,6 +9458,16 @@
         "issue-403"
       ],
       "error": "run"
+    },
+    {
+      "path": "stdlib/403e_build_ordered_released.clp",
+      "level": "interaction",
+      "covers": [
+        "build",
+        "eval",
+        "deftemplate",
+        "issue-403"
+      ]
     }
   ]
 }

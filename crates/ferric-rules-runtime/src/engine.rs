@@ -106,6 +106,23 @@ impl<Id: Copy> FactAssertionResult<Id> {
     }
 }
 
+/// The construct identity a fact holds in use while it is assembled
+/// (see [`Engine::with_active_fact`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FactIdentity {
+    Template(TemplateId),
+    Ordered(Symbol),
+}
+
+impl FactIdentity {
+    pub(crate) fn of(fact: &Fact) -> Self {
+        match fact {
+            Fact::Template(fact) => Self::Template(fact.template_id),
+            Fact::Ordered(fact) => Self::Ordered(fact.relation),
+        }
+    }
+}
+
 /// The Ferric rules engine.
 ///
 /// This is the main entry point for embedding applications. The engine is
@@ -204,6 +221,10 @@ pub struct Engine {
     /// `active_callables`. A slot expression or dynamic default cannot
     /// redefine such a template underneath its own assertion.
     pub(crate) active_templates: Vec<TemplateId>,
+    /// Ordered relations whose fact is being assembled or published, held
+    /// like `active_templates` so `build` cannot define an explicit template
+    /// over the relation underneath its own assertion.
+    pub(crate) active_ordered_relations: Vec<Symbol>,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
@@ -315,6 +336,7 @@ impl Engine {
             source_load_depth: 0,
             active_callables: Vec::new(),
             active_templates: Vec::new(),
+            active_ordered_relations: Vec::new(),
             active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
@@ -375,19 +397,25 @@ impl Engine {
         self.config.set_fact_duplication(enabled)
     }
 
-    /// Keep `template` in use while one of its facts is assembled and
-    /// published. Its slot expressions and dynamic defaults may run `build`;
-    /// like CLIPS 6.30, that redefinition is then rejected (CSTRCPSR4) instead
-    /// of publishing the fact under a template with a different slot layout.
-    pub(crate) fn with_active_template<T>(
+    /// Keep a fact's template or ordered relation in use while the fact is
+    /// assembled and published. Its slot expressions, fields and dynamic
+    /// defaults may run `build`; like CLIPS 6.30, a redefinition of that
+    /// template, or an explicit template over that relation, is then rejected
+    /// (CSTRCPSR4) instead of publishing the fact under a different layout.
+    pub(crate) fn with_active_fact<T>(
         &mut self,
-        template: Option<TemplateId>,
+        identity: FactIdentity,
         assemble: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let depth = self.active_templates.len();
-        self.active_templates.extend(template);
+        let templates = self.active_templates.len();
+        let relations = self.active_ordered_relations.len();
+        match identity {
+            FactIdentity::Template(id) => self.active_templates.push(id),
+            FactIdentity::Ordered(relation) => self.active_ordered_relations.push(relation),
+        }
         let result = assemble(self);
-        self.active_templates.truncate(depth);
+        self.active_templates.truncate(templates);
+        self.active_ordered_relations.truncate(relations);
         result
     }
 
@@ -786,7 +814,7 @@ impl Engine {
         }
         let def = std::sync::Arc::clone(def);
         // Dynamic defaults may run `build`; hold the template until published.
-        self.with_active_template(Some(tid), |engine| {
+        self.with_active_fact(FactIdentity::Template(tid), |engine| {
             engine.assert_template_slots_with_defaults(
                 template_name,
                 tid,
@@ -1558,7 +1586,7 @@ impl Engine {
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
             for initializer in definition.facts {
-                self.with_active_template(initializer.template_id(), |engine| {
+                self.with_active_fact(initializer.identity(), |engine| {
                     let fact = engine
                         .evaluate_prepared_fact(&initializer, definition.module)
                         .map_err(|reason| EngineError::FactInitialization {
@@ -1606,6 +1634,7 @@ impl Engine {
         self.template_declarations = vec![(ModuleId(0), "initial-fact".to_owned())];
         self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
         self.active_templates.clear();
+        self.active_ordered_relations.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the
