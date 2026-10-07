@@ -9500,6 +9500,15 @@
         "issue-403"
       ],
       "error": "run"
+    },
+    {
+      "path": "stdlib/403i_template_default_value_unchecked.clp",
+      "level": "boundary",
+      "covers": [
+        "construct-introspection",
+        "deftemplate",
+        "issue-403"
+      ]
     }
   ]
 }

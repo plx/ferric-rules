@@ -1292,9 +1292,10 @@ effects can install a new callable definition before that invocation begins.
 
 Ordered relation declarations remain available to introspection after their
 last fact is retracted and across reset. The built-in `initial-fact` is a
-deftemplate without slots, not an ordered relation. Querying a dynamic default evaluates
-its expression, including side effects; merely listing slots or asking the
-default kind does not.
+deftemplate without slots, not an ordered relation. Querying a dynamic default
+evaluates its expression, including side effects, and returns its value without
+checking the slot's constraints; merely listing slots or asking the default
+kind does not evaluate it.
 
 `deftemplate-slot-names` loads with an INTEGER or SYMBOL literal argument, as
 in CLIPS 6.30. A template name that is not a SYMBOL when evaluated stops the

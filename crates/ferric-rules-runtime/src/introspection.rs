@@ -222,7 +222,8 @@ fn type_names(ctx: &mut EvalContext<'_>, allowed: Option<&[SlotValueType]>) -> V
     )
 }
 
-/// Evaluate a slot's dynamic default and check it against the slot's constraints.
+/// Evaluate a slot's dynamic default. As in CLIPS, constraints are checked
+/// only when a fact is asserted, not when the default is queried.
 fn dynamic_default_value(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -230,12 +231,7 @@ fn dynamic_default_value(
     index: usize,
     default: &crate::templates::DynamicSlotDefault,
 ) -> Result<Value, EvalError> {
-    let invalid = |reason| EvalError::UnsupportedOperation {
-        operation: name.to_owned(),
-        reason,
-        span: None,
-    };
-    let value = crate::template_defaults::evaluate_dynamic(
+    crate::template_defaults::evaluate_dynamic(
         ctx,
         default,
         template.slot_types[index],
@@ -243,10 +239,12 @@ fn dynamic_default_value(
     )
     .map_err(|failure| match failure {
         crate::template_defaults::SlotFailure::Eval(error) => error,
-        crate::template_defaults::SlotFailure::Invalid(reason) => invalid(reason),
-    })?;
-    template.validate_slot(index, &value).map_err(invalid)?;
-    Ok(value)
+        crate::template_defaults::SlotFailure::Invalid(reason) => EvalError::UnsupportedOperation {
+            operation: name.to_owned(),
+            reason,
+            span: None,
+        },
+    })
 }
 
 fn slot_metadata(

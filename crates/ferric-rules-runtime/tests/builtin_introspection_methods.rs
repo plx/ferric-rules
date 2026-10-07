@@ -243,3 +243,22 @@ fn initial_fact_metadata_has_no_implied_slot() {
         );
     }
 }
+
+// Querying a dynamic default does not check slot constraints: CLIPS 6.30
+// prints `dynamic 20`. Ferric's assertion of that default is still rejected,
+// intentionally stricter than CLIPS's default dynamic-constraint setting
+// (see the migration guide).
+#[test]
+fn dynamic_default_value_query_does_not_check_constraints() {
+    let mut engine = Engine::with_rules(
+        "(deffunction f () 20)
+         (deftemplate item (slot x (range 0 10) (default-dynamic (f))))
+         (defrule report => (printout t (deftemplate-slot-defaultp item x) \" \"
+           (deftemplate-slot-default-value item x) crlf)
+           (assert (item)))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(engine.get_output("t"), Some("dynamic 20\n"));
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("range"));
+}
