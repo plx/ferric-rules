@@ -1260,12 +1260,13 @@ fn execute_single_action(
 
 /// Whether `call` is a dedicated action handler, which evaluates its own
 /// operands, given an explicit `expand$` operand. The evaluator expands
-/// `printout`, `bind` and ordinary function calls itself.
+/// `printout`, `bind` and ordinary function calls itself, and `println`
+/// prints expanded fields directly, so fields without a literal form (such
+/// as fact addresses) still print.
 fn takes_expanded_operands(call: &FunctionCall) -> bool {
     matches!(
         call.name.as_str(),
-        "println"
-            | "list-focus-stack"
+        "list-focus-stack"
             | "agenda"
             | "rules"
             | "undefrule"
@@ -2435,7 +2436,44 @@ fn execute_println(
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
+        let value = match arg {
+            ActionExpr::FunctionCall(expansion) if expansion.name == "expand$" => {
+                let span = Some(crate::evaluator::SourceSpan {
+                    line: expansion.span.start.line,
+                    column: expansion.span.start.column,
+                });
+                let [operand] = expansion.args.as_slice() else {
+                    return Err(ActionError::Evaluator(EvalError::ArityMismatch {
+                        name: "expand$".into(),
+                        expected: "1".into(),
+                        actual: expansion.args.len(),
+                        span,
+                    }));
+                };
+                let value =
+                    eval_env.eval_expr(token, rule_info, operand, context, collected_facts)?;
+                let Value::Multifield(fields) = value else {
+                    return Err(ActionError::Evaluator(EvalError::TypeError {
+                        function: "expand$".into(),
+                        expected: "MULTIFIELD".into(),
+                        actual: runtime_value_type_name(&value).into(),
+                        span,
+                    }));
+                };
+                // Each expanded field is its own println argument.
+                for field in fields.iter() {
+                    crate::value_print::append_printout_value(
+                        field,
+                        &context.engine.symbol_table,
+                        &mut output,
+                    );
+                    write_output(context, "t", &output);
+                    output.clear();
+                }
+                continue;
+            }
+            _ => eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?,
+        };
         crate::value_print::append_printout_value(
             &value,
             &context.engine.symbol_table,
