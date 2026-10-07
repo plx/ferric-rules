@@ -476,7 +476,10 @@ assertion's current module. A global read inside a called function follows that
 function's module. Ordinary local variable reads are invalid in defaults;
 lexical loop and fact-query bindings are supported. Direct `return` expressions
 in defaults are rejected; a called function may return normally. A static void
-default is invalid, while a dynamic scalar void result fills the slot with `nil`.
+default is invalid, including a void element of a static multislot default
+(CLIPS 6.30 reports `[CSTRNCHK1]` after evaluating every element). A dynamic
+scalar void result fills the slot with `nil`, and dynamic multislot defaults
+omit void elements.
 A default in a template redefinition cannot assert or query the template it
 replaces, because CLIPS 6.30 removes the old definition before it parses the
 new body. Both engines reject such a redefinition at load. Ferric checks before

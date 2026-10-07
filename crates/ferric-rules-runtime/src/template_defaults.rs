@@ -40,6 +40,18 @@ pub(crate) struct SlotEvaluationError {
     pub failure: SlotFailure,
 }
 
+/// How a void result (such as `printout`'s) is treated in a slot expression.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoidPolicy {
+    /// Supplied slot fields: a void multislot element is omitted.
+    Omit,
+    /// Dynamic defaults: a void single-field value becomes `nil`, and a void
+    /// multislot element is omitted.
+    NilOrOmit,
+    /// Static defaults: CLIPS 6.30 rejects any void result (CSTRNCHK1).
+    Reject,
+}
+
 /// Evaluate one complete slot; multifield expressions splice into the aggregate.
 /// Recursive calls retain the active evaluator depth and shared execution budget.
 fn evaluate_expressions(
@@ -47,7 +59,7 @@ fn evaluate_expressions(
     slot_type: SlotType,
     name: &str,
     expressions: &[RuntimeExpr],
-    void_as_nil: bool,
+    void_policy: VoidPolicy,
 ) -> Result<Value, SlotFailure> {
     if slot_type == SlotType::Single {
         let [expression] = expressions else {
@@ -56,7 +68,7 @@ fn evaluate_expressions(
             )));
         };
         let mut value = evaluator::eval_inner(ctx, expression)?;
-        if void_as_nil && matches!(value, Value::Void) {
+        if void_policy == VoidPolicy::NilOrOmit && matches!(value, Value::Void) {
             value = Value::Symbol(
                 ctx.engine
                     .symbol_table
@@ -72,12 +84,19 @@ fn evaluate_expressions(
         return Ok(value);
     }
     let mut fields = ferric_rules_core::Multifield::new();
+    let mut produced_void = false;
     for expression in expressions {
         match evaluator::eval_inner(ctx, expression)? {
             Value::Multifield(values) => fields.extend(values.iter().cloned()),
-            Value::Void => {}
+            Value::Void => produced_void = true,
             value => fields.push(value),
         }
+    }
+    // Like CLIPS, every element runs before the whole default is checked.
+    if produced_void && void_policy == VoidPolicy::Reject {
+        return Err(SlotFailure::Invalid(format!(
+            "static default for multislot `{name}` produced no value"
+        )));
     }
     Ok(Value::Multifield(Box::new(fields)))
 }
@@ -94,7 +113,7 @@ fn evaluate_actions(
             evaluator::from_action_expr(field, &mut ctx.engine.symbol_table, &ctx.engine.config)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    evaluate_expressions(ctx, slot_type, name, &expressions, false)
+    evaluate_expressions(ctx, slot_type, name, &expressions, VoidPolicy::Omit)
 }
 
 fn evaluate_dynamic(
@@ -124,14 +143,17 @@ fn evaluate_dynamic(
     };
     // A default is not lexically inside the asserting callable or loop, so a
     // `return` or `break` reached through `funcall` must not escape into it.
-    evaluate_expressions(&mut child, slot_type, name, &default.expressions, true).map_err(
-        |failure| match failure {
-            SlotFailure::Eval(error) => {
-                SlotFailure::Eval(evaluator::contain_control_signals(error))
-            }
-            invalid @ SlotFailure::Invalid(_) => invalid,
-        },
+    evaluate_expressions(
+        &mut child,
+        slot_type,
+        name,
+        &default.expressions,
+        VoidPolicy::NilOrOmit,
     )
+    .map_err(|failure| match failure {
+        SlotFailure::Eval(error) => SlotFailure::Eval(evaluator::contain_control_signals(error)),
+        invalid @ SlotFailure::Invalid(_) => invalid,
+    })
 }
 
 /// One source per slot for a prepared fact, whose overrides may be stored out
@@ -203,7 +225,7 @@ fn evaluate_slots_inner(
                 continue;
             }
             SlotSource::Exprs(expressions) => {
-                evaluate_expressions(ctx, slot_type, name, expressions, false)
+                evaluate_expressions(ctx, slot_type, name, expressions, VoidPolicy::Omit)
             }
             SlotSource::Actions(fields) => evaluate_actions(ctx, slot_type, name, fields),
             SlotSource::Default => match &template.dynamic_defaults[index] {
@@ -242,7 +264,7 @@ impl Engine {
         module: ModuleId,
     ) -> Result<Value, String> {
         self.with_default_context(module, |ctx| {
-            evaluate_expressions(ctx, slot_type, name, expressions, false)
+            evaluate_expressions(ctx, slot_type, name, expressions, VoidPolicy::Reject)
         })
         .map_err(|failure| match failure {
             SlotFailure::Invalid(reason) => reason,

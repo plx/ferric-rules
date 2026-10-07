@@ -346,6 +346,40 @@ fn dynamic_scalar_void_defaults_become_nil_but_static_void_defaults_are_invalid(
 }
 
 #[test]
+fn static_multislot_void_elements_are_invalid_but_dynamic_ones_are_omitted() {
+    let mut engine = Engine::with_rules("(deftemplate item (multislot m (default 9)))").unwrap();
+    // CLIPS evaluates every element, then rejects the default (CSTRNCHK1).
+    assert!(engine
+        .load_str(
+            "(deffunction nothing () (printout t nothing crlf))
+      (deftemplate item (multislot m (default 1 (nothing) (printout t after crlf) 2)))"
+        )
+        .is_err());
+    assert_eq!(engine.get_output("t"), Some("nothing\nafter\n"));
+    let multifield = |engine: &Engine, fact| match engine.get_fact_slot_by_name(fact, "m").unwrap()
+    {
+        Value::Multifield(values) => values
+            .iter()
+            .map(|value| match value {
+                Value::Integer(value) => *value,
+                value => panic!("expected integer, got {value:?}"),
+            })
+            .collect::<Vec<_>>(),
+        value => panic!("expected multifield, got {value:?}"),
+    };
+    // The previous definition stays installed.
+    let fact = engine.assert_template("item", &[], ()).unwrap();
+    assert_eq!(multifield(&engine, fact), [9]);
+    engine.retract(fact).unwrap();
+
+    engine
+        .load_str("(deftemplate item (multislot m (default-dynamic 1 (nothing) 2)))")
+        .unwrap();
+    let fact = engine.assert_template("item", &[], ()).unwrap();
+    assert_eq!(multifield(&engine, fact), [1, 2]);
+}
+
+#[test]
 fn computed_constraint_failures_preserve_original_facts_across_all_mutations() {
     for (slot, computed, initial) in [
         ("(slot n (type INTEGER) (range 1 5))", "(+ 5 1)", "3"),

@@ -963,6 +963,17 @@
       ]
     },
     {
+      "path": "facts/397_template_constraints_static_multislot_void_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "deftemplate",
+        "multislot",
+        "default",
+        "printout"
+      ],
+      "error": "load"
+    },
+    {
       "path": "facts/397_template_default_self_reference_redefinition_rejected.clp",
       "level": "boundary",
       "covers": [
