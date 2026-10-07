@@ -1790,7 +1790,7 @@ impl Engine {
             Some(DefaultValue::Expressions(expressions)) => {
                 let compiled = self.prepare_default_expressions(expressions, module)?;
                 self.evaluate_static_default(slot.slot_type, &slot.name, &compiled, module)
-                    .map_err(|error| Self::compile_error_at(&slot.span, &error.to_string()))?
+                    .map_err(|error| Self::compile_error_at(&slot.span, &error))?
             }
             Some(DefaultValue::Dynamic(expressions)) => {
                 let expressions = self.prepare_default_expressions(expressions, module)?;

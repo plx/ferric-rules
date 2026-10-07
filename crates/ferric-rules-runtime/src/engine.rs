@@ -614,9 +614,17 @@ impl Engine {
     /// template identity and every positional slot value after defaults and
     /// named overrides have been applied.
     ///
+    /// Omitted slots with a `default-dynamic` attribute are evaluated, in
+    /// slot declaration order, after every supplied value has been validated.
+    ///
     /// # Errors
     ///
-    /// Returns an error for an unknown template or slot.
+    /// Returns an error for an unknown template or slot, a duplicate slot, or
+    /// a mismatched name/value count. A supplied value that violates its
+    /// slot's type or constraints, an omitted `?NONE` slot, and an evaluated
+    /// `default-dynamic` slot whose expression fails or whose result violates
+    /// the slot's constraints all return [`EngineError::InvalidSlotValue`]
+    /// naming that slot.
     pub fn assert_template_with_result(
         &mut self,
         template_name: &str,
@@ -639,13 +647,13 @@ impl Engine {
         let def = self
             .template_defs
             .get(tid)
-            .cloned()
             .ok_or_else(|| EngineError::TemplateNotFound(template_name.to_string()))?;
 
-        let mut overrides = Vec::with_capacity(slot_names.len());
+        // Start with default values for all slots.
+        let mut slots = def.defaults.clone();
 
         // Validate every override before mutating working memory.
-        let mut seen = vec![false; def.slot_names.len()];
+        let mut seen = vec![false; slots.len()];
         for (name, value) in slot_names.iter().zip(slot_values) {
             let idx = def
                 .slot_index(name)
@@ -679,16 +687,52 @@ impl Engine {
             };
             def.validate_slot(idx, &value)
                 .map_err(|reason| invalid(&reason))?;
-            overrides.push((idx, vec![crate::evaluator::RuntimeExpr::Literal(value)]));
+            slots[idx] = value;
         }
-        let slots = self
-            .evaluate_template_defaults(&def, &overrides, self.module_registry.current_module())
-            .map_err(|error| EngineError::InvalidSlotValue {
-                template: template_name.to_owned(),
-                slot: def.slot_names[error.index].clone(),
-                reason: error.error.to_string(),
-            })?
-            .into_boxed_slice();
+        // Omitted static defaults (including `?NONE`) are checked before any
+        // dynamic default runs, so a rejected assertion has no side effects.
+        let mut dynamic = false;
+        for (index, value) in slots.iter().enumerate() {
+            if seen[index] {
+                continue;
+            }
+            if def.dynamic_defaults[index].is_some() {
+                dynamic = true;
+                continue;
+            }
+            def.validate_slot(index, value)
+                .map_err(|reason| EngineError::InvalidSlotValue {
+                    template: template_name.to_owned(),
+                    slot: def.slot_names[index].clone(),
+                    reason,
+                })?;
+        }
+        let slots = if dynamic {
+            let def = std::sync::Arc::clone(def);
+            let sources = slots
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    if seen[index] || def.dynamic_defaults[index].is_none() {
+                        crate::template_defaults::SlotSource::Supplied(value)
+                    } else {
+                        crate::template_defaults::SlotSource::Default
+                    }
+                })
+                .collect();
+            self.evaluate_template_defaults(&def, sources, self.module_registry.current_module())
+                .map_err(|error| EngineError::InvalidSlotValue {
+                    template: template_name.to_owned(),
+                    slot: def.slot_names[error.index].clone(),
+                    reason: match error.failure {
+                        crate::template_defaults::SlotFailure::Invalid(reason) => reason,
+                        crate::template_defaults::SlotFailure::Eval(error) => error.to_string(),
+                    },
+                })?
+        } else {
+            slots
+        }
+        .into_boxed_slice();
 
         let fact = Fact::Template(TemplateFact {
             template_id: tid,

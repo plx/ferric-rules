@@ -8,6 +8,7 @@ use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
 use crate::fact_address::{live_fact_id, make_fact_address};
 use crate::loader::TemplateLookupError;
 use crate::modules::ModuleId;
+use crate::template_defaults;
 use crate::templates::RegisteredTemplate;
 
 pub(crate) fn is_effect(name: &str) -> bool {
@@ -418,25 +419,18 @@ fn eval_assert(
                 let validated = definition
                     .slot_overrides(&pattern.args, &ctx.engine.symbol_table)
                     .map_err(|error| failure(name, error, span))?;
-                let overrides = validated
-                    .into_iter()
-                    .map(|(index, slot)| {
-                        let fields = slot
-                            .args
-                            .iter()
-                            .map(|field| {
-                                evaluator::from_action_expr(
-                                    field,
-                                    &mut ctx.engine.symbol_table,
-                                    &ctx.engine.config,
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        Ok((index, fields))
-                    })
-                    .collect::<Result<Vec<_>, EvalError>>()?;
-                let slots = crate::template_defaults::evaluate_slots(ctx, &definition, &overrides)
-                    .map_err(|error| error.error)?;
+                let mut sources = template_defaults::default_sources(&definition);
+                for (index, slot) in validated {
+                    sources[index] = template_defaults::SlotSource::Actions(&slot.args);
+                }
+                let slots = template_defaults::evaluate_slots(ctx, &definition, sources).map_err(
+                    |error| match error.failure {
+                        template_defaults::SlotFailure::Invalid(reason) => {
+                            failure(name, reason, span)
+                        }
+                        template_defaults::SlotFailure::Eval(error) => error,
+                    },
+                )?;
                 Fact::Template(TemplateFact {
                     template_id: id,
                     slots: slots.into_boxed_slice(),

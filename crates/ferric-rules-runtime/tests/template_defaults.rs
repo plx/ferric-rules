@@ -361,3 +361,55 @@ fn invalid_earlier_default_prevents_later_definition_effects() {
         ));
     }
 }
+
+fn diagnostics(engine: &Engine) -> String {
+    engine
+        .action_diagnostics()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn slot_violations_report_their_entry_point_without_a_template_slot_wrapper() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n (range 1 3)))
+      (defrule bad => (assert (item (n (+ 2 2)))))",
+    )
+    .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    let diagnostics = diagnostics(&engine);
+    assert!(diagnostics.contains("`assert`"), "{diagnostics}");
+    assert!(diagnostics.contains("line"), "{diagnostics}");
+    assert!(!diagnostics.contains("template slot"), "{diagnostics}");
+
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(deftemplate item (slot n (range 1 3)))
+      (deffacts seed (item (n (+ 2 2))))",
+        )
+        .unwrap();
+    let message = engine
+        .reset()
+        .map_err(|error| error.to_string())
+        .unwrap_err();
+    assert!(!message.contains("unsupported operation"), "{message}");
+    assert!(message.contains("range"), "{message}");
+
+    let mut engine =
+        Engine::with_rules("(deftemplate item (slot n (range 1 3) (default-dynamic (+ 2 2))))")
+            .unwrap();
+    let Err(EngineError::InvalidSlotValue { slot, reason, .. }) =
+        engine.assert_template("item", &[], ())
+    else {
+        panic!("a computed violation must be an invalid slot value");
+    };
+    assert_eq!(slot, "n");
+    assert!(!reason.contains("unsupported operation"), "{reason}");
+    assert!(reason.contains("range"), "{reason}");
+}

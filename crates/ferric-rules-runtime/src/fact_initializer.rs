@@ -497,8 +497,14 @@ impl Engine {
             })),
             PreparedFact::Template { template_id, slots } => {
                 let template = template.expect("template resolved above");
-                let values = crate::template_defaults::evaluate_slots(&mut ctx, &template, slots)
-                    .map_err(|error| error.error.to_string())?;
+                let values = crate::template_defaults::prepared_sources(&template, slots)
+                    .and_then(|sources| {
+                        crate::template_defaults::evaluate_slots(&mut ctx, &template, sources)
+                    })
+                    .map_err(|error| match error.failure {
+                        crate::template_defaults::SlotFailure::Invalid(reason) => reason,
+                        crate::template_defaults::SlotFailure::Eval(error) => error.to_string(),
+                    })?;
                 Ok(Fact::Template(TemplateFact {
                     template_id: *template_id,
                     slots: values.into_boxed_slice(),
