@@ -120,7 +120,10 @@ any other type make `fact-existp`, `fact-relation`, `fact-slot-names`, and
 `fact-slot-value` return `FALSE` (`fact-index` returns `-1` for anything but an
 address), and the rule continues; `fact-slot-value` does not evaluate its slot
 argument in that case. Only an invalid slot, or slot argument type, on a live
-fact stops the rule. Missing or negative indices make `retract` a no-op.
+fact stops the rule. `retract` skips missing targets, stops evaluating its
+targets at a negative index, and stops the rule for a wrong-type target after
+retracting the rest. `modify` and `duplicate` given a missing index do nothing;
+negative indices, stale addresses, and wrong-type targets stop the rule.
 `FactAddress` equality uses the assertion identity and working-memory epoch, so
 stale addresses cannot alias facts created after reset.
 

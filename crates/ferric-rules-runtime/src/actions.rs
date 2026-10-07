@@ -2650,18 +2650,30 @@ fn execute_retract(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    // CLIPS 6.30's `retract` skips a missing fact, stops at a negative index
+    // without evaluating later targets (the rule continues), and reports a
+    // wrong-type target only after retracting the remaining targets.
+    let mut wrong_type = None;
     for arg in args {
-        let Some(fact_id) = resolve_target_fact_id(
-            "retract",
+        let fact_id = match resolve_target_fact_id(
             arg,
             token,
             rule_info,
             context,
             eval_env,
             collected_facts,
-        )?
-        else {
-            continue;
+        )? {
+            FactTarget::Live(fact_id) => fact_id,
+            FactTarget::MissingIndex | FactTarget::StaleAddress => continue,
+            FactTarget::NegativeIndex => break,
+            FactTarget::WrongType => {
+                wrong_type.get_or_insert_with(|| {
+                    ActionError::EvalError(
+                        "retract: target must be a fact-address or fact index".to_string(),
+                    )
+                });
+                continue;
+            }
         };
         if Some(fact_id) == context.engine.initial_fact_id {
             return Err(ActionError::EvalError(
@@ -2681,7 +2693,7 @@ fn execute_retract(
             context.engine.drain_pending_predicate_matches();
         }
     }
-    Ok(())
+    wrong_type.map_or(Ok(()), Err)
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
@@ -2752,16 +2764,34 @@ fn execute_fact_mutation(
     } else {
         "duplicate"
     };
-    let fact_id = resolve_target_fact_id(
-        action,
+    let fact_id = match resolve_target_fact_id(
         target,
         token,
         rule_info,
         context,
         eval_env,
         collected_facts,
-    )?
-    .ok_or_else(|| ActionError::EvalError(format!("{action}: target fact does not exist")))?;
+    )? {
+        FactTarget::Live(fact_id) => fact_id,
+        // CLIPS 6.30 reports a missing index and continues the rule without
+        // evaluating or applying the slot overrides.
+        FactTarget::MissingIndex => return Ok(()),
+        FactTarget::StaleAddress => {
+            return Err(ActionError::EvalError(format!(
+                "{action}: target fact does not exist"
+            )));
+        }
+        FactTarget::NegativeIndex => {
+            return Err(ActionError::EvalError(format!(
+                "{action}: fact index must not be negative"
+            )));
+        }
+        FactTarget::WrongType => {
+            return Err(ActionError::EvalError(format!(
+                "{action}: target must be a fact-address or fact index"
+            )));
+        }
+    };
     if Some(fact_id) == context.engine.initial_fact_id {
         return Err(ActionError::EvalError(
             "the internal initial-fact is protected and cannot be modified or duplicated"
@@ -2888,18 +2918,31 @@ fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<&Fact, Act
         .ok_or(ActionError::FactNotFound(fact_id))
 }
 
+/// What a fact-action target designates. Each action decides which of the
+/// non-live outcomes are recoverable, following CLIPS 6.30.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FactTarget {
+    Live(FactId),
+    /// A non-negative INTEGER index that names no live fact.
+    MissingIndex,
+    /// A fact address whose fact was retracted (or a dummy address).
+    StaleAddress,
+    NegativeIndex,
+    /// Neither a fact address nor an INTEGER index.
+    WrongType,
+}
+
 /// Fact actions use the current ordinary frame, including query members,
 /// aliases, and inner loop shadowing. Compact slot bindings have a separate
 /// lexical purpose and must not override these ordinary values.
 fn resolve_target_fact_id(
-    action: &str,
     target: &ActionExpr,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
-) -> Result<Option<FactId>, ActionError> {
+) -> Result<FactTarget, ActionError> {
     let fast = match target {
         // Without RHS locals, a variable reads the activation frame directly;
         // this is what evaluating it would do, minus building a frame.
@@ -2912,17 +2955,19 @@ fn resolve_target_fact_id(
         Some(value) => value,
         None => eval_env.eval_expr(token, rule_info, target, context, collected_facts)?,
     };
-    if !matches!(value, Value::FactAddress(_) | Value::Integer(_)) {
-        return Err(ActionError::EvalError(format!(
-            "{action}: target must be a fact-address or fact index"
-        )));
-    }
+    let missing = match value {
+        Value::FactAddress(_) => FactTarget::StaleAddress,
+        Value::Integer(index) if index < 0 => return Ok(FactTarget::NegativeIndex),
+        Value::Integer(_) => FactTarget::MissingIndex,
+        _ => return Ok(FactTarget::WrongType),
+    };
     Ok(crate::evaluator::designated_fact(
         &context.engine.fact_base,
         context.engine.initial_fact_id,
         context.engine.fact_epoch,
         &value,
-    ))
+    )
+    .map_or(missing, FactTarget::Live))
 }
 
 /// Read a variable from the activation frame (pattern and fact-address bindings).

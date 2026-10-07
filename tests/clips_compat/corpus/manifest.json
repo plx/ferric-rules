@@ -5139,6 +5139,44 @@
       "recoverable_fact_notices": true
     },
     {
+      "path": "queries/typed-fact-address-retract-negative-stops.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "negative-index",
+        "evaluation-order",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-modify-missing-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "modify",
+        "duplicate",
+        "missing-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-modify-negative-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "modify",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
       "path": "stdlib/001_add_integers.clp",
       "level": "basic",
       "covers": [
