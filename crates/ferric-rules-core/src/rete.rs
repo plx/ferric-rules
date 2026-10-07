@@ -2251,7 +2251,7 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_propagate", token = ?token_id);
-        self.beta.ensure_nested_ncc_index();
+        self.beta.ensure_ncc_entry_wait_index();
         // Child arrays retain attachment order; CLIPS links new successors at
         // the head, so every propagation visits them newest first.
         //
@@ -2262,39 +2262,53 @@ impl ReteNetwork {
         // a result for the enclosing NCC, so deciding before its own subnetwork
         // has seen the token would retract and recreate the enclosing match,
         // refiring it. Such an NCC waits until its not-yet-visited entry has
-        // run. Both maps are built only once a nested NCC is met, keeping
-        // each child visit O(1).
+        // run. An NCC whose subnetwork begins with a nested NCC that is
+        // waiting, as `(exists (and ...))` over a shared entry lowers, waits
+        // for that nested NCC: admitting the token first would make a
+        // transient activation (and auto-focus push) that CLIPS never makes.
+        // The maps are built only once such an NCC is met, keeping each child
+        // visit O(1).
         let mut positions: Option<rustc_hash::FxHashMap<NodeId, usize>> = None;
         let mut postponed: Option<rustc_hash::FxHashMap<NodeId, SmallVec<[NodeId; 2]>>> = None;
+        let mut waiting: Option<rustc_hash::FxHashSet<NodeId>> = None;
         for (index, &child_id) in children.iter().enumerate().rev() {
-            if let Some(entry) = self.beta.nested_ncc_entry(child_id) {
-                let positions = positions.get_or_insert_with(|| {
-                    children
-                        .iter()
-                        .enumerate()
-                        .map(|(position, &child)| (child, position))
-                        .collect()
-                });
-                if positions
-                    .get(&entry)
-                    .is_some_and(|&position| position < index)
-                {
+            if let Some(wait) = self.beta.ncc_entry_wait_for(child_id) {
+                let entry_waiting = waiting.as_ref().is_some_and(|w| w.contains(&wait.entry));
+                let entry_unvisited = wait.nested
+                    && positions
+                        .get_or_insert_with(|| {
+                            children
+                                .iter()
+                                .enumerate()
+                                .map(|(position, &child)| (child, position))
+                                .collect()
+                        })
+                        .get(&wait.entry)
+                        .is_some_and(|&position| position < index);
+                if entry_waiting || entry_unvisited {
                     postponed
                         .get_or_insert_with(rustc_hash::FxHashMap::default)
-                        .entry(entry)
+                        .entry(wait.entry)
                         .or_default()
                         .push(child_id);
+                    waiting
+                        .get_or_insert_with(rustc_hash::FxHashSet::default)
+                        .insert(child_id);
                     continue;
                 }
             }
             self.propagate_to_child(token_id, child_id, fact_base, new_activations);
-            // A released NCC can itself be the entry another nested NCC waits
-            // for (`(exists (exists ...))`), so release transitively, depth
-            // first, keeping each waiting list's order. Every entry is removed
-            // once, so the extra work stays proportional to the postponed NCCs.
-            if let Some(waiting) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
-                let mut ready: SmallVec<[NodeId; 4]> = waiting.into_iter().rev().collect();
+            // A released NCC can itself be the entry another NCC waits for
+            // (`(exists (exists ...))`, `(exists (and ...))`), so release
+            // transitively, depth first, keeping each waiting list's order.
+            // Every entry is removed once, so the extra work stays
+            // proportional to the postponed NCCs.
+            if let Some(released) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
+                let mut ready: SmallVec<[NodeId; 4]> = released.into_iter().rev().collect();
                 while let Some(ncc) = ready.pop() {
+                    if let Some(waiting) = waiting.as_mut() {
+                        waiting.remove(&ncc);
+                    }
                     self.propagate_to_child(token_id, ncc, fact_base, new_activations);
                     if let Some(next) = postponed.as_mut().and_then(|p| p.remove(&ncc)) {
                         ready.extend(next.into_iter().rev());
@@ -2304,7 +2318,7 @@ impl ReteNetwork {
         }
         debug_assert!(
             !postponed.as_ref().is_some_and(|p| !p.is_empty()),
-            "every postponed nested NCC must be released after its entry"
+            "every postponed NCC must be released after its entry"
         );
     }
 

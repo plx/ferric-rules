@@ -991,9 +991,7 @@ impl ReteCompiler {
             .create_ncc_partner(sub_parent, ncc_id, ncc_memory_id);
         rete.beta.set_ncc_partner(ncc_id, partner_id);
         rete.beta.link_ncc_after_subnetwork(ncc_id);
-        if nested {
-            rete.beta.register_nested_ncc(ncc_id);
-        }
+        rete.beta.register_ncc_entry_wait(ncc_id, nested);
 
         ncc_id
     }
