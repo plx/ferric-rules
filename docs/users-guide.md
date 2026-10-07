@@ -377,7 +377,8 @@ fact by address. `duplicate` creates a copy with slot overrides.
 
 For control flow inside the RHS, ferric supports the action-level forms:
 `if/then/else`, `while/do`, `loop-for-count`, `progn$`/`foreach`, and
-`switch/case/default`. User-function and method bodies are evaluator
+`switch/case/default`. `(break)` exits the nearest enclosing loop or action
+fact query. User-function and method bodies are evaluator
 expressions, not full RHS action sequences: use rule RHS code for fact
 mutation and focus control.
 
@@ -431,7 +432,12 @@ RHS action lists. They can call expression functions such as `str-cat`,
 `run`) belong in the calling rule's RHS.
 
 Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
-`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`.
+`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`. A
+parameter can add a final query after its types, as in
+`((?x SYMBOL (eq ?x special)))`, and a wildcard `$?name` parameter accepts
+optional types and a query, as in `(($?r SYMBOL))`. See
+[Generic Functions and Methods](compatibility.md#168-generic-functions-and-methods)
+for dispatch order and specificity.
 
 ---
 

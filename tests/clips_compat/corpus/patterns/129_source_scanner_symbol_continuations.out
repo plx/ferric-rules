@@ -1,0 +1,20 @@
+1,2: 1,2 TRUE 1 TRUE
+1:2: 1:2 TRUE 1 TRUE
+1?x: 1?x TRUE 1 TRUE
+1[x]: 1[x] TRUE 1 TRUE
+1': 1' TRUE 1 TRUE
+1`: 1` TRUE 1 TRUE
+12é: 12é TRUE 1 TRUE
+-.5λ: -.5λ TRUE 1 TRUE
+-abc: -abc TRUE 1 TRUE
+-abc?x: -abc?x TRUE 1 TRUE
++x?y: +x?y TRUE 1 TRUE
+.foo: .foo TRUE 1 TRUE
+.foo?: .foo? TRUE 1 TRUE
+-: - TRUE 1 TRUE
++: + TRUE 1 TRUE
+.: . TRUE 1 TRUE
+->: -> TRUE 1 TRUE
+-1:x: -1:x TRUE 1 TRUE
+2 (1 <2)
+2 (-a <b)

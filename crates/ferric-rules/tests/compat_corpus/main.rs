@@ -493,6 +493,25 @@ fn manifest_covers_every_program() {
                 case.path
             );
         }
+        if case.error == Some(ErrorPhase::Run) {
+            // The runner strips only listed run-time diagnostics; an unlisted
+            // code would otherwise surface as an unexplained output mismatch.
+            for line in golden(&expected, None, case.recoverable_fact_notices)
+                .output
+                .split(|&byte| byte == b'\n')
+            {
+                if is_diagnostic(line) {
+                    let code = line.split(|&byte| byte == b' ').next().unwrap_or(line);
+                    assert_eq!(
+                        diagnostic_offset(line),
+                        Some(0),
+                        "{}: run-time diagnostic {} is not listed in diagnostic_offset",
+                        case.path,
+                        String::from_utf8_lossy(code)
+                    );
+                }
+            }
+        }
         if root.join(&case.path).with_extension("in").is_file() {
             assert_eq!(case.resets, 1, "input replay across resets is not defined");
         }

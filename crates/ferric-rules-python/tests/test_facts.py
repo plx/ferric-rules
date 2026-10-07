@@ -71,14 +71,18 @@ class TestAssertString:
             engine.assert_string(source)
         assert engine.facts() == []
 
-    @pytest.mark.parametrize("expression", ["?missing", "(missing-function)"])
-    def test_assert_string_error_retains_only_completed_facts(self, engine, expression):
+    def test_assert_string_evaluation_error_retains_only_completed_facts(self, engine):
         with pytest.raises(ferric.FerricError):
-            engine.assert_string(f"(before (+ 1 2)) (bad {expression}) (after)")
+            engine.assert_string("(before (+ 1 2)) (bad ?missing) (after)")
         facts = engine.facts()
         assert len(facts) == 1
         assert facts[0].relation == "before"
         assert facts[0].fields == [3]
+
+    def test_assert_string_static_error_asserts_no_facts(self, engine):
+        with pytest.raises(ferric.FerricError):
+            engine.assert_string("(before (+ 1 2)) (bad (missing-function)) (after)")
+        assert engine.facts() == []
 
     def test_deffacts_expression_error_is_raised_at_reset(self, engine):
         engine.load("(deffacts seed (before (+ 1 2)) (bad (/ 1 0)) (after))")

@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 711
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 738
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -103,6 +103,19 @@ field reports an error instead of being silently omitted. Ordered fields and
 multislots splice multifield results; single slots reject them even when the
 multifield contains exactly one value. `load-facts` accepts literal fact data
 only, and stops at an invalid fact while retaining earlier valid facts.
+
+As in CLIPS, every fact of an `assert` command is parsed before any is
+asserted. A statically invalid field (an unknown function, an unknown slot, or
+a static multifield in a single slot) rejects the whole command. An evaluation
+error, such as `(/ 1 0)`, an unbound local variable or an undefined global,
+stops the command and keeps the facts it completed earlier. CLIPS 6.30 still
+inserts the failing fact: an ordered fact loses all of its fields (`(bad)`),
+and a template fact keeps its other slots while the failing slot holds an
+unspecified value. Ferric inserts none of it. Each top-level assertion is evaluated in the module current
+at its position in the source, and the last `defmodule` stays current
+afterwards. Void results, such as those of `printout`, are omitted from
+ordered fields and multislots. Template slot expressions are evaluated in the
+template's slot declaration order, not the order the source writes them.
 
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
@@ -242,6 +255,10 @@ including all commonly used conditional elements and RHS actions.
 | `\|` | Disjunction | `(color red\|blue)` |
 | `&` | Conjunction | `(value ?x&~0)` |
 
+Precedence is `~` > `&` > `|`, except that a leading `?x&` binds over the
+rest of the field: `?x&a|b` means `?x&(a|b)`. Variables used inside
+alternatives must already be bound.
+
 ### Conflict Resolution Strategies
 
 Depth and breadth are the supported CLIPS ordering strategies. The host API
@@ -351,7 +368,8 @@ local in a query predicate is a load error.
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
 multifield collection expressions, and query predicates cannot contain
 `break`, even when the construct is nested inside another loop. Invalid
-placement is rejected at load. `while` and `loop-for-count` return `FALSE`
+placement is rejected at load, including a `break` outside a loop in a rule's
+`test` CE or `:`/`=` pattern constraint (`[PRCDRPSR2]`). `while` and `loop-for-count` return `FALSE`
 after `break` as well as after normal completion.
 
 ### RHS evaluation errors
@@ -447,8 +465,18 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 - Field expressions and globals are evaluated on every reset, after globals
   are restored, in the definition's module. Loading a definition does not
   execute its expressions. A global may be defined after the deffacts, and
-  replacing a called function affects the next reset. Local variables and
-  unknown calls are rejected during loading.
+  replacing a called function affects the next reset. Template slot
+  expressions run in slot declaration order, as for `assert`. Local variables
+  and unknown calls are rejected during loading.
+- An evaluation error during reset stops the reset at that fact. Facts already
+  asserted, including those of earlier definitions, remain; later facts and
+  definitions are not asserted. CLIPS 6.30 behaves the same, except that it
+  still inserts the failing fact: an ordered fact loses all of its fields, and
+  a template fact keeps its other slots while the failing slot holds an
+  unspecified value. Ferric inserts none of it. Rust `reset()`
+  returns `EngineError::FactInitialization { definition, reason }`; Python and
+  Node raise `FerricRuntimeError`; C (and Go through it) returns
+  `FERRIC_ERROR_RUNTIME_ERROR`.
 
 ---
 
@@ -478,16 +506,17 @@ and disjunction expansion use checked, conservative work estimates: at most
 256 CE alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
 expanded source per rule. Both normalization passes also share a per-load
 budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
-does not count field-level `|` constraints as rule alternatives: each field
-disjunction is evaluated once, including inside `not`, `exists`, and `forall`.
-A leading `?x&` binds over all alternatives (`?x&a|b` means `?x&(a|b)`).
-The estimate may reject an unusually redundant `or` CE expression that could
-be optimized to less work; Ferric does not perform that optimization implicitly.
+does not count field-level `|` constraints, which compile to one test on
+their field rather than to rule alternatives. The estimate may reject an
+unusually redundant `or` CE expression that could be optimized to less work;
+Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant
-tests, including the children of compound field tests. These bounds keep
-recursive propagation practical without adding a resumable execution subsystem.
+tests, including the children of compound field tests. When a pattern's
+field disjunctions would take it past that alpha budget, the widest ones are
+evaluated as match-time predicates instead. These bounds keep recursive propagation practical without adding a
+resumable execution subsystem.
 Boundary regressions exercise combined alpha
 and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
 Over-limit constructs fail before installation; previously installed rules and
@@ -582,6 +611,15 @@ Each named global is installed after its initializer succeeds. Earlier names in
 one `defglobal` group remain available to later initializers. If an initializer
 fails, its name and later names in that group are not installed; earlier globals
 and following top-level constructs retain their incremental load behavior.
+
+Known difference: callable bodies are validated after the whole source is
+read, but initializers run in source order. An initializer can therefore call
+a deffunction or method defined earlier in the same load before that
+callable's validation finishes. If the callable is then rejected (for
+example, for an unknown call in a branch that never ran), the global keeps
+the initializer's value and any side effects of the call remain. CLIPS 6.30
+rejects the callable first and then rejects the initializer, so the global is
+never defined.
 
 ```clp
 (defglobal ?*count* = 0)
@@ -689,6 +727,19 @@ or load diagnostic before continuing recursive evaluation. Callable bodies
 are checked before registration; a failed function redefinition or implicit
 generic registration preserves the previous registry state.
 
+Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
+the deffunction, so later callers are rejected at load; Ferric keeps the
+previous body and its callers still load. Both keep the previous method when
+a `defmethod` redefinition fails. Until a rejected callable is removed at the
+end of the load, it still counts as using the templates it references, so a
+`deftemplate` replacement later in the same source is refused with
+`[CSTRCPSR4]` where CLIPS accepts it.
+
+Known difference: an undefined global variable in a deffunction body, a
+defmethod body, or a method restriction query does not stop the load. Ferric
+reports it only when the expression is evaluated; CLIPS 6.30 rejects the
+construct at load with `[GLOBLPSR1]`.
+
 Embedding note: release recursion regressions run on 512 KiB native stacks;
 unoptimized development regressions use 2 MiB. These are supported test
 baselines, not a promise for arbitrarily small host stacks. Larger requested
@@ -722,19 +773,78 @@ Ferric supports generic function dispatch via `defgeneric` and `defmethod`.
 
 Methods are ranked by type specificity. More specific types win:
 `INTEGER` > `NUMBER`, `FLOAT` > `NUMBER`, etc. When multiple methods could
-match, the most specific applicable method is selected. Fixed parameters
-outrank wildcards, and a type restriction outranks an otherwise unrestricted
-parameter with a query. A query adds specificity when the other restrictions
-are the same.
+match, the most specific applicable method is selected. Restrictions are
+compared left to right, with a wildcard counting as its method's last
+restriction. A wildcard loses at once to a regular parameter in the same
+position when that parameter's method has no wildcard. Otherwise, as in
+CLIPS 6.30, the two type lists are compared in written order:
 
-A parameter query follows its optional type restrictions. It can reference
-any method parameter, including later ones: all arguments are bound before
-queries run. Queries use CLIPS truthiness and are evaluated only as dispatch
-searches for the next applicable method. Lower-priority method queries are
-not evaluated after a match is found. A query error stops dispatch instead
-of trying a fallback. Queries may bind globals, but cannot bind local variables
-or parameters. Undefined variables and templates unavailable when the method
-is defined are load errors.
+- Any type list outranks an unrestricted parameter, so a type restriction
+  outranks an otherwise unrestricted parameter with a query.
+- At the first position where one listed type is a subclass of the other in
+  the CLIPS class hierarchy, the subclass wins: `INTEGER` and `FLOAT` under
+  `NUMBER`, and `SYMBOL` and `STRING` under `LEXEME`. `INSTANCE-NAME` is not
+  a subclass of `SYMBOL`. So
+  `((?x INTEGER SYMBOL))` outranks `((?x NUMBER))`, although it covers more
+  types.
+- Otherwise the shorter list wins: `((?x INTEGER))` outranks
+  `((?x INTEGER SYMBOL))`.
+- Lists of the same length that differ anywhere, such as `(INTEGER SYMBOL)`
+  and `(INTEGER STRING)`, or `(INTEGER SYMBOL)` and `(SYMBOL INTEGER)`, leave
+  the two methods unranked: neither outranks the other, and their queries and
+  later restrictions are not compared.
+
+A query adds specificity only when the type lists are identical. When every
+shared position ties, a method without a wildcard wins, then the method with
+more restrictions. For example, `(($?xs INTEGER))` outranks `(?x $?xs)`, while
+`(?x ?y)` outranks `(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
+
+This ranking can be cyclic: `(($?x INTEGER))` outranks `((?x NUMBER) $?y)`,
+which outranks `(?x)`, which outranks `(($?x INTEGER))`. As in CLIPS 6.30,
+methods are not sorted. Each method is inserted before the first existing
+method it outranks, or after all of them, so the final order can depend on
+definition order, both for cyclic rankings and for unranked methods. Ferric
+inserts methods in index order, which is definition order unless explicit
+indices are given out of order.
+
+Known differences:
+
+- When explicit indices are given out of definition order, CLIPS 6.30 still
+  inserts methods in definition order. Its dispatch order can then differ from
+  Ferric's whenever those methods do not strictly outrank each other, either
+  because the ranking is cyclic or because their restrictions differ without
+  one outranking the other. For example, after
+  `(defmethod g 2 ((?x INTEGER SYMBOL)) A)` and
+  `(defmethod g 1 ((?x INTEGER FLOAT)) B)`, CLIPS 6.30 returns `A` for
+  `(g 1)` and Ferric returns `B`.
+- A `defmethod` whose restrictions are identical to an existing method's adds
+  a second method after it, where CLIPS 6.30 replaces the existing method.
+- Only `INTEGER`, `FLOAT`, `NUMBER`, `SYMBOL`, `STRING`, `LEXEME`,
+  `INSTANCE-NAME`, `MULTIFIELD` and `EXTERNAL-ADDRESS` match as type
+  restrictions. Other CLIPS class names, such as `PRIMITIVE`, `OBJECT`,
+  `ADDRESS`, `INSTANCE`, `FACT-ADDRESS` and `INSTANCE-ADDRESS`, load as method
+  restrictions but never match, so a restriction that names only such classes
+  makes its method never applicable.
+
+A parameter query follows its optional type restrictions. It is a function
+call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
+read again at each dispatch. A query can reference any method parameter,
+including later ones: all arguments are bound before queries run. Queries
+use CLIPS truthiness and are evaluated only as dispatch searches for the next
+applicable method. For each candidate, dispatch walks
+the arguments left to right: it checks the argument's type and then runs its
+restriction's query, stopping at the first failure. A query therefore runs,
+with its side effects, even when a later argument's type rules the method
+out. Excess arguments share the wildcard restriction, so a wildcard query
+runs once per excess argument and not at all when there are none.
+Lower-priority method queries are not evaluated after a match is found. A
+query error stops dispatch instead of trying a fallback. Queries may bind
+globals, but cannot bind local variables or parameters. `return` anywhere in
+a query is rejected at load (`[PRCDRPSR2]`). Undefined variables
+and templates unavailable when the method is defined are load errors. An
+undefined global in a query is reported only when the query runs, which stops
+dispatch; CLIPS 6.30 rejects the method at load (`[GLOBLPSR1]`), as it does
+for an undefined global in a deffunction or method body.
 
 ```clp
 (defgeneric classify)
@@ -966,8 +1076,10 @@ Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
 exponents such as `5e` are single symbols. Source integers outside the signed
 64-bit range saturate too, but the source lexer has no warning channel and
-does not emit the `[SCANNER1]` notice. Comments end at CR or LF, including
-files that use CR-only line endings.
+does not emit the `[SCANNER1]` notice. This includes `load-facts` at run
+time, where CLIPS prints that warning within the program's output for each
+overflowing integer and Ferric prints nothing. Comments end at CR or LF,
+including files that use CR-only line endings.
 
 ### Multifield Functions
 
@@ -1071,7 +1183,8 @@ same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;
 `(format nil "n=%d" 42)` returns the string without writing it. `printout`
 writes each argument before evaluating the next, including inside callable
 bodies. Output from nested calls appears in evaluation order, and an error
-in a later argument preserves the output already written.
+in a later argument preserves the output already written. `printout` to `nil`
+writes nothing and evaluates none of its arguments.
 
 `format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
 `%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number

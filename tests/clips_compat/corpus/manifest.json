@@ -334,6 +334,26 @@
       ]
     },
     {
+      "path": "facts/027_deffacts_expression_query_template_redefinition_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/028_deffacts_expression_void_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "printout"
+      ]
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [
@@ -710,6 +730,28 @@
       "error": "run"
     },
     {
+      "path": "generics/callable-query-return-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-return-nested-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
       "path": "generics/callable-query-unknown-variable-rejected.clp",
       "level": "boundary",
       "covers": [
@@ -751,6 +793,80 @@
         "parameter-query",
         "global-bind",
         "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-query-wildcard-per-argument.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "zero-arguments"
+      ]
+    },
+    {
+      "path": "generics/callable-query-argument-order.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "lazy-dispatch",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-wildcard-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence-many.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-type-list-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-query-global-variable.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "defglobal"
       ]
     },
     {
@@ -1076,6 +1192,17 @@
         "defglobal"
       ],
       "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-template-slot-order.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "deffunction",
+        "defglobal"
+      ]
     },
     {
       "path": "modules/focus-argument-order.clp",
@@ -2282,7 +2409,143 @@
       ]
     },
     {
-      "path": "patterns/111_source_scanner_numeric_table.clp",
+      "path": "patterns/111_field_disjunction_not_exists_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "exists",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/112_field_disjunction_wide_mixed_alternatives.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "not",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/113_complex_predicate_ncc_child.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not",
+        "and",
+        "ncc",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/114_complex_predicate_multi_exists.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/115_complex_predicate_forall_condition.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "forall",
+        "predicate-constraint",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/116_field_disjunction_sequence_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "multifield",
+        "not",
+        "exists",
+        "join",
+        "variable-binding",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/117_field_disjunction_template_multislot_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multislot",
+        "not",
+        "exists",
+        "forall",
+        "join",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/118_field_disjunction_multifield_leading_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "multifield",
+        "predicate-constraint",
+        "variable-binding",
+        "join"
+      ]
+    },
+    {
+      "path": "patterns/119_field_disjunction_template_slot_bound_variable.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "not",
+        "exists",
+        "join",
+        "variable-binding",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/120_field_disjunction_alpha_budget_later_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "field-disjunction",
+        "deftemplate",
+        "multifield",
+        "not",
+        "variable-binding",
+        "retract",
+        "salience"
+      ]
+    },
+    {
+      "path": "patterns/121_source_scanner_numeric_table.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2293,7 +2556,7 @@
       ]
     },
     {
-      "path": "patterns/112_source_scanner_signed_zero_exponents.clp",
+      "path": "patterns/122_source_scanner_signed_zero_exponents.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2304,7 +2567,7 @@
       ]
     },
     {
-      "path": "patterns/113_source_scanner_ordered_numeric_symbols.clp",
+      "path": "patterns/123_source_scanner_ordered_numeric_symbols.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2315,7 +2578,7 @@
       ]
     },
     {
-      "path": "patterns/114_source_scanner_incomplete_exponent_patterns.clp",
+      "path": "patterns/124_source_scanner_incomplete_exponent_patterns.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2325,7 +2588,7 @@
       ]
     },
     {
-      "path": "patterns/115_source_scanner_integer_overflow.clp",
+      "path": "patterns/125_source_scanner_integer_overflow.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2335,7 +2598,7 @@
       ]
     },
     {
-      "path": "patterns/116_source_scanner_cr_comments.clp",
+      "path": "patterns/126_source_scanner_cr_comments.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2344,7 +2607,7 @@
       ]
     },
     {
-      "path": "patterns/117_source_scanner_connective_delimiters.clp",
+      "path": "patterns/127_source_scanner_connective_delimiters.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
@@ -2354,13 +2617,33 @@
       ]
     },
     {
-      "path": "patterns/118_source_scanner_signed_numeric_symbols.clp",
+      "path": "patterns/128_source_scanner_signed_numeric_symbols.clp",
       "level": "boundary",
       "covers": [
         "source-scanner",
         "explode$",
         "symbolp"
       ]
+    },
+    {
+      "path": "patterns/129_source_scanner_symbol_continuations.clp",
+      "level": "boundary",
+      "covers": [
+        "source-scanner",
+        "explode$",
+        "symbolp",
+        "create$"
+      ]
+    },
+    {
+      "path": "patterns/402_break_lhs_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "test-ce",
+        "break"
+      ],
+      "error": "load"
     },
     {
       "path": "procedural/001_function_zero_arguments.clp",
@@ -3224,6 +3507,18 @@
         "parameter-query",
         "module-visibility",
         "unknown-call"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/402_callable_rejected_function_caller_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "unknown-call",
+        "deffunction",
+        "defrule"
       ],
       "error": "load"
     },
@@ -7109,6 +7404,31 @@
         "format",
         "printout",
         "deffunction"
+      ]
+    },
+    {
+      "path": "stdlib/244_format_output_printout_nil_skips_operands.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
+      "path": "stdlib/245_format_output_nested_body_direct_write.clp",
+      "level": "interaction",
+      "covers": [
+        "format",
+        "printout",
+        "deffunction",
+        "if",
+        "loop-for-count",
+        "while",
+        "switch",
+        "do-for-all-facts",
+        "list-focus-stack"
       ]
     }
   ]
