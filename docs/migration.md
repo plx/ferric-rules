@@ -202,6 +202,14 @@ compiled patterns did not check field counts. Restore an old snapshot with the
 version that produced it, export the application data, and assert it into a
 new engine; see [snapshots.md](snapshots.md).
 
+## Pre-1.0 rule declarations and focus
+
+- `focus`, auto-focus, and the host `push_focus` APIs (Rust
+  `Engine::push_focus`, Python `push_focus`, Node `pushFocus`) leave the stack
+  unchanged when the module is already on top, as CLIPS does. Pushing `A`
+  twice now gives `[A, MAIN]`, not `[A, A, MAIN]`; a module deeper in the
+  stack may still be pushed again.
+
 ## Pre-1.0 CLIPS behavior fixes
 
 The fixes for issues #320 to #346, #395, #396, #403, #404 and #406 make these cases behave

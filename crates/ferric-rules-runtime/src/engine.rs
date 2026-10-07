@@ -1860,6 +1860,9 @@ impl Engine {
 
     /// Push a module onto the focus stack by name.
     ///
+    /// Pushing the module already at the top leaves the stack unchanged; a
+    /// module deeper in the stack may be pushed again.
+    ///
     /// # Errors
     ///
     /// Returns `ModuleNotFound` if the module has not been registered.

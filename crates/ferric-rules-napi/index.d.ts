@@ -189,7 +189,12 @@ export declare class Engine {
   getGlobal(name: string): unknown
   /** Set focus to a single module, replacing the previous focus stack. */
   setFocus(moduleName: string): void
-  /** Push a module onto the focus stack. */
+  /**
+   * Push a module onto the focus stack.
+   *
+   * Pushing the module already at the top leaves the stack unchanged; a
+   * module deeper in the stack may be pushed again.
+   */
   pushFocus(moduleName: string): void
   /**
    * Get captured output for a channel (e.g. `"stdout"`).

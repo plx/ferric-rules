@@ -431,7 +431,7 @@ activation order and the blocker history used for future activations.
 | `duplicate` | Assert a template copy with slot overrides; return its address or `FALSE` for a duplicate |
 | `printout` | Write to a named channel (`t` for stdout) |
 | `halt` | Stop the run once the current RHS finishes (loops and queries in it run to completion) |
-| `focus` | Push one or more modules onto the focus stack; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
+| `focus` | Push one or more modules onto the focus stack, skipping a module already on top; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
 | `agenda` | Print the current agenda |
@@ -1127,7 +1127,9 @@ Constructs can be referenced with `MODULE::name` syntax:
 ### Focus Stack
 
 - `MAIN` is the default focus module after `(reset)`.
-- `(focus MODULE)` pushes a module onto the focus stack.
+- `(focus MODULE)` pushes a module onto the focus stack. Pushing the module
+  already at the top leaves the stack unchanged; a module deeper in the stack
+  may be pushed again. The host `push_focus`/`pushFocus` APIs behave the same.
 - Only rules in the current focus-stack module are eligible to fire.
 - When a module's agenda is empty, it is popped and the next module resumes.
 

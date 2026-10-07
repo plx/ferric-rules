@@ -395,7 +395,11 @@ export class Engine {
   /** Replace the entire focus stack with a single module. */
   setFocus(moduleName: string): void;
 
-  /** Push a module onto the focus stack. */
+  /**
+   * Push a module onto the focus stack. Pushing the module already at the
+   * top leaves the stack unchanged; a module deeper in the stack may be
+   * pushed again.
+   */
   pushFocus(moduleName: string): void;
 
   // --- I/O ---

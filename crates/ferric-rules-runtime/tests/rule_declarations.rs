@@ -468,3 +468,15 @@ fn late_ncc_focus_history_and_blocked_state_survive_every_snapshot_format() {
         }
     }
 }
+
+#[test]
+fn host_push_focus_skips_the_module_already_on_top() {
+    let mut engine = Engine::with_rules("(defmodule A) (defmodule B)").unwrap();
+    engine.reset().unwrap();
+    engine.push_focus("A").unwrap();
+    engine.push_focus("A").unwrap();
+    assert_eq!(engine.get_focus_stack(), ["MAIN", "A"]);
+    engine.push_focus("B").unwrap();
+    engine.push_focus("A").unwrap();
+    assert_eq!(engine.get_focus_stack(), ["MAIN", "A", "B", "A"]);
+}
