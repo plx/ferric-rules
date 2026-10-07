@@ -467,7 +467,12 @@ impl Engine {
             PreparedFact::Template { template_id, slots } => {
                 let template = template.expect("template resolved above");
                 let mut values = template.defaults.clone();
-                for (index, fields) in slots {
+                // CLIPS evaluates slot expressions in declaration order, not
+                // in the order the source wrote them. Sorting here also covers
+                // prepared facts restored from older snapshots.
+                let mut ordered: Vec<_> = slots.iter().collect();
+                ordered.sort_by_key(|(index, _)| *index);
+                for (index, fields) in ordered {
                     values[*index] = match template.slot_types[*index] {
                         SlotType::Single => evaluator::eval(&mut ctx, &fields[0])
                             .map_err(|error| error.to_string())?,

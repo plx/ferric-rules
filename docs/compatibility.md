@@ -112,7 +112,8 @@ none of the failing fact, while CLIPS 6.30 can insert that fact truncated at
 the failing field. Each top-level assertion is evaluated in the module current
 at its position in the source, and the last `defmodule` stays current
 afterwards. Void results, such as those of `printout`, are omitted from
-ordered fields and multislots.
+ordered fields and multislots. Template slot expressions are evaluated in the
+template's slot declaration order, not the order the source writes them.
 
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
@@ -453,8 +454,9 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 - Field expressions and globals are evaluated on every reset, after globals
   are restored, in the definition's module. Loading a definition does not
   execute its expressions. A global may be defined after the deffacts, and
-  replacing a called function affects the next reset. Local variables and
-  unknown calls are rejected during loading.
+  replacing a called function affects the next reset. Template slot
+  expressions run in slot declaration order, as for `assert`. Local variables
+  and unknown calls are rejected during loading.
 - An evaluation error during reset stops the reset at that fact. Facts already
   asserted, including those of earlier definitions, remain; later facts and
   definitions are not asserted. CLIPS 6.30 behaves the same, except that it

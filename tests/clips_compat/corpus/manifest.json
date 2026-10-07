@@ -959,6 +959,17 @@
       "resets": 2
     },
     {
+      "path": "lifecycle/deffacts-expression-template-slot-order.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "deffunction",
+        "defglobal"
+      ]
+    },
+    {
       "path": "modules/focus-argument-order.clp",
       "level": "interaction",
       "covers": [

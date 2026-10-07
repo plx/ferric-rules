@@ -121,6 +121,30 @@ fn one_assert_evaluates_every_fact_and_field_in_source_order() {
     assert_eq!(engine.get_output("t"), Some("ordered\n"));
 }
 
+/// Template slots are evaluated in declaration order, whatever order the
+/// source writes them in. CLIPS 6.30 asserts `(item (a 1) (b 2) (c))` and
+/// `(item (a 3) (b 4) (c 5 6))` at the top level, and the same seeds after
+/// `(reset)`.
+#[test]
+fn template_slots_are_evaluated_in_declaration_order() {
+    const CONSTRUCTS: &str = "(defglobal ?*n* = 0)
+        (deffunction next () (bind ?*n* (+ ?*n* 1)) ?*n*)
+        (deftemplate item (slot a) (slot b) (multislot c))
+        (defrule show (item (a ?a) (b ?b) (c $?c))
+          => (printout t ?a \" \" ?b \" \" (implode$ ?c) crlf))";
+    const FACTS: &str = "(item (b (next)) (a (next)))
+        (item (c (next) (next)) (b (next)) (a (next)))";
+    const EXPECTED: &str = "3 4 5 6\n1 2 \n";
+    let mut asserted = Engine::with_rules(CONSTRUCTS).unwrap();
+    asserted.load_str(&format!("(assert {FACTS})")).unwrap();
+    let mut seeded = Engine::with_rules(&format!("{CONSTRUCTS} (deffacts seed {FACTS})")).unwrap();
+    seeded.reset().unwrap();
+    for engine in [&mut asserted, &mut seeded] {
+        run(engine, 2);
+        assert_eq!(engine.get_output("t"), Some(EXPECTED));
+    }
+}
+
 #[test]
 fn invalid_source_fields_report_errors_without_asserting_truncated_facts() {
     for expression in ["?missing", "?*missing*", "(unknown 1)", "(+ 1 ?missing)"] {
