@@ -275,11 +275,14 @@ fn bench_host_assert_template_retract(c: &mut Criterion) {
     );
 
     let mut constrained = String::from("(deftemplate item");
+    // CLIPS rejects a range combined with allowed numeric values on one slot.
     for index in 0..8 {
-        let _ = write!(
-            constrained,
-            " (slot s{index} (type INTEGER) (range 0 100) (allowed-values 0 1 2 3 4 5 6 7 8 9))"
-        );
+        let facet = if index < 4 {
+            "(type INTEGER) (range 0 100)"
+        } else {
+            "(allowed-values 0 1 2 3 4 5 6 7 8 9)"
+        };
+        let _ = write!(constrained, " (slot s{index} {facet})");
     }
     constrained.push(')');
     case(c, "constrained_8_slots", &constrained, &names, &integers);
