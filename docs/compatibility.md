@@ -1194,7 +1194,8 @@ nor an INTEGER, also returns `FALSE` from `fact-existp`, `fact-relation`,
 returns `-1` for any argument that is not a fact address, including an INTEGER.
 `fact-slot-value` resolves its designator before evaluating the slot argument,
 so the slot argument is not evaluated when the designator names no live fact.
-On a live fact, an invalid slot name or a slot argument that is not a symbol,
+As in CLIPS, a slot argument that resets or retracts the fact still reads the
+record the designator named, not a fact asserted afterwards. On a live fact, an invalid slot name or a slot argument that is not a symbol,
 string, or instance name stops the rule. CLIPS 6.30 accepts only a SYMBOL slot
 argument: it rejects a literal STRING at load and stops the rule for a computed
 one, whereas Ferric also accepts a STRING or INSTANCE-NAME slot name.
