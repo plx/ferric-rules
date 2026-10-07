@@ -1367,6 +1367,8 @@ fn eval_fact_query(
         }
     }
     for candidate in selected {
+        // Each delayed body costs one action-loop iteration, as in the RHS form.
+        consume_action_loop_iteration(&ctx.engine.config, name, span.cloned())?;
         match with_expression_query_candidate(ctx, &candidate, |ctx| eval_sequence(ctx, body)) {
             Ok(value) => result = value,
             Err(EvalError::BreakControl { .. }) => return Ok(Value::Void),

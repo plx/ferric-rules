@@ -529,3 +529,34 @@ fn effect_action_literals_are_encoded_at_load() {
     assert_eq!(engine.run(RunLimit::Count(5)).unwrap().rules_fired, 1);
     assert_eq!(engine.get_output("t"), Some("ok\n"));
 }
+
+#[test]
+fn delayed_query_bodies_consume_the_action_loop_budget_in_callables() {
+    let body = "(delayed-do-for-all-facts ((?f item)) TRUE (printout t body \"|\"))";
+    for probe in [
+        format!("(defrule driver => {body})"),
+        format!("(deffunction probe () {body}) (defrule driver => (probe))"),
+    ] {
+        let mut config = EngineConfig::utf8();
+        config.max_action_loop_iterations = 2;
+        let mut engine = Engine::new(config);
+        engine
+            .load_str(&format!(
+                "(deftemplate item (slot value))
+                 (deffacts seed (item (value 1)) (item (value 2)))
+                 {probe}"
+            ))
+            .unwrap();
+        engine.reset().unwrap();
+        let result = engine.run(RunLimit::Count(5)).unwrap();
+        assert_eq!(result.halt_reason, HaltReason::ActionError, "{probe}");
+        assert!(
+            engine.action_diagnostics().iter().any(|error| error
+                .to_string()
+                .contains("action iteration limit exceeded")),
+            "{probe}: {:?}",
+            engine.action_diagnostics()
+        );
+        assert_eq!(engine.get_output("t"), None, "{probe}");
+    }
+}
