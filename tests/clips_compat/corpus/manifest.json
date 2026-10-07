@@ -9527,6 +9527,15 @@
         "deftemplate",
         "issue-403"
       ]
+    },
+    {
+      "path": "stdlib/403b_math_nan_propagates.clp",
+      "level": "boundary",
+      "covers": [
+        "stdlib",
+        "builtin-semantics",
+        "issue-403"
+      ]
     }
   ]
 }

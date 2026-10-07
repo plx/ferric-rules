@@ -1132,8 +1132,9 @@ CLIPS does, so `(round -0.49999999999999994)` is `-1`.
 Domain errors in `sqrt`, `asin`, `acos`, `acosh`, `atanh`, `log`, `log10`,
 and `**` stop the current run with an `EMATHFUN1` diagnostic. Zero logarithm
 arguments report `EMATHFUN2`; a `tan` asymptote reports `EMATHFUN3`. Following
-CLIPS, overflow from functions such as `(exp 1000)` can still return `inf.0`.
-These errors preserve output already produced and stop later RHS actions.
+CLIPS, overflow from functions such as `(exp 1000)` can still return `inf.0`,
+and a NaN argument is not out of range, so these functions return `nan.0`
+for it (except `**` with a negative base). These errors preserve output already produced and stop later RHS actions.
 
 ### Type Conversion
 

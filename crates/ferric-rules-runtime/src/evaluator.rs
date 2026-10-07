@@ -4060,7 +4060,7 @@ fn builtin_sqrt(
     check_arity_exact("sqrt", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "sqrt", span)?;
-    require_math_domain("sqrt", f >= 0.0, span)?;
+    reject_out_of_domain("sqrt", f < 0.0, span)?;
     Ok(Value::Float(f.sqrt()))
 }
 
@@ -4111,7 +4111,7 @@ fn builtin_asin(
     check_arity_exact("asin", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "asin", span)?;
-    require_math_domain("asin", (-1.0..=1.0).contains(&f), span)?;
+    reject_out_of_domain("asin", f < -1.0 || f > 1.0, span)?;
     Ok(Value::Float(f.asin()))
 }
 
@@ -4123,7 +4123,7 @@ fn builtin_acos(
     check_arity_exact("acos", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "acos", span)?;
-    require_math_domain("acos", (-1.0..=1.0).contains(&f), span)?;
+    reject_out_of_domain("acos", f < -1.0 || f > 1.0, span)?;
     Ok(Value::Float(f.acos()))
 }
 
@@ -4202,7 +4202,7 @@ fn builtin_acosh(
     check_arity_exact("acosh", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "acosh", span)?;
-    require_math_domain("acosh", f >= 1.0, span)?;
+    reject_out_of_domain("acosh", f < 1.0, span)?;
     Ok(Value::Float(f.acosh()))
 }
 
@@ -4214,7 +4214,7 @@ fn builtin_atanh(
     check_arity_exact("atanh", args, 1, span)?;
     let values = eval_args(ctx, args)?;
     let f = as_float(&values[0], "atanh", span)?;
-    require_math_domain("atanh", f.abs() < 1.0, span)?;
+    reject_out_of_domain("atanh", f >= 1.0 || f <= -1.0, span)?;
     Ok(Value::Float(f.atanh()))
 }
 
@@ -4262,26 +4262,28 @@ fn builtin_pow(
     let values = eval_args(ctx, args)?;
     let base = as_float(&values[0], "**", span)?;
     let exp = as_float(&values[1], "**", span)?;
-    require_math_domain(
+    reject_out_of_domain(
         "**",
-        !(base == 0.0 && exp <= 0.0 || base < 0.0 && exp.fract() != 0.0),
+        base == 0.0 && exp <= 0.0 || base < 0.0 && exp.fract() != 0.0,
         span,
     )?;
     Ok(Value::Float(base.powf(exp)))
 }
 
-fn require_math_domain(
+/// Like CLIPS, each caller tests for an out-of-domain argument rather than
+/// membership in the domain, so a NaN argument propagates instead of failing.
+fn reject_out_of_domain(
     function: &str,
-    valid: bool,
+    out_of_domain: bool,
     span: Option<&SourceSpan>,
 ) -> Result<(), EvalError> {
-    if valid {
-        Ok(())
-    } else {
+    if out_of_domain {
         Err(EvalError::MathDomain {
             function: function.into(),
             span: span.cloned(),
         })
+    } else {
+        Ok(())
     }
 }
 
@@ -4290,7 +4292,7 @@ fn validate_log_argument(
     value: f64,
     span: Option<&SourceSpan>,
 ) -> Result<(), EvalError> {
-    require_math_domain(function, value >= 0.0, span)?;
+    reject_out_of_domain(function, value < 0.0, span)?;
     if value == 0.0 {
         return Err(EvalError::MathOverflow {
             function: function.into(),

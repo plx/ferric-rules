@@ -260,7 +260,8 @@ like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   definitions in the source still load.
 - Math domain, overflow and singularity errors now stop the rule with
   `EMATHFUN1`, `EMATHFUN2` or `EMATHFUN3` instead of returning `nan` or `inf`:
-  `(sqrt -1)`, `(log 0)` and `(tan (/ (pi) 2))` are errors.
+  `(sqrt -1)`, `(log 0)` and `(tan (/ (pi) 2))` are errors. A NaN argument
+  still returns `nan`, as in CLIPS.
 - `length` and `length$` count the bytes of a STRING or SYMBOL, and `length$`
   accepts those lexemes as well as a multifield.
 - `str-cat` and `sym-cat` reject multifield arguments.
