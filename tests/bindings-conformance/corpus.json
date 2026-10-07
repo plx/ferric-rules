@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite_version": "1.3.0",
+  "suite_version": "1.4.0",
   "bindings": ["rust", "c", "go", "node", "python"],
   "cases": [
     {
@@ -110,6 +110,40 @@
           "rationale": "Python has no external-address wrapper; native external identities are explicitly rejected on conversion, never erased to None.",
           "since": "1.0.0",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
+        }
+      }
+    },
+    {
+      "id": "value.fact-address",
+      "semantic": "value.fact_address",
+      "canonical": {
+        "egress": {"type": "fact_address", "public_index": 1},
+        "ingress": "rejected"
+      },
+      "deviations": {
+        "c": {
+          "expected": {"egress": "rejected", "ingress": "unsupported"},
+          "rationale": "The C value model has no fact-address discriminant; value conversion rejects rule-created fact addresses, including nested ones, and hosts use fact IDs instead.",
+          "since": "1.4.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/408"
+        },
+        "go": {
+          "expected": {"egress": "rejected", "ingress": "unsupported"},
+          "rationale": "Go inherits the C value conversion, which rejects rule-created fact addresses; hosts use fact IDs instead.",
+          "since": "1.4.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/408"
+        },
+        "node": {
+          "expected": {"egress": "rejected", "ingress": "unsupported"},
+          "rationale": "Node has no fact-address wrapper; rule-created fact addresses are rejected on conversion, never erased to null or an integer.",
+          "since": "1.4.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/408"
+        },
+        "python": {
+          "expected": {"egress": "rejected", "ingress": "unsupported"},
+          "rationale": "Python has no fact-address wrapper; rule-created fact addresses are rejected on conversion with TypeError, never erased to None or an integer.",
+          "since": "1.4.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/408"
         }
       }
     },
