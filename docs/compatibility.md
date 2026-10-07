@@ -759,6 +759,14 @@ or load diagnostic before continuing recursive evaluation. Callable bodies
 are checked before registration; a failed function redefinition or implicit
 generic registration preserves the previous registry state.
 
+Known difference: match conditions and deffacts or defglobal initializers
+evaluated by an engine effect (`assert`, `retract`, `modify`, `duplicate`,
+`reset`) continue that effect's call and expression depth rather than starting
+from zero. An effect run from deep inside nested calls can therefore push such
+a condition or initializer past these limits. Ferric reports that as a
+diagnostic, and an affected match condition does not match; CLIPS 6.30 has no
+such limit and evaluates them normally.
+
 Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
 the deffunction, so later callers are rejected at load; Ferric keeps the
 previous body and its callers still load. Both keep the previous method when
