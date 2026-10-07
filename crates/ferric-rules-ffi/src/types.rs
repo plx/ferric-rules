@@ -373,7 +373,8 @@ use ferric_rules_core::Value;
 /// cannot represent embedded NUL. Such values return an error instead of
 /// silently becoming an empty or truncated C string.
 /// Host external identities are also rejected: they are not memory addresses
-/// and cannot be represented by the legacy `external_pointer` field.
+/// and cannot be represented by the legacy `external_pointer` field. Fact
+/// addresses are rejected too; host fact handles remain a separate API type.
 pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricValue, String> {
     match value {
         Value::Integer(i) => Ok(FerricValue {
@@ -410,6 +411,9 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
                 values.push(value_to_ferric(element, engine)?);
             }
             Ok(values.into_multifield())
+        }
+        Value::FactAddress(_) => {
+            Err("fact addresses are not supported by the C binding".to_string())
         }
         Value::ExternalAddress(_) => Err(
             "host external identities cannot be converted to legacy FFI pointer values".to_string(),

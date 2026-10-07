@@ -75,6 +75,7 @@ create_exception!(
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
         EngineError::FactTimestampExhausted(_)
+        | EngineError::FactEpochExhausted
         | EngineError::FactInitialization { .. }
         | EngineError::ForeignHandle
         | EngineError::InvalidHostValue(_)

@@ -24,6 +24,18 @@ before assertion. Host values allow 32 multifield levels and one million total
 values per assertion. Opaque external tokens remain valid in memory and are
 explicitly rejected by snapshot serialization.
 
+Rule-language `Value::FactAddress` values are distinct from host `FactHandle`s.
+They retain their printed index after retraction and snapshots preserve their
+internal identity. Host assertions reject them, including nested values and
+owned fact copies. C, Python, and Node value extraction also rejects addresses,
+and Go and Swift inherit that rejection through the C ABI. This covers every
+rule-created `FACT-ADDRESS` value, including `<Dummy Fact>` slot defaults and
+addresses inside multifields: reading a global or a fact that holds one raises
+an error. While any fact in working memory holds an address, enumerating all
+facts fails for the whole call, and a relation lookup fails whenever one of
+its facts holds one. Inspect or retract facts using the host handles returned
+by the engine instead, and keep application IDs in facts.
+
 `SymbolHandle` and `HostValue` can move between threads along with their engine.
 Symbols survive `reset`. They are invalid after `clear` or in a separately
 restored engine. Clone an owned fact value with `HostFact::value` when it needs

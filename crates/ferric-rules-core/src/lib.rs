@@ -80,6 +80,8 @@ pub use string::FerricString;
 pub use symbol::{InstanceName, Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};
 pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage};
-pub use value::{AtomKey, ExternalAddress, ExternalTypeId, IntoFieldValues, Multifield, Value};
+pub use value::{
+    AtomKey, ExternalAddress, ExternalTypeId, FactAddress, IntoFieldValues, Multifield, Value,
+};
 
 mod snapshot;

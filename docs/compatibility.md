@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 722
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 744
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -77,6 +77,7 @@ the same value types and working-memory semantics as CLIPS.
 | `STRING` | Quoted string (e.g., `"hello"`) |
 | `INSTANCE-NAME` | Bracketed name (e.g., `[widget]`), distinct from SYMBOL |
 | `MULTIFIELD` | Ordered sequence of values |
+| `FACT-ADDRESS` | Opaque fact identity, displayed as `<Fact-N>` or `<Dummy Fact>` |
 
 Instance names are values only: Ferric has no object system, so `[widget]`
 names no instance. They match, compare, print and round-trip through
@@ -819,11 +820,13 @@ Known differences:
 - A `defmethod` whose restrictions are identical to an existing method's adds
   a second method after it, where CLIPS 6.30 replaces the existing method.
 - Only `INTEGER`, `FLOAT`, `NUMBER`, `SYMBOL`, `STRING`, `LEXEME`,
-  `INSTANCE-NAME`, `MULTIFIELD` and `EXTERNAL-ADDRESS` match as type
-  restrictions. Other CLIPS class names, such as `PRIMITIVE`, `OBJECT`,
-  `ADDRESS`, `INSTANCE`, `FACT-ADDRESS` and `INSTANCE-ADDRESS`, load as method
+  `INSTANCE-NAME`, `MULTIFIELD`, `EXTERNAL-ADDRESS` and `FACT-ADDRESS` match
+  as type restrictions. Other CLIPS class names, such as `PRIMITIVE`,
+  `OBJECT`, `ADDRESS`, `INSTANCE` and `INSTANCE-ADDRESS`, load as method
   restrictions but never match, so a restriction that names only such classes
-  makes its method never applicable.
+  makes its method never applicable. In particular, an `ADDRESS`, `PRIMITIVE`
+  or `OBJECT` restriction does not match a fact address in Ferric, although
+  CLIPS 6.30 matches it.
 
 A parameter query follows its optional type restrictions. It is a function
 call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
@@ -1126,22 +1129,59 @@ error; CLIPS instead reports an unknown name and continues with `FALSE`.
 
 #### Fact addresses
 
-A fact address (`?f <- (...)`, a query member, or a `find-fact` result) is an
-opaque INTEGER handle in Ferric, not a FACT-ADDRESS value. It works with
-`retract`, `modify`, `duplicate` and the fact functions, but printing it shows
-a large integer where CLIPS prints `<Fact-3>`, `integerp` returns TRUE, and
-arithmetic on it gives a meaningless number. `retract` and the fact functions
-above also take the CLIPS fact index that `fact-index` returns, so
-`(fact-relation (fact-index ?f))` names the relation of `?f`'s fact; an index is
-found by scanning working memory.
+A fact address (`?f <- (...)`, a query member, or an element of a `find-fact`
+result) has type `FACT-ADDRESS`. It prints `<Fact-N>` using the public assertion
+index, works with `retract`, `modify`, `duplicate`, and fact introspection,
+and compares by identity with `eq` and `neq`. It is neither an INTEGER nor a
+NUMBER: arithmetic, `str-cat`, and `sym-cat` reject it. Addresses can be stored
+in fact fields, slots, multifields, and globals; engine snapshots preserve
+their identities.
 
-An index that names no fact differs from CLIPS. CLIPS always continues:
-`retract` does nothing and the functions return `FALSE`, after printing
-`[PRNTUTIL1] Unable to find fact f-N.` for `retract`, `fact-slot-value` and
-`fact-slot-names`, or an `[ARGACCES5]` type notice for a negative index. In
-Ferric, `retract` and `fact-slot-value` make it an action error, which ends the
-run; `fact-existp`, `fact-relation` and `fact-slot-names` return `FALSE`
-without a notice.
+An INTEGER designator always means a public fact index. It cannot be decoded
+as an internal address. `(fact-relation (fact-index ?f))` therefore names
+`?f`'s relation while the fact is live.
+
+Retraction preserves an address's printed `<Fact-N>` identity. `fact-index`
+then returns `-1`; `fact-existp`, `fact-relation`, `fact-slot-names`, and
+`fact-slot-value` return `FALSE`. An address does not become an address to a
+replacement fact. A runtime assertion using the derived default for a
+`FACT-ADDRESS` slot receives `<Dummy Fact>`, a distinct address value with no
+referenced fact; its introspection results are the same as a stale address.
+
+A missing or negative fact index, or a designator that is neither an address
+nor an INTEGER, also returns `FALSE` from `fact-existp`, `fact-relation`,
+`fact-slot-names`, and `fact-slot-value`, and the rule continues. `fact-index`
+returns `-1` for any argument that is not a fact address, including an INTEGER.
+`fact-slot-value` resolves its designator before evaluating the slot argument,
+so the slot argument is not evaluated when the designator names no live fact.
+On a live fact, an invalid slot name or a slot argument that is not a symbol,
+string, or instance name stops the rule. CLIPS 6.30 accepts only a SYMBOL slot
+argument: it rejects a literal STRING at load and stops the rule for a computed
+one, whereas Ferric also accepts a STRING or INSTANCE-NAME slot name.
+
+`retract` skips a missing index or a stale address and goes on to its next
+target. A negative index ends that `retract` call: later targets are neither
+evaluated nor retracted, and the rule continues. A target of any other type
+stops the rule, after the remaining targets have been retracted. As in CLIPS,
+a later target that calls a deffunction or generic function is not called and
+retracts nothing, while variables, literals, and builtin calls are still
+evaluated and retracted. CLIPS 6.30 also fails some builtin targets in that
+state, such as `progn$`, `switch`, `funcall`, or `(nth$ 1 (create$ ?f))`, and
+keeps their facts, whereas Ferric still evaluates and retracts them. A
+deffunction or generic function reached through such a builtin, whether nested
+in it or called through `funcall`, still runs in Ferric; CLIPS 6.30 does not
+call it. `modify` and `duplicate` given a missing index do nothing, without
+evaluating their slot overrides, and the rule continues; a negative index or a
+target of another type stops the rule, as in CLIPS. Given a stale address,
+`modify` and `duplicate` also stop the rule, whereas CLIPS 6.30 asserts a new
+fact from the retracted fact's data.
+
+CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]` notices for these
+calls; Ferric omits those notices.
+
+`save-facts` renders addresses as quoted strings, such as `"<Fact-1>"` or
+`"<Dummy Fact>"`, matching CLIPS. These fact files do not preserve address
+identity; use an engine snapshot when identity must survive persistence.
 
 ### I/O Functions
 
@@ -1642,7 +1682,8 @@ diagnostics are emitted to stderr.
 ### Template type declarations
 
 Primitive template slot unions (`SYMBOL`, `STRING`, `INTEGER`, `FLOAT`,
-`NUMBER`, `LEXEME`, `EXTERNAL-ADDRESS`) are retained and checked. Default values,
+`NUMBER`, `LEXEME`, `INSTANCE-NAME`, `FACT-ADDRESS`, `EXTERNAL-ADDRESS`) are
+retained and checked. Default values,
 seed facts, and literal rule assertions are validated before their construct is
 installed; runtime values and host template assertions are always validated.
 Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects

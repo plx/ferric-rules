@@ -303,6 +303,7 @@ pub enum SlotValueType {
     Integer,
     Float,
     InstanceName,
+    FactAddress,
     ExternalAddress,
 }
 
@@ -3080,7 +3081,9 @@ fn interpret_slot_types(
     }
     let mut types = Vec::new();
     for value in values {
-        use SlotValueType::{ExternalAddress, Float, InstanceName, Integer, String, Symbol};
+        use SlotValueType::{
+            ExternalAddress, FactAddress, Float, InstanceName, Integer, String, Symbol,
+        };
         let kinds: &[_] = match value.as_symbol() {
             Some("SYMBOL") => &[Symbol],
             Some("STRING") => &[String],
@@ -3090,7 +3093,8 @@ fn interpret_slot_types(
             Some("LEXEME") => &[Symbol, String],
             Some("EXTERNAL-ADDRESS") => &[ExternalAddress],
             Some("INSTANCE-NAME") => &[InstanceName],
-            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, INSTANCE-NAME, or EXTERNAL-ADDRESS", value.span())),
+            Some("FACT-ADDRESS") => &[FactAddress],
+            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, INSTANCE-NAME, FACT-ADDRESS, or EXTERNAL-ADDRESS", value.span())),
         };
         types.extend_from_slice(kinds);
     }

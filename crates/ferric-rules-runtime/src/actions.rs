@@ -19,7 +19,6 @@ use ferric_rules_core::{
     TemplateId, Value,
 };
 use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
-use slotmap::Key as _;
 
 use crate::evaluator::CompactFactBinding;
 use crate::modules::ModuleRegistry;
@@ -147,6 +146,7 @@ impl ActionEvalEnv {
             input_buffer: Some(&mut engine.input_buffer),
             fact_base: Some(&engine.fact_base),
             initial_fact_id: engine.initial_fact_id,
+            fact_epoch: engine.fact_epoch,
             template_defs: Some(&engine.template_defs),
             compact_fact_bindings: Some(compact_facts),
             template_resolver: Some(crate::loader::TemplateResolver {
@@ -188,6 +188,21 @@ impl ActionEvalEnv {
         let mut ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
         crate::evaluator::eval_action_expression(&mut ctx, runtime_expr)
             .map_err(ActionError::from_action_evaluation)
+    }
+
+    /// Whether `expr` is a call that runs a deffunction or defgeneric.
+    fn calls_user_callable(
+        &self,
+        token: &Token,
+        rule_info: &CompiledRuleInfo,
+        expr: &ActionExpr,
+        context: &mut ActionExecutionContext<'_>,
+    ) -> bool {
+        let ActionExpr::FunctionCall(call) = expr else {
+            return false;
+        };
+        let ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
+        crate::evaluator::call_names_user_callable(&ctx, &call.name)
     }
 
     fn eval_expr(
@@ -235,6 +250,7 @@ impl ActionEvalEnv {
             input_buffer: Some(&mut engine.input_buffer),
             fact_base: Some(&engine.fact_base),
             initial_fact_id: engine.initial_fact_id,
+            fact_epoch: engine.fact_epoch,
             template_defs: Some(&engine.template_defs),
             compact_fact_bindings: Some(compact_facts),
             template_resolver: Some(crate::loader::TemplateResolver {
@@ -411,6 +427,9 @@ pub(crate) fn execute_actions(
         seed_compact_fact_addresses(
             collected_facts,
             &rule_info.fact_address_vars,
+            &context.engine.fact_base,
+            context.engine.initial_fact_id,
+            context.engine.fact_epoch,
             &mut eval_env.compact_facts,
         );
     }
@@ -504,12 +523,16 @@ pub(crate) fn evaluate_test_condition(
 /// Bind pattern fact addresses (`?f <- (...)`) into an activation's own token
 /// copy, so RHS expressions read them through the ordinary binding frame.
 /// A same-named pattern variable keeps precedence.
+#[allow(clippy::too_many_arguments)] // Captures engine identity alongside activation bindings.
 pub(crate) fn bind_fact_addresses(
     token: &mut Token,
     rule_info: &CompiledRuleInfo,
     collected_facts: &[FactId],
     symbol_table: &SymbolTable,
     encoding: ferric_rules_core::StringEncoding,
+    fact_base: &FactBase,
+    initial_fact_id: Option<FactId>,
+    fact_epoch: u64,
 ) {
     let layout = rule_info.activation_layout(symbol_table, encoding);
     for &(id, index) in &layout.fact_address_slots {
@@ -517,10 +540,16 @@ pub(crate) fn bind_fact_addresses(
             continue;
         };
         if token.bindings.get(id).is_none() {
-            let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
-            token
-                .bindings
-                .set(id, ValueRef::new(Value::Integer(encoded)));
+            if let Some(address) = crate::fact_address::make_fact_address(
+                fact_base,
+                initial_fact_id,
+                fact_epoch,
+                *fact_id,
+            ) {
+                token
+                    .bindings
+                    .set(id, ValueRef::new(Value::FactAddress(address)));
+            }
         }
     }
 }
@@ -530,13 +559,18 @@ pub(crate) fn bind_fact_addresses(
 fn seed_compact_fact_addresses(
     collected_facts: &[FactId],
     addresses: &HashMap<String, usize>,
+    fact_base: &FactBase,
+    initial_fact_id: Option<FactId>,
+    fact_epoch: u64,
     compact_facts: &mut crate::evaluator::CompactFactBindings,
 ) {
     for (name, &index) in addresses {
-        if let Some(fact_id) = collected_facts.get(index) {
+        if let Some(address) = collected_facts.get(index).and_then(|fact_id| {
+            crate::fact_address::make_fact_address(fact_base, initial_fact_id, fact_epoch, *fact_id)
+        }) {
             compact_facts.insert(
                 name.strip_prefix("$?").unwrap_or(name).to_string(),
-                CompactFactBinding::live(*fact_id),
+                CompactFactBinding::live(address),
             );
         }
     }
@@ -1529,8 +1563,15 @@ impl ActionQueryCursor {
                             .clone(),
                     )
                 });
+                let address = crate::fact_address::make_fact_address(
+                    &context.engine.fact_base,
+                    context.engine.initial_fact_id,
+                    context.engine.fact_epoch,
+                    fact_id,
+                )
+                .expect("chronological index only yields live facts");
                 self.current[self.level] =
-                    Some(CompactFactBinding::retained(fact_id, retained.clone()));
+                    Some(CompactFactBinding::retained(address, retained.clone()));
                 if self.level + 1 == self.members.len() {
                     let candidate = self
                         .members
@@ -1587,10 +1628,10 @@ fn with_query_candidate<T>(
             .var_map
             .get_or_create(symbol)
             .map_err(|_| ActionError::EvalError(format!("query: too many variables for {name}")))?;
-        let address = i64::from_ne_bytes(member.fact_id().data().as_ffi().to_ne_bytes());
-        aug_token
-            .bindings
-            .set(var_id, ValueRef::new(Value::Integer(address)));
+        aug_token.bindings.set(
+            var_id,
+            ValueRef::new(Value::FactAddress(member.address().clone())),
+        );
     }
     eval_env.with_local_scope(
         candidate.iter().map(|(name, _)| name.as_str()),
@@ -2127,6 +2168,12 @@ fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut 
                 format_value_for_fct(v, symbol_table, output);
             }
         }
+        Value::FactAddress(_) => {
+            // CLIPS saves the address spelling as a string, not a reusable identity.
+            output.push('"');
+            crate::value_print::append_printout_value(value, symbol_table, output);
+            output.push('"');
+        }
         Value::ExternalAddress(_) | Value::Void => {}
     }
 }
@@ -2448,6 +2495,7 @@ fn runtime_value_type_name(value: &Value) -> &'static str {
         Value::InstanceName(_) => "INSTANCE-NAME",
         Value::Multifield(_) => "MULTIFIELD",
         Value::ExternalAddress(_) => "EXTERNAL-ADDRESS",
+        Value::FactAddress(_) => "FACT-ADDRESS",
         Value::Void => "VOID",
     }
 }
@@ -2617,16 +2665,41 @@ fn execute_retract(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    // CLIPS 6.30's `retract` skips a missing fact, stops at a negative index
+    // without evaluating later targets (the rule continues), and reports a
+    // wrong-type target only after retracting the remaining targets.
+    let mut wrong_type = None;
     for arg in args {
-        let fact_id = resolve_target_fact_id(
-            "retract",
+        // Once a wrong-type target has set CLIPS's halt flag, a later
+        // deffunction or generic target returns FALSE without running (another
+        // wrong-type target). Builtins, variables and literals still evaluate.
+        // Only a top-level call is checked: a user callable nested inside a
+        // builtin target or called through `funcall` still runs, as do
+        // builtins such as `progn$`, `switch` and `funcall` that CLIPS also
+        // fails while halted.
+        if wrong_type.is_some() && eval_env.calls_user_callable(token, rule_info, arg, context) {
+            continue;
+        }
+        let fact_id = match resolve_target_fact_id(
             arg,
             token,
             rule_info,
             context,
             eval_env,
             collected_facts,
-        )?;
+        )? {
+            FactTarget::Live(fact_id) => fact_id,
+            FactTarget::MissingIndex | FactTarget::StaleAddress => continue,
+            FactTarget::NegativeIndex => break,
+            FactTarget::WrongType => {
+                wrong_type.get_or_insert_with(|| {
+                    ActionError::EvalError(
+                        "retract: target must be a fact-address or fact index".to_string(),
+                    )
+                });
+                continue;
+            }
+        };
         if Some(fact_id) == context.engine.initial_fact_id {
             return Err(ActionError::EvalError(
                 "the internal initial-fact is protected and cannot be retracted".to_string(),
@@ -2645,7 +2718,7 @@ fn execute_retract(
             context.engine.drain_pending_predicate_matches();
         }
     }
-    Ok(())
+    wrong_type.map_or(Ok(()), Err)
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
@@ -2711,19 +2784,16 @@ fn execute_fact_mutation(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     let target = args.first().ok_or(ActionError::InvalidRetract)?;
-    let fact_id = resolve_target_fact_id(
-        if mode.retract_original() {
-            "modify"
-        } else {
-            "duplicate"
-        },
-        target,
-        token,
-        rule_info,
-        context,
-        eval_env,
-        collected_facts,
-    )?;
+    let action = if mode.retract_original() {
+        "modify"
+    } else {
+        "duplicate"
+    };
+    let target =
+        resolve_target_fact_id(target, token, rule_info, context, eval_env, collected_facts)?;
+    let Some(fact_id) = mutation_target(action, target)? else {
+        return Ok(());
+    };
     if Some(fact_id) == context.engine.initial_fact_id {
         return Err(ActionError::EvalError(
             "the internal initial-fact is protected and cannot be modified or duplicated"
@@ -2850,18 +2920,45 @@ fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<&Fact, Act
         .ok_or(ActionError::FactNotFound(fact_id))
 }
 
+/// The live fact `modify` or `duplicate` changes. CLIPS 6.30 reports a missing
+/// index and continues the rule without evaluating or applying the slot
+/// overrides (`None`); other unresolved targets stop the rule.
+fn mutation_target(action: &str, target: FactTarget) -> Result<Option<FactId>, ActionError> {
+    let reason = match target {
+        FactTarget::Live(fact_id) => return Ok(Some(fact_id)),
+        FactTarget::MissingIndex => return Ok(None),
+        FactTarget::StaleAddress => "target fact does not exist",
+        FactTarget::NegativeIndex => "fact index must not be negative",
+        FactTarget::WrongType => "target must be a fact-address or fact index",
+    };
+    Err(ActionError::EvalError(format!("{action}: {reason}")))
+}
+
+/// What a fact-action target designates. Each action decides which of the
+/// non-live outcomes are recoverable, following CLIPS 6.30.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FactTarget {
+    Live(FactId),
+    /// A non-negative INTEGER index that names no live fact.
+    MissingIndex,
+    /// A fact address whose fact was retracted (or a dummy address).
+    StaleAddress,
+    NegativeIndex,
+    /// Neither a fact address nor an INTEGER index.
+    WrongType,
+}
+
 /// Fact actions use the current ordinary frame, including query members,
 /// aliases, and inner loop shadowing. Compact slot bindings have a separate
 /// lexical purpose and must not override these ordinary values.
 fn resolve_target_fact_id(
-    action: &str,
     target: &ActionExpr,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
-) -> Result<FactId, ActionError> {
+) -> Result<FactTarget, ActionError> {
     let fast = match target {
         // Without RHS locals, a variable reads the activation frame directly;
         // this is what evaluating it would do, minus building a frame.
@@ -2874,17 +2971,19 @@ fn resolve_target_fact_id(
         Some(value) => value,
         None => eval_env.eval_expr(token, rule_info, target, context, collected_facts)?,
     };
-    let Value::Integer(index) = value else {
-        return Err(ActionError::EvalError(format!(
-            "{action}: target must be a fact-address or fact index"
-        )));
+    let missing = match value {
+        Value::FactAddress(_) => FactTarget::StaleAddress,
+        Value::Integer(index) if index < 0 => return Ok(FactTarget::NegativeIndex),
+        Value::Integer(_) => FactTarget::MissingIndex,
+        _ => return Ok(FactTarget::WrongType),
     };
-    crate::evaluator::designated_fact(
+    Ok(crate::evaluator::designated_fact(
         &context.engine.fact_base,
         context.engine.initial_fact_id,
+        context.engine.fact_epoch,
         &value,
     )
-    .ok_or_else(|| ActionError::EvalError(format!("{action}: no fact has index {index}")))
+    .map_or(missing, FactTarget::Live))
 }
 
 /// Read a variable from the activation frame (pattern and fact-address bindings).
@@ -3141,13 +3240,36 @@ mod tests {
             ActionError::RuleReturn,
         ] {
             let mut env = ActionEvalEnv::default();
-            env.compact_facts
-                .insert("f".into(), CompactFactBinding::live(outer));
+            env.compact_facts.insert(
+                "f".into(),
+                CompactFactBinding::live(ferric_rules_core::FactAddress::new(
+                    outer,
+                    1,
+                    ferric_rules_core::Timestamp::ZERO,
+                    1,
+                )),
+            );
             insert_runtime_binding(&mut env.runtime_bindings, "f", Value::Integer(42));
             let result: Result<(), ActionError> = env.with_compact_scope(
                 &[
-                    ("f".into(), CompactFactBinding::live(inner)),
-                    ("temporary".into(), CompactFactBinding::live(inner)),
+                    (
+                        "f".into(),
+                        CompactFactBinding::live(ferric_rules_core::FactAddress::new(
+                            inner,
+                            1,
+                            ferric_rules_core::Timestamp::ZERO,
+                            1,
+                        )),
+                    ),
+                    (
+                        "temporary".into(),
+                        CompactFactBinding::live(ferric_rules_core::FactAddress::new(
+                            inner,
+                            1,
+                            ferric_rules_core::Timestamp::ZERO,
+                            1,
+                        )),
+                    ),
                 ],
                 |env| {
                     assert_eq!(
@@ -3167,7 +3289,15 @@ mod tests {
                         Some(Value::Integer(42))
                     ));
                     let nested_result: Result<(), ActionError> = env.with_compact_scope(
-                        &[("f".into(), CompactFactBinding::live(nested))],
+                        &[(
+                            "f".into(),
+                            CompactFactBinding::live(ferric_rules_core::FactAddress::new(
+                                nested,
+                                1,
+                                ferric_rules_core::Timestamp::ZERO,
+                                1,
+                            )),
+                        )],
                         |env| {
                             assert_eq!(
                                 env.compact_facts.get("f").map(CompactFactBinding::fact_id),
@@ -3197,14 +3327,25 @@ mod tests {
         let fact = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
         let mut env = ActionEvalEnv::default();
         for name in ["f", "g"] {
-            env.with_compact_scope(&[(name.into(), CompactFactBinding::live(fact))], |env| {
-                assert_eq!(env.compact_facts.len(), 1);
-                assert_eq!(
-                    env.compact_facts.get(name).map(CompactFactBinding::fact_id),
-                    Some(fact)
-                );
-                Ok(())
-            })
+            env.with_compact_scope(
+                &[(
+                    name.into(),
+                    CompactFactBinding::live(ferric_rules_core::FactAddress::new(
+                        fact,
+                        1,
+                        ferric_rules_core::Timestamp::ZERO,
+                        1,
+                    )),
+                )],
+                |env| {
+                    assert_eq!(env.compact_facts.len(), 1);
+                    assert_eq!(
+                        env.compact_facts.get(name).map(CompactFactBinding::fact_id),
+                        Some(fact)
+                    );
+                    Ok(())
+                },
+            )
             .unwrap();
             assert!(env.compact_facts.is_empty());
         }
@@ -3305,20 +3446,35 @@ mod tests {
         let (f, g) = (lookup(&engine, "f"), lookup(&engine, "g"));
         // A pattern binding of the same name keeps precedence.
         token.bindings.set(g, ValueRef::new(Value::Integer(-1)));
-        let fact_id = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
+        let relation = engine
+            .symbol_table
+            .intern_symbol("a", engine.config.string_encoding)
+            .unwrap();
+        let fact_id = engine
+            .fact_base
+            .assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
         bind_fact_addresses(
             &mut token,
             &info,
             &[fact_id, fact_id],
             &engine.symbol_table,
             engine.config.string_encoding,
+            &engine.fact_base,
+            engine.initial_fact_id,
+            engine.fact_epoch,
         );
-        let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
+        let address = crate::fact_address::make_fact_address(
+            &engine.fact_base,
+            engine.initial_fact_id,
+            engine.fact_epoch,
+            fact_id,
+        )
+        .unwrap();
         assert!(token
             .bindings
             .get(f)
             .unwrap()
-            .structural_eq(&Value::Integer(encoded)));
+            .structural_eq(&Value::FactAddress(address)));
         assert!(token
             .bindings
             .get(g)
@@ -3336,6 +3492,9 @@ mod tests {
             &[],
             &engine.symbol_table,
             engine.config.string_encoding,
+            &engine.fact_base,
+            engine.initial_fact_id,
+            engine.fact_epoch,
         );
         assert_eq!(empty.bindings.bound_count(), 0);
     }

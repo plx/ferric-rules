@@ -159,6 +159,7 @@ impl RegisteredTemplate {
                 Value::Integer(_) => SlotValueType::Integer,
                 Value::Float(_) => SlotValueType::Float,
                 Value::InstanceName(_) => SlotValueType::InstanceName,
+                Value::FactAddress(_) => SlotValueType::FactAddress,
                 Value::ExternalAddress(_) => SlotValueType::ExternalAddress,
                 Value::Multifield(_) if self.allowed_types[index].is_none() => continue,
                 Value::Multifield(_) | Value::Void => {

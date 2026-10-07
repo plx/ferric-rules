@@ -1035,6 +1035,10 @@ fn observe_value(engine: &Engine, value: &Value) -> Result<ValueObservation, Str
         Value::Integer(value) => Ok(ValueObservation::Integer {
             value: value.to_string(),
         }),
+        Value::FactAddress(address) => Ok(ValueObservation::FactAddress {
+            public_index: address.public_index(),
+            opaque: true,
+        }),
         Value::Float(value) => Ok(ValueObservation::Float {
             value: canonical_float(*value),
             bits: format!("0x{:016x}", value.to_bits()),
@@ -1283,13 +1287,33 @@ struct SlotObservation {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ValueObservation {
-    Symbol { value: String },
-    InstanceName { value: String },
-    String { value: String },
-    Integer { value: String },
-    Float { value: String, bits: String },
-    Multifield { values: Vec<ValueObservation> },
-    ExternalAddress { external_type_id: u32, opaque: bool },
+    Symbol {
+        value: String,
+    },
+    InstanceName {
+        value: String,
+    },
+    String {
+        value: String,
+    },
+    Integer {
+        value: String,
+    },
+    FactAddress {
+        public_index: Option<u64>,
+        opaque: bool,
+    },
+    Float {
+        value: String,
+        bits: String,
+    },
+    Multifield {
+        values: Vec<ValueObservation>,
+    },
+    ExternalAddress {
+        external_type_id: u32,
+        opaque: bool,
+    },
     Void,
 }
 
@@ -1372,6 +1396,50 @@ struct Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_fact_addresses_keep_semantic_type_and_retained_public_index() {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffacts seed (item)) \
+                 (defrule capture ?f <- (item) => (assert (saved ?f)) (retract ?f))",
+            )
+            .unwrap();
+        engine.reset().unwrap();
+        engine.run(RunLimit::Count(10)).unwrap();
+        let address = engine
+            .facts()
+            .unwrap()
+            .find_map(|(_, fact)| match fact {
+                Fact::Ordered(fact) => fact
+                    .fields
+                    .iter()
+                    .find(|value| matches!(value, Value::FactAddress(_)))
+                    .cloned(),
+                Fact::Template(_) => None,
+            })
+            .unwrap();
+        let values = Value::Multifield(Box::new(
+            [
+                address,
+                Value::FactAddress(ferric_rules_core::FactAddress::dummy()),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        let observed = serde_json::to_value(observe_value(&engine, &values).unwrap()).unwrap();
+        assert_eq!(
+            observed,
+            serde_json::json!({
+                "type": "multifield",
+                "values": [
+                    {"type": "fact-address", "public_index": 1, "opaque": true},
+                    {"type": "fact-address", "public_index": null, "opaque": true}
+                ]
+            })
+        );
+    }
 
     #[test]
     fn sha256_parser_requires_lowercase_canonical_text() {

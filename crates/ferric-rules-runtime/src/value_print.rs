@@ -90,6 +90,13 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
             }
         }
         Value::Void => {}
+        Value::FactAddress(address) => {
+            if let Some(index) = address.public_index() {
+                let _ = write!(output, "<Fact-{index}>");
+            } else {
+                output.push_str("<Dummy Fact>");
+            }
+        }
         // Preserve the existing opaque-host-value boundary; this is not a
         // fabricated CLIPS pointer or a typed fact-address representation.
         Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),

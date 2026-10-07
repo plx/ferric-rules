@@ -187,6 +187,7 @@ pub struct Engine {
     /// use the independent non-fact root. Public host queries hide this protected
     /// implementation fact, and retraction rejects its ID.
     pub(crate) initial_fact_id: Option<FactId>,
+    pub(crate) fact_epoch: u64,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
@@ -254,6 +255,7 @@ impl Engine {
             global_modules: HashMap::default(),
             generic_modules: HashMap::default(),
             initial_fact_id: None,
+            fact_epoch: 0,
             action_diagnostics: Vec::new(),
             processing_predicates: false,
             halted: false,
@@ -554,6 +556,14 @@ impl Engine {
             definition
                 .validate_slots(&template.slots)
                 .map_err(EngineError::InvalidHostValue)?;
+        }
+        let fields: &[Value] = match &fact.fact {
+            Fact::Ordered(fact) => &fact.fields,
+            Fact::Template(fact) => &fact.slots,
+        };
+        let mut remaining = HOST_VALUE_MAX_ITEMS;
+        for value in fields {
+            HostValue::validate_contents(value, true, self.config.string_encoding, &mut remaining)?;
         }
         let result = self.assert_fact_internal(fact.fact)?;
         Ok(self.host_assertion_result(result))
@@ -1089,6 +1099,9 @@ impl Engine {
             &collected_facts,
             &self.symbol_table,
             self.config.string_encoding,
+            &self.fact_base,
+            self.initial_fact_id,
+            self.fact_epoch,
         );
 
         let (fired, reset_requested, clear_requested, errors) = {
@@ -1355,6 +1368,10 @@ impl Engine {
     ///
     /// Evaluation errors stop reset before publishing the failing fact.
     pub fn reset(&mut self) -> Result<(), EngineError> {
+        self.fact_epoch = self
+            .fact_epoch
+            .checked_add(1)
+            .ok_or(EngineError::FactEpochExhausted)?;
         self.host.clear_facts();
         ferric_span!(info_span, "engine_reset");
 
@@ -1415,6 +1432,10 @@ impl Engine {
     /// Unlike `reset()`, which preserves compiled rules and templates,
     /// `clear()` removes everything.
     pub fn clear(&mut self) {
+        // Clear discards every internal address carrier, including registered
+        // globals. Host assertions reject retained addresses, so epoch reuse
+        // here cannot revive one. Reset preserves carriers and must not wrap.
+        self.fact_epoch = self.fact_epoch.wrapping_add(1);
         self.host = HostState::new();
         ferric_span!(info_span, "engine_clear");
         self.fact_base = FactBase::new();
@@ -1795,6 +1816,9 @@ pub enum EngineError {
 
     #[error(transparent)]
     FactTimestampExhausted(#[from] ferric_rules_core::FactTimestampExhausted),
+
+    #[error("fact epoch capacity exhausted")]
+    FactEpochExhausted,
 
     #[error("fact not found: {0:?}")]
     FactNotFound(FactHandle),

@@ -25,7 +25,13 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 5. Generic methods retain fixed-parameter queries,
+The current schema is 6. Typed fact addresses retain their assertion identity,
+working-memory epoch, and public display index. Live, retracted, and dummy
+addresses survive snapshots, including nested values and rule bindings. Restored
+address metadata is checked against the working-memory chronology. Schema 5
+lacks this representation and is rejected with `UnsupportedVersion(5)`.
+
+Generic methods retain fixed-parameter queries,
 wildcard type restrictions, and wildcard queries. Schema 4 lacks that metadata
 and is rejected with `UnsupportedVersion(4)`. This version also uses corrected
 loop, empty-callable, and wildcard argument semantics.
@@ -75,7 +81,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`4`) |
+| 8–9 | Little-endian schema version (`6`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

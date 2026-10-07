@@ -258,7 +258,7 @@ fn marked_name(obj: &JsObject, marker: &str) -> Result<Option<String>> {
 /// - `Value::String` → `string`
 /// - `Value::Multifield` → `Array`
 /// - `Value::Void` → `null`
-/// - `Value::ExternalAddress` → explicit unsupported-value error
+/// - `Value::ExternalAddress` / `Value::FactAddress` → explicit unsupported-value error
 ///
 /// # Errors
 ///
@@ -312,6 +312,10 @@ pub fn value_to_js(env: &Env, val: &Value, engine: &Engine) -> Result<JsUnknown>
         }
 
         Value::Void => env.get_null().map(JsNull::into_unknown),
+        Value::FactAddress(_) => Err(Error::new(
+            Status::InvalidArg,
+            "fact addresses are not supported by the Node binding",
+        )),
         Value::ExternalAddress(_) => Err(Error::new(
             Status::InvalidArg,
             "host external identities are not supported by the Node binding",

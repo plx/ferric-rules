@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"unsafe"
 
 	ferric "github.com/plx/ferric-rules/bindings/go"
@@ -172,9 +173,27 @@ func valueCase(caseID string) (any, error) {
 			"host_representation": "opaque_pointer",
 			"ingress":             ingress,
 		}, nil
+	case "value.fact-address":
+		return factAddressCase()
 	default:
 		return nil, fmt.Errorf("unknown value case %s", caseID)
 	}
+}
+
+// factAddressCase reads a global bound to a rule's fact address. Go has no
+// fact-address value and inherits the C ABI's egress rejection.
+func factAddressCase() (any, error) {
+	_, engine, err := runFixture("fact-address.clp", 0, false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = engine.Close() }()
+	if _, err := engine.GetGlobal("address"); err == nil {
+		return nil, errors.New("a fact address crossed the Go value boundary")
+	} else if !strings.Contains(err.Error(), "fact addresses") {
+		return nil, err
+	}
+	return map[string]any{"egress": "rejected", "ingress": "unsupported"}, nil
 }
 
 func configurationDefault() (any, error) {

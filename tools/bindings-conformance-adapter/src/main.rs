@@ -71,6 +71,9 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
                 .collect::<Vec<_>>()
         }),
         Value::ExternalAddress(_) => json!({"type": "external_address"}),
+        Value::FactAddress(address) => json!({
+            "type": "fact_address", "public_index": address.public_index(),
+        }),
     }
 }
 
@@ -163,6 +166,25 @@ fn value_case(case_id: &str) -> Result<JsonValue, String> {
             Ok(json!({
                 "host_representation": "opaque",
                 "ingress": if accepted { "accepted" } else { "rejected" }
+            }))
+        }
+        "value.fact-address" => {
+            let mut engine = new_with_fixture("fact-address.clp")?;
+            engine
+                .run(RunLimit::Unlimited)
+                .map_err(|error| error.to_string())?;
+            let address = engine
+                .get_global("address")
+                .cloned()
+                .ok_or_else(|| "global address is missing".to_string())?;
+            let egress = normalize_value(&address, &engine);
+            let rejected = matches!(
+                engine.assert_ordered("probe", address),
+                Err(EngineError::InvalidHostValue(_))
+            );
+            Ok(json!({
+                "egress": egress,
+                "ingress": if rejected { "rejected" } else { "accepted" }
             }))
         }
         _ => Err(format!("unknown value case {case_id}")),

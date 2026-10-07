@@ -20,6 +20,23 @@ impl Engine {
             .map_err(SerializationError::InvalidState)
     }
 
+    fn validate_snapshot_value(&self, value: &Value) -> Result<(), String> {
+        self.symbol_table.validate_snapshot_value(value)?;
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::FactAddress(address) => self.fact_base.validate_snapshot_fact_address(
+                    address,
+                    self.fact_epoch,
+                    self.initial_fact_id,
+                )?,
+                Value::Multifield(fields) => pending.extend(fields.iter()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn validate_snapshot_metadata(&self) -> Result<(), String> {
         self.symbol_table.validate_snapshot()?;
@@ -30,6 +47,8 @@ impl Engine {
             self.config.strategy == self.rete.agenda.strategy(),
             "configured strategy disagrees with restored agenda",
         )?;
+        self.rete
+            .validate_snapshot_binding_values(|value| self.validate_snapshot_value(value))?;
         self.compiler.validate_snapshot(&self.rete)?;
         // Installation allocates sequential IDs and reuses removed slots. The
         // index retains its capacity after removal; only a new engine is empty.
@@ -144,8 +163,7 @@ impl Engine {
                         "noncanonical template type union",
                     )?;
                 }
-                self.symbol_table
-                    .validate_snapshot_value(&template.defaults[index])?;
+                self.validate_snapshot_value(&template.defaults[index])?;
                 if !matches!(template.defaults[index], Value::Void) {
                     template.validate_slot(index, &template.defaults[index])?;
                 }
@@ -216,7 +234,7 @@ impl Engine {
                         == Some(*module),
                     "global missing from owner index",
                 )?;
-                self.symbol_table.validate_snapshot_value(value)?;
+                self.validate_snapshot_value(value)?;
             }
         }
         ensure(self.globals.gensym_counter >= 1, "invalid gensym counter")?;
@@ -240,7 +258,7 @@ impl Engine {
                         == Some(*module),
                 "registered global missing from runtime or owner index",
             )?;
-            self.symbol_table.validate_snapshot_value(value)?;
+            self.validate_snapshot_value(value)?;
         }
         for (module, functions) in &self.functions.functions {
             ensure(
@@ -398,7 +416,7 @@ impl Engine {
             }
         };
         for value in values {
-            self.symbol_table.validate_snapshot_value(value)?;
+            self.validate_snapshot_value(value)?;
         }
         Ok(())
     }
@@ -406,8 +424,7 @@ impl Engine {
     fn validate_snapshot_initializer(&self, fact: &PreparedFact) -> Result<(), String> {
         match fact {
             PreparedFact::Ordered { relation, .. } => {
-                self.symbol_table
-                    .validate_snapshot_value(&Value::Symbol(*relation))?;
+                self.validate_snapshot_value(&Value::Symbol(*relation))?;
             }
             PreparedFact::Template { template_id, slots } => {
                 let template = self
@@ -460,7 +477,7 @@ impl Engine {
             ensure(depth < 16, "snapshot expression-depth limit is 16")?;
             let mut branches = Vec::new();
             match expr {
-                RuntimeExpr::Literal(value) => self.symbol_table.validate_snapshot_value(value)?,
+                RuntimeExpr::Literal(value) => self.validate_snapshot_value(value)?,
                 RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {}
                 RuntimeExpr::Call { args, .. } => {
                     pending.extend(args.iter().map(|expr| (expr, depth + 1)));

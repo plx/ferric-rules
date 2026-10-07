@@ -18,6 +18,10 @@ pub(crate) fn format_value(value: &Value, engine: &Engine) -> String {
         ),
         Value::String(s) => format!("\"{}\"", s.as_str()),
         Value::Integer(i) => i.to_string(),
+        Value::FactAddress(address) => address.public_index().map_or_else(
+            || "<Dummy Fact>".to_string(),
+            |index| format!("<Fact-{index}>"),
+        ),
         Value::Float(f) => {
             if f.fract() == 0.0 {
                 format!("{f:.1}")

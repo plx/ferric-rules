@@ -249,3 +249,47 @@ test("action evaluation error stops the current run", () => {
   assert.strictEqual(e.diagnostics.length, 1);
   e.close();
 });
+
+test("fact addresses are rejected directly and inside multifields without changing state", () => {
+  for (const expression of ["?f", '(create$ "allocated first" ?f)']) {
+    const e = new Engine();
+    try {
+      e.load(`
+        (deftemplate item (slot value))
+        (defglobal ?*address* = FALSE)
+        (deffacts seed (item (value 7)))
+        (defrule capture ?f <- (item) => (bind ?*address* ${expression}))
+      `);
+      e.reset();
+      const original = e.facts()[0];
+      assert.strictEqual(e.run().rulesFired, 1);
+      assert.throws(() => e.getGlobal("address"), /fact addresses.*not supported/);
+      assert.strictEqual(e.getFact(original.id)?.slots?.value, 7);
+      e.retract(original.id);
+      assert.throws(() => e.getGlobal("address"), /fact addresses.*not supported/);
+      assert.strictEqual(e.factCount, 0);
+    } finally {
+      e.close();
+    }
+  }
+});
+
+test("fact snapshots reject address fields and multislot elements", () => {
+  for (const slot of ["(slot address)", "(multislot address)"]) {
+    const e = new Engine();
+    try {
+      e.load(`
+        (deftemplate saved ${slot})
+        (defrule capture ?f <- (item ?value) => (assert (saved (address ?f))))
+      `);
+      e.reset();
+      const original = e.assertFact("item", 7);
+      assert.strictEqual(e.run().rulesFired, 1);
+      assert.throws(() => e.facts(), /fact addresses.*not supported/);
+      assert.deepStrictEqual(e.getFact(original)?.fields, [7]);
+      assert.strictEqual(e.factCount, 2);
+    } finally {
+      e.close();
+    }
+  }
+});

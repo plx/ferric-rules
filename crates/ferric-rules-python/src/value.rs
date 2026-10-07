@@ -121,7 +121,8 @@ impl ClipsString {
 ///
 /// # Errors
 ///
-/// Returns a `PyErr` if the Python object cannot be created.
+/// Returns a `PyErr` if the Python object cannot be created or contains an
+/// unsupported external identity or fact address, including inside multifields.
 pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult<PyObject> {
     match val {
         Value::Integer(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
@@ -161,6 +162,9 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
             Ok(PyList::new(py, items?)?.into_any().unbind())
         }
         Value::Void => Ok(py.None()),
+        Value::FactAddress(_) => Err(pyo3::exceptions::PyTypeError::new_err(
+            "fact addresses are not supported by the Python binding",
+        )),
         Value::ExternalAddress(_) => Err(pyo3::exceptions::PyTypeError::new_err(
             "host external identities are not supported by the Python binding",
         )),

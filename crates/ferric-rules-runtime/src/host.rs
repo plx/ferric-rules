@@ -107,15 +107,26 @@ impl HostValue {
         if self.owner.is_some() && self.owner != owner {
             return Err(EngineError::ForeignHandle);
         }
+        Self::validate_contents(&self.value, self.owner.is_some(), encoding, remaining)
+    }
+
+    pub(crate) fn validate_contents(
+        value: &Value,
+        has_provenance: bool,
+        encoding: StringEncoding,
+        remaining: &mut usize,
+    ) -> Result<(), EngineError> {
         let mut pending = SmallVec::<[(&Value, usize); 8]>::new();
-        pending.push((&self.value, 0));
+        pending.push((value, 0));
         while let Some((value, depth)) = pending.pop() {
             *remaining = remaining.checked_sub(1).ok_or_else(|| {
                 EngineError::InvalidHostValue("too many values in one assertion".into())
             })?;
             match value {
-                Value::Symbol(_) | Value::InstanceName(_) if self.owner.is_none() => return Err(EngineError::InvalidHostValue(
+                Value::Symbol(_) | Value::InstanceName(_) if !has_provenance => return Err(EngineError::InvalidHostValue(
                     "raw core symbols have no host provenance; use engine.symbol_value, engine.instance_name_value, or an owned fact value".into())),
+                Value::FactAddress(_) => return Err(EngineError::InvalidHostValue(
+                    "rule-language fact addresses cannot cross the host assertion boundary; use engine fact handles".into())),
                 Value::Void => return Err(EngineError::InvalidHostValue(
                     "void cannot be stored in a fact, including inside a multifield".into())),
                 Value::String(value) => {

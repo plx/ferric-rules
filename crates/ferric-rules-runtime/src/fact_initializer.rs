@@ -442,6 +442,7 @@ impl Engine {
             input_buffer: Some(&mut self.input_buffer),
             fact_base: Some(&self.fact_base),
             initial_fact_id: self.initial_fact_id,
+            fact_epoch: self.fact_epoch,
             template_defs: Some(&self.template_defs),
             compact_fact_bindings: None,
             template_resolver: Some(TemplateResolver {

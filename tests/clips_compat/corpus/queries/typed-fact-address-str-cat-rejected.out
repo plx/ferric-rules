@@ -1,0 +1,2 @@
+before [ARGACCES5] Function str-cat expected argument #1 to be of type string, instance name, symbol, float, or integer
+[PRCCODE4] Execution halted during the actions of defrule run.

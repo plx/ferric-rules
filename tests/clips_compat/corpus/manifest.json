@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "94cd0564d12520842eb9a06a31c444d9cc8d245b",
+    "ferric_revision": "2f578fa99aa234440df6ed95af1c30ebfad30c25",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -4943,6 +4943,265 @@
         "query-slot"
       ],
       "error": "load"
+    },
+    {
+      "path": "queries/typed-fact-address-issue-repro.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "arithmetic-rejection",
+        "query-members",
+        "integer-index"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-missing-index-repro.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "missing-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-negative-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "negative-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-identity-and-predicates.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "identity",
+        "predicates",
+        "fact-index"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-query-results.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "query-members",
+        "flattened-results"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-stored-multifields.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "template-slot",
+        "multifield",
+        "ordered-field",
+        "snapshot"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-stale-address-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "stale-address",
+        "global",
+        "identity",
+        "snapshot"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "queries/typed-fact-address-dummy-default.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "dummy-address",
+        "derived-default",
+        "snapshot"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-generic-dispatch.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "generic-dispatch",
+        "dummy-address"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-str-cat-rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "string-rejection",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-sym-cat-rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "symbol-rejection",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-integer-is-only-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "integer-index",
+        "forged-handle",
+        "retract"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-retract-mixed-designators.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-missing-value-in-expression.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "missing-index",
+        "expression-result"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-slot-type-rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "template-slot",
+        "type-rejection"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/typed-fact-address-stale-stored-identity.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "stale-address",
+        "identity",
+        "template-slot",
+        "snapshot"
+      ]
+    },
+    {
+      "path": "queries/typed-fact-address-designator-evaluation-order.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "fact-slot-value",
+        "fact-index",
+        "wrong-type-designator",
+        "evaluation-order",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-retract-negative-stops.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "negative-index",
+        "evaluation-order",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-modify-missing-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "modify",
+        "duplicate",
+        "missing-index",
+        "recoverable-notice"
+      ],
+      "recoverable_fact_notices": true
+    },
+    {
+      "path": "queries/typed-fact-address-modify-negative-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "modify",
+        "negative-index",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-retract-wrong-type-callable.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "wrong-type",
+        "deffunction",
+        "defgeneric",
+        "evaluation-order",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "queries/typed-fact-address-joins-and-duplicates.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "joins",
+        "negation",
+        "exists",
+        "duplicate-suppression"
+      ]
     },
     {
       "path": "stdlib/001_add_integers.clp",

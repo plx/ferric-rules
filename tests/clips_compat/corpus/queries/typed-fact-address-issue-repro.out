@@ -1,0 +1,5 @@
+<Fact-1> FALSE FALSE
+(<Fact-1> <Fact-2>)
+FALSE
+[ARGACCES5] Function + expected argument #1 to be of type integer or float
+[PRCCODE4] Execution halted during the actions of defrule r.

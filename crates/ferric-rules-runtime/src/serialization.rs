@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 4")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 6")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 5;
+const SCHEMA_VERSION: u16 = 6;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -209,6 +209,7 @@ struct EngineSnapshotRef<'a> {
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")]
     generic_modules: &'a ModuleNameMap<ModuleId>,
     initial_fact_id: &'a Option<ferric_rules_core::FactId>,
+    fact_epoch: u64,
     action_diagnostics: &'a Vec<ActionError>,
     halted: bool,
     input_buffer: &'a VecDeque<String>,
@@ -243,6 +244,7 @@ struct EngineSnapshotOwned {
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")]
     generic_modules: ModuleNameMap<ModuleId>,
     initial_fact_id: Option<ferric_rules_core::FactId>,
+    fact_epoch: u64,
     action_diagnostics: Vec<ActionError>,
     halted: bool,
     input_buffer: VecDeque<String>,
@@ -274,6 +276,7 @@ impl EngineSnapshotOwned {
             global_modules: self.global_modules,
             generic_modules: self.generic_modules,
             initial_fact_id: self.initial_fact_id,
+            fact_epoch: self.fact_epoch,
             action_diagnostics: self.action_diagnostics,
             processing_predicates: false,
             halted: self.halted,
@@ -346,6 +349,7 @@ impl Engine {
             global_modules: &self.global_modules,
             generic_modules: &self.generic_modules,
             initial_fact_id: &self.initial_fact_id,
+            fact_epoch: self.fact_epoch,
             action_diagnostics: &self.action_diagnostics,
             halted: self.halted,
             input_buffer: &self.input_buffer,
@@ -1611,11 +1615,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-5 fixture: ordered and template splits,
+    /// Source of the committed schema-6 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-5.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-6.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -1746,10 +1750,23 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_five_snapshot_resumes_matches_initializers_and_method_queries() {
+    fn committed_schema_five_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-5.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(5))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_six_snapshot_resumes_matches_initializers_methods_and_addresses() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-6.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
+        let address = engine.get_global("fixture-address").unwrap();
+        assert!(
+            matches!(address, Value::FactAddress(address) if address.public_index().is_some_and(|index| index > 0))
+        );
         verify_split_resume(engine);
 
         let mut methods = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
@@ -1797,12 +1814,144 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-5 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_five_fixture() {
+    #[ignore = "regenerates the committed schema-6 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_six_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-5.cbor");
+            .join("tests/fixtures/snapshots/schema-6.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn fact_addresses_preserve_live_stale_and_dummy_identity_across_snapshots_and_reset() {
+        let mut engine = Engine::with_rules(
+            "(deftemplate item (slot n))
+             (deftemplate holder (slot address (type FACT-ADDRESS)))
+             (deffacts seed (item (n 1)) (item (n 2)) (holder))",
+        )
+        .unwrap();
+        engine
+            .load_str(
+                "(defglobal ?*live* = FALSE ?*stale* = FALSE)
+          (defrule capture =>
+            (bind ?*live* (nth$ 1 (find-all-facts ((?f item)) (= ?f:n 1))))
+            (bind ?*stale* (nth$ 1 (find-all-facts ((?f item)) (= ?f:n 2))))
+            (retract ?*stale*))",
+            )
+            .unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        engine
+            .load_str("(defglobal ?*saved-live* = ?*live* ?*saved-stale* = ?*stale*)")
+            .unwrap();
+        engine
+            .load_str(
+                r#"(defrule inspect =>
+           (printout t ?*saved-live* " " (fact-index ?*saved-live*) " " ?*saved-stale* " " (fact-index ?*saved-stale*) crlf)
+           (do-for-fact ((?h holder)) TRUE (printout t ?h:address crlf)))"#,
+            )
+            .unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            restored.run(RunLimit::Unlimited).unwrap();
+            assert_eq!(
+                restored.get_output("t"),
+                Some("<Fact-1> 1 <Fact-2> -1\n<Dummy Fact>\n")
+            );
+            restored.reset().unwrap();
+            restored.run(RunLimit::Unlimited).unwrap();
+            // Registered initial values still retain their old identities even
+            // though the new fact base reuses keys, timestamps, and indices.
+            assert_eq!(
+                restored.get_output("t"),
+                Some("<Fact-1> -1 <Fact-2> -1\n<Dummy Fact>\n")
+            );
+            assert!(restored.action_diagnostics().is_empty());
+            let again = restored.serialize(format).unwrap();
+            let mut again = Engine::deserialize(&again, format).unwrap();
+            again.load_str("(defrule compare => (printout t (eq ?*saved-live* (nth$ 1 (find-all-facts ((?f item)) (= ?f:n 1)))) crlf))").unwrap();
+            again.run(RunLimit::Unlimited).unwrap();
+            assert!(again.get_output("t").unwrap().ends_with("FALSE\n"));
+        }
+    }
+
+    #[test]
+    fn forged_fact_address_metadata_is_rejected() {
+        let mut engine = Engine::with_rules(
+            "(deftemplate item (slot n))
+          (deffacts seed (item (n 1)))
+          (defglobal ?*address* = FALSE)
+          (defrule capture ?f <- (item) => (bind ?*address* ?f))",
+        )
+        .unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        for (field, value) in [
+            ("epoch", serde_json::json!(engine.fact_epoch + 1)),
+            ("timestamp", serde_json::json!(99)),
+            ("public_index", serde_json::json!(99)),
+            (
+                "fact_id",
+                serde_json::to_value(<ferric_rules_core::FactId as slotmap::Key>::null()).unwrap(),
+            ),
+        ] {
+            let result = alter_state(&engine, |state| {
+                fn replace(
+                    value: &mut serde_json::Value,
+                    field: &str,
+                    replacement: &serde_json::Value,
+                ) -> usize {
+                    match value {
+                        serde_json::Value::Object(fields) => {
+                            let mut count = 0;
+                            if let Some(serde_json::Value::Object(address)) =
+                                fields.get_mut("FactAddress")
+                            {
+                                address.insert(field.to_owned(), replacement.clone());
+                                count += 1;
+                            }
+                            count
+                                + fields
+                                    .values_mut()
+                                    .map(|value| replace(value, field, replacement))
+                                    .sum::<usize>()
+                        }
+                        serde_json::Value::Array(values) => values
+                            .iter_mut()
+                            .map(|value| replace(value, field, replacement))
+                            .sum(),
+                        _ => 0,
+                    }
+                }
+                assert!(replace(state, field, &value) > 0);
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn exhausted_fact_epochs_remain_readable_and_clearable() {
+        let engine = Engine::with_rules("(deffacts seed (item 1))").unwrap();
+        let mut restored = alter_state(&engine, |state| {
+            state["fact_epoch"] = serde_json::json!(u64::MAX);
+        })
+        .unwrap();
+        let before = restored.fact_count();
+        assert!(matches!(
+            restored.reset(),
+            Err(crate::EngineError::FactEpochExhausted)
+        ));
+        assert_eq!(restored.fact_count(), before);
+        for &format in SerializationFormat::ALL {
+            let bytes = restored.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            restored.clear();
+            restored.load_str("(deffacts seed (fresh 2))").unwrap();
+            restored.reset().unwrap();
+            assert_eq!(restored.find_facts("fresh").unwrap().len(), 1);
+        }
     }
 
     #[test]
