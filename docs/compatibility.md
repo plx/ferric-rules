@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1061
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1066
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -337,9 +337,13 @@ accepted. Removing an activation does not undo its focus change. Both explicit
 module deeper in the stack may appear again. Predicate and NCC evaluation
 follow depth-first traversal order whether or not auto-focus is used, so
 declaring auto-focus on one rule does not reorder unrelated rules. A rule
-guarded by `(exists (and ...))` pushes its module only once the conjunction
-holds, even when the conjunction's first join is shared with an older rule. A
-`(not (and ...))` whose first join is shared with an older rule still makes
+guarded by a pure double negation, `(exists (and ...))` or the equivalent
+`(not (and (not (and ...))))`, pushes its module during reset and assertion
+only once the conjunction holds, even when the conjunction's first join is
+shared with an older rule. An outer `(not (and ...))` with more conditions
+after its nested one, such as `(not (and (not (and (a) (b))) (c)))`, keeps
+CLIPS's transient admission and focus push before those conditions block it.
+A `(not (and ...))` whose first join is shared with an older rule also makes
 CLIPS's transient admission, and focus push, before that join blocks it.
 Snapshots preserve the focus stack without replaying notices for existing
 activations.

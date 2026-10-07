@@ -10878,6 +10878,68 @@
           "diagnostics": []
         }
       }
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_extra_ce.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_extra_ce_first.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_test_ce.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "test",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_negated_ce.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "not",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_explicit_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
     }
   ]
 }

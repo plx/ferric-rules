@@ -527,8 +527,9 @@ pub struct BetaNetwork {
     /// NCCs that may wait for their subnetwork entry during propagation.
     ///
     /// This holds every NCC nested inside an enclosing NCC's subnetwork, and
-    /// every NCC whose subnetwork begins with a nested NCC (`(exists (and
-    /// ...))`). Other top-level NCCs never pay for the check. The compiler
+    /// every pure double negation (`(exists (and ...))`; see
+    /// `ncc_is_pure_double_negation`). Other top-level NCCs never pay for the
+    /// check. The compiler
     /// registers NCCs as it builds them. This derived index is omitted from
     /// snapshots and dropped by rule removal; `None` is rebuilt from the
     /// graph on demand.
@@ -1010,13 +1011,12 @@ impl BetaNetwork {
     /// successor was newest instead. Beta-root NCCs are primed like CLIPS's
     /// left-prime joins, newest first, and keep their attachment position.
     ///
-    /// The NCC is linked just before the oldest of its own subnetwork's
-    /// children of the parent, so every node of its subnetwork sees a parent
-    /// token before the NCC decides. For a plain subnetwork that child is the
-    /// newest successor, giving the CLIPS position above. When the subnetwork
-    /// begins with a nested NCC (`(exists (and ...))`), the nested NCC and its
-    /// own entry are both newer children; linking second would let the outer
-    /// NCC admit a token before the nested NCC produced the result that blocks
+    /// A pure double negation (`(exists (and ...))` as lowered, or an
+    /// explicit `(not (and (not (and ...))))`) is instead linked just before
+    /// the oldest of its own subnetwork's children of the parent, so the
+    /// nested NCC and its own entry, both newer children, see a parent token
+    /// before the outer NCC decides. Linking second would let the outer NCC
+    /// admit a token before the nested NCC produced the result that blocks
     /// it, creating a transient activation CLIPS never makes. The subnetwork
     /// is identified by node ID: `compile_ncc_condition` allocates the NCC
     /// before its subnetwork and the partner last, so its fresh nodes are
@@ -1024,7 +1024,9 @@ impl BetaNetwork {
     /// shared with an older rule has no child in that range and keeps the
     /// second-in-visit-order position. When the nested NCC's own entry is
     /// shared and visited later, propagation postpones both NCCs behind it
-    /// (see `NccEntryWait`).
+    /// (see `NccEntryWait`). A subnetwork with more conditions after its
+    /// nested NCC keeps the second position: CLIPS admits the token there
+    /// transiently, and keeps the focus push that admission makes.
     pub fn link_ncc_after_subnetwork(&mut self, ncc_node_id: NodeId) {
         let Some(BetaNode::Ncc {
             parent, partner, ..
@@ -1037,6 +1039,7 @@ impl BetaNetwork {
         if parent == self.root_id {
             return;
         }
+        let pure_double_negation = self.ncc_is_pure_double_negation(ncc_node_id);
         if let Some(
             BetaNode::Join { children, .. }
             | BetaNode::Predicate { children, .. }
@@ -1052,10 +1055,15 @@ impl BetaNetwork {
                 .collect();
             // Children are stored oldest first and visited in reverse, so the
             // slot before the last element is second in visit order.
-            let slot = linked
-                .iter()
-                .position(|child| subnetwork.contains(&child.0))
-                .unwrap_or_else(|| linked.len().saturating_sub(1));
+            let second = linked.len().saturating_sub(1);
+            let slot = if pure_double_negation {
+                linked
+                    .iter()
+                    .position(|child| subnetwork.contains(&child.0))
+                    .unwrap_or(second)
+            } else {
+                second
+            };
             linked.insert(slot, ncc_node_id);
             *children = linked.into();
         }
@@ -1077,6 +1085,26 @@ impl BetaNetwork {
             }
             current = above;
         }
+    }
+
+    /// Whether an NCC is a pure double negation: its subnetwork is a single
+    /// nested NCC under the same parent, whose pass-through feeds the outer
+    /// partner directly. `(exists (and ...))` lowers to this shape, and an
+    /// explicit `(not (and (not (and ...))))` has it too. A subnetwork with
+    /// any join, test, negation or further NCC after its nested NCC is not
+    /// one.
+    pub(crate) fn ncc_is_pure_double_negation(&self, ncc_node_id: NodeId) -> bool {
+        let Some(BetaNode::Ncc { partner, .. }) = self.get_node(ncc_node_id) else {
+            return false;
+        };
+        let Some(entry) = self.ncc_subnetwork_entry(ncc_node_id) else {
+            return false;
+        };
+        matches!(self.get_node(entry), Some(BetaNode::Ncc { .. }))
+            && self
+                .get_node(*partner)
+                .and_then(BetaNode::parent_node)
+                .is_some_and(|above| above == entry)
     }
 
     /// Whether an NCC's pass-through tokens are results for an enclosing NCC.
@@ -1103,10 +1131,10 @@ impl BetaNetwork {
     }
 
     /// How an NCC may wait for its subnetwork entry, or `None` when it never
-    /// waits: a top-level NCC whose subnetwork begins with a join or test.
+    /// waits: a top-level NCC that is not a pure double negation.
     fn ncc_entry_wait(&self, ncc_node_id: NodeId, nested: bool) -> Option<NccEntryWait> {
         let entry = self.ncc_subnetwork_entry(ncc_node_id)?;
-        (nested || matches!(self.get_node(entry), Some(BetaNode::Ncc { .. })))
+        (nested || self.ncc_is_pure_double_negation(ncc_node_id))
             .then_some(NccEntryWait { entry, nested })
     }
 

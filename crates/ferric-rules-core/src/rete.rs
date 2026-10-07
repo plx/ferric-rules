@@ -2262,10 +2262,12 @@ impl ReteNetwork {
         // a result for the enclosing NCC, so deciding before its own subnetwork
         // has seen the token would retract and recreate the enclosing match,
         // refiring it. Such an NCC waits until its not-yet-visited entry has
-        // run. An NCC whose subnetwork begins with a nested NCC that is
-        // waiting, as `(exists (and ...))` over a shared entry lowers, waits
-        // for that nested NCC: admitting the token first would make a
-        // transient activation (and auto-focus push) that CLIPS never makes.
+        // run. A pure double negation whose nested NCC is waiting, as
+        // `(exists (and ...))` over a shared entry lowers, waits for that
+        // nested NCC: admitting the token first would make a transient
+        // activation (and auto-focus push) that CLIPS never makes. An NCC with
+        // more conditions after its nested NCC keeps CLIPS's transient
+        // admission and does not wait.
         // The maps are built only once such an NCC is met, keeping each child
         // visit O(1).
         let mut positions: Option<rustc_hash::FxHashMap<NodeId, usize>> = None;

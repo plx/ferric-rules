@@ -465,3 +465,122 @@ fn top_level_ncc_over_shared_entry_keeps_transient_admission() {
         assert_eq!(network.rules(), vec![1]);
     }
 }
+
+/// The outer NCC of `(p) (not (and <nested> <trailer>))` for rule `id`.
+fn outer_ncc(network: &Network, id: u32) -> crate::NodeId {
+    use crate::beta::BetaNode;
+    let terminal = network
+        .rete
+        .beta
+        .iter_nodes()
+        .find_map(|(node_id, node)| match node {
+            BetaNode::Terminal { rule, .. } if rule.0 == id => Some(node_id),
+            _ => None,
+        })
+        .unwrap();
+    network
+        .rete
+        .beta
+        .get_node(terminal)
+        .unwrap()
+        .parent_node()
+        .unwrap()
+}
+
+#[test]
+fn only_a_nested_ncc_feeding_the_partner_is_a_pure_double_negation() {
+    let mut network = Network::new(ConflictResolutionStrategy::Depth);
+    let [p, a, b, c, d] =
+        ["p", "a", "b", "c", "d"].map(|relation| network.pattern(relation, false));
+    let nested = || {
+        CompilableCondition::Ncc(vec![
+            CompilableCondition::Pattern(a.clone()),
+            CompilableCondition::Pattern(b.clone()),
+        ])
+    };
+    let mut negated = d.clone();
+    negated.negated = true;
+    // `exists` is rejected inside an NCC, so it needs no shape here.
+    let shapes: [(Vec<CompilableCondition>, bool); 5] = [
+        (vec![nested()], true),
+        (
+            vec![nested(), CompilableCondition::Pattern(c.clone())],
+            false,
+        ),
+        (
+            vec![
+                nested(),
+                CompilableCondition::Predicate { condition_index: 0 },
+            ],
+            false,
+        ),
+        (vec![nested(), CompilableCondition::Pattern(negated)], false),
+        (
+            vec![
+                nested(),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(c),
+                    CompilableCondition::Pattern(d),
+                ]),
+            ],
+            false,
+        ),
+    ];
+    for (id, (subconditions, pure)) in (1..).zip(shapes) {
+        network.install_conditions(
+            id,
+            &[
+                CompilableCondition::Pattern(p.clone()),
+                CompilableCondition::Ncc(subconditions),
+            ],
+        );
+        let outer = outer_ncc(&network, id);
+        assert_eq!(
+            network.rete.beta.ncc_is_pure_double_negation(outer),
+            pure,
+            "shape {id}"
+        );
+        // Only a pure double negation waits for its nested NCC.
+        assert_eq!(
+            network.rete.beta.ncc_entry_wait_for(outer).is_some(),
+            pure,
+            "shape {id}"
+        );
+    }
+    let compiled = network.rete.beta.ncc_entry_waits.clone().unwrap();
+    network.rete.beta.ncc_entry_waits = None;
+    network.rete.beta.ensure_ncc_entry_wait_index();
+    assert_eq!(network.rete.beta.ncc_entry_waits, Some(compiled));
+}
+
+#[test]
+fn ncc_with_conditions_after_its_nested_ncc_keeps_transient_admission() {
+    for strategy in [
+        ConflictResolutionStrategy::Depth,
+        ConflictResolutionStrategy::Breadth,
+    ] {
+        let mut network = Network::new(strategy);
+        let [p, a, b, c] = ["p", "a", "b", "c"].map(|relation| network.pattern(relation, false));
+        // watched: (p) (not (and (not (and (a) (b))) (c))).
+        network.rete.set_rule_auto_focus(RuleId(1), true);
+        network.install_conditions(
+            1,
+            &[
+                CompilableCondition::Pattern(p),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Ncc(vec![
+                        CompilableCondition::Pattern(a),
+                        CompilableCondition::Pattern(b),
+                    ]),
+                    CompilableCondition::Pattern(c),
+                ]),
+            ],
+        );
+        network.assert("c", &[]);
+        // CLIPS 6.30 admits (p) before the nested NCC reaches (c), so the
+        // focus push survives the cancelled activation.
+        network.assert("p", &[]);
+        assert_eq!(network.auto_focus_notices(), vec![1]);
+        assert!(network.rete.agenda.is_empty());
+    }
+}
