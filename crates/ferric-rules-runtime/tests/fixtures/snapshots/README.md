@@ -80,7 +80,7 @@ clear refuses construct removal. Schema 8 rejects these unchanged bytes with
 `UnsupportedVersion(7)` because template constraints and deferred dynamic defaults
 add persisted metadata.
 
-`schema-8.cbor` is the current format. Its source, `schema-8.clp`, retains the
+`schema-8.cbor` preserves the previous format. Its source, `schema-8.clp`, retains the
 same one-fired/eight-pending checkpoint and adds a constrained template with
 allowed symbols, a numeric range, multislot cardinality, a computed static
 default, and a dynamic default. The latter increments a counter when an omitted
@@ -90,8 +90,20 @@ survive callable replacement, and that later dynamic calls use the replacement
 function. Invalid assertions continue to fail after restoration. All older
 fixture bytes remain unchanged.
 
-Regenerate schema 8 only after an intentional change to its unreleased layout:
+`schema-9.cbor` preserves random-generator state, construct declaration order,
+and allowed-value source order. Its source adds a partially consumed seeded
+stream and a mixed-type allowed-value list to the previous checkpoint. The
+current schema rejects these unchanged bytes with `UnsupportedVersion(9)`.
+
+`schema-10.cbor` is the current format. Its source, `schema-10.clp`, retains
+simple negative and NCC matches supported by two blockers each. The resume
+test removes the primary blocker, round-trips the migrated state through each
+codec, removes the final blocker, and checks exact firing order. The split,
+method, default, expression-effect, and random-state resume checks also remain.
+All older fixture bytes remain unchanged.
+
+Regenerate schema 10 only after an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_eight_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_ten_fixture -- --ignored
 ```

@@ -406,6 +406,66 @@ fn test_scaling_exists_support_assertion() {
     );
 }
 
+/// Completing an indexed NCC result must order just its matching parents.
+/// Each key has two parents: sorting a batch must not scan all 2N parents.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_indexed_ncc_completion() {
+    fn measure(n: usize) -> Duration {
+        measure_op_median(
+            || {
+                let mut engine = Engine::with_rules(
+                    "(defrule absent (item ?key ?copy)
+                       (not (and (blocker ?key) (other ?key))) =>)",
+                )
+                .unwrap();
+                for key in 0..n {
+                    let key = i64::try_from(key).unwrap();
+                    for copy in 0..2_i64 {
+                        engine
+                            .assert_ordered(
+                                "item",
+                                vec![
+                                    ferric_rules::core::Value::Integer(key),
+                                    ferric_rules::core::Value::Integer(copy),
+                                ],
+                            )
+                            .unwrap();
+                    }
+                    engine.assert_ordered("blocker", key).unwrap();
+                }
+                engine
+            },
+            |mut engine| {
+                for key in 0..n {
+                    engine
+                        .assert_ordered("other", i64::try_from(key).unwrap())
+                        .unwrap();
+                }
+                let result = engine.run(RunLimit::Unlimited).unwrap();
+                assert_eq!(result.rules_fired, 0);
+                assert_eq!(
+                    result.halt_reason,
+                    ferric_rules::runtime::HaltReason::AgendaEmpty
+                );
+                assert!(engine.action_diagnostics().is_empty());
+                assert_eq!(engine.fact_count(), n * 4);
+                black_box(engine);
+            },
+        )
+    }
+
+    let (small, large) = (512, 2048);
+    assert_scaling(
+        "indexed_ncc_completion",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
+
 /// Retracting N independent parents must not scan N unrelated negative memories.
 #[test]
 #[ignore = "requires release mode; run via just scaling-check"]
@@ -609,6 +669,61 @@ fn test_scaling_sequence_negative_admission() {
     let (small, large) = (500, 2000);
     assert_scaling(
         "sequence_negative_admission",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
+
+/// N rules sharing `(item ?x)` leave N NCC siblings under one join. Visiting
+/// each top-level NCC must not scan its older siblings for a subnetwork entry
+/// it never waits for, or each parent token costs O(N²).
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_shared_parent_ncc_fanout() {
+    const ITEMS: i64 = 32;
+    fn measure(n: usize) -> Duration {
+        let mut source = String::new();
+        for rule in 0..n {
+            writeln!(
+                source,
+                "(defrule absent-{rule} (item ?x) (not (and (blocker ?x) (other ?x))) =>)"
+            )
+            .unwrap();
+        }
+        let mut engine = Engine::with_rules(&source).unwrap();
+        for key in 0..ITEMS {
+            engine.assert_ordered("blocker", key).unwrap();
+            engine.assert_ordered("other", key).unwrap();
+        }
+        // Time only the assertions: every item is blocked, so each token
+        // reaches all N NCCs and creates no activations. Untimed retraction
+        // restores the starting state between samples.
+        let mut times = Vec::with_capacity(SAMPLES);
+        for sample in 0..WARMUP + SAMPLES {
+            let start = Instant::now();
+            let items: Vec<_> = (0..ITEMS)
+                .map(|key| engine.assert_ordered("item", key).unwrap())
+                .collect();
+            let elapsed = start.elapsed();
+            if sample >= WARMUP {
+                times.push(elapsed);
+            }
+            assert_eq!(engine.agenda_len(), 0);
+            for item in items {
+                engine.retract(item).unwrap();
+            }
+        }
+        black_box(engine);
+        times.sort();
+        times[SAMPLES / 2]
+    }
+
+    let (small, large) = (2000, 8000);
+    assert_scaling(
+        "shared_parent_ncc_fanout",
         small,
         large,
         measure(small),

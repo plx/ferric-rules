@@ -578,6 +578,11 @@ impl ReteNetwork {
     #[allow(clippy::too_many_lines)]
     pub fn validate_snapshot(&self, facts: &FactBase, symbols: &SymbolTable) -> Result<(), String> {
         self.validate_consistency()?;
+        self.validate_block_orders()?;
+        require!(
+            self.pending_ncc_results.is_none(),
+            "snapshot has unfinished NCC results"
+        );
         require!(
             self.pending_predicate_matches.is_empty(),
             "snapshot has unfinished predicate matches"
@@ -1326,7 +1331,9 @@ impl ReteNetwork {
                         .and_then(|id| self.beta.get_memory(id))
                         .ok_or("missing NCC result memory")?;
                     require_eq!(results.len(), memory.result_owner.len());
-                    for result in results.iter() {
+                    let mut result_ranks = rustc_hash::FxHashMap::default();
+                    for (rank, result) in results.iter().enumerate() {
+                        result_ranks.insert(result, rank);
                         let mut token = result;
                         let owner = loop {
                             work.step()?;
@@ -1344,6 +1351,18 @@ impl ReteNetwork {
                             memory.result_owner.get(&result) == Some(&owner),
                             "inconsistent NCC result owner"
                         );
+                    }
+                    for supports in memory.parent_results.values() {
+                        let mut previous_rank = usize::MAX;
+                        for result in supports {
+                            work.step()?;
+                            let rank = *result_ranks.get(result).ok_or("dangling NCC support")?;
+                            require!(
+                                rank < previous_rank,
+                                "NCC supports are not in result insertion order"
+                            );
+                            previous_rank = rank;
+                        }
                     }
                     for owner in upstream.iter() {
                         require!(
@@ -1426,10 +1445,34 @@ impl ReteNetwork {
                         );
                         self.validate_passthrough(parent, *passthrough, node_id)?;
                     } else {
+                        let blockers = memory
+                            .blocked
+                            .get(&parent)
+                            .ok_or("incomplete negative blocker membership")?;
                         require!(
-                            memory.blocked.get(&parent) == Some(&matches),
+                            blockers.len() == matches.len(),
                             "incomplete negative blocker membership"
                         );
+                        // Left scans and later right assertions both retain
+                        // oldest-first supports. Reordering identical members
+                        // would change the primary blocker after restoration.
+                        let mut previous = None;
+                        for fact in blockers {
+                            work.step()?;
+                            require!(
+                                matches.contains(fact),
+                                "incomplete negative blocker membership"
+                            );
+                            let timestamp = facts
+                                .get(*fact)
+                                .ok_or("missing negative blocker")?
+                                .timestamp;
+                            require!(
+                                previous.map_or(true, |earlier| earlier < timestamp),
+                                "negative blocker supports are not in assertion order"
+                            );
+                            previous = Some(timestamp);
+                        }
                         require!(
                             !memory.unblocked.contains_key(&parent),
                             "blocked negative parent has pass-through"
@@ -1885,6 +1928,67 @@ impl crate::compiler::ReteCompiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_rejects_reordered_negative_supports_after_fact_slot_reuse() {
+        for activate_before_facts in [false, true] {
+            let mut symbols = SymbolTable::new();
+            let relation = symbols
+                .intern_symbol("blocker", crate::StringEncoding::Ascii)
+                .unwrap();
+            let mut facts = FactBase::new();
+            let mut rete = ReteNetwork::new();
+            let entry = rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(relation));
+            let alpha = rete.alpha.create_memory(entry);
+            let (negative, _, memory) =
+                rete.beta
+                    .create_negative_node(rete.beta.root_id(), alpha, vec![]);
+            rete.beta
+                .create_terminal_node(negative, crate::RuleId(1), crate::Salience::DEFAULT);
+            if activate_before_facts {
+                rete.activate_root_children(&[negative], &facts);
+            }
+            let mut asserted = Vec::new();
+            for value in 0..3 {
+                let id = facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(value)]);
+                rete.assert_fact(id, &facts.get(id).unwrap().fact, &facts);
+                asserted.push(id);
+            }
+            if !activate_before_facts {
+                rete.activate_root_children(&[negative], &facts);
+            }
+            let removed = facts.retract(asserted[1]).unwrap();
+            rete.retract_fact(asserted[1], &removed.fact, &facts);
+            let replacement =
+                facts.assert_ordered(relation, smallvec::smallvec![Value::Integer(3)]);
+            rete.assert_fact(replacement, &facts.get(replacement).unwrap().fact, &facts);
+            rete.validate_snapshot(&facts, &symbols).unwrap();
+
+            let negative_memory = rete.beta.get_neg_memory_mut(memory).unwrap();
+            let parent = *negative_memory.blocked.keys().next().unwrap();
+            assert_eq!(
+                negative_memory.blocked[&parent]
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![asserted[0], asserted[2], replacement]
+            );
+            let mut reordered = crate::ordered_set::OrderedSet::default();
+            for id in [asserted[2], asserted[0], replacement] {
+                reordered.insert(id);
+            }
+            negative_memory.blocked.insert(parent, reordered);
+            // Forward/reverse membership and block positions still agree, so
+            // only snapshot validation can detect the forged primary support.
+            rete.validate_consistency().unwrap();
+            assert!(rete
+                .validate_snapshot(&facts, &symbols)
+                .unwrap_err()
+                .contains("negative blocker supports are not in assertion order"));
+        }
+    }
 
     #[test]
     fn snapshot_rejects_impossible_public_indexes_from_older_epochs() {

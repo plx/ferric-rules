@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 948
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1014
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -46,13 +46,18 @@ Docker image.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
-direction. Four cases carry one, all tracked in
-[#394](https://github.com/plx/ferric-rules/issues/394):
+direction. Four cases track output/format differences in
+[#394](https://github.com/plx/ferric-rules/issues/394), and five track remaining
+network-topology tie differences described with
+[#400](https://github.com/plx/ferric-rules/issues/400):
 
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
 | Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
+| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
+| Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
+| Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
@@ -284,6 +289,17 @@ are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared
 strategy through the host API. Bindings reject unknown enum/name values.
 
+For equal salience, activation creation order breaks ties: depth selects the
+newest activation and breadth the oldest. Shared beta successors and mixed
+positive/negative/exists subscriptions are visited newest first. Retraction
+handles the fact's pattern matches one alpha memory at a time, oldest memory
+first. Within a memory, the positive cascade unblocks NCC matches first, then
+that memory's blocked simple negative matches are released in reverse
+primary-blocker attachment order; moving to another blocker updates that
+attachment order. See the
+[activation ordering contract](#activation-ordering-contract) for the remaining
+node-sharing boundary.
+
 ### Salience
 
 Rules may declare one static integer salience in -10000 through 10000.
@@ -338,13 +354,39 @@ Binding a query member or a local in a query predicate is a load error.
 
 ### Activation Ordering Contract
 
-- Ferric guarantees a total ordering of activations at runtime within a
-  single `run` call.
-- Cross-run replay-identical ordering is **not** guaranteed.
-- Semantic compatibility expectations should focus on final working-memory
-  outcomes for order-insensitive rule sets.
-- For order-sensitive side effects, encode precedence explicitly via salience,
-  `focus`, or phase facts.
+Depth and breadth follow CLIPS 6.30 for the reference-verified shared-positive,
+mixed-subscription, empty-LHS, OR-variant, and blocker-retraction cases in the
+corpus. Creation order follows network traversal, rather than rule name or
+source order alone. Each blocked match initially attaches to its oldest
+support. Retracting a fact processes its pattern matches as CLIPS does: alpha
+memories in creation order, and within each memory the positive cascade (NCC
+unblocks) before that memory's block list, newest attachment first. Matches
+with another support attach to the oldest survivor. This history survives
+snapshots and is cleared on reset.
+
+CLIPS also shares identical negative and NCC joins between rules; Ferric
+currently shares positive joins only. Equal-salience ties involving those
+separately compiled negative joins can therefore differ. This is the explicit
+node-sharing boundary of [#400](https://github.com/plx/ferric-rules/issues/400),
+recorded by exact corpus characterizations. A further pre-existing difference
+occurs for selected multi-pattern `exists` ties: Ferric lowers the conjunction
+through nested NCC nodes, while CLIPS uses a distinct existential join topology.
+Its independent-support example remains characterized. Ties among subscribers
+of different patterns, for example a later rule reusing an earlier rule's
+pattern behind a different first pattern, are ordered by node age rather than
+pattern by pattern as in CLIPS, and may differ. A nested NCC whose subnetwork
+entry is shared with an older rule settles after that entry, so Ferric never
+transiently retracts and refires the enclosing rule, as CLIPS can when another
+successor was linked to the same parent in between. Nested NCC chains, such as
+`(exists (exists ...))`, settle depth first as in CLIPS: when several rules'
+chains share one subnetwork, each chain finishes before the next one starts,
+so deeper and shallower nestings tie as the reference does. Other strategy combinations are
+not a promise of replay-identical order across engines or versions.
+
+For application semantics that require precedence independently of network
+construction, use salience, `focus`, or phase facts. Within an engine, the
+agenda maintains a total order and restoring a snapshot preserves pending
+activation order and the blocker history used for future activations.
 
 ### RHS Actions
 
@@ -1483,7 +1525,7 @@ The following features are explicitly out of scope.
 | `Simplicity` strategy | Deferred | Until fully specified |
 | `Complexity` strategy | Deferred | Until fully specified |
 | `Random` strategy | Deferred | Until fully specified |
-| Replay-identical ordering | Not guaranteed | Total order within a run, but not reproducible across runs |
+| General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | Triple-nested negation | Not supported | Decompose into multiple rules |
 | `(exists (not ...))` | Not supported | Use separate rules |

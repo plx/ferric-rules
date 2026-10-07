@@ -944,9 +944,12 @@ A non-exhaustive list worth internalizing:
   resets can activate again; use a run limit or an explicit halt when needed.
 - **Source `clear` preserves active constructs.** It removes facts, refuses
   construct removal, and continues the current execution.
-- **Activation order is total per run, not reproducible across runs.**
-  Don't rely on two independent runs producing the same interleaving;
-  encode precedence with salience or focus if order matters.
+- **Equal-salience order follows network construction.** Under depth and
+  breadth, ties follow activation creation order, which depends on how the
+  rules' network is built. It is deterministic, the same on every run, and
+  survives snapshots. Some ties still differ from CLIPS (see the
+  [activation ordering contract](compatibility.md#activation-ordering-contract)),
+  so encode precedence with salience, focus, or phase facts if order matters.
 - **Prefer `find_facts` and `facts()` to `printout` for machine output.**
   Printouts are strings; facts have types.
 - **`run`, `step`, and `reset` clear action diagnostics.** Inspect them

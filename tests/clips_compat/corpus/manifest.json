@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "c38ce5c5ca6670cd35306ff44bfdb6247ae1c4a6",
+    "ferric_revision": "47de248e9e16a936894426fe74fef86d4380dd16",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -9383,6 +9383,822 @@
         "evaluation-order"
       ],
       "recoverable_random_notices": true
+    },
+    {
+      "path": "patterns/400o_shared_terminals_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "deffacts",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_shared_terminals_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "deffacts",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_shared_parent_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "join",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_shared_parent_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "join",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_shared_literal_variable_groups_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "literal-constraint",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_shared_literal_variable_groups_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "literal-constraint",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_or_variants_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "or",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_or_variants_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "shared-beta",
+        "or",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_exists_positive_exists_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_exists_positive_exists_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_positive_exists_positive_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_positive_exists_positive_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "join",
+        "assert",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_unblock_tokens_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_unblock_tokens_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_unblock_nodes_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_unblock_nodes_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_unblock_tokens_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_unblock_tokens_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_empty_lhs_roots_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "empty-lhs",
+        "reset",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_empty_lhs_roots_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "empty-lhs",
+        "reset",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_unshared_literal_variable_predicate_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "predicate-constraint",
+        "literal-constraint",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_unshared_literal_variable_predicate_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "predicate-constraint",
+        "literal-constraint",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_multiple_blockers_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "support-count",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_multiple_blockers_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "retract",
+        "support-count",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_simple_ncc_simple_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_simple_ncc_simple_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_ncc_simple_ncc_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_ncc_simple_ncc_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_mixed_negative_cancels_ncc_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/400o_mixed_negative_cancels_ncc_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "and",
+        "ncc",
+        "retract"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_shared_entry_link_order_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_shared_entry_link_order_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "breadth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_shared_entry_terminal_order_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_shared_subnetwork_refraction_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta",
+        "refraction"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_shared_subnetwork_loop_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta",
+        "refraction"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_nested_refraction_loop_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "refraction"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_ncc_before_negative_shared_memory_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_ncc_before_negative_shared_memory_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_generic_then_literal_memories_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_generic_then_literal_memories_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_literal_then_generic_memories_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_literal_then_generic_memories_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_blockers_asserted_last_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_blockers_asserted_last_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_three_memories_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_three_memories_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_negative_older_memory_ncc_newer_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_negative_older_memory_ncc_newer_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_retract_ncc_negative_shared_and_second_memory_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_retract_ncc_negative_shared_and_second_memory_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_multiple_blockers_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_multiple_blockers_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_blockers_before_items_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_blockers_before_items_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_blockers_before_items_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_blockers_before_items_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_three_blockers_interleaved_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_three_blockers_interleaved_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_gap_shared_negative_assert_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "shared-beta"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented scope boundary: identical negative joins are not shared, so equal-salience activation order differs from CLIPS 6.30.",
+        "observed": {
+          "phase": "complete",
+          "output": "r1\nr2\nr3\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_identical_ncc_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "shared-beta",
+        "and",
+        "ncc"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented scope boundary: identical NCC joins are not shared, so equal-salience activation order differs from CLIPS 6.30.",
+        "observed": {
+          "phase": "complete",
+          "output": "r2\nr1\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_shared_negative_retract_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "shared-beta"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented scope boundary: identical negative joins are not shared, so equal-salience activation order differs from CLIPS 6.30.",
+        "observed": {
+          "phase": "complete",
+          "output": "r3\nr1\nr2\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_independent_multi_exists_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "exists",
+        "ncc"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Pre-existing scope boundary: independent multi-pattern exists is lowered through a separate double-NCC topology, producing a different equal-salience activation order from CLIPS 6.30. This is distinct from identical negative-join sharing.",
+        "observed": {
+          "phase": "complete",
+          "output": "3\n2\n1\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400o_gap_nested_ncc_shared_entry_refire_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta",
+        "refraction"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/400"
+        ],
+        "summary": "Documented boundary: CLIPS visits a nested NCC before a shared subnetwork entry that is not its parent's newest successor, so a transient inner match refires the enclosing rule; Ferric settles the inner NCC after its entry and does not refire it.",
+        "observed": {
+          "phase": "complete",
+          "output": "nested\nadd-a\nhelper\nmid\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "patterns/400_nested_exists_seed_only.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "not",
+        "ncc",
+        "nested-ncc"
+      ]
+    },
+    {
+      "path": "patterns/400_nested_exists_transitive_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "not",
+        "ncc",
+        "nested-ncc",
+        "shared-beta",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400_nested_exists_transitive_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "not",
+        "ncc",
+        "nested-ncc",
+        "shared-beta",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
     },
     {
       "path": "stdlib/403b_fact_designator_symbol_literals.clp",

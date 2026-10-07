@@ -1,11 +1,13 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 948 small programs progress from individual features to
+CLIPS subset. Its 1014 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 944 clean conformance cases, 183 of which
-reproduce a CLIPS error, and 4 active characterizations of documented
-differences: CLIPS output that is not UTF-8, and malformed `format` directives.
+CLIPS-verified output oracle. There are 1005 clean conformance cases, 183 of which
+reproduce a CLIPS error, and 9 active characterizations of documented
+differences: CLIPS output that is not UTF-8, malformed `format` directives,
+equal-salience ties involving identical negative/NCC joins or multi-pattern
+`exists`, and a transient nested NCC refire.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs
@@ -66,7 +68,8 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   "breadth"` runs the program under the breadth strategy (CLIPS
   `(set-strategy breadth)`, Ferric `EngineConfig::with_strategy`).
 - Prefer a single observable distinction per program. Use salience or phase
-  facts where side-effect ordering matters. Keep each problematic function or
+  facts where side-effect ordering matters, except when the case explicitly
+  tests depth/breadth activation ties. Keep each problematic function or
   invalid index in its own program so an earlier error cannot conceal it.
 - Mutation cases observe subsequent rule matches or query results. These are
   behavioral programs, not parser-only acceptance tests. General snapshots of
