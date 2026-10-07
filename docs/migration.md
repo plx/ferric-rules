@@ -460,8 +460,9 @@ constraints, general static type inference, or dynamic constraint toggles.
   See [host-api.md](host-api.md).
 - Snapshots use a bounded, versioned envelope (schema 5); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
-  application data through the producing version before upgrading; see
+  unversioned, schema-1, schema-2, schema-3 and schema-4 snapshots are rejected
+  explicitly. Export durable application data through the producing version
+  before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
