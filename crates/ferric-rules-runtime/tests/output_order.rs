@@ -165,3 +165,31 @@ fn nil_printout_skips_operand_evaluation_in_actions_and_callables() {
     ));
     assert!(engine.get_output("nil").is_none());
 }
+
+#[test]
+fn queued_output_in_nested_bodies_precedes_later_direct_writes() {
+    for (source, expected) in [
+        (
+            r#"(defrule exercise => (if TRUE then (format t "a") (println)))"#,
+            "a\n",
+        ),
+        (
+            r#"(defrule exercise =>
+                 (loop-for-count (?i 2) (format t "%d" ?i) (println)))"#,
+            "1\n2\n",
+        ),
+        (
+            r#"(deffunction g () (format t "cond%n") TRUE)
+               (defrule exercise => (if (g) then (println)))"#,
+            "cond\n\n",
+        ),
+        (
+            r#"(deffunction f () (printout t "in-f" crlf))
+               (defrule exercise => (if TRUE then (f) (list-focus-stack)))"#,
+            "in-f\nMAIN\n",
+        ),
+    ] {
+        let engine = run(source, HaltReason::AgendaEmpty);
+        assert_eq!(engine.get_output("t"), Some(expected), "{source}");
+    }
+}

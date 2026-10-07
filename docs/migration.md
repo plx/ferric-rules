@@ -21,6 +21,11 @@ reset after global initialization; globals defined later and callable
 replacements affect those values. Loading a deffacts definition has no expression side
 effects. `load-facts` accepts literal data only.
 
+Rust code that matches or constructs parser fact types must handle the new
+`FactValue::Expression` variant and the `FactSlotValue::ordered_expression`
+field. `EngineError` has a new `FactInitialization { definition, reason }`
+variant, which `Engine::reset()` now returns when a deffacts initializer fails.
+
 A definition is identified by module and local name. Successful replacement
 moves it to the end of that module's definition order; reset visits modules
 in creation order, then their definitions in order. `undeffacts` removes
@@ -110,8 +115,8 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
-Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346, #395, #396, #404 and #406 make these cases behave
+like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -124,6 +129,12 @@ Programs that relied on the earlier behavior need changes:
   returns only the first field of its line.
 - `format` rejects an argument count that does not match its directives, `%s`
   of a number, and a malformed directive such as `%5-3d`.
+- `format` writes its result to its logical name unless that name is `nil`, so
+  `(printout t (format t ...) crlf)` now prints the text twice; use `nil` when
+  the result goes into another output call. `printout` and `println` write each
+  argument as soon as it is evaluated, so output from nested calls appears in
+  place and text written before an argument error stays visible.
+  `(printout nil ...)` no longer evaluates its arguments.
 - `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
   `"1e+20"`), and `printout` quotes STRING fields inside a multifield.
 - `round` breaks half ties toward the lower integer, and `min`/`max` return the
@@ -143,6 +154,23 @@ Programs that relied on the earlier behavior need changes:
   parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
   several field constraints such as `(color red green)`, and a slot that
   appears twice in one template pattern.
+- A variable must be bound before an `|` alternative uses it, so
+  `(item ?x|99)` and `(mnj (x ?x|?y) (y ?x|?y))` are now load errors, as in
+  CLIPS. `?x&a|b` binds `?x` for every alternative. Overlapping alternatives
+  no longer fire twice, and `not`, `exists` and `forall` test the whole
+  disjunction.
+- Source files, the REPL and `load-facts` scan numbers like `explode$`: a
+  lexeme that starts with a digit, sign or `.` runs to the next CLIPS
+  delimiter. `(place 1st)` now has one field, not `1 st`; `1-2`, `0x10`,
+  `12abc` and `5e` are single SYMBOLs; `1.`, `.5` and `1.e3` are FLOATs (`.5`
+  was a SYMBOL). Integers outside the signed 64-bit range saturate instead of
+  rejecting the file. A `;` comment ends at CR as well as LF. The parser no
+  longer reports `ParseErrorKind::InvalidNumber`.
+- Top-level `assert` evaluates field expressions and globals in the module
+  current at its source position, and deffacts evaluate theirs at each reset
+  (see [the seed and reset changes](#pre-10-seed-and-reset-changes)). A
+  statically invalid field rejects the whole `assert` command; an evaluation
+  error keeps the facts it asserted earlier.
 
 ## Step 1: Check Feature Coverage
 

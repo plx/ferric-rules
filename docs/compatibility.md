@@ -103,6 +103,19 @@ multislots splice multifield results; single slots reject them even when the
 multifield contains exactly one value. `load-facts` accepts literal fact data
 only, and stops at an invalid fact while retaining earlier valid facts.
 
+As in CLIPS, every fact of an `assert` command is parsed before any is
+asserted. A statically invalid field (an unknown function, an unknown slot, or
+a static multifield in a single slot) rejects the whole command. An evaluation
+error, such as `(/ 1 0)`, an unbound local variable or an undefined global,
+stops the command and keeps the facts it completed earlier. CLIPS 6.30 still
+inserts the failing fact: an ordered fact loses all of its fields (`(bad)`),
+and a template fact keeps its other slots while the failing slot holds an
+unspecified value. Ferric inserts none of it. Each top-level assertion is evaluated in the module current
+at its position in the source, and the last `defmodule` stays current
+afterwards. Void results, such as those of `printout`, are omitted from
+ordered fields and multislots. Template slot expressions are evaluated in the
+template's slot declaration order, not the order the source writes them.
+
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
 `(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
@@ -240,6 +253,10 @@ including all commonly used conditional elements and RHS actions.
 | `~` | Negation | `(color ~red)` |
 | `\|` | Disjunction | `(color red\|blue)` |
 | `&` | Conjunction | `(value ?x&~0)` |
+
+Precedence is `~` > `&` > `|`, except that a leading `?x&` binds over the
+rest of the field: `?x&a|b` means `?x&(a|b)`. Variables used inside
+alternatives must already be bound.
 
 ### Conflict Resolution Strategies
 
@@ -446,8 +463,18 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 - Field expressions and globals are evaluated on every reset, after globals
   are restored, in the definition's module. Loading a definition does not
   execute its expressions. A global may be defined after the deffacts, and
-  replacing a called function affects the next reset. Local variables and
-  unknown calls are rejected during loading.
+  replacing a called function affects the next reset. Template slot
+  expressions run in slot declaration order, as for `assert`. Local variables
+  and unknown calls are rejected during loading.
+- An evaluation error during reset stops the reset at that fact. Facts already
+  asserted, including those of earlier definitions, remain; later facts and
+  definitions are not asserted. CLIPS 6.30 behaves the same, except that it
+  still inserts the failing fact: an ordered fact loses all of its fields, and
+  a template fact keeps its other slots while the failing slot holds an
+  unspecified value. Ferric inserts none of it. Rust `reset()`
+  returns `EngineError::FactInitialization { definition, reason }`; Python and
+  Node raise `FerricRuntimeError`; C (and Go through it) returns
+  `FERRIC_ERROR_RUNTIME_ERROR`.
 
 ---
 
@@ -477,16 +504,17 @@ and disjunction expansion use checked, conservative work estimates: at most
 256 CE alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
 expanded source per rule. Both normalization passes also share a per-load
 budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
-does not count field-level `|` constraints as rule alternatives: each field
-disjunction is evaluated once, including inside `not`, `exists`, and `forall`.
-A leading `?x&` binds over all alternatives (`?x&a|b` means `?x&(a|b)`).
-The estimate may reject an unusually redundant `or` CE expression that could
-be optimized to less work; Ferric does not perform that optimization implicitly.
+does not count field-level `|` constraints, which compile to one test on
+their field rather than to rule alternatives. The estimate may reject an
+unusually redundant `or` CE expression that could be optimized to less work;
+Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant
-tests, including the children of compound field tests. These bounds keep
-recursive propagation practical without adding a resumable execution subsystem.
+tests, including the children of compound field tests. When a pattern's
+field disjunctions would take it past that alpha budget, the widest ones are
+evaluated as match-time predicates instead. These bounds keep recursive propagation practical without adding a
+resumable execution subsystem.
 Boundary regressions exercise combined alpha
 and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
 Over-limit constructs fail before installation; previously installed rules and
@@ -965,8 +993,10 @@ Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
 exponents such as `5e` are single symbols. Source integers outside the signed
 64-bit range saturate too, but the source lexer has no warning channel and
-does not emit the `[SCANNER1]` notice. Comments end at CR or LF, including
-files that use CR-only line endings.
+does not emit the `[SCANNER1]` notice. This includes `load-facts` at run
+time, where CLIPS prints that warning within the program's output for each
+overflowing integer and Ferric prints nothing. Comments end at CR or LF,
+including files that use CR-only line endings.
 
 ### Multifield Functions
 
@@ -1057,7 +1087,8 @@ same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;
 `(format nil "n=%d" 42)` returns the string without writing it. `printout`
 writes each argument before evaluating the next, including inside callable
 bodies. Output from nested calls appears in evaluation order, and an error
-in a later argument preserves the output already written.
+in a later argument preserves the output already written. `printout` to `nil`
+writes nothing and evaluates none of its arguments.
 
 `format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
 `%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number
