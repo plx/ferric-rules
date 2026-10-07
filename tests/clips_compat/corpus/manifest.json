@@ -9948,6 +9948,110 @@
       "strategy": "breadth"
     },
     {
+      "path": "patterns/400o_ncc_multiple_blockers_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_multiple_blockers_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_blockers_before_items_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_blockers_before_items_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_negative_blockers_before_items_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_negative_blockers_before_items_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_three_blockers_interleaved_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_three_blockers_interleaved_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "not",
+        "ncc",
+        "and",
+        "retract",
+        "support-count",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
       "path": "patterns/400o_gap_shared_negative_assert_depth.clp",
       "level": "interaction",
       "covers": [
