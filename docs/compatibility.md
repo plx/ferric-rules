@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1011
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1014
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -377,7 +377,10 @@ pattern behind a different first pattern, are ordered by node age rather than
 pattern by pattern as in CLIPS, and may differ. A nested NCC whose subnetwork
 entry is shared with an older rule settles after that entry, so Ferric never
 transiently retracts and refires the enclosing rule, as CLIPS can when another
-successor was linked to the same parent in between. Other strategy combinations are
+successor was linked to the same parent in between. Nested NCC chains, such as
+`(exists (exists ...))`, settle depth first as in CLIPS: when several rules'
+chains share one subnetwork, each chain finishes before the next one starts,
+so deeper and shallower nestings tie as the reference does. Other strategy combinations are
 not a promise of replay-identical order across engines or versions.
 
 For application semantics that require precedence independently of network

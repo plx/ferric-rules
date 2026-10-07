@@ -10162,6 +10162,45 @@
       }
     },
     {
+      "path": "patterns/400_nested_exists_seed_only.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "not",
+        "ncc",
+        "nested-ncc"
+      ]
+    },
+    {
+      "path": "patterns/400_nested_exists_transitive_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "not",
+        "ncc",
+        "nested-ncc",
+        "shared-beta",
+        "retract",
+        "activation-order",
+        "depth"
+      ]
+    },
+    {
+      "path": "patterns/400_nested_exists_transitive_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "not",
+        "ncc",
+        "nested-ncc",
+        "shared-beta",
+        "retract",
+        "activation-order",
+        "breadth"
+      ],
+      "strategy": "breadth"
+    },
+    {
       "path": "stdlib/403b_fact_designator_symbol_literals.clp",
       "level": "boundary",
       "covers": [
