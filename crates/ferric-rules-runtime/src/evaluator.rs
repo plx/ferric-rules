@@ -1728,84 +1728,73 @@ fn generic_value_type_name(value: &Value) -> &'static str {
     }
 }
 
-/// Count how many distinct concrete types a restriction set covers.
-///
-/// Returns `usize::MAX` when the restriction list is empty (no restriction = matches
-/// everything = least specific). Otherwise, counts the distinct concrete leaf types
-/// implied by the given type names, using the CLIPS type hierarchy:
-/// - `NUMBER` expands to `INTEGER` + `FLOAT`
-/// - `LEXEME` expands to `SYMBOL` + `STRING`
-fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
-    if restrictions.is_empty() {
-        return usize::MAX; // No restriction = matches everything, least specific
+/// The result of comparing two restrictions, as CLIPS 6.30's
+/// `TypeListCompare` and `RestrictionsCompare` report it: the first one
+/// outranks the second, is outranked by it, differs without either one
+/// outranking the other, or is identical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestrictionPrecedence {
+    Higher,
+    Lower,
+    Different,
+    Identical,
+}
+
+/// Every superclass of a CLIPS 6.30 system class, as
+/// `(class-superclasses <class> inherit)` reports it. Other names have none.
+fn type_superclasses(type_name: &str) -> &'static [&'static str] {
+    match type_name {
+        "PRIMITIVE" | "USER" => &["OBJECT"],
+        "NUMBER" | "LEXEME" | "MULTIFIELD" | "ADDRESS" | "INSTANCE" => &["PRIMITIVE", "OBJECT"],
+        "INTEGER" | "FLOAT" => &["NUMBER", "PRIMITIVE", "OBJECT"],
+        "SYMBOL" | "STRING" => &["LEXEME", "PRIMITIVE", "OBJECT"],
+        "EXTERNAL-ADDRESS" | "FACT-ADDRESS" => &["ADDRESS", "PRIMITIVE", "OBJECT"],
+        "INSTANCE-ADDRESS" => &["INSTANCE", "ADDRESS", "PRIMITIVE", "OBJECT"],
+        "INSTANCE-NAME" => &["INSTANCE", "PRIMITIVE", "OBJECT"],
+        "INITIAL-OBJECT" => &["USER", "OBJECT"],
+        _ => &[],
     }
-    let mut count = 0usize;
-    // Tracks whether each concrete type has been counted:
-    // 0=INTEGER, 1=FLOAT, 2=SYMBOL, 3=STRING, 4=MULTIFIELD, 5=EXTERNAL-ADDRESS,
-    // 6=INSTANCE-NAME
-    let mut seen = [false; 7];
-    for t in restrictions {
-        match t.as_str() {
-            "INTEGER" if !seen[0] => {
-                seen[0] = true;
-                count += 1;
+}
+
+/// Compare two parameter type lists as CLIPS 6.30's `TypeListCompare` does.
+///
+/// An empty list (any type) is outranked by any other list. Otherwise, at the
+/// first position in written order where one type is a subclass of the other,
+/// the subclass wins. Failing that, the shorter list wins. Lists of equal
+/// length that differ anywhere are `Different`: neither outranks the other.
+fn type_list_compare(a: &[String], b: &[String]) -> RestrictionPrecedence {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => return RestrictionPrecedence::Identical,
+        (true, false) => return RestrictionPrecedence::Lower,
+        (false, true) => return RestrictionPrecedence::Higher,
+        (false, false) => {}
+    }
+    let mut differ = false;
+    for (a_type, b_type) in a.iter().zip(b) {
+        if a_type != b_type {
+            differ = true;
+            if type_superclasses(a_type).contains(&b_type.as_str()) {
+                return RestrictionPrecedence::Higher;
             }
-            "FLOAT" if !seen[1] => {
-                seen[1] = true;
-                count += 1;
+            if type_superclasses(b_type).contains(&a_type.as_str()) {
+                return RestrictionPrecedence::Lower;
             }
-            "NUMBER" => {
-                if !seen[0] {
-                    seen[0] = true;
-                    count += 1;
-                }
-                if !seen[1] {
-                    seen[1] = true;
-                    count += 1;
-                }
-            }
-            "SYMBOL" if !seen[2] => {
-                seen[2] = true;
-                count += 1;
-            }
-            "STRING" if !seen[3] => {
-                seen[3] = true;
-                count += 1;
-            }
-            "LEXEME" => {
-                if !seen[2] {
-                    seen[2] = true;
-                    count += 1;
-                }
-                if !seen[3] {
-                    seen[3] = true;
-                    count += 1;
-                }
-            }
-            "MULTIFIELD" if !seen[4] => {
-                seen[4] = true;
-                count += 1;
-            }
-            "EXTERNAL-ADDRESS" if !seen[5] => {
-                seen[5] = true;
-                count += 1;
-            }
-            "INSTANCE-NAME" if !seen[6] => {
-                seen[6] = true;
-                count += 1;
-            }
-            _ => {}
         }
     }
-    count
+    match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Less => RestrictionPrecedence::Higher,
+        std::cmp::Ordering::Greater => RestrictionPrecedence::Lower,
+        std::cmp::Ordering::Equal if differ => RestrictionPrecedence::Different,
+        std::cmp::Ordering::Equal => RestrictionPrecedence::Identical,
+    }
 }
 
 /// Whether method `a` has strictly higher dispatch precedence than `b`, as
 /// CLIPS 6.30's `RestrictionsCompare` decides when it places a new method.
 ///
 /// The relation is not transitive (a wildcard slot loses at once to a method
-/// without a wildcard, while typed slots compare by type count), so it must
-/// not drive a sort: [`GenericFunction::methods_by_precedence`] uses it to
+/// without a wildcard, while typed slots compare by their type lists), so it
+/// must not drive a sort: [`GenericFunction::methods_by_precedence`] uses it to
 /// insert methods one at a time, as CLIPS does.
 pub(crate) fn method_has_higher_precedence(
     a: &crate::functions::RegisteredMethod,
@@ -1821,9 +1810,11 @@ pub(crate) fn method_has_higher_precedence(
 /// Following CLIPS 6.30, each method's restriction slots are its fixed
 /// parameters followed by its wildcard, compared left to right. A wildcard slot
 /// loses at once to a regular parameter of a method that has no wildcard.
-/// Otherwise fewer covered primitive types is more specific, then a query
-/// outranks no query. When the shared slots tie, a method without a wildcard
-/// wins, then the method with more slots.
+/// Otherwise the slots' type lists are compared ([`type_list_compare`]); the
+/// first slot whose lists are not identical decides, and lists that differ
+/// without either outranking the other leave the methods unranked. When the
+/// lists are identical, a query outranks no query. When the shared slots tie,
+/// a method without a wildcard wins, then the method with more slots.
 fn compare_method_restrictions(
     a: &crate::functions::RegisteredMethod,
     b: &crate::functions::RegisteredMethod,
@@ -1839,8 +1830,13 @@ fn compare_method_restrictions(
         if b_slot.wildcard && a.wildcard_parameter.is_none() {
             return std::cmp::Ordering::Less;
         }
-        let order =
-            compare_parameter_specificity(a_slot.types, a_slot.query, b_slot.types, b_slot.query);
+        match type_list_compare(a_slot.types, b_slot.types) {
+            RestrictionPrecedence::Higher => return std::cmp::Ordering::Less,
+            RestrictionPrecedence::Lower => return std::cmp::Ordering::Greater,
+            RestrictionPrecedence::Different => return std::cmp::Ordering::Equal,
+            RestrictionPrecedence::Identical => {}
+        }
+        let order = b_slot.query.cmp(&a_slot.query);
         if !order.is_eq() {
             return order;
         }
@@ -1882,17 +1878,6 @@ fn method_slot(method: &crate::functions::RegisteredMethod, slot: usize) -> Meth
             query: method.wildcard_query.is_some(),
         }
     }
-}
-
-fn compare_parameter_specificity(
-    a_types: &[String],
-    a_query: bool,
-    b_types: &[String],
-    b_query: bool,
-) -> std::cmp::Ordering {
-    restriction_concrete_type_count(a_types)
-        .cmp(&restriction_concrete_type_count(b_types))
-        .then_with(|| b_query.cmp(&a_query))
 }
 
 /// Prefilter dispatch candidates. A method with a query keeps its type checks
@@ -10636,35 +10621,90 @@ mod tests {
     // Specificity scoring unit tests
     // -------------------------------------------------------------------
 
-    #[test]
-    fn restriction_concrete_type_count_integer() {
-        let r = vec!["INTEGER".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 1);
+    fn types(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
     }
 
     #[test]
-    fn restriction_concrete_type_count_number_expands_to_two() {
-        let r = vec!["NUMBER".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 2);
+    fn type_list_compare_empty_lists() {
+        assert_eq!(
+            type_list_compare(&[], &[]),
+            RestrictionPrecedence::Identical
+        );
+        assert_eq!(
+            type_list_compare(&[], &types(&["INTEGER"])),
+            RestrictionPrecedence::Lower
+        );
+        assert_eq!(
+            type_list_compare(&types(&["OBJECT"]), &[]),
+            RestrictionPrecedence::Higher
+        );
     }
 
     #[test]
-    fn restriction_concrete_type_count_integer_and_float_deduped() {
-        // ["INTEGER", "FLOAT"] and ["NUMBER"] should both count as 2 distinct concrete types.
-        let r = vec!["INTEGER".to_string(), "FLOAT".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 2);
+    fn type_list_compare_subclass_wins_at_first_related_position() {
+        // CLIPS: (INTEGER SYMBOL) outranks (NUMBER), and (SYMBOL INTEGER
+        // FLOAT) outranks (LEXEME), despite covering more types.
+        assert_eq!(
+            type_list_compare(&types(&["INTEGER", "SYMBOL"]), &types(&["NUMBER"])),
+            RestrictionPrecedence::Higher
+        );
+        assert_eq!(
+            type_list_compare(&types(&["LEXEME"]), &types(&["SYMBOL", "INTEGER", "FLOAT"])),
+            RestrictionPrecedence::Lower
+        );
+        // An unrelated first position does not stop the scan.
+        assert_eq!(
+            type_list_compare(&types(&["INTEGER", "LEXEME"]), &types(&["FLOAT", "SYMBOL"])),
+            RestrictionPrecedence::Lower
+        );
+        assert_eq!(
+            type_list_compare(&types(&["NUMBER", "SYMBOL"]), &types(&["PRIMITIVE"])),
+            RestrictionPrecedence::Higher
+        );
+        assert_eq!(
+            type_list_compare(&types(&["INSTANCE-ADDRESS"]), &types(&["ADDRESS"])),
+            RestrictionPrecedence::Higher
+        );
     }
 
     #[test]
-    fn restriction_concrete_type_count_empty_is_max() {
-        let r: Vec<String> = vec![];
-        assert_eq!(restriction_concrete_type_count(&r), usize::MAX);
+    fn type_list_compare_instance_name_is_not_a_symbol() {
+        // In CLIPS 6.30, INSTANCE-NAME's superclasses are INSTANCE,
+        // PRIMITIVE, and OBJECT, so it is unrelated to LEXEME.
+        assert_eq!(
+            type_list_compare(&types(&["INSTANCE-NAME", "SYMBOL"]), &types(&["LEXEME"])),
+            RestrictionPrecedence::Lower
+        );
     }
 
     #[test]
-    fn restriction_concrete_type_count_lexeme_expands_to_two() {
-        let r = vec!["LEXEME".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 2);
+    fn type_list_compare_shorter_wins_then_different() {
+        assert_eq!(
+            type_list_compare(&types(&["INTEGER"]), &types(&["INTEGER", "SYMBOL"])),
+            RestrictionPrecedence::Higher
+        );
+        assert_eq!(
+            type_list_compare(
+                &types(&["INTEGER", "SYMBOL"]),
+                &types(&["INTEGER", "STRING"])
+            ),
+            RestrictionPrecedence::Different
+        );
+        assert_eq!(
+            type_list_compare(
+                &types(&["INTEGER", "SYMBOL"]),
+                &types(&["SYMBOL", "INTEGER"])
+            ),
+            RestrictionPrecedence::Different
+        );
+        assert_eq!(
+            type_list_compare(
+                &types(&["INTEGER", "SYMBOL"]),
+                &types(&["INTEGER", "SYMBOL"])
+            ),
+            RestrictionPrecedence::Identical
+        );
     }
 
     /// Build a minimal `RegisteredMethod` for specificity comparison tests.
@@ -10828,6 +10868,64 @@ mod tests {
             compare_method_restrictions(&queried, &untyped),
             std::cmp::Ordering::Less,
         );
+    }
+
+    fn with_query(
+        mut method: crate::functions::RegisteredMethod,
+        slot: usize,
+    ) -> crate::functions::RegisteredMethod {
+        method.parameter_queries[slot] = Some(ferric_rules_parser::ActionExpr::Literal(
+            ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol("TRUE".into()),
+                span: dummy_span(),
+            },
+        ));
+        method
+    }
+
+    #[test]
+    fn compare_specificity_different_types_stop_before_query() {
+        // CLIPS: ((?x INTEGER SYMBOL)) and ((?x INTEGER STRING (eq ?x 1)))
+        // differ, so the query is never consulted and neither outranks.
+        let plain = make_method(1, vec![types(&["INTEGER", "SYMBOL"])], false);
+        let queried = with_query(
+            make_method(2, vec![types(&["INTEGER", "STRING"])], false),
+            0,
+        );
+        assert_eq!(
+            compare_method_restrictions(&queried, &plain),
+            std::cmp::Ordering::Equal,
+        );
+        assert_eq!(
+            compare_method_restrictions(&plain, &queried),
+            std::cmp::Ordering::Equal,
+        );
+        // With identical types, the query decides.
+        let queried_same = with_query(
+            make_method(2, vec![types(&["INTEGER", "SYMBOL"])], false),
+            0,
+        );
+        assert_eq!(
+            compare_method_restrictions(&queried_same, &plain),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_different_types_stop_before_later_slots() {
+        // CLIPS: ((?x INTEGER SYMBOL) ?y) and ((?x INTEGER STRING) (?y
+        // INTEGER)) differ in the first slot, so the second is not compared.
+        let a = make_method(1, vec![types(&["INTEGER", "SYMBOL"]), vec![]], false);
+        let b = make_method(
+            2,
+            vec![types(&["INTEGER", "STRING"]), types(&["INTEGER"])],
+            false,
+        );
+        assert_eq!(
+            compare_method_restrictions(&b, &a),
+            std::cmp::Ordering::Equal
+        );
+        assert!(!method_has_higher_precedence(&b, &a));
     }
 
     // -------------------------------------------------------------------

@@ -921,6 +921,53 @@ mod tests {
     }
 
     #[test]
+    fn generic_precedence_keeps_definition_order_for_different_type_lists() {
+        // CLIPS: ((?x INTEGER SYMBOL)) and ((?x INTEGER STRING (eq ?x 1)))
+        // differ without either outranking, so the query does not promote
+        // the later method.
+        let label = |name: &str| {
+            vec![ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol(name.into()),
+                span: ferric_rules_parser::Span::point(
+                    ferric_rules_parser::Position {
+                        offset: 0,
+                        line: 1,
+                        column: 1,
+                    },
+                    ferric_rules_parser::FileId(0),
+                ),
+            })]
+        };
+        let mut reg = GenericRegistry::new();
+        reg.register_restricted_method(
+            main_module(),
+            "g",
+            None,
+            vec!["x".into()],
+            vec![vec!["INTEGER".into(), "SYMBOL".into()]],
+            vec![None],
+            None,
+            vec![],
+            None,
+            label("first"),
+        );
+        reg.register_restricted_method(
+            main_module(),
+            "g",
+            None,
+            vec!["x".into()],
+            vec![vec!["INTEGER".into(), "STRING".into()]],
+            vec![Some(label("TRUE").remove(0))],
+            None,
+            vec![],
+            None,
+            label("second"),
+        );
+        assert_eq!(precedence_labels(&reg), ["first", "second"]);
+        reg.debug_assert_consistency();
+    }
+
+    #[test]
     fn generic_precedence_follows_index_order_for_explicit_indices() {
         let mut reg = GenericRegistry::new();
         for (index, label) in [(3, "C"), (1, "A"), (2, "B")] {

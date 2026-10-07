@@ -828,6 +828,16 @@
       ]
     },
     {
+      "path": "generics/callable-type-list-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
       "path": "generics/callable-query-global-variable.clp",
       "level": "boundary",
       "covers": [

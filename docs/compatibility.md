@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 719
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 720
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -775,19 +775,34 @@ Methods are ranked by type specificity. More specific types win:
 match, the most specific applicable method is selected. Restrictions are
 compared left to right, with a wildcard counting as its method's last
 restriction. A wildcard loses at once to a regular parameter in the same
-position when that parameter's method has no wildcard. Otherwise the
-restriction covering fewer types wins, so a type restriction outranks an
-otherwise unrestricted parameter with a query; a query adds specificity when
-the types are the same. When every shared position ties, a method without a
-wildcard wins, then the method with more restrictions. For example,
-`(($?xs INTEGER))` outranks `(?x $?xs)`, while `(?x ?y)` outranks
-`(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
+position when that parameter's method has no wildcard. Otherwise, as in
+CLIPS 6.30, the two type lists are compared in written order:
+
+- Any type list outranks an unrestricted parameter, so a type restriction
+  outranks an otherwise unrestricted parameter with a query.
+- At the first position where one listed type is a subclass of the other in
+  the CLIPS class hierarchy, the subclass wins: `INTEGER` and `FLOAT` under
+  `NUMBER`, `SYMBOL` and `STRING` under `LEXEME`, and every primitive type
+  under `PRIMITIVE`. `INSTANCE-NAME` is not a subclass of `SYMBOL`. So
+  `((?x INTEGER SYMBOL))` outranks `((?x NUMBER))`, although it covers more
+  types.
+- Otherwise the shorter list wins: `((?x INTEGER))` outranks
+  `((?x INTEGER SYMBOL))`.
+- Lists of the same length that differ anywhere, such as `(INTEGER SYMBOL)`
+  and `(INTEGER STRING)`, or `(INTEGER SYMBOL)` and `(SYMBOL INTEGER)`, leave
+  the two methods unranked: neither outranks the other, and their queries and
+  later restrictions are not compared.
+
+A query adds specificity only when the type lists are identical. When every
+shared position ties, a method without a wildcard wins, then the method with
+more restrictions. For example, `(($?xs INTEGER))` outranks `(?x $?xs)`, while
+`(?x ?y)` outranks `(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
 
 This ranking can be cyclic: `(($?x INTEGER))` outranks `((?x NUMBER) $?y)`,
 which outranks `(?x)`, which outranks `(($?x INTEGER))`. As in CLIPS 6.30,
 methods are not sorted. Each method is inserted before the first existing
 method it outranks, or after all of them, so the final order can depend on
-definition order. Ferric inserts methods in index order, which is definition
+definition order, both for cyclic rankings and for unranked methods. Ferric inserts methods in index order, which is definition
 order unless explicit indices are given out of order.
 
 Known difference: when explicit indices are given out of definition order and
