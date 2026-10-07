@@ -472,10 +472,10 @@ was never populated.
 | `defrule` | Supported |
 | `deftemplate` | Supported |
 | `deffacts` | Supported |
-| `deffunction` | Supported (evaluator expressions; no fact mutation/control actions) |
+| `deffunction` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `defglobal` | Supported |
 | `defmodule` | Supported |
-| `defgeneric` / `defmethod` | Supported (evaluator expressions; no fact mutation/control actions) |
+| `defgeneric` / `defmethod` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
 | `printout` / `format` / `read` / `readline` | Supported |
 | `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |
@@ -529,8 +529,8 @@ constraint toggles.
   See [host-api.md](host-api.md).
 - Snapshots use a bounded, versioned envelope (schema 7); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1, schema-2, schema-3, schema-4 and schema-5 snapshots
-  are rejected explicitly. Export durable application data through the
+  unversioned, schema-1, schema-2, schema-3, schema-4, schema-5 and schema-6
+  snapshots are rejected explicitly. Export durable application data through the
   producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
