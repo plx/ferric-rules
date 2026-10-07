@@ -306,9 +306,11 @@ fn unified_right_pass_keeps_prepropagation_positive_parent_capture() {
 
 #[test]
 fn nested_ncc_waits_for_shared_subnetwork_entry() {
-    for strategy in [
-        ConflictResolutionStrategy::Depth,
-        ConflictResolutionStrategy::Breadth,
+    for (strategy, rebuild_index) in [
+        (ConflictResolutionStrategy::Depth, false),
+        (ConflictResolutionStrategy::Breadth, false),
+        (ConflictResolutionStrategy::Depth, true),
+        (ConflictResolutionStrategy::Breadth, true),
     ] {
         let mut network = Network::new(strategy);
         let [a, b, c] = ["a", "b", "c"].map(|relation| network.pattern(relation, false));
@@ -324,6 +326,18 @@ fn nested_ncc_waits_for_shared_subnetwork_entry() {
                 ]),
             ])],
         );
+        // Only the inner NCC is nested. The compiler's registration must
+        // match the graph-derived index that snapshot restore rebuilds.
+        let compiled = network.rete.beta.nested_ncc_entries.clone().unwrap();
+        assert_eq!(compiled.len(), 1);
+        network.rete.beta.nested_ncc_entries = None;
+        network.rete.beta.ensure_nested_ncc_index();
+        assert_eq!(network.rete.beta.nested_ncc_entries, Some(compiled));
+        if rebuild_index {
+            // Exercise propagation's own rebuild of a dropped index.
+            network.rete.beta.nested_ncc_entries = None;
+        }
+
         network.rete.clear_working_memory();
         network.assert("b", &[]);
         network.assert("c", &[]);

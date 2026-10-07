@@ -2029,37 +2029,49 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_propagate", token = ?token_id);
+        self.beta.ensure_nested_ncc_index();
         // Child arrays retain attachment order; CLIPS links new successors at
         // the head, so every propagation visits them newest first.
-        let mut postponed: SmallVec<[(NodeId, NodeId); 2]> = SmallVec::new();
+        //
+        // CLIPS visits an NCC behind its parent's newest successor when
+        // linked, which precedes a shared subnetwork entry from an older rule.
+        // A top-level NCC keeps that position: a transient pass-through there
+        // only adds and removes new activations. A nested NCC's pass-through is
+        // a result for the enclosing NCC, so deciding before its own subnetwork
+        // has seen the token would retract and recreate the enclosing match,
+        // refiring it. Such an NCC waits until its not-yet-visited entry has
+        // run. Both maps are built only once a nested NCC is met, keeping
+        // each child visit O(1).
+        let mut positions: Option<rustc_hash::FxHashMap<NodeId, usize>> = None;
+        let mut postponed: Option<rustc_hash::FxHashMap<NodeId, SmallVec<[NodeId; 2]>>> = None;
         for (index, &child_id) in children.iter().enumerate().rev() {
-            if let Some(entry) = self.ncc_waiting_for_entry(child_id, &children[..index]) {
-                postponed.push((entry, child_id));
-                continue;
+            if let Some(entry) = self.beta.nested_ncc_entry(child_id) {
+                let positions = positions.get_or_insert_with(|| {
+                    children
+                        .iter()
+                        .enumerate()
+                        .map(|(position, &child)| (child, position))
+                        .collect()
+                });
+                if positions
+                    .get(&entry)
+                    .is_some_and(|&position| position < index)
+                {
+                    postponed
+                        .get_or_insert_with(rustc_hash::FxHashMap::default)
+                        .entry(entry)
+                        .or_default()
+                        .push(child_id);
+                    continue;
+                }
             }
             self.propagate_to_child(token_id, child_id, fact_base, new_activations);
-            while let Some(position) = postponed.iter().position(|&(entry, _)| entry == child_id) {
-                let (_, ncc) = postponed.remove(position);
-                self.propagate_to_child(token_id, ncc, fact_base, new_activations);
+            if let Some(waiting) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
+                for ncc in waiting {
+                    self.propagate_to_child(token_id, ncc, fact_base, new_activations);
+                }
             }
         }
-    }
-
-    /// Return the not-yet-visited sibling an NCC must wait for, if any.
-    ///
-    /// CLIPS visits an NCC behind its parent's newest successor when linked,
-    /// which precedes a shared subnetwork entry from an older rule. A
-    /// top-level NCC keeps that position: a transient pass-through there only
-    /// adds and removes new activations. A nested NCC's pass-through is a result
-    /// for the enclosing NCC, so deciding before its own subnetwork has seen
-    /// the token would retract and recreate the enclosing match, refiring it.
-    fn ncc_waiting_for_entry(&self, child_id: NodeId, older: &[NodeId]) -> Option<NodeId> {
-        if older.is_empty() || !matches!(self.beta.get_node(child_id), Some(BetaNode::Ncc { .. })) {
-            return None;
-        }
-        let entry = self.beta.ncc_subnetwork_entry(child_id)?;
-        (older.contains(&entry) && self.beta.ncc_feeds_enclosing_subnetwork(child_id))
-            .then_some(entry)
     }
 
     fn propagate_to_child(

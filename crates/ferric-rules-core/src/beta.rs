@@ -524,6 +524,14 @@ pub struct BetaNetwork {
     /// Reverse index: alpha memory -> list of exists nodes that subscribe to it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     pub(crate) alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
+    /// NCCs nested inside an enclosing NCC's subnetwork -> their subnetwork entry.
+    ///
+    /// Only these NCCs can wait for their entry during propagation, so
+    /// top-level NCCs never pay for that check. The compiler registers nested
+    /// NCCs as it builds them. This derived index is omitted from snapshots
+    /// and dropped by rule removal; `None` is rebuilt from the graph on demand.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) nested_ncc_entries: Option<HashMap<NodeId, NodeId>>,
 }
 
 impl BetaNetwork {
@@ -561,6 +569,7 @@ impl BetaNetwork {
             alpha_to_joins: HashMap::default(),
             alpha_to_negatives: HashMap::default(),
             alpha_to_exists: HashMap::default(),
+            nested_ncc_entries: Some(HashMap::default()),
         }
     }
 
@@ -620,6 +629,9 @@ impl BetaNetwork {
     /// stay stable, so surviving matches and their agenda chronology are intact.
     pub(crate) fn retain_nodes(&mut self, retained: &HashSet<NodeId>) -> HashSet<AlphaMemoryId> {
         self.nodes.retain(|id, _| retained.contains(id));
+        if let Some(nested) = &mut self.nested_ncc_entries {
+            nested.retain(|id, _| retained.contains(id));
+        }
         let mut memory_ids = vec![false; self.memories.len()];
         let mut negative_ids = vec![false; self.neg_memories.len()];
         let mut ncc_ids = vec![false; self.ncc_memories.len()];
@@ -1052,6 +1064,47 @@ impl BetaNetwork {
             }
         }
         false
+    }
+
+    /// Record a completed NCC that the compiler built inside an enclosing
+    /// NCC's subnetwork, caching the subnetwork entry it may wait for.
+    pub(crate) fn register_nested_ncc(&mut self, ncc_node_id: NodeId) {
+        let Some(entry) = self.ncc_subnetwork_entry(ncc_node_id) else {
+            return;
+        };
+        // A missing index is rebuilt from the graph, which includes this NCC.
+        if let Some(nested) = &mut self.nested_ncc_entries {
+            nested.insert(ncc_node_id, entry);
+        }
+    }
+
+    /// Rebuild the nested-NCC index from the graph if it was dropped.
+    pub(crate) fn ensure_nested_ncc_index(&mut self) {
+        if self.nested_ncc_entries.is_some() {
+            return;
+        }
+        let nested = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node, BetaNode::Ncc { .. }))
+            .filter(|&(&id, _)| self.ncc_feeds_enclosing_subnetwork(id))
+            .filter_map(|(&id, _)| Some((id, self.ncc_subnetwork_entry(id)?)))
+            .collect();
+        self.nested_ncc_entries = Some(nested);
+    }
+
+    /// The subnetwork entry a nested NCC may wait for; `None` for every
+    /// other node, including top-level NCCs.
+    #[inline]
+    pub(crate) fn nested_ncc_entry(&self, node_id: NodeId) -> Option<NodeId> {
+        match &self.nested_ncc_entries {
+            Some(nested) if nested.is_empty() => None,
+            Some(nested) => nested.get(&node_id).copied(),
+            None => {
+                debug_assert!(false, "nested NCC index must be built before lookup");
+                None
+            }
+        }
     }
 
     /// Update the partner pointer of an existing NCC node.
