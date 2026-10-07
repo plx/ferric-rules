@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 933
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 934
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1186,7 +1186,7 @@ each other.
 | `string-to-field` | First CLIPS field of a STRING, SYMBOL or INSTANCE-NAME | `(string-to-field "42 rest")` => `42` |
 | `explode$` | Every CLIPS field of a STRING, as a multifield | `(explode$ "a \"b c\" 3")` => `(a "b c" 3)` |
 | `symbol-to-instance-name` | SYMBOL to INSTANCE-NAME | `(symbol-to-instance-name x)` => `[x]` |
-| `instance-name-to-symbol` | INSTANCE-NAME to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
+| `instance-name-to-symbol` | INSTANCE-NAME or SYMBOL to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
 
 `str-cat` and `sym-cat` require at least one argument. They accept STRING,
@@ -1284,6 +1284,10 @@ Ordered relation declarations remain available to introspection after their
 last fact is retracted and across reset. Querying a dynamic default evaluates
 its expression, including side effects; merely listing slots or asking the
 default kind does not.
+
+`deftemplate-slot-names` loads with an INTEGER or SYMBOL literal argument, as
+in CLIPS 6.30. A template name that is not a SYMBOL when evaluated stops the
+rule in Ferric, whereas CLIPS prints an `ARGACCES5` notice and returns FALSE.
 
 ### Dynamic Source, Randomness, and Time
 

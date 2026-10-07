@@ -225,6 +225,10 @@ fn invalid_builtin_calls_do_not_replace_a_rule_or_prevent_later_rules_loading() 
         ("(length$ 1)", "ARGACCES5"),
         ("(sqrt wrong)", "ARGACCES5"),
         ("(str-cat)", "ARGACCES4"),
+        ("(retract \"x\")", "ARGACCES5"),
+        ("(fact-existp 1.5)", "ARGACCES5"),
+        ("(fact-index 1)", "ARGACCES5"),
+        ("(fact-slot-value 1 \"x\")", "ARGACCES5"),
     ] {
         let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
         let errors = engine

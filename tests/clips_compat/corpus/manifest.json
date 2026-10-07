@@ -9397,6 +9397,17 @@
         "issue-403"
       ],
       "recoverable_fact_notices": true
+    },
+    {
+      "path": "stdlib/403b_restriction_accepted_literals.clp",
+      "level": "boundary",
+      "covers": [
+        "stdlib",
+        "builtin-validation",
+        "instance-name-to-symbol",
+        "deftemplate-slot-names",
+        "issue-403"
+      ]
     }
   ]
 }
