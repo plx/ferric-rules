@@ -10803,6 +10803,18 @@
         "assert",
         "get-focus-stack"
       ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_entry_join.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "activation-order"
+      ]
     }
   ]
 }
