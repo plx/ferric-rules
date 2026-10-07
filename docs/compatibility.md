@@ -340,9 +340,11 @@ declaring auto-focus on one rule does not reorder unrelated rules. Snapshots
 preserve the focus stack without replaying notices for existing activations.
 
 Late installation of a blocked NCC rule follows CLIPS's transient focus push
-when its fresh subnetwork shares the rule's left prefix with an older rule,
-unless a test CE follows the NCC, and no push when the subnetwork extends an
-already populated join, including one followed by a deferred test. Two
+in two situations: when its fresh subnetwork shares the rule's left prefix with
+an older rule, unless a test CE follows the NCC; and when a fresh join inside
+the NCC follows a shared, already populated subnetwork entry join. There is no
+push when the only thing after that populated shared join is a test CE inside
+the NCC, whether or not the older rule also defers that test. Two
 characterized differences remain, tracked in
 [#480](https://github.com/plx/ferric-rules/issues/480): with a shared prefix and
 a trailing test CE, the test is only queued before the fresh subnetwork blocks
