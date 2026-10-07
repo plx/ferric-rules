@@ -90,6 +90,15 @@ preserve multifields as single arguments. Unknown calls in function and method
 bodies now fail during loading, including calls in branches that never execute.
 Forward references within a load remain supported.
 
+Calls to a deffunction or generic from rule RHS actions, function and method
+bodies, and method queries now fail during loading unless the callable is
+visible in the calling module: defined there, or exported by its module and
+imported by the caller (see [Export/Import](compatibility.md#exportimport)).
+Previously the loader accepted an unqualified call to a callable defined in
+any module. Module-qualified calls such as `(OTHER::f)` to a nonexistent
+module or callable also fail during loading instead of at run time. Add the missing
+`export`/`import` declarations to programs that relied on the old lookup.
+
 Parser `MethodParameter` struct literals need a `query` field. `MethodConstruct`
 and runtime `RegisteredMethod` also store wildcard type/query restrictions;
 `RegisteredMethod` stores one optional query per fixed parameter. Use `None`
