@@ -760,7 +760,9 @@ wildcard wins, then the method with more restrictions. For example,
 `(($?xs INTEGER))` outranks `(?x $?xs)`, while `(?x ?y)` outranks
 `(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
 
-A parameter query follows its optional type restrictions. It can reference
+A parameter query follows its optional type restrictions. It is a function
+call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
+read again at each dispatch. A query can reference
 any method parameter, including later ones: all arguments are bound before
 queries run. Queries use CLIPS truthiness and are evaluated only as dispatch
 searches for the next applicable method. For each candidate, dispatch walks

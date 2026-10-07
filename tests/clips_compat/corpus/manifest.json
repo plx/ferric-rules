@@ -808,6 +808,16 @@
       ]
     },
     {
+      "path": "generics/callable-query-global-variable.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "defglobal"
+      ]
+    },
+    {
       "path": "io/read-blank-comment-lines-skip.clp",
       "level": "boundary",
       "covers": [
