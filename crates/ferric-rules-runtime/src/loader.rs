@@ -2071,6 +2071,8 @@ impl Engine {
         let bindings = ferric_rules_core::binding::BindingSet::new();
         let var_map = ferric_rules_core::binding::VarMap::new();
         let mut locals = crate::evaluator::CallableLocals::default();
+        // A `build` at depth continues its caller's evaluation budget.
+        let (call_depth, expression_depth) = self.eval_depth_floor;
         let value = {
             let mut context = crate::evaluator::EvalContext {
                 engine: self,
@@ -2079,8 +2081,8 @@ impl Engine {
                 bindings: &bindings,
                 var_map: &var_map,
                 callable_locals: Some(&mut locals),
-                call_depth: 0,
-                expression_depth: 0,
+                call_depth,
+                expression_depth,
                 method_chain: None,
                 compact_fact_bindings: None,
                 allow_engine_effects: true,
