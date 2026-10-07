@@ -1882,13 +1882,33 @@ fn compare_parameter_specificity(
         .then_with(|| b_query.cmp(&a_query))
 }
 
-/// Check only the argument count; restrictions are checked during selection.
-fn method_accepts_arity(method: &crate::functions::RegisteredMethod, arg_count: usize) -> bool {
-    if method.wildcard_parameter.is_some() {
-        arg_count >= method.parameters.len()
+/// Prefilter dispatch candidates. A method with a query keeps its type checks
+/// for selection, where they interleave with the queries in argument order;
+/// a method without one has no observable checks, so its types filter here.
+fn method_may_apply(method: &crate::functions::RegisteredMethod, arg_values: &[Value]) -> bool {
+    let fixed_count = method.parameters.len();
+    let arity = if method.wildcard_parameter.is_some() {
+        arg_values.len() >= fixed_count
     } else {
-        arg_count == method.parameters.len()
+        arg_values.len() == fixed_count
+    };
+    if !arity
+        || method.parameter_queries.iter().any(Option::is_some)
+        || method.wildcard_query.is_some()
+    {
+        return arity;
     }
+    arg_values.iter().enumerate().all(|(i, value)| {
+        let types = if i < fixed_count {
+            method
+                .type_restrictions
+                .get(i)
+                .map_or(&[][..], Vec::as_slice)
+        } else {
+            method.wildcard_type_restrictions.as_slice()
+        };
+        types.is_empty() || types.iter().any(|kind| value_matches_type(value, kind))
+    })
 }
 
 struct SelectedMethod {
@@ -2038,8 +2058,8 @@ fn no_applicable_method(name: &str, arg_values: &[Value], span: Option<SourceSpa
     }
 }
 
-/// Dispatch a call after evaluating arguments once. Candidates are filtered by
-/// arity only; type restrictions and queries are checked in argument order as
+/// Dispatch a call after evaluating arguments once. Restriction queries, and
+/// the type checks of methods that have them, run in argument order as
 /// selection reaches each candidate, throughout the call-next-method chain.
 fn dispatch_generic(
     ctx: &mut EvalContext<'_>,
@@ -2052,7 +2072,7 @@ fn dispatch_generic(
     let mut candidates: Vec<_> = generic
         .methods
         .iter()
-        .filter(|method| method_accepts_arity(method, arg_values.len()))
+        .filter(|method| method_may_apply(method, &arg_values))
         .cloned()
         .collect();
     candidates.sort_by(compare_method_specificity);
