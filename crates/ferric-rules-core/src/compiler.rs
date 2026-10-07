@@ -987,6 +987,7 @@ impl ReteCompiler {
             .beta
             .create_ncc_partner(sub_parent, ncc_id, ncc_memory_id);
         rete.beta.set_ncc_partner(ncc_id, partner_id);
+        rete.beta.link_ncc_after_subnetwork(ncc_id);
 
         ncc_id
     }

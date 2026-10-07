@@ -9714,6 +9714,81 @@
       "strategy": "breadth"
     },
     {
+      "path": "patterns/400o_ncc_shared_entry_link_order_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_shared_entry_link_order_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "breadth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "patterns/400o_ncc_shared_entry_terminal_order_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_shared_subnetwork_refraction_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta",
+        "refraction"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_shared_subnetwork_loop_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "shared-beta",
+        "refraction"
+      ]
+    },
+    {
+      "path": "patterns/400o_ncc_nested_refraction_loop_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "not",
+        "and",
+        "ncc",
+        "refraction"
+      ]
+    },
+    {
       "path": "patterns/400o_gap_shared_negative_assert_depth.clp",
       "level": "interaction",
       "covers": [

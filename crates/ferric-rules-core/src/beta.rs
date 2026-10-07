@@ -482,6 +482,19 @@ impl BetaNode {
             Self::Terminal { .. } | Self::NccPartner { .. } => None,
         }
     }
+
+    pub(crate) fn parent_node(&self) -> Option<NodeId> {
+        match self {
+            Self::Root { .. } => None,
+            Self::Join { parent, .. }
+            | Self::Predicate { parent, .. }
+            | Self::Terminal { parent, .. }
+            | Self::Negative { parent, .. }
+            | Self::Ncc { parent, .. }
+            | Self::NccPartner { parent, .. }
+            | Self::Exists { parent, .. } => Some(*parent),
+        }
+    }
 }
 
 /// The beta network.
@@ -961,6 +974,84 @@ impl BetaNetwork {
         self.attach_child_to_parent(parent, node_id);
 
         node_id
+    }
+
+    /// Relink a completed NCC node second in its parent's newest-first visit order.
+    ///
+    /// CLIPS builds a not/and subnetwork before its join from the right, then
+    /// links that join just behind its parent's newest successor
+    /// (`rulebld.c` `CreateNewJoin`). A newly built subnetwork entry is that
+    /// successor, so it sees each parent token before the NCC decides. When the
+    /// entry is shared with an older rule, the NCC lands behind whichever
+    /// successor was newest instead. Beta-root NCCs are primed like CLIPS's
+    /// left-prime joins, newest first, and keep their attachment position.
+    pub fn link_ncc_after_subnetwork(&mut self, ncc_node_id: NodeId) {
+        let Some(BetaNode::Ncc { parent, .. }) = self.nodes.get(&ncc_node_id) else {
+            return;
+        };
+        let parent = *parent;
+        if parent == self.root_id {
+            return;
+        }
+        if let Some(
+            BetaNode::Join { children, .. }
+            | BetaNode::Predicate { children, .. }
+            | BetaNode::Negative { children, .. }
+            | BetaNode::Ncc { children, .. }
+            | BetaNode::Exists { children, .. },
+        ) = self.nodes.get_mut(&parent)
+        {
+            let mut linked: Vec<NodeId> = children
+                .iter()
+                .copied()
+                .filter(|&child| child != ncc_node_id)
+                .collect();
+            // Children are stored oldest first and visited in reverse, so the
+            // slot before the last element is second in visit order.
+            linked.insert(linked.len().saturating_sub(1), ncc_node_id);
+            *children = linked.into();
+        }
+    }
+
+    /// The child of an NCC's parent that begins the NCC's subnetwork.
+    pub(crate) fn ncc_subnetwork_entry(&self, ncc_node_id: NodeId) -> Option<NodeId> {
+        let BetaNode::Ncc {
+            parent, partner, ..
+        } = self.get_node(ncc_node_id)?
+        else {
+            return None;
+        };
+        let mut current = *partner;
+        loop {
+            let above = self.get_node(current)?.parent_node()?;
+            if above == *parent {
+                return Some(current);
+            }
+            current = above;
+        }
+    }
+
+    /// Whether an NCC's pass-through tokens are results for an enclosing NCC.
+    ///
+    /// Every node an NCC's compilation creates, including any nested NCC and
+    /// its descendants, is allocated between that NCC and its partner.
+    pub(crate) fn ncc_feeds_enclosing_subnetwork(&self, ncc_node_id: NodeId) -> bool {
+        let mut pending = vec![ncc_node_id];
+        while let Some(node_id) = pending.pop() {
+            match self.get_node(node_id) {
+                Some(BetaNode::NccPartner { ncc_node, .. }) if ncc_node.0 < ncc_node_id.0 => {
+                    return true;
+                }
+                Some(node) => pending.extend(
+                    node.child_nodes()
+                        .into_iter()
+                        .flat_map(|children| children.iter())
+                        .filter(|child| child.0 > ncc_node_id.0),
+                ),
+                None => {}
+            }
+        }
+        false
     }
 
     /// Update the partner pointer of an existing NCC node.
