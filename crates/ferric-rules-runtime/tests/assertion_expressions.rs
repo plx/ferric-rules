@@ -483,7 +483,7 @@ fn a_static_error_in_any_fact_rejects_the_whole_assert() {
 /// reports `[PRNTUTIL7] Attempt to divide by zero in / function.`,
 /// `[EVALUATN1] Variable missing is unbound` and `[GLOBLDEF1] Global variable
 /// ?*undefined* is unbound.` and keeps `(e)`, `(before 3)` and `(i)`. It also
-/// keeps the failing fact truncated (`(bad)`, `(bad2)`); Ferric does not.
+/// inserts the failing fact with no fields (`(bad)`); Ferric does not.
 #[test]
 fn an_evaluation_error_keeps_the_facts_already_asserted() {
     for (source, kept) in [
