@@ -13,7 +13,8 @@ use crate::modules::ModuleId;
 
 impl Engine {
     pub(crate) fn template_is_in_use(&self, id: TemplateId) -> bool {
-        if self.fact_base.facts_by_template(id).next().is_some()
+        if self.active_templates.contains(&id)
+            || self.fact_base.facts_by_template(id).next().is_some()
             || self
                 .rete
                 .alpha

@@ -28,6 +28,13 @@ pub(crate) enum PreparedFact {
 }
 
 impl PreparedFact {
+    pub(crate) fn template_id(&self) -> Option<TemplateId> {
+        match self {
+            Self::Ordered { .. } => None,
+            Self::Template { template_id, .. } => Some(*template_id),
+        }
+    }
+
     pub(crate) fn expressions(&self) -> impl Iterator<Item = &RuntimeExpr> {
         let (ordered, slots): (&[RuntimeExpr], &[(usize, Vec<RuntimeExpr>)]) = match self {
             Self::Ordered { fields, .. } => (fields, &[]),

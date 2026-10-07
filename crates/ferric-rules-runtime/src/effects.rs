@@ -253,6 +253,15 @@ fn apply_slots(
     overrides: &[ActionExpr],
     span: Option<&SourceSpan>,
 ) -> Result<(), EvalError> {
+    // The target's template is held in use while its slots are evaluated,
+    // so the layouts agree; report rather than index a mismatched fact.
+    if slots.len() != template.slot_types.len() {
+        return Err(failure(
+            name,
+            "target fact does not match its template's slots",
+            span,
+        ));
+    }
     let overrides = template
         .slot_overrides(overrides, &ctx.engine.symbol_table)
         .map_err(|error| failure(name, error, span))?;
@@ -280,6 +289,20 @@ fn apply_slots(
     template
         .validate_slots(slots)
         .map_err(|error| failure(name, error, span))
+}
+
+/// Hold `template` in use from the moment a fact of it is captured until the
+/// fact is published (see [`Engine::with_active_template`]).
+fn with_active_template<T>(
+    ctx: &mut EvalContext<'_>,
+    template: Option<ferric_rules_core::TemplateId>,
+    assemble: impl FnOnce(&mut EvalContext<'_>) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    let depth = ctx.engine.active_templates.len();
+    ctx.engine.active_templates.extend(template);
+    let result = assemble(ctx);
+    ctx.engine.active_templates.truncate(depth);
+    result
 }
 
 fn assert_result(
@@ -348,55 +371,74 @@ fn eval_syntax_inner(ctx: &mut EvalContext<'_>, call: &FunctionCall) -> Result<V
                 id,
             )
             .expect("resolved target is live");
-            let mut fact = ctx
+            let fact = ctx
                 .engine
                 .fact_base
                 .get(id)
                 .expect("resolved target is live")
                 .fact
                 .clone();
-            match &mut fact {
-                Fact::Template(fact) => {
-                    let template = ctx
-                        .engine
-                        .template_defs
-                        .get(fact.template_id)
-                        .cloned()
-                        .ok_or_else(|| failure(name, "target has unknown template", span))?;
-                    apply_slots(ctx, name, &template, &mut fact.slots, &call.args[1..], span)?;
-                }
-                Fact::Ordered(fact) => {
-                    // Preserve Ferric's existing positional ordered-fact overrides.
-                    for override_expression in &call.args[1..] {
-                        if let ActionExpr::FunctionCall(field) = override_expression {
-                            if let (Ok(index), Some(value)) =
-                                (field.name.parse::<usize>(), field.args.first())
-                            {
-                                if index < fact.fields.len() {
-                                    fact.fields[index] = eval_source(ctx, value)?;
-                                }
-                            }
+            // A slot expression may retract the original first, so the live
+            // fact alone does not keep its template in use until publication.
+            let template = match &fact {
+                Fact::Template(fact) => Some(fact.template_id),
+                Fact::Ordered(_) => None,
+            };
+            with_active_template(ctx, template, |ctx| {
+                replace_fact(ctx, name, call, fact, &address, span)
+            })
+        }
+        _ => Err(failure(name, "unknown syntax effect", span)),
+    }
+}
+
+/// Apply `modify`/`duplicate` slot overrides to a copy of the target and
+/// publish it, retracting the original for `modify`.
+fn replace_fact(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    call: &FunctionCall,
+    mut fact: Fact,
+    address: &ferric_rules_core::FactAddress,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    match &mut fact {
+        Fact::Template(fact) => {
+            let template = ctx
+                .engine
+                .template_defs
+                .get(fact.template_id)
+                .cloned()
+                .ok_or_else(|| failure(name, "target has unknown template", span))?;
+            apply_slots(ctx, name, &template, &mut fact.slots, &call.args[1..], span)?;
+        }
+        Fact::Ordered(fact) => {
+            // Preserve Ferric's existing positional ordered-fact overrides.
+            for override_expression in &call.args[1..] {
+                if let ActionExpr::FunctionCall(field) = override_expression {
+                    if let (Ok(index), Some(value)) =
+                        (field.name.parse::<usize>(), field.args.first())
+                    {
+                        if index < fact.fields.len() {
+                            fact.fields[index] = eval_source(ctx, value)?;
                         }
                     }
                 }
             }
-            if name == "modify" {
-                ctx.engine
-                    .fact_base
-                    .ensure_assertion_capacity()
-                    .map_err(|error| failure(name, error.to_string(), span))?;
-                // A field expression may reset/retract the target. Never apply
-                // its old slot key to a replacement fact in the new epoch.
-                if let Some(id) =
-                    live_fact_id(&ctx.engine.fact_base, ctx.engine.fact_epoch, &address)
-                {
-                    retract(ctx.engine, id);
-                }
-            }
-            assert_result(ctx, name, fact, span)
         }
-        _ => Err(failure(name, "unknown syntax effect", span)),
     }
+    if name == "modify" {
+        ctx.engine
+            .fact_base
+            .ensure_assertion_capacity()
+            .map_err(|error| failure(name, error.to_string(), span))?;
+        // A field expression may reset/retract the target. Never apply
+        // its old slot key to a replacement fact in the new epoch.
+        if let Some(id) = live_fact_id(&ctx.engine.fact_base, ctx.engine.fact_epoch, address) {
+            retract(ctx.engine, id);
+        }
+    }
+    assert_result(ctx, name, fact, span)
 }
 
 fn eval_assert(
@@ -410,11 +452,11 @@ fn eval_assert(
         let ActionExpr::FunctionCall(pattern) = argument else {
             return Err(failure(name, "expected a fact pattern", span));
         };
-        let fact = match ctx
+        result = match ctx
             .engine
             .resolve_template_id(&pattern.name, ctx.current_module)
         {
-            Ok(id) => {
+            Ok(id) => with_active_template(ctx, Some(id), |ctx| {
                 let definition = ctx.engine.template_defs[id].clone();
                 let validated = definition
                     .slot_overrides(&pattern.args, &ctx.engine.symbol_table)
@@ -431,21 +473,23 @@ fn eval_assert(
                         template_defaults::SlotFailure::Eval(error) => error,
                     },
                 )?;
-                Fact::Template(TemplateFact {
+                let fact = Fact::Template(TemplateFact {
                     template_id: id,
                     slots: slots.into_boxed_slice(),
-                })
-            }
+                });
+                assert_result(ctx, name, fact, span)
+            })?,
             Err(TemplateLookupError::Unknown) => {
                 let relation = ctx
                     .engine
                     .symbol_table
                     .intern_symbol(&pattern.name, ctx.engine.config.string_encoding)
                     .map_err(|error| failure(name, error.to_string(), span))?;
-                Fact::Ordered(OrderedFact {
+                let fact = Fact::Ordered(OrderedFact {
                     relation,
                     fields: eval_fields(ctx, &pattern.args)?.into(),
-                })
+                });
+                assert_result(ctx, name, fact, span)?
             }
             Err(error) => {
                 return Err(failure(
@@ -455,7 +499,6 @@ fn eval_assert(
                 ))
             }
         };
-        result = assert_result(ctx, name, fact, span)?;
     }
     Ok(result)
 }

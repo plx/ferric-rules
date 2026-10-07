@@ -119,3 +119,85 @@ fn construct_initializers_reject_reentrant_build_without_corrupting_templates() 
         .unwrap();
     engine.assert_template("p", &[], ()).unwrap();
 }
+
+// A `build` reached while a fact of the template is being assembled must not
+// redefine that template. CLIPS 6.30 rejects the redefinition, keeps the fact
+// as `(x)` and halts the rule at the `modify` of a slot the template lacks:
+//
+//   [CSTRCPSR4] Cannot redefine deftemplate p while it is in use.
+//
+//   ERROR:
+//   (deftemplate MAIN::p
+//   (x)
+//
+//   [TMPLTDEF1] Invalid slot z not defined in corresponding deftemplate p.
+//   [PRCCODE4] Execution halted during the actions of defrule r.
+//
+// These stay Rust tests rather than a corpus golden: Ferric reports the
+// CSTRCPSR4 rejection but does not echo the failed construct (`ERROR:` and
+// `(deftemplate MAIN::p`) as CLIPS's parser does.
+fn assert_rejected_template_redefinition(source: &str) {
+    let mut engine = Engine::with_rules(source).unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Count(30)).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert_eq!(engine.get_output("t"), Some("FALSE (x)\n"));
+    assert!(engine
+        .get_output("werror")
+        .is_some_and(|text| text.contains("CSTRCPSR4")));
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("modify"));
+}
+
+#[test]
+fn eval_assert_cannot_redefine_its_template_from_a_slot_expression() {
+    assert_rejected_template_redefinition(
+        r#"(deftemplate p (slot x))
+      (deffunction mk ()
+        (eval "(assert (p (x (build \"(deftemplate p (slot y) (slot z))\"))))"))
+      (defrule r => (bind ?f (mk))
+        (printout t (fact-slot-value ?f x) " " (fact-slot-names ?f) crlf)
+        (modify ?f (z 3)))"#,
+    );
+}
+
+#[test]
+fn a_dynamic_default_cannot_redefine_the_template_it_is_filling() {
+    assert_rejected_template_redefinition(
+        r#"(deftemplate p
+        (slot x (default-dynamic (build "(deftemplate p (slot y) (slot z))"))))
+      (defrule r => (bind ?f (eval "(assert (p))"))
+        (printout t (fact-slot-value ?f x) " " (fact-slot-names ?f) crlf)
+        (modify ?f (z 3)))"#,
+    );
+}
+
+#[test]
+fn host_template_assertion_keeps_its_template_while_defaults_build() {
+    let mut engine = Engine::with_rules(
+        r#"(deftemplate p
+        (slot x (default-dynamic (build "(deftemplate p (slot y) (slot z))"))))"#,
+    )
+    .unwrap();
+    let fact = engine.assert_template("p", &[], ()).unwrap();
+    assert!(matches!(
+        engine.get_fact_slot_by_name(fact, "x").unwrap(),
+        Value::Symbol(_)
+    ));
+    assert!(engine.get_fact_slot_by_name(fact, "z").is_err());
+    assert!(engine
+        .get_output("werror")
+        .is_some_and(|text| text.contains("CSTRCPSR4")));
+    engine
+        .load_str(
+            "(defrule r ?f <- (p (x ?x))
+          => (printout t ?x \" \" (fact-slot-names ?f) crlf) (modify ?f (z 3)))",
+        )
+        .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Count(30)).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert_eq!(engine.get_output("t"), Some("FALSE (x)\n"));
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("modify"));
+}

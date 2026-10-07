@@ -200,6 +200,10 @@ pub struct Engine {
     pub(crate) source_load_depth: usize,
     /// Transient executing callable identities, retained across nested evaluator frames.
     pub(crate) active_callables: Vec<(ModuleId, String)>,
+    /// Templates whose fact is being assembled or published; transient like
+    /// `active_callables`. A slot expression or dynamic default cannot
+    /// redefine such a template underneath its own assertion.
+    pub(crate) active_templates: Vec<TemplateId>,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
@@ -310,6 +314,7 @@ impl Engine {
             reset_in_progress: false,
             source_load_depth: 0,
             active_callables: Vec::new(),
+            active_templates: Vec::new(),
             active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
@@ -368,6 +373,22 @@ impl Engine {
     /// when duplication is disabled.
     pub fn set_fact_duplication(&mut self, enabled: bool) -> bool {
         self.config.set_fact_duplication(enabled)
+    }
+
+    /// Keep `template` in use while one of its facts is assembled and
+    /// published. Its slot expressions and dynamic defaults may run `build`;
+    /// like CLIPS 6.30, that redefinition is then rejected (CSTRCPSR4) instead
+    /// of publishing the fact under a template with a different slot layout.
+    pub(crate) fn with_active_template<T>(
+        &mut self,
+        template: Option<TemplateId>,
+        assemble: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let depth = self.active_templates.len();
+        self.active_templates.extend(template);
+        let result = assemble(self);
+        self.active_templates.truncate(depth);
+        result
     }
 
     pub(crate) fn assert_fact_internal(
@@ -760,8 +781,30 @@ impl Engine {
                     reason,
                 })?;
         }
+        let def = std::sync::Arc::clone(def);
+        // Dynamic defaults may run `build`; hold the template until published.
+        self.with_active_template(Some(tid), |engine| {
+            engine.assert_template_slots_with_defaults(
+                template_name,
+                tid,
+                &def,
+                slots,
+                &seen,
+                dynamic,
+            )
+        })
+    }
+
+    fn assert_template_slots_with_defaults(
+        &mut self,
+        template_name: &str,
+        tid: TemplateId,
+        def: &std::sync::Arc<crate::templates::RegisteredTemplate>,
+        slots: Vec<Value>,
+        seen: &[bool],
+        dynamic: bool,
+    ) -> Result<FactAssertionResult, EngineError> {
         let slots = if dynamic {
-            let def = std::sync::Arc::clone(def);
             let sources = slots
                 .into_iter()
                 .enumerate()
@@ -773,7 +816,7 @@ impl Engine {
                     }
                 })
                 .collect();
-            self.evaluate_template_defaults(&def, sources, self.module_registry.current_module())
+            self.evaluate_template_defaults(def, sources, self.module_registry.current_module())
                 .map_err(|error| EngineError::InvalidSlotValue {
                     template: template_name.to_owned(),
                     slot: def.slot_names[error.index].clone(),
@@ -1512,13 +1555,15 @@ impl Engine {
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
             for initializer in definition.facts {
-                let fact = self
-                    .evaluate_prepared_fact(&initializer, definition.module)
-                    .map_err(|reason| EngineError::FactInitialization {
-                        definition: definition.name.clone(),
-                        reason,
-                    })?;
-                self.assert_fact_internal(fact)?;
+                self.with_active_template(initializer.template_id(), |engine| {
+                    let fact = engine
+                        .evaluate_prepared_fact(&initializer, definition.module)
+                        .map_err(|reason| EngineError::FactInitialization {
+                            definition: definition.name.clone(),
+                            reason,
+                        })?;
+                    engine.assert_fact_internal(fact)
+                })?;
             }
         }
 
@@ -1557,6 +1602,7 @@ impl Engine {
         self.template_local_ids.clear();
         self.template_declarations = vec![(ModuleId(0), "initial-fact".to_owned())];
         self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
+        self.active_templates.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the

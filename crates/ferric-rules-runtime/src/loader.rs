@@ -1725,10 +1725,13 @@ impl Engine {
             if let Construct::Facts(definition) = construct {
                 for body in definition.facts {
                     let prepared = self.prepare_fact_body(&body, true)?;
-                    let fact = self
-                        .evaluate_prepared_fact(&prepared, self.module_registry.current_module())
-                        .map_err(LoadError::Compile)?;
-                    self.assert_fact_internal(fact)?;
+                    self.with_active_template(prepared.template_id(), |engine| {
+                        let module = engine.module_registry.current_module();
+                        let fact = engine
+                            .evaluate_prepared_fact(&prepared, module)
+                            .map_err(LoadError::Compile)?;
+                        engine.assert_fact_internal(fact).map_err(LoadError::from)
+                    })?;
                     count += 1;
                 }
             }
@@ -2151,10 +2154,14 @@ impl Engine {
         let mut locals = crate::evaluator::CallableLocals::default();
         for fact in &prepared {
             // Each fact is evaluated completely before it is published.
-            let fact = self
-                .evaluate_prepared_fact_with_locals(fact, module, &mut locals)
-                .map_err(LoadError::InvalidAssert)?;
-            let fact_id = self.assert_fact_internal(fact)?.fact_id();
+            let fact_id = self
+                .with_active_template(fact.template_id(), |engine| {
+                    let fact = engine
+                        .evaluate_prepared_fact_with_locals(fact, module, &mut locals)
+                        .map_err(LoadError::InvalidAssert)?;
+                    engine.assert_fact_internal(fact).map_err(LoadError::from)
+                })?
+                .fact_id();
             result.asserted_facts.push(self.host.export(fact_id));
         }
         Ok(())
