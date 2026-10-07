@@ -207,8 +207,10 @@ new engine; see [snapshots.md](snapshots.md).
 - `focus`, auto-focus, and the host `push_focus` APIs (Rust
   `Engine::push_focus`, Python `push_focus`, Node `pushFocus`) leave the stack
   unchanged when the module is already on top, as CLIPS does. Pushing `A`
-  twice now gives `[A, MAIN]`, not `[A, A, MAIN]`; a module deeper in the
-  stack may still be pushed again.
+  twice now leaves the stack that the host accessors (Rust
+  `Engine::get_focus_stack`, Python `focus_stack`) return bottom-first as
+  `["MAIN", "A"]`, not `["MAIN", "A", "A"]`; a module deeper in the stack may
+  still be pushed again.
 - `ferric_rules_parser::stage2::RuleConstruct` has two new public fields for
   `(declare (salience <expression>) (auto-focus TRUE|FALSE))`. Struct
   literals must add `salience_expression: None, auto_focus: false` to keep the
