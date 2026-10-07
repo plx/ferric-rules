@@ -262,3 +262,28 @@ fn dynamic_default_value_query_does_not_check_constraints() {
     assert_eq!(engine.get_output("t"), Some("dynamic 20\n"));
     assert!(format!("{:?}", engine.action_diagnostics()).contains("range"));
 }
+
+// The query returns the evaluated expression without the assertion-time slot
+// shape: CLIPS 6.30 prints `[]`, `(1 2) 2` and `(1 2 3)`. Asserting the
+// single-field multifield default is still rejected.
+#[test]
+fn dynamic_default_value_query_keeps_void_and_multifield_results() {
+    let mut engine = Engine::with_rules(
+        "(deffunction two () (create$ 1 2))
+         (deffunction none () (printout t \"\"))
+         (deftemplate item
+           (slot x (default-dynamic (two)))
+           (slot z (default-dynamic (none)))
+           (multislot m (default-dynamic (none) (two) 3)))
+         (defrule report =>
+           (printout t \"[\" (deftemplate-slot-default-value item z) \"]\" crlf
+             (deftemplate-slot-default-value item x) \" \"
+             (length$ (deftemplate-slot-default-value item x)) crlf
+             (deftemplate-slot-default-value item m) crlf)
+           (assert (item)))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(engine.get_output("t"), Some("[]\n(1 2) 2\n(1 2 3)\n"));
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("single-field slot `x`"));
+}

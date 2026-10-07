@@ -1296,8 +1296,9 @@ last fact is retracted and across reset. Parsing an assertion in `eval` or
 run, as loading source does. The built-in `initial-fact` is a deftemplate
 without slots, not an ordered relation. Querying a dynamic default evaluates
 its expression, including side effects, and returns its value without checking
-the slot's constraints; merely listing slots or asking the default kind does
-not evaluate it.
+the slot's constraints or shape: a void or multifield result of a single-field
+slot's default is returned as is, and a multislot default omits void elements.
+Merely listing slots or asking the default kind does not evaluate it.
 
 `deftemplate-slot-names` loads with an INTEGER or SYMBOL literal argument, as
 in CLIPS 6.30. A template name that is not a SYMBOL when evaluated stops the

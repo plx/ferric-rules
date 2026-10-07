@@ -222,31 +222,6 @@ fn type_names(ctx: &mut EvalContext<'_>, allowed: Option<&[SlotValueType]>) -> V
     )
 }
 
-/// Evaluate a slot's dynamic default. As in CLIPS, constraints are checked
-/// only when a fact is asserted, not when the default is queried.
-fn dynamic_default_value(
-    ctx: &mut EvalContext<'_>,
-    name: &str,
-    template: &RegisteredTemplate,
-    index: usize,
-    default: &crate::templates::DynamicSlotDefault,
-) -> Result<Value, EvalError> {
-    crate::template_defaults::evaluate_dynamic(
-        ctx,
-        default,
-        template.slot_types[index],
-        &template.slot_names[index],
-    )
-    .map_err(|failure| match failure {
-        crate::template_defaults::SlotFailure::Eval(error) => error,
-        crate::template_defaults::SlotFailure::Invalid(reason) => EvalError::UnsupportedOperation {
-            operation: name.to_owned(),
-            reason,
-            span: None,
-        },
-    })
-}
-
 fn slot_metadata(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -284,7 +259,13 @@ fn slot_metadata(
             if template.requires_value(index) {
                 symbol(ctx, "?NONE")
             } else if let Some(default) = &template.dynamic_defaults[index] {
-                dynamic_default_value(ctx, name, template, index, default)?
+                // As in CLIPS, the query reports the evaluated expression:
+                // slot shape and constraints are checked only on assertion.
+                crate::template_defaults::evaluate_dynamic_raw(
+                    ctx,
+                    default,
+                    template.slot_types[index],
+                )?
             } else {
                 template.defaults[index].clone()
             }
