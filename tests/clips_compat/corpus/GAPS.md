@@ -24,7 +24,11 @@ transient focus push from earlier fact order, a
 [shared-prefix NCC followed by a test CE](modules/398_gap_late_ncc_shared_prefix_trailing_test.clp)
 misses the push CLIPS performs during installation, and a blocked
 [`exists (and ...)` holding a `not`](modules/398_gap_late_exists_conjunction_negation.clp)
-makes a push CLIPS does not. Shared-prefix (without a
+makes a push CLIPS does not. A fourth,
+[test CE cancelled by NCC completion during reset](modules/398_gap_ncc_deferred_test_cancelled_reset.clp),
+shows the same queued-test mechanism in ordinary propagation: the NCC
+retracts the token before its queued test runs, so the transient push CLIPS
+keeps never happens. Shared-prefix (without a
 trailing test), shared-join, shared-entry, and deferred-predicate late
 installation, ordinary activation hooks, and deferred-predicate admission have
 separate conforming coverage.

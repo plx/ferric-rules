@@ -11059,6 +11059,31 @@
           "diagnostics": []
         }
       }
+    },
+    {
+      "path": "modules/398_gap_ncc_deferred_test_cancelled_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "deffacts",
+        "ncc",
+        "test",
+        "activation-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Deferred test boundary: during ordinary reset, an auto-focus rule whose test CE follows an NCC loses the transient focus push CLIPS 6.30 keeps; the test is only queued when the token reaches it, and the NCC's subnetwork completes and retracts the token before the queued test is evaluated, so no activation is ever created.",
+        "observed": {
+          "phase": "complete",
+          "output": "",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }

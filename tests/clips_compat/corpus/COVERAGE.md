@@ -124,8 +124,9 @@ nested forall remain unsupported. Identical negative/NCC join sharing, selected 
 and CLIPS's transient nested NCC refire remain characterized topology gaps.
 Late-installed auto-focus NCC rules also retain characterized differences in
 fresh-subnetwork activation history, in a shared-prefix NCC followed by a
-test CE, and in a blocked `exists (and ...)` conjunction that contains a `not`
-(#480).
+test CE, and in a blocked `exists (and ...)` conjunction that contains a `not`;
+during ordinary reset and assertion, a test CE after an NCC that the NCC
+cancels before it runs loses its transient focus push (#480).
 General cross-engine replay-identical activation order is not promised; use
 explicit salience/phases when application precedence must be independent of
 network construction. These exclusions should not be

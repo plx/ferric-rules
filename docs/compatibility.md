@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1074
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1075
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -47,11 +47,12 @@ Docker image.
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
 direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and eight track network
+[#394](https://github.com/plx/ferric-rules/issues/394), and nine track network
 topology and installation-history differences: five equal-salience ties
-described with [#400](https://github.com/plx/ferric-rules/issues/400) and three
-late-installation focus histories tracked in
-[#480](https://github.com/plx/ferric-rules/issues/480):
+described with [#400](https://github.com/plx/ferric-rules/issues/400) and four
+auto-focus histories tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480), three from late
+installation and one from a queued test CE:
 
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
@@ -62,6 +63,7 @@ late-installation focus histories tracked in
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
 | Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
 | Late-installed `(exists (and ...))` holding a negation | Building an auto-focus rule whose `(exists (and ...))` conjunction contains a `not` and does not hold when it is installed can make a transient focus push that CLIPS does not make. | `modules/398_gap_late_exists_conjunction_negation` |
+| Test CE after an NCC cancelled before it runs | During reset or assertion, a test CE after an NCC is only queued; when the NCC's subnetwork completes first and retracts the token, Ferric never creates the transient activation, so an auto-focus rule misses the focus push CLIPS keeps. | `modules/398_gap_ncc_deferred_test_cancelled_reset` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
@@ -356,18 +358,25 @@ in two situations: when its fresh subnetwork shares the rule's left prefix with
 an older rule, unless a test CE follows the NCC; and when a fresh join inside
 the NCC follows a shared, already populated subnetwork entry join. There is no
 push when the only thing after that populated shared join is a test CE inside
-the NCC, whether or not the older rule also defers that test. Two
-characterized differences remain, tracked in
+the NCC, whether or not the older rule also defers that test. Three
+characterized late-installation differences remain, tracked in
 [#480](https://github.com/plx/ferric-rules/issues/480): with a shared prefix and
 a trailing test CE, the test is only queued before the fresh subnetwork blocks
-the token, so the transient activation and its focus push never happen; and a
+the token, so the transient activation and its focus push never happen; a
 fresh subnetwork with no shared prefix does not reconstruct every transient
 activation from the historical fact assertion order, so such a rule can miss a
-historical focus push. A third is an extra push: a rule guarded by
-`(exists (and ...))` whose conjunction contains a `not` and does not hold at
-installation can admit its token before the conjunction is primed, making a
-transient focus push that CLIPS does not make. Ordinary assertion, reset, and blocker-retraction focus
-behavior is covered separately.
+historical focus push; and a rule guarded by `(exists (and ...))` whose
+conjunction contains a `not` and does not hold at installation can admit its
+token before the conjunction is primed, making a transient focus push that
+CLIPS does not make.
+
+A queued test CE loses CLIPS's transient focus push during ordinary reset and
+assertion too. When a test CE follows an NCC and the NCC's subnetwork
+completes and retracts the token before the queued test is evaluated, as for
+`(p) (not (and (a) (b))) (a) (test ...)` with `(a)` asserted after `(b)` and
+`(p)`, no activation is created, so the push CLIPS keeps never happens (also
+tracked in #480). Other assertion, reset, and blocker-retraction focus
+behavior has conforming coverage.
 
 `when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,
 and `refresh-agenda` remain unsupported. Invalid or duplicate declarations
