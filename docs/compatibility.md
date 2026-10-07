@@ -802,12 +802,22 @@ This ranking can be cyclic: `(($?x INTEGER))` outranks `((?x NUMBER) $?y)`,
 which outranks `(?x)`, which outranks `(($?x INTEGER))`. As in CLIPS 6.30,
 methods are not sorted. Each method is inserted before the first existing
 method it outranks, or after all of them, so the final order can depend on
-definition order, both for cyclic rankings and for unranked methods. Ferric inserts methods in index order, which is definition
-order unless explicit indices are given out of order.
+definition order, both for cyclic rankings and for unranked methods. Ferric
+inserts methods in index order, which is definition order unless explicit
+indices are given out of order.
 
-Known difference: when explicit indices are given out of definition order and
-the ranking among those methods is cyclic, CLIPS 6.30 still inserts methods in
-definition order, so its dispatch order can differ from Ferric's.
+Known differences:
+
+- When explicit indices are given out of definition order, CLIPS 6.30 still
+  inserts methods in definition order. Its dispatch order can then differ from
+  Ferric's whenever those methods do not strictly outrank each other, either
+  because the ranking is cyclic or because their restrictions differ without
+  one outranking the other. For example, after
+  `(defmethod g 2 ((?x INTEGER SYMBOL)) A)` and
+  `(defmethod g 1 ((?x INTEGER FLOAT)) B)`, CLIPS 6.30 returns `A` for
+  `(g 1)` and Ferric returns `B`.
+- A `defmethod` whose restrictions are identical to an existing method's adds
+  a second method after it, where CLIPS 6.30 replaces the existing method.
 
 A parameter query follows its optional type restrictions. It is a function
 call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
