@@ -9492,6 +9492,15 @@
       "recoverable_build_notices": true
     },
     {
+      "path": "stdlib/403e_eval_declares_implied_template.clp",
+      "level": "boundary",
+      "covers": [
+        "eval",
+        "construct-introspection",
+        "issue-403"
+      ]
+    },
+    {
       "path": "stdlib/403i_template_metadata_initial_fact.clp",
       "level": "boundary",
       "covers": [

@@ -330,3 +330,19 @@ fn a_rule_that_removed_itself_keeps_its_templates_in_use() {
     assert_eq!(engine.get_output("t"), Some("FALSE (x) (<Fact-1>)\n"));
     assert_eq!(rejections(&engine).len(), 1);
 }
+
+// As loading source does, parsing an eval expression declares the implied
+// template of an assertion that never runs. CLIPS 6.30 prints
+// (initial-fact) / (initial-fact hidden) (implied).
+#[test]
+fn eval_declares_the_implied_templates_it_parses() {
+    let engine = run(r#"(defrule probe =>
+      (printout t (get-deftemplate-list) crlf)
+      (eval "(if FALSE then (assert (hidden)))")
+      (assert-string "(other)")
+      (printout t (get-deftemplate-list) " " (deftemplate-slot-names hidden) crlf))"#);
+    assert_eq!(
+        engine.get_output("t"),
+        Some("(initial-fact)\n(initial-fact hidden other) (implied)\n")
+    );
+}

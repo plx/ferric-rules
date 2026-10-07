@@ -74,7 +74,7 @@ status and coverage in other suites do not establish a CLIPS oracle here.
 | Math, string, multifield, introspection, funcall | Broad ordinary-input coverage with selected boundary controls; function-by-function error matrices and generic funcall still need work. |
 | `load-facts` / `save-facts` | Not represented in this portable program corpus; runtime file-roundtrip tests exist separately. |
 | Complex constraints / compile-time function validation | Unknown calls in deffunction and method bodies reject at load; an explicit empty forward declaration can be replaced before execution. More diagnostic and expression-depth boundaries remain to characterize. |
-| `eval`/`build` | Dynamic source values, first-form parsing, isolation from caller locals, and `build` rejections of templates and ordered relations in use, including a later fact of the same assertion and an `eval` expression's own references. Top-level assertions are Rust tests in [`dynamic_source.rs`](../../../crates/ferric-rules-runtime/tests/dynamic_source.rs). |
+| `eval`/`build` | Dynamic source values, first-form parsing, isolation from caller locals, implied-template declaration, and `build` rejections of templates and ordered relations in use, including a later fact of the same assertion and an `eval` expression's own references. Top-level assertions are Rust tests in [`dynamic_source.rs`](../../../crates/ferric-rules-runtime/tests/dynamic_source.rs). |
 | Batch interpreter, file handles | Not represented in this corpus; no compatibility conclusion is inferred. |
 
 ## Harness and reference limits

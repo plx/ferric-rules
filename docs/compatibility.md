@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 940
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 945
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1291,11 +1291,13 @@ effects can install a new callable definition before that invocation begins.
 | `deftemplate-slot-default-value` | Stored static value, evaluation of the dynamic default, or `?NONE` |
 
 Ordered relation declarations remain available to introspection after their
-last fact is retracted and across reset. The built-in `initial-fact` is a
-deftemplate without slots, not an ordered relation. Querying a dynamic default
-evaluates its expression, including side effects, and returns its value without
-checking the slot's constraints; merely listing slots or asking the default
-kind does not evaluate it.
+last fact is retracted and across reset. Parsing an assertion in `eval` or
+`assert-string` source declares its relation even when the assertion does not
+run, as loading source does. The built-in `initial-fact` is a deftemplate
+without slots, not an ordered relation. Querying a dynamic default evaluates
+its expression, including side effects, and returns its value without checking
+the slot's constraints; merely listing slots or asking the default kind does
+not evaluate it.
 
 `deftemplate-slot-names` loads with an INTEGER or SYMBOL literal argument, as
 in CLIPS 6.30. A template name that is not a SYMBOL when evaluated stops the

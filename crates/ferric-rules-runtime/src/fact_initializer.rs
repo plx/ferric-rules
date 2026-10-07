@@ -317,6 +317,9 @@ impl Engine {
         module: ModuleId,
     ) -> Result<RuntimeExpr, LoadError> {
         self.validate_source_default_control(expression, module, "eval")?;
+        // As when loading source, parsing an assertion declares its implied
+        // template, whether or not the assertion runs.
+        self.declare_expression_templates(expression, module);
         self.prepare_field(expression, module, false)
     }
 
