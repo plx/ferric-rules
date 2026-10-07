@@ -525,3 +525,23 @@ fn load_facts_reports_an_unknown_template_for_slot_style_facts() {
     assert_eq!(integers(&engine, "ok"), [1]);
     assert_eq!(engine.fact_count(), 1);
 }
+
+/// Void results are omitted from ordered facts. CLIPS 6.30 asserts
+/// `(row before after)`.
+#[test]
+fn void_results_are_omitted_from_asserted_ordered_fields() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str("(assert (row before (printout nil x) after))")
+        .unwrap();
+    let fields: Vec<_> = ordered(&engine, "row")
+        .iter()
+        .map(|value| {
+            let Value::Symbol(symbol) = value else {
+                panic!("expected a symbol, got {value:?}");
+            };
+            engine.resolve_core_symbol(*symbol).unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(fields, ["before", "after"]);
+}

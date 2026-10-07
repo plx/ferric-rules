@@ -345,6 +345,15 @@
       "error": "load"
     },
     {
+      "path": "facts/028_deffacts_expression_void_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "printout"
+      ]
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [
