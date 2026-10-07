@@ -55,7 +55,7 @@ network-topology tie differences described with
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
 | Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
-| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | Three `patterns/400` sharing characterizations |
+| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 
 Some CLIPS-valid programs are rejected at load instead of running
@@ -370,7 +370,10 @@ node-sharing boundary of [#400](https://github.com/plx/ferric-rules/issues/400),
 recorded by exact corpus characterizations. A further pre-existing difference
 occurs for selected multi-pattern `exists` ties: Ferric lowers the conjunction
 through nested NCC nodes, while CLIPS uses a distinct existential join topology.
-Its independent-support example remains characterized. Other strategy combinations are
+Its independent-support example remains characterized. Ties among subscribers
+of different patterns, for example a later rule reusing an earlier rule's
+pattern behind a different first pattern, are ordered by node age rather than
+pattern by pattern as in CLIPS, and may differ. Other strategy combinations are
 not a promise of replay-identical order across engines or versions.
 
 For application semantics that require precedence independently of network

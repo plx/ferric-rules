@@ -273,8 +273,10 @@ impl ReteNetwork {
             );
         }
         // Node IDs increase across installation and are not recycled when rules
-        // are removed. CLIPS visits the newest subscriber first, regardless of
-        // alpha-memory placement or whether the node is positive/negative/exists.
+        // are removed. Ferric visits every subscriber newest node first, in one
+        // order across alpha memories and positive/negative/exists kinds. CLIPS
+        // instead walks each pattern's subscribers in turn, so ties between
+        // subscribers of different patterns can differ.
         right_activations.sort_unstable_by_key(|activation| std::cmp::Reverse(activation.node().0));
         for activation in right_activations {
             match activation {
