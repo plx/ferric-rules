@@ -991,6 +991,7 @@ impl Engine {
         )
     }
 
+    #[cfg(feature = "serde")]
     pub(crate) fn validate_method_queries<'a>(
         &self,
         parameters: &HashSet<String>,
