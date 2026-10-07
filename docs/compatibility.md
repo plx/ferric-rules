@@ -103,6 +103,17 @@ multislots splice multifield results; single slots reject them even when the
 multifield contains exactly one value. `load-facts` accepts literal fact data
 only, and stops at an invalid fact while retaining earlier valid facts.
 
+As in CLIPS, every fact of an `assert` command is parsed before any is
+asserted. A statically invalid field (an unknown function, an unknown slot, or
+a static multifield in a single slot) rejects the whole command. An evaluation
+error, such as `(/ 1 0)`, an unbound local variable or an undefined global,
+stops the command and keeps the facts it completed earlier. Ferric inserts
+none of the failing fact, while CLIPS 6.30 can insert that fact truncated at
+the failing field. Each top-level assertion is evaluated in the module current
+at its position in the source, and the last `defmodule` stays current
+afterwards. Void results, such as those of `printout`, are omitted from
+ordered fields and multislots.
+
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
 `(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
@@ -444,6 +455,13 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
   execute its expressions. A global may be defined after the deffacts, and
   replacing a called function affects the next reset. Local variables and
   unknown calls are rejected during loading.
+- An evaluation error during reset stops the reset at that fact. Facts already
+  asserted, including those of earlier definitions, remain; later facts and
+  definitions are not asserted. CLIPS 6.30 behaves the same, except that it
+  keeps the failing fact truncated at the failing field. Rust `reset()`
+  returns `EngineError::FactInitialization { definition, reason }`; Python and
+  Node raise `FerricRuntimeError`; C (and Go through it) returns
+  `FERRIC_ERROR_RUNTIME_ERROR`.
 
 ---
 
