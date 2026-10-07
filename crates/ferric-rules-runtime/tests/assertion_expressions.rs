@@ -500,3 +500,28 @@ fn colon_named_locals_are_single_assertion_operands() {
     };
     assert!(matches!(tags.as_slice(), [Value::Integer(3)]));
 }
+
+/// CLIPS 6.30 rejects the slot-style fact with `[PRNTUTIL2] Syntax Error` and
+/// keeps only `(ok 1)`.
+#[test]
+fn load_facts_reports_an_unknown_template_for_slot_style_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unknown.fct");
+    std::fs::write(&path, "(ok 1)\n(person (name bob))\n(after 2)\n").unwrap();
+    let escaped = path
+        .to_str()
+        .unwrap()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let mut engine =
+        Engine::with_rules(&format!("(defrule read => (load-facts \"{escaped}\"))")).unwrap();
+    let result = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(result.halt_reason, HaltReason::ActionError);
+    let diagnostics = format!("{:?}", engine.action_diagnostics());
+    assert!(
+        diagnostics.contains("unknown template `person`"),
+        "{diagnostics}"
+    );
+    assert_eq!(integers(&engine, "ok"), [1]);
+    assert_eq!(engine.fact_count(), 1);
+}

@@ -212,17 +212,17 @@ impl Engine {
                         })
                         .collect::<Result<Vec<_>, LoadError>>()?;
                     self.prepare_template_initializer(template_id, &slots, module, false)
+                } else if literal_only {
+                    // `load-facts` has no ordered-expression reading of slot lists.
+                    Err(invalid_at(
+                        fact.span,
+                        &format!("unknown template `{}`", fact.template),
+                    ))
                 } else {
                     let fields = fact
                         .slot_values
                         .iter()
                         .map(|slot| {
-                            if literal_only {
-                                return Err(invalid_at(
-                                    slot.span,
-                                    "load-facts requires literal field values",
-                                ));
-                            }
                             slot.ordered_expression.as_deref().cloned().ok_or_else(|| {
                                 invalid_at(
                                     slot.span,
