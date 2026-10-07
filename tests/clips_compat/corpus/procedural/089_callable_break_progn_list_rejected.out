@@ -1,0 +1,8 @@
+
+[PRCDRPSR2] The break function not valid in this context.
+
+ERROR:
+(deffunction MAIN::bad
+   ()
+   (while TRUE do
+      (progn$ (?x (break

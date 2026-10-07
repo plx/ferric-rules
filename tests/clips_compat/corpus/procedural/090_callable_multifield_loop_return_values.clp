@@ -1,0 +1,8 @@
+(deffunction values ()
+  (printout t "foreach:[" (foreach ?x (create$ a b c) ?x) "]" crlf)
+  (printout t "progn$:[" (progn$ (?x (create$ a b c)) ?x) "]" crlf)
+  (printout t "foreach-empty:[" (foreach ?x (create$) ?x) "]" crlf)
+  (printout t "progn$-empty:[" (progn$ (?x (create$)) ?x) "]" crlf)
+  (printout t "foreach-break:[" (foreach ?x (create$ a b c) (if (eq ?x b) then (break)) ?x) "]" crlf)
+  (printout t "progn$-break:[" (progn$ (?x (create$ a b c)) (if (eq ?x b) then (break)) ?x) "]" crlf))
+(defrule run => (values))

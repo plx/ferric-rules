@@ -143,19 +143,17 @@ fn refresh_and_dynamic_salience_cannot_promise_unimplemented_behavior() {
         assert_eq!(engine.find_facts("kept").unwrap().len(), 1);
         assert!(engine.find_facts("wrong").unwrap().is_empty());
     }
-    let mut engine = Engine::with_rules(
-        "(deffunction refresh () (refresh-agenda))
+    let mut engine = Engine::new(EngineConfig::default());
+    let errors = engine
+        .load_str(
+            "(deffunction refresh () (refresh-agenda))
          (defrule choose => (refresh) (assert (wrong)))",
-    )
-    .unwrap();
-    assert_eq!(
-        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
-        HaltReason::ActionError
-    );
-    assert!(engine
-        .action_diagnostics()
+        )
+        .expect_err("unsupported callable body must fail at load");
+    assert!(errors
         .iter()
-        .any(|e| e.to_string().contains("refresh-agenda")));
+        .any(|error| error.to_string().contains("refresh-agenda")));
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
     assert!(engine.find_facts("wrong").unwrap().is_empty());
 }
 

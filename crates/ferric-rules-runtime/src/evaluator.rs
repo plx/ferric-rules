@@ -150,6 +150,14 @@ pub enum EvalError {
         reason: String,
         span: Option<SourceSpan>,
     },
+
+    #[error("`break` is not valid outside a loop body at {}", format_span(.span.as_ref()))]
+    BreakOutsideLoop { span: Option<SourceSpan> },
+
+    /// Internal non-local control signal consumed by the nearest loop body.
+    #[doc(hidden)]
+    #[error("internal break control escaped its loop at {}", format_span(.span.as_ref()))]
+    BreakControl { span: Option<SourceSpan> },
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +193,7 @@ pub enum RuntimeExpr {
     ///
     /// Evaluates `condition`; if truthy evaluates `then_branch` in order and
     /// returns the last value, otherwise evaluates `else_branch`.
-    /// Returns `Value::Void` when the selected branch is empty.
+    /// Returns the `FALSE` symbol when the selected branch is empty.
     ///
     /// Each branch entry pairs the original parser `ActionExpr` (needed by
     /// the action executor for assert/retract/printout arg handling) with its
@@ -200,8 +208,7 @@ pub enum RuntimeExpr {
     /// CLIPS `(while <condition> do <action>*)` loop.
     ///
     /// Evaluates `condition` before each iteration; executes `body` while
-    /// truthy. Returns the last body value from the last iteration, or the
-    /// `FALSE` symbol if never entered.
+    /// truthy. Returns `FALSE` after completion or `break`.
     ///
     /// Body entries follow the same paired representation as `If` branches.
     While {
@@ -226,7 +233,7 @@ pub enum RuntimeExpr {
     /// Evaluates `list_expr` to a multifield value, then iterates each element
     /// binding `var_name` to the element and `<var_name>-index` to the 1-based
     /// index. Returns the last body value from the last iteration, or `FALSE`
-    /// if the multifield is empty.
+    /// if the multifield is empty. A `break` returns `Value::Void`.
     Progn {
         var_name: String,
         list_expr: Box<RuntimeExpr>,
@@ -274,17 +281,17 @@ pub enum RuntimeExpr {
 /// Active generic dispatch chain for `call-next-method` support.
 ///
 /// When a generic method is executing, this tracks the ordered list of
-/// applicable methods and the current position so `call-next-method` can
-/// advance to the next one.
+/// arity/type-compatible candidates and the current position. Restriction
+/// queries run only while selecting the current or next method.
 #[derive(Clone, Debug)]
 pub struct MethodChain {
     /// Name of the generic function being dispatched.
     pub generic_name: String,
     /// Module where the generic is defined.
     pub generic_module: crate::modules::ModuleId,
-    /// All applicable methods, sorted most-specific-first.
-    pub applicable_methods: Vec<crate::functions::RegisteredMethod>,
-    /// Index of the currently executing method in `applicable_methods`.
+    /// Arity/type-compatible candidates, sorted most-specific-first.
+    pub candidate_methods: Vec<crate::functions::RegisteredMethod>,
+    /// Index of the currently executing method in `candidate_methods`.
     pub current_index: usize,
     /// The evaluated argument values (used to rebind parameters in the next method).
     pub arg_values: Vec<Value>,
@@ -591,23 +598,40 @@ impl Drop for EvalRunGuard {
 ///
 /// Root entrypoint for expression evaluation. Recursive evaluation should flow
 /// through `eval_inner`, which keeps tracing lightweight on deep call stacks.
-#[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
 pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
+    finish_root_evaluation(eval_with_budget(ctx, expr))
+}
+
+/// Action loops consume breaks at their own lexical boundary. Ordinary callers
+/// use `eval`, which rejects any control signal that escaped its expression.
+pub(crate) fn eval_action_expression(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+) -> Result<Value, EvalError> {
+    match eval_with_budget(ctx, expr) {
+        Err(EvalError::ReturnControl { span, .. }) => {
+            Err(EvalError::ReturnOutsideCallable { span })
+        }
+        other => other,
+    }
+}
+
+fn eval_with_budget(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
     let owns_action_loop_budget = ctx.config.begin_action_loop_budget_if_inactive();
 
     #[cfg(feature = "tracing")]
     let result = {
         if EvalRunGuard::is_active() {
-            finish_root_evaluation(eval_inner(ctx, expr))
+            eval_inner(ctx, expr)
         } else {
             let _run_guard = EvalRunGuard::enter_root();
             ferric_span!(debug_span, "eval_root", call_depth = ctx.call_depth);
-            finish_root_evaluation(eval_inner(ctx, expr))
+            eval_inner(ctx, expr)
         }
     };
 
     #[cfg(not(feature = "tracing"))]
-    let result = { finish_root_evaluation(eval_inner(ctx, expr)) };
+    let result = { eval_inner(ctx, expr) };
 
     if owns_action_loop_budget {
         ctx.config.end_action_loop_budget();
@@ -627,6 +651,7 @@ fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, Eva
         Err(EvalError::ReturnControl { span, .. }) => {
             Err(EvalError::ReturnOutsideCallable { span })
         }
+        Err(EvalError::BreakControl { span }) => Err(EvalError::BreakOutsideLoop { span }),
         other => other,
     }
 }
@@ -789,40 +814,26 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             } else {
                 else_branch
             };
-            let mut result = Value::Void;
-            for (action_expr, rt_expr) in branch {
-                if let Some(rt) = rt_expr {
-                    result = eval_inner(ctx, rt)?;
-                } else {
-                    // Pre-compilation failed; translate on the fly.
-                    let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                    result = eval_inner(ctx, &rt)?;
-                }
-            }
-            Ok(result)
+            eval_sequence(ctx, branch)
         }
         RuntimeExpr::While {
             condition,
             body,
             span,
         } => {
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             loop {
                 let cond_value = eval_inner(ctx, condition)?;
                 if !is_truthy(&cond_value, ctx.symbol_table) {
                     break;
                 }
                 consume_action_loop_iteration(ctx.config, "while", span.clone())?;
-                for (action_expr, rt_expr) in body {
-                    if let Some(rt) = rt_expr {
-                        result = eval_inner(ctx, rt)?;
-                    } else {
-                        let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                        result = eval_inner(ctx, &rt)?;
-                    }
+                match eval_sequence(ctx, body) {
+                    Ok(_) => {}
+                    Err(EvalError::BreakControl { .. }) => break,
+                    Err(error) => return Err(error),
                 }
             }
-            Ok(result)
+            Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
         }
         RuntimeExpr::LoopForCount {
             var_name,
@@ -895,7 +906,6 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 None => None,
             };
 
-            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             with_callable_local_scope(ctx, var_name.as_deref(), var_name.as_deref(), |ctx| {
                 for counter in start_int..=end_int {
                     consume_action_loop_iteration(ctx.config, "loop-for-count", span.clone())?;
@@ -927,22 +937,15 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         template_defs: ctx.template_defs,
                     };
 
-                    for (action_expr, rt_expr) in body {
-                        if let Some(rt) = rt_expr {
-                            result = eval_inner(&mut iter_ctx, rt)?;
-                        } else {
-                            let rt = from_action_expr(
-                                action_expr,
-                                iter_ctx.symbol_table,
-                                iter_ctx.config,
-                            )?;
-                            result = eval_inner(&mut iter_ctx, &rt)?;
-                        }
+                    match eval_sequence(&mut iter_ctx, body) {
+                        Ok(_) => {}
+                        Err(EvalError::BreakControl { .. }) => break,
+                        Err(error) => return Err(error),
                     }
                 }
                 Ok(())
             })?;
-            Ok(result)
+            Ok(false_val)
         }
         RuntimeExpr::Progn {
             var_name,
@@ -1042,17 +1045,13 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                             template_defs: ctx.template_defs,
                         };
 
-                        for (action_expr, rt_expr) in body {
-                            if let Some(rt) = rt_expr {
-                                result = eval_inner(&mut iter_ctx, rt)?;
-                            } else {
-                                let rt = from_action_expr(
-                                    action_expr,
-                                    iter_ctx.symbol_table,
-                                    iter_ctx.config,
-                                )?;
-                                result = eval_inner(&mut iter_ctx, &rt)?;
+                        match eval_sequence(&mut iter_ctx, body) {
+                            Ok(value) => result = value,
+                            Err(EvalError::BreakControl { .. }) => {
+                                result = Value::Void;
+                                break;
                             }
+                            Err(error) => return Err(error),
                         }
                     }
                     Ok(())
@@ -1071,32 +1070,14 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             for (test_val_expr, case_body) in cases {
                 let test_value = eval_inner(ctx, test_val_expr)?;
                 if disc_value.structural_eq(&test_value) {
-                    let mut result = Value::Void;
-                    for (action_expr, rt_expr) in case_body {
-                        if let Some(rt) = rt_expr {
-                            result = eval_inner(ctx, rt)?;
-                        } else {
-                            let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                            result = eval_inner(ctx, &rt)?;
-                        }
-                    }
-                    return Ok(result);
+                    return eval_sequence(ctx, case_body);
                 }
             }
             // No case matched; fall to default
             if let Some(default_body) = default {
-                let mut result = Value::Void;
-                for (action_expr, rt_expr) in default_body {
-                    if let Some(rt) = rt_expr {
-                        result = eval_inner(ctx, rt)?;
-                    } else {
-                        let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                        result = eval_inner(ctx, &rt)?;
-                    }
-                }
-                Ok(result)
+                eval_sequence(ctx, default_body)
             } else {
-                Ok(Value::Void)
+                Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
             }
         }
         RuntimeExpr::QueryAction {
@@ -1107,6 +1088,23 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
             span,
         } => eval_fact_query(ctx, name, bindings, query, body.is_empty(), span.as_ref()),
     }
+}
+
+/// Evaluate a structured body while preserving non-local control signals.
+fn eval_sequence(
+    ctx: &mut EvalContext<'_>,
+    body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
+) -> Result<Value, EvalError> {
+    let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+    for (source, compiled) in body {
+        result = if let Some(expression) = compiled {
+            eval_inner(ctx, expression)?
+        } else {
+            let expression = from_action_expr(source, ctx.symbol_table, ctx.config)?;
+            eval_inner(ctx, &expression)?
+        };
+    }
+    Ok(result)
 }
 
 /// Assertion chronology is independent of slot-map position after retraction.
@@ -1617,11 +1615,14 @@ fn execute_callable_body(
         template_defs: ctx.template_defs,
     };
 
-    let mut result = Value::Void;
+    let mut result = clips_false(inner_ctx.symbol_table, inner_ctx.config.string_encoding);
     for body_expr in &body_exprs {
         match eval_inner(&mut inner_ctx, body_expr) {
             Ok(value) => result = value,
             Err(EvalError::ReturnControl { value, .. }) => return Ok(value),
+            Err(EvalError::BreakControl { span }) => {
+                return Err(EvalError::BreakOutsideLoop { span })
+            }
             Err(error) => return Err(error),
         }
     }
@@ -1727,151 +1728,337 @@ fn generic_value_type_name(value: &Value) -> &'static str {
     }
 }
 
-/// Count how many distinct concrete types a restriction set covers.
-///
-/// Returns `usize::MAX` when the restriction list is empty (no restriction = matches
-/// everything = least specific). Otherwise, counts the distinct concrete leaf types
-/// implied by the given type names, using the CLIPS type hierarchy:
-/// - `NUMBER` expands to `INTEGER` + `FLOAT`
-/// - `LEXEME` expands to `SYMBOL` + `STRING`
-fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
-    if restrictions.is_empty() {
-        return usize::MAX; // No restriction = matches everything, least specific
-    }
-    let mut count = 0usize;
-    // Tracks whether each concrete type has been counted:
-    // 0=INTEGER, 1=FLOAT, 2=SYMBOL, 3=STRING, 4=MULTIFIELD, 5=EXTERNAL-ADDRESS,
-    // 6=INSTANCE-NAME
-    let mut seen = [false; 7];
-    for t in restrictions {
-        match t.as_str() {
-            "INTEGER" if !seen[0] => {
-                seen[0] = true;
-                count += 1;
-            }
-            "FLOAT" if !seen[1] => {
-                seen[1] = true;
-                count += 1;
-            }
-            "NUMBER" => {
-                if !seen[0] {
-                    seen[0] = true;
-                    count += 1;
-                }
-                if !seen[1] {
-                    seen[1] = true;
-                    count += 1;
-                }
-            }
-            "SYMBOL" if !seen[2] => {
-                seen[2] = true;
-                count += 1;
-            }
-            "STRING" if !seen[3] => {
-                seen[3] = true;
-                count += 1;
-            }
-            "LEXEME" => {
-                if !seen[2] {
-                    seen[2] = true;
-                    count += 1;
-                }
-                if !seen[3] {
-                    seen[3] = true;
-                    count += 1;
-                }
-            }
-            "MULTIFIELD" if !seen[4] => {
-                seen[4] = true;
-                count += 1;
-            }
-            "EXTERNAL-ADDRESS" if !seen[5] => {
-                seen[5] = true;
-                count += 1;
-            }
-            "INSTANCE-NAME" if !seen[6] => {
-                seen[6] = true;
-                count += 1;
-            }
-            _ => {}
-        }
-    }
-    count
+/// The result of comparing two restrictions, as CLIPS 6.30's
+/// `TypeListCompare` and `RestrictionsCompare` report it: the first one
+/// outranks the second, is outranked by it, differs without either one
+/// outranking the other, or is identical.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestrictionPrecedence {
+    Higher,
+    Lower,
+    Different,
+    Identical,
 }
 
-/// Compare two methods by specificity. Returns `Ordering::Less` if `a` is more specific
-/// than `b`, `Ordering::Greater` if `b` is more specific, and `Ordering::Equal` only
-/// when the two methods are identical in specificity (resolved by index tie-break).
+/// Every superclass of a CLIPS 6.30 system class, as
+/// `(class-superclasses <class> inherit)` reports it. Other names have none.
+fn type_superclasses(type_name: &str) -> &'static [&'static str] {
+    match type_name {
+        "PRIMITIVE" | "USER" => &["OBJECT"],
+        "NUMBER" | "LEXEME" | "MULTIFIELD" | "ADDRESS" | "INSTANCE" => &["PRIMITIVE", "OBJECT"],
+        "INTEGER" | "FLOAT" => &["NUMBER", "PRIMITIVE", "OBJECT"],
+        "SYMBOL" | "STRING" => &["LEXEME", "PRIMITIVE", "OBJECT"],
+        "EXTERNAL-ADDRESS" | "FACT-ADDRESS" => &["ADDRESS", "PRIMITIVE", "OBJECT"],
+        "INSTANCE-ADDRESS" => &["INSTANCE", "ADDRESS", "PRIMITIVE", "OBJECT"],
+        "INSTANCE-NAME" => &["INSTANCE", "PRIMITIVE", "OBJECT"],
+        "INITIAL-OBJECT" => &["USER", "OBJECT"],
+        _ => &[],
+    }
+}
+
+/// Compare two parameter type lists as CLIPS 6.30's `TypeListCompare` does.
 ///
-/// Comparison is performed parameter-by-parameter (left to right). A parameter with
-/// fewer covered concrete types is more specific. After all explicit parameters, a
-/// method without a wildcard is more specific than one with a wildcard.
-fn compare_method_specificity(
+/// An empty list (any type) is outranked by any other list. Otherwise, at the
+/// first position in written order where one type is a subclass of the other,
+/// the subclass wins. Failing that, the shorter list wins. Lists of equal
+/// length that differ anywhere are `Different`: neither outranks the other.
+fn type_list_compare(a: &[String], b: &[String]) -> RestrictionPrecedence {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => return RestrictionPrecedence::Identical,
+        (true, false) => return RestrictionPrecedence::Lower,
+        (false, true) => return RestrictionPrecedence::Higher,
+        (false, false) => {}
+    }
+    let mut differ = false;
+    for (a_type, b_type) in a.iter().zip(b) {
+        if a_type != b_type {
+            differ = true;
+            if type_superclasses(a_type).contains(&b_type.as_str()) {
+                return RestrictionPrecedence::Higher;
+            }
+            if type_superclasses(b_type).contains(&a_type.as_str()) {
+                return RestrictionPrecedence::Lower;
+            }
+        }
+    }
+    match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Less => RestrictionPrecedence::Higher,
+        std::cmp::Ordering::Greater => RestrictionPrecedence::Lower,
+        std::cmp::Ordering::Equal if differ => RestrictionPrecedence::Different,
+        std::cmp::Ordering::Equal => RestrictionPrecedence::Identical,
+    }
+}
+
+/// Whether method `a` has strictly higher dispatch precedence than `b`, as
+/// CLIPS 6.30's `RestrictionsCompare` decides when it places a new method.
+///
+/// The relation is not transitive (a wildcard slot loses at once to a method
+/// without a wildcard, while typed slots compare by their type lists), so it
+/// must not drive a sort: [`GenericFunction::methods_by_precedence`] uses it to
+/// insert methods one at a time, as CLIPS does.
+pub(crate) fn method_has_higher_precedence(
+    a: &crate::functions::RegisteredMethod,
+    b: &crate::functions::RegisteredMethod,
+) -> bool {
+    compare_method_restrictions(a, b).is_lt()
+}
+
+/// Compare two methods' restrictions. Returns `Ordering::Less` if `a` has
+/// higher precedence than `b`, `Ordering::Greater` if `b` does, and
+/// `Ordering::Equal` when neither outranks the other.
+///
+/// Following CLIPS 6.30, each method's restriction slots are its fixed
+/// parameters followed by its wildcard, compared left to right. A wildcard slot
+/// loses at once to a regular parameter of a method that has no wildcard.
+/// Otherwise the slots' type lists are compared ([`type_list_compare`]); the
+/// first slot whose lists are not identical decides, and lists that differ
+/// without either outranking the other leave the methods unranked. When the
+/// lists are identical, a query outranks no query. When the shared slots tie,
+/// a method without a wildcard wins, then the method with more slots.
+fn compare_method_restrictions(
     a: &crate::functions::RegisteredMethod,
     b: &crate::functions::RegisteredMethod,
 ) -> std::cmp::Ordering {
-    let max_params = a.type_restrictions.len().max(b.type_restrictions.len());
-    for i in 0..max_params {
-        let a_count = a
-            .type_restrictions
-            .get(i)
-            .map_or(usize::MAX, |r| restriction_concrete_type_count(r));
-        let b_count = b
-            .type_restrictions
-            .get(i)
-            .map_or(usize::MAX, |r| restriction_concrete_type_count(r));
-        let ord = a_count.cmp(&b_count);
-        if ord != std::cmp::Ordering::Equal {
-            return ord; // Fewer concrete types = more specific = Less
+    let a_slots = method_slot_count(a);
+    let b_slots = method_slot_count(b);
+    for i in 0..a_slots.min(b_slots) {
+        let a_slot = method_slot(a, i);
+        let b_slot = method_slot(b, i);
+        if a_slot.wildcard && b.wildcard_parameter.is_none() {
+            return std::cmp::Ordering::Greater;
+        }
+        if b_slot.wildcard && a.wildcard_parameter.is_none() {
+            return std::cmp::Ordering::Less;
+        }
+        match type_list_compare(a_slot.types, b_slot.types) {
+            RestrictionPrecedence::Higher => return std::cmp::Ordering::Less,
+            RestrictionPrecedence::Lower => return std::cmp::Ordering::Greater,
+            RestrictionPrecedence::Different => return std::cmp::Ordering::Equal,
+            RestrictionPrecedence::Identical => {}
+        }
+        let order = b_slot.query.cmp(&a_slot.query);
+        if !order.is_eq() {
+            return order;
         }
     }
-    // Tie-break 1: method without wildcard > method with wildcard.
-    match (
-        a.wildcard_parameter.is_some(),
-        b.wildcard_parameter.is_some(),
-    ) {
-        (false, true) => return std::cmp::Ordering::Less,
-        (true, false) => return std::cmp::Ordering::Greater,
-        _ => {}
-    }
-    // Tie-break 2: lower index wins (preserves CLIPS definition order).
-    a.index.cmp(&b.index)
+    a.wildcard_parameter
+        .is_some()
+        .cmp(&b.wildcard_parameter.is_some())
+        .then_with(|| b_slots.cmp(&a_slots))
 }
 
-/// Check if a method is applicable for the given evaluated arguments.
-fn method_applicable(method: &crate::functions::RegisteredMethod, arg_values: &[Value]) -> bool {
-    let required_count = method.parameters.len();
-    let has_wildcard = method.wildcard_parameter.is_some();
+/// One restriction slot of a method: a fixed parameter or the wildcard.
+struct MethodSlot<'a> {
+    wildcard: bool,
+    types: &'a [String],
+    query: bool,
+}
 
-    // Arity check: exact match without wildcard, or at-least match with wildcard.
-    if has_wildcard {
-        if arg_values.len() < required_count {
-            return false;
+fn method_slot_count(method: &crate::functions::RegisteredMethod) -> usize {
+    method.parameters.len() + usize::from(method.wildcard_parameter.is_some())
+}
+
+fn method_slot(method: &crate::functions::RegisteredMethod, slot: usize) -> MethodSlot<'_> {
+    if slot < method.parameters.len() {
+        MethodSlot {
+            wildcard: false,
+            types: method
+                .type_restrictions
+                .get(slot)
+                .map_or(&[][..], Vec::as_slice),
+            query: method
+                .parameter_queries
+                .get(slot)
+                .is_some_and(Option::is_some),
         }
-    } else if arg_values.len() != required_count {
-        return false;
+    } else {
+        MethodSlot {
+            wildcard: true,
+            types: &method.wildcard_type_restrictions,
+            query: method.wildcard_query.is_some(),
+        }
     }
+}
 
-    // Type restriction check for each required parameter.
-    for (i, restrictions) in method.type_restrictions.iter().enumerate() {
-        if restrictions.is_empty() {
-            continue; // No restriction = any type.
+/// Prefilter dispatch candidates. A method with a query keeps its type checks
+/// for selection, where they interleave with the queries in argument order;
+/// a method without one has no observable checks, so its types filter here.
+fn method_may_apply(method: &crate::functions::RegisteredMethod, arg_values: &[Value]) -> bool {
+    let fixed_count = method.parameters.len();
+    let arity = if method.wildcard_parameter.is_some() {
+        arg_values.len() >= fixed_count
+    } else {
+        arg_values.len() == fixed_count
+    };
+    if !arity
+        || method.parameter_queries.iter().any(Option::is_some)
+        || method.wildcard_query.is_some()
+    {
+        return arity;
+    }
+    arg_values.iter().enumerate().all(|(i, value)| {
+        let types = if i < fixed_count {
+            method
+                .type_restrictions
+                .get(i)
+                .map_or(&[][..], Vec::as_slice)
+        } else {
+            method.wildcard_type_restrictions.as_slice()
+        };
+        types.is_empty() || types.iter().any(|kind| value_matches_type(value, kind))
+    })
+}
+
+struct SelectedMethod {
+    index: usize,
+    var_map: VarMap,
+    bindings: BindingSet,
+}
+
+/// Evaluate one restriction query with every parameter bound. Caller locals
+/// and method chains are not visible in a restriction query's scope.
+fn method_query_matches(
+    ctx: &mut EvalContext<'_>,
+    query: &ferric_rules_parser::ActionExpr,
+    module: crate::modules::ModuleId,
+    var_map: &VarMap,
+    bindings: &BindingSet,
+) -> Result<bool, EvalError> {
+    let mut locals = CallableLocals::default();
+    let mut query_ctx = EvalContext {
+        bindings,
+        var_map,
+        callable_locals: Some(&mut locals),
+        symbol_table: ctx.symbol_table,
+        config: ctx.config,
+        functions: ctx.functions,
+        globals: ctx.globals,
+        generics: ctx.generics,
+        call_depth: ctx.call_depth + 1,
+        expression_depth: ctx.expression_depth,
+        current_module: module,
+        module_registry: ctx.module_registry,
+        function_modules: ctx.function_modules,
+        global_modules: ctx.global_modules,
+        generic_modules: ctx.generic_modules,
+        method_chain: None,
+        input_buffer: ctx.input_buffer.as_deref_mut(),
+        fact_base: ctx.fact_base,
+        compact_fact_bindings: None,
+        template_resolver: ctx.template_resolver,
+        initial_fact_id: ctx.initial_fact_id,
+        template_defs: ctx.template_defs,
+    };
+    let expression = from_action_expr(query, query_ctx.symbol_table, query_ctx.config)?;
+    let value = finish_root_evaluation(eval_inner(&mut query_ctx, &expression))?;
+    Ok(is_truthy(&value, query_ctx.symbol_table))
+}
+
+/// Walk the original arguments in order, as CLIPS 6.30 does: each argument's
+/// type is checked against its restriction, then that restriction's query
+/// runs, stopping at the first failure. Excess arguments reuse the wildcard
+/// restriction, so its query runs once per excess argument (never when there
+/// are none). All parameters are bound before the first query runs, so a
+/// query can reference later parameters and the flattened wildcard.
+fn method_applies(
+    ctx: &mut EvalContext<'_>,
+    chain: &MethodChain,
+    method: &crate::functions::RegisteredMethod,
+    bound: &mut Option<(VarMap, BindingSet)>,
+    span: Option<&SourceSpan>,
+) -> Result<bool, EvalError> {
+    let fixed_count = method.parameters.len();
+    for (i, value) in chain.arg_values.iter().enumerate() {
+        let (types, query) = if i < fixed_count {
+            (
+                method
+                    .type_restrictions
+                    .get(i)
+                    .map_or(&[][..], Vec::as_slice),
+                method.parameter_queries.get(i).and_then(Option::as_ref),
+            )
+        } else {
+            (
+                method.wildcard_type_restrictions.as_slice(),
+                method.wildcard_query.as_ref(),
+            )
+        };
+        if !types.is_empty() && !types.iter().any(|kind| value_matches_type(value, kind)) {
+            return Ok(false);
         }
-        if i >= arg_values.len() {
-            return false; // Shouldn't happen given arity check, but be safe.
+        let Some(query) = query else {
+            continue;
+        };
+        let (var_map, bindings) = match bound {
+            Some(bound) => bound,
+            None => bound.insert(bind_callable_arguments(
+                ctx,
+                &chain.generic_name,
+                &method.parameters,
+                method.wildcard_parameter.as_deref(),
+                &chain.arg_values,
+                span,
+            )?),
+        };
+        if !method_query_matches(ctx, query, chain.generic_module, var_map, bindings)? {
+            return Ok(false);
         }
-        if !restrictions
+    }
+    Ok(true)
+}
+
+fn select_method(
+    ctx: &mut EvalContext<'_>,
+    chain: &MethodChain,
+    start: usize,
+    span: Option<&SourceSpan>,
+) -> Result<Option<SelectedMethod>, EvalError> {
+    for (index, method) in chain.candidate_methods.iter().enumerate().skip(start) {
+        let mut bound = None;
+        if !method_applies(ctx, chain, method, &mut bound, span)? {
+            continue;
+        }
+        let (var_map, bindings) = match bound {
+            Some(bound) => bound,
+            None => bind_callable_arguments(
+                ctx,
+                &chain.generic_name,
+                &method.parameters,
+                method.wildcard_parameter.as_deref(),
+                &chain.arg_values,
+                span,
+            )?,
+        };
+        return Ok(Some(SelectedMethod {
+            index,
+            var_map,
+            bindings,
+        }));
+    }
+    Ok(None)
+}
+
+fn no_applicable_method(name: &str, arg_values: &[Value], span: Option<SourceSpan>) -> EvalError {
+    ferric_event!(
+        debug,
+        callable = name,
+        arg_count = arg_values.len(),
+        "dispatch_generic_no_applicable_method"
+    );
+    EvalError::NoApplicableMethod {
+        name: name.to_owned(),
+        actual_types: arg_values
             .iter()
-            .any(|t| value_matches_type(&arg_values[i], t))
-        {
-            return false;
-        }
+            .map(generic_value_type_name)
+            .collect::<Vec<_>>()
+            .join(", "),
+        span,
     }
-
-    true
 }
 
-/// Dispatch a call to a generic function.
+/// Dispatch a call after evaluating arguments once. Restriction queries, and
+/// the type checks of methods that have them, run in argument order as
+/// selection reaches each candidate, throughout the call-next-method chain.
 fn dispatch_generic(
     ctx: &mut EvalContext<'_>,
     generic: &GenericFunction,
@@ -1879,89 +2066,52 @@ fn dispatch_generic(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let max_call_depth = ctx.config.effective_max_call_depth();
-    // Evaluate all arguments first (eager evaluation).
     let arg_values = eval_args(ctx, args)?;
-
-    // Collect all applicable methods, sorted by specificity (most specific first).
-    let mut applicable: Vec<crate::functions::RegisteredMethod> = generic
-        .methods
-        .iter()
-        .filter(|m| method_applicable(m, &arg_values))
+    let candidates: Vec<_> = generic
+        .methods_by_precedence()
+        .filter(|method| method_may_apply(method, &arg_values))
         .cloned()
         .collect();
-    applicable.sort_by(compare_method_specificity);
-
-    if applicable.is_empty() {
-        ferric_event!(
-            debug,
-            callable = %generic.name,
-            arg_count = arg_values.len(),
-            "dispatch_generic_no_applicable_method"
-        );
-        let types: Vec<&str> = arg_values.iter().map(generic_value_type_name).collect();
-        return Err(EvalError::NoApplicableMethod {
-            name: generic.name.clone(),
-            actual_types: types.join(", "),
-            span,
-        });
+    if candidates.is_empty() {
+        return Err(no_applicable_method(&generic.name, &arg_values, span));
     }
-
-    let method = applicable[0].clone();
-
-    // Check recursion limit.
+    let max_call_depth = ctx.config.effective_max_call_depth();
     if ctx.call_depth >= max_call_depth {
-        ferric_event!(
-            warn,
-            callable = %generic.name,
-            call_depth = ctx.call_depth,
-            max_call_depth,
-            "eval_recursion_limit_reached"
-        );
+        ferric_event!(warn, callable = %generic.name, call_depth = ctx.call_depth, max_call_depth, "eval_recursion_limit_reached");
         return Err(EvalError::RecursionLimit {
             name: generic.name.clone(),
             depth: ctx.call_depth,
             span,
         });
     }
-
-    // Build the dispatch chain for call-next-method support.
-    let chain = MethodChain {
+    let mut chain = MethodChain {
         generic_name: generic.name.clone(),
         generic_module,
-        applicable_methods: applicable,
+        candidate_methods: candidates,
         current_index: 0,
-        arg_values: arg_values.clone(),
+        arg_values,
     };
-
-    // Build parameter bindings for the selected method.
-    let (fn_var_map, fn_bindings) = bind_callable_arguments(
-        ctx,
-        &generic.name,
-        &method.parameters,
-        method.wildcard_parameter.as_deref(),
-        &arg_values,
-        span.as_ref(),
-    )?;
-    // The method body executes in the generic's definition module.
+    let selected = select_method(ctx, &chain, 0, span.as_ref())?
+        .ok_or_else(|| no_applicable_method(&generic.name, &chain.arg_values, span))?;
+    chain.current_index = selected.index;
+    let method = chain.candidate_methods[selected.index].clone();
     execute_callable_body(
         ctx,
-        &fn_var_map,
-        &fn_bindings,
+        &selected.var_map,
+        &selected.bindings,
         &method.body,
         generic_module,
         Some(chain),
     )
 }
 
-/// Handle `(call-next-method)` — advance to the next method in the generic dispatch chain.
+/// Each call-next-method invocation searches again from its caller's position,
+/// retaining original arguments and re-evaluating the reached query expressions.
 fn dispatch_call_next_method(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let max_call_depth = ctx.config.effective_max_call_depth();
-    // call-next-method takes no arguments.
     if !args.is_empty() {
         return Err(EvalError::ArityMismatch {
             name: "call-next-method".to_string(),
@@ -1970,78 +2120,40 @@ fn dispatch_call_next_method(
             span,
         });
     }
-
-    // Must be inside a generic method dispatch chain.
-    let chain = match &ctx.method_chain {
-        Some(c) => c.clone(),
-        None => {
-            return Err(EvalError::TypeError {
-                function: "call-next-method".to_string(),
-                expected: "called from within a generic method body".to_string(),
-                actual: "called outside generic dispatch context".to_string(),
-                span,
-            });
-        }
-    };
-
-    let next_index = chain.current_index + 1;
-    if next_index >= chain.applicable_methods.len() {
-        ferric_event!(
-            debug,
-            callable = %chain.generic_name,
-            current_index = chain.current_index,
-            "call_next_method_missing_next"
-        );
-        return Err(EvalError::NoApplicableMethod {
-            name: format!("call-next-method for `{}`", chain.generic_name),
-            actual_types: "no next method in dispatch chain".to_string(),
+    let Some(mut chain) = ctx.method_chain.clone() else {
+        return Err(EvalError::TypeError {
+            function: "call-next-method".to_string(),
+            expected: "called from within a generic method body".to_string(),
+            actual: "called outside generic dispatch context".to_string(),
             span,
         });
-    }
-
-    // Recursion limit check.
+    };
+    let max_call_depth = ctx.config.effective_max_call_depth();
     if ctx.call_depth >= max_call_depth {
-        ferric_event!(
-            warn,
-            callable = %chain.generic_name,
-            call_depth = ctx.call_depth,
-            max_call_depth,
-            "eval_recursion_limit_reached"
-        );
+        ferric_event!(warn, callable = %chain.generic_name, call_depth = ctx.call_depth, max_call_depth, "eval_recursion_limit_reached");
         return Err(EvalError::RecursionLimit {
             name: format!("call-next-method for `{}`", chain.generic_name),
             depth: ctx.call_depth,
             span,
         });
     }
-
-    let next_method = chain.applicable_methods[next_index].clone();
-
-    // Bind parameters for the next method using the original arguments.
-    let (fn_var_map, fn_bindings) = bind_callable_arguments(
-        ctx,
-        &chain.generic_name,
-        &next_method.parameters,
-        next_method.wildcard_parameter.as_deref(),
-        &chain.arg_values,
-        span.as_ref(),
-    )?;
-
-    // Execute next method body with updated chain position.
-    let next_chain = MethodChain {
-        generic_name: chain.generic_name.clone(),
-        generic_module: chain.generic_module,
-        applicable_methods: chain.applicable_methods.clone(),
-        current_index: next_index,
-        arg_values: chain.arg_values.clone(),
-    };
+    let selected = select_method(ctx, &chain, chain.current_index + 1, span.as_ref())?
+        .ok_or_else(|| {
+            ferric_event!(debug, callable = %chain.generic_name, current_index = chain.current_index, "call_next_method_missing_next");
+            EvalError::NoApplicableMethod {
+                name: format!("call-next-method for `{}`", chain.generic_name),
+                actual_types: "no next method in dispatch chain".to_string(), span,
+            }
+        })?;
+    chain.current_index = selected.index;
+    let method = chain.candidate_methods[selected.index].clone();
     execute_callable_body(
         ctx,
-        &fn_var_map,
-        &fn_bindings,
-        &next_method.body,
+        &selected.var_map,
+        &selected.bindings,
+        &method.body,
         chain.generic_module,
-        Some(next_chain),
+        Some(chain),
     )
 }
 
@@ -2069,10 +2181,17 @@ fn bind_callable_arguments(
     }
 
     if let Some(wildcard_name) = wildcard_parameter {
-        let extra_values = arg_values[parameters.len()..]
-            .iter()
-            .cloned()
-            .collect::<ferric_rules_core::Multifield>();
+        let mut extra_values = ferric_rules_core::Multifield::new();
+        for value in &arg_values[parameters.len()..] {
+            match value {
+                Value::Multifield(fields) => {
+                    for field in fields.iter() {
+                        extra_values.push(field.clone());
+                    }
+                }
+                value => extra_values.push(value.clone()),
+            }
+        }
         bind_parameter(
             ctx,
             callable_name,
@@ -2779,6 +2898,7 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "get-focus-stack"
             | "close"
             | "return"
+            | "break"
             | "load"
             | "undefrule"
             | "ppdefrule"
@@ -2962,6 +3082,7 @@ fn dispatch_builtin(
         "readline" => builtin_readline(ctx, args, span_ref),
         "close" => builtin_close(ctx, args, span_ref),
         "return" => builtin_return(ctx, args, span_ref),
+        "break" => builtin_break(args, span_ref),
         "load" => builtin_load(ctx, args, span_ref),
         "undefrule" => builtin_undefrule(ctx, args, span_ref),
         "ppdefrule" => builtin_ppdefrule(ctx, args, span_ref),
@@ -5633,6 +5754,13 @@ fn builtin_close(
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
+fn builtin_break(args: &[RuntimeExpr], span: Option<&SourceSpan>) -> Result<Value, EvalError> {
+    check_arity_exact("break", args, 0, span)?;
+    Err(EvalError::BreakControl {
+        span: span.cloned(),
+    })
+}
+
 /// `return` — unwind the current callable with its argument (or VOID).
 fn builtin_return(
     ctx: &mut EvalContext<'_>,
@@ -6809,6 +6937,238 @@ mod tests {
         }
     }
 
+    fn source_action(source: &str) -> ferric_rules_parser::ActionExpr {
+        let parsed = ferric_rules_parser::parse_sexprs(source, ferric_rules_parser::FileId(0));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        ferric_rules_parser::interpret_action_expr(&parsed.exprs[0]).unwrap()
+    }
+
+    fn eval_source(ctx: &mut EvalContext<'_>, source: &str) -> Result<Value, EvalError> {
+        let expression = from_action_expr(&source_action(source), ctx.symbol_table, ctx.config)?;
+        eval(ctx, &expression)
+    }
+
+    #[test]
+    fn procedural_defaults_are_false_values_in_callable_expressions() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction nop ()) (defmethod nopm ((?x INTEGER)))
+             (deffunction conditional (?x) (if (> ?x 0) then yes))
+             (deffunction count () (loop-for-count 2 do 77))
+             (deffunction spin () (bind ?n 0) (while (< ?n 2) do (bind ?n (+ ?n 1))))",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            for source in [
+                "(nop)",
+                "(nopm 1)",
+                "(conditional -1)",
+                "(count)",
+                "(spin)",
+                "(switch 1 (case 2 then yes))",
+                "(foreach ?x (create$) ?x)",
+            ] {
+                let value = eval_source(ctx, source).unwrap();
+                assert!(
+                    matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("FALSE")),
+                    "{source}: {value:?}"
+                );
+            }
+            let fields = eval_source(ctx, "(create$ a (conditional -1) b)").unwrap();
+            assert!(matches!(fields, Value::Multifield(values) if values.len() == 3));
+        });
+    }
+
+    #[test]
+    fn evaluator_breaks_stop_the_nearest_loop_and_restore_local_scope() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction nested () (bind ?n 0)
+                (loop-for-count (?i 1 3) do
+                    (loop-for-count (?j 1 4) do (bind ?n (+ ?n 1)) (break))
+                    (bind ?n (+ ?n 10))) ?n)
+             (deffunction early () (loop-for-count 5 do (return 7)) 99)",
+            )
+            .unwrap();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            assert!(matches!(
+                eval_source(ctx, "(nested)").unwrap(),
+                Value::Integer(33)
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(early)").unwrap(),
+                Value::Integer(7)
+            ));
+            eval(ctx, &local_bind("x", vec![int(99)])).unwrap();
+            for source in ["(while TRUE do (break))", "(loop-for-count 5 do (break))"] {
+                let value = eval_source(ctx, source).unwrap();
+                assert!(!is_truthy(&value, ctx.symbol_table), "{source}");
+            }
+            for source in [
+                "(progn$ (?x (create$ a b c)) (if (eq ?x b) then (break)) ?x)",
+                "(foreach ?x (create$ a b c) (if (eq ?x b) then (break)) ?x)",
+            ] {
+                assert!(
+                    matches!(eval_source(ctx, source).unwrap(), Value::Void),
+                    "{source}"
+                );
+                assert!(matches!(
+                    eval(ctx, &local_read("x")).unwrap(),
+                    Value::Integer(99)
+                ));
+            }
+            let value = eval_source(ctx, "(foreach ?x (create$ a b c) ?x)").unwrap();
+            assert!(
+                matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("c"))
+            );
+        });
+    }
+
+    #[test]
+    fn escaped_breaks_cannot_cross_callable_or_public_evaluator_boundaries() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine.load_str("(deffunction broken () 0)").unwrap();
+        // Bypass source validation to exercise the runtime boundary directly.
+        engine.functions.register(
+            engine.module_registry.main_module_id(),
+            UserFunction {
+                name: "broken".into(),
+                parameters: Vec::new(),
+                wildcard_parameter: None,
+                body: vec![source_action("(break)")],
+            },
+        );
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(matches!(
+                eval_source(ctx, "(break)"),
+                Err(EvalError::BreakOutsideLoop { .. })
+            ));
+            assert!(matches!(
+                eval_action_expression(ctx, &call("break", vec![])),
+                Err(EvalError::BreakControl { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(while TRUE do (broken))"),
+                Err(EvalError::BreakOutsideLoop { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(break 1)"),
+                Err(EvalError::ArityMismatch { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn wildcard_bindings_flatten_only_excess_arguments_after_type_selection() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction count ($?values) (length$ ?values))
+             (deffunction sizes (?first $?rest) (create$ (length$ ?first) (length$ ?rest)))
+             (defmethod symbols (($?values SYMBOL)) (length$ ?values))
+             (defmethod fields (($?values MULTIFIELD)) (length$ ?values))
+             (defmethod queried (($?values (= (length$ ?values) 3))) (length$ ?values))",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            for (source, expected) in [
+                ("(count (create$ a b c))", 3),
+                ("(count x (create$ a b) y)", 4),
+                ("(count (create$))", 0),
+                ("(symbols a b)", 2),
+                ("(symbols)", 0),
+                ("(fields (create$ a b) (create$ c))", 3),
+                ("(queried a (create$ b c))", 3),
+            ] {
+                assert!(
+                    matches!(eval_source(ctx, source).unwrap(), Value::Integer(value) if value == expected),
+                    "{source}"
+                );
+            }
+            assert!(matches!(
+                eval_source(ctx, "(symbols (create$ a b))"),
+                Err(EvalError::NoApplicableMethod { .. })
+            ));
+            let sizes = eval_source(ctx, "(sizes (create$ 1 2) 3 (create$ 4 5))").unwrap();
+            assert!(sizes.structural_eq(&Value::Multifield(Box::new(
+                [Value::Integer(2), Value::Integer(3)].into_iter().collect()
+            ))));
+        });
+    }
+
+    #[test]
+    fn method_queries_are_lazy_and_call_next_rechecks_reached_candidates() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine.load_str(
+            "(defglobal ?*queries* = 0)
+             (deffunction probe (?answer) (bind ?*queries* (+ ?*queries* 1)) ?answer)
+             (defmethod choose 10 ((?x INTEGER (probe TRUE))) first)
+             (defmethod choose 20 ((?x NUMBER (probe TRUE))) second)
+             (defmethod chain 10 ((?x INTEGER (probe TRUE))) (create$ (call-next-method) (call-next-method)))
+             (defmethod chain 20 ((?x INTEGER (probe FALSE))) skipped)
+             (defmethod chain 30 ((?x NUMBER (probe TRUE))) third)",
+        ).unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            let value = eval_source(ctx, "(choose 1)").unwrap();
+            assert!(
+                matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("first"))
+            );
+            assert!(matches!(
+                ctx.globals.get(ctx.current_module, "queries"),
+                Some(Value::Integer(1))
+            ));
+            ctx.globals
+                .set(ctx.current_module, "queries", Value::Integer(0));
+            let value = eval_source(ctx, "(chain 1)").unwrap();
+            let Value::Multifield(fields) = value else {
+                panic!("expected two next-method results")
+            };
+            assert_eq!(fields.len(), 2);
+            assert!(fields.iter().all(|value| matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(*symbol) == Some("third"))));
+            assert!(matches!(
+                ctx.globals.get(ctx.current_module, "queries"),
+                Some(Value::Integer(5))
+            ));
+        });
+    }
+
+    #[test]
+    fn method_queries_see_later_parameters_and_errors_abort_selection() {
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(defmethod later ((?x INTEGER (< ?x ?later)) (?later INTEGER)) yes)
+             (defmethod failure 1 ((?x INTEGER (/ 1 0))) unreachable)
+             (defmethod failure 2 ((?x NUMBER)) fallback)
+             (defmethod priority 1 ((?x (eq ?x 1))) queried)
+             (defmethod priority 2 ((?x INTEGER)) typed)
+             (defmethod shape 1 (($?values INTEGER)) wildcard)
+             (defmethod shape 2 (?x) fixed)",
+            )
+            .unwrap();
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(eval_source(ctx, "(later 1 2)").is_ok());
+            assert!(matches!(
+                eval_source(ctx, "(later 2 1)"),
+                Err(EvalError::NoApplicableMethod { .. })
+            ));
+            assert!(matches!(
+                eval_source(ctx, "(failure 1)"),
+                Err(EvalError::DivisionByZero { .. })
+            ));
+            for (source, expected) in [("(priority 1)", "typed"), ("(shape 1)", "fixed")] {
+                let value = eval_source(ctx, source).unwrap();
+                assert!(
+                    matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some(expected)),
+                    "{source}"
+                );
+            }
+        });
+    }
+
     fn local_bind(name: &str, values: Vec<RuntimeExpr>) -> RuntimeExpr {
         call(
             "bind",
@@ -7692,7 +8052,7 @@ mod tests {
         let compact = compact_ref(&mut engine, "f", "value");
         let body = vec![(
             ferric_rules_parser::ActionExpr::Variable("unused".into(), dummy_span()),
-            Some(Box::new(compact)),
+            Some(Box::new(local_bind("seen", vec![compact]))),
         )];
         let loops = [
             RuntimeExpr::LoopForCount {
@@ -7709,9 +8069,13 @@ mod tests {
                 span: None,
             },
         ];
-        with_compact_context(&mut engine, Some(&scope), |ctx| {
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, Some(&scope), Some(&mut locals), |ctx| {
             for expr in loops {
-                assert!(eval(ctx, &expr).unwrap().structural_eq(&Value::Integer(10)));
+                eval(ctx, &expr).unwrap();
+                assert!(eval(ctx, &local_read("seen"))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(10)));
             }
         });
     }
@@ -7739,7 +8103,7 @@ mod tests {
             let method = MethodChain {
                 generic_name: "test".into(),
                 generic_module: ctx.current_module,
-                applicable_methods: Vec::new(),
+                candidate_methods: Vec::new(),
                 current_index: 0,
                 arg_values: Vec::new(),
             };
@@ -10257,35 +10621,90 @@ mod tests {
     // Specificity scoring unit tests
     // -------------------------------------------------------------------
 
-    #[test]
-    fn restriction_concrete_type_count_integer() {
-        let r = vec!["INTEGER".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 1);
+    fn types(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
     }
 
     #[test]
-    fn restriction_concrete_type_count_number_expands_to_two() {
-        let r = vec!["NUMBER".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 2);
+    fn type_list_compare_empty_lists() {
+        assert_eq!(
+            type_list_compare(&[], &[]),
+            RestrictionPrecedence::Identical
+        );
+        assert_eq!(
+            type_list_compare(&[], &types(&["INTEGER"])),
+            RestrictionPrecedence::Lower
+        );
+        assert_eq!(
+            type_list_compare(&types(&["OBJECT"]), &[]),
+            RestrictionPrecedence::Higher
+        );
     }
 
     #[test]
-    fn restriction_concrete_type_count_integer_and_float_deduped() {
-        // ["INTEGER", "FLOAT"] and ["NUMBER"] should both count as 2 distinct concrete types.
-        let r = vec!["INTEGER".to_string(), "FLOAT".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 2);
+    fn type_list_compare_subclass_wins_at_first_related_position() {
+        // CLIPS: (INTEGER SYMBOL) outranks (NUMBER), and (SYMBOL INTEGER
+        // FLOAT) outranks (LEXEME), despite covering more types.
+        assert_eq!(
+            type_list_compare(&types(&["INTEGER", "SYMBOL"]), &types(&["NUMBER"])),
+            RestrictionPrecedence::Higher
+        );
+        assert_eq!(
+            type_list_compare(&types(&["LEXEME"]), &types(&["SYMBOL", "INTEGER", "FLOAT"])),
+            RestrictionPrecedence::Lower
+        );
+        // An unrelated first position does not stop the scan.
+        assert_eq!(
+            type_list_compare(&types(&["INTEGER", "LEXEME"]), &types(&["FLOAT", "SYMBOL"])),
+            RestrictionPrecedence::Lower
+        );
+        assert_eq!(
+            type_list_compare(&types(&["NUMBER", "SYMBOL"]), &types(&["PRIMITIVE"])),
+            RestrictionPrecedence::Higher
+        );
+        assert_eq!(
+            type_list_compare(&types(&["INSTANCE-ADDRESS"]), &types(&["ADDRESS"])),
+            RestrictionPrecedence::Higher
+        );
     }
 
     #[test]
-    fn restriction_concrete_type_count_empty_is_max() {
-        let r: Vec<String> = vec![];
-        assert_eq!(restriction_concrete_type_count(&r), usize::MAX);
+    fn type_list_compare_instance_name_is_not_a_symbol() {
+        // In CLIPS 6.30, INSTANCE-NAME's superclasses are INSTANCE,
+        // PRIMITIVE, and OBJECT, so it is unrelated to LEXEME.
+        assert_eq!(
+            type_list_compare(&types(&["INSTANCE-NAME", "SYMBOL"]), &types(&["LEXEME"])),
+            RestrictionPrecedence::Lower
+        );
     }
 
     #[test]
-    fn restriction_concrete_type_count_lexeme_expands_to_two() {
-        let r = vec!["LEXEME".to_string()];
-        assert_eq!(restriction_concrete_type_count(&r), 2);
+    fn type_list_compare_shorter_wins_then_different() {
+        assert_eq!(
+            type_list_compare(&types(&["INTEGER"]), &types(&["INTEGER", "SYMBOL"])),
+            RestrictionPrecedence::Higher
+        );
+        assert_eq!(
+            type_list_compare(
+                &types(&["INTEGER", "SYMBOL"]),
+                &types(&["INTEGER", "STRING"])
+            ),
+            RestrictionPrecedence::Different
+        );
+        assert_eq!(
+            type_list_compare(
+                &types(&["INTEGER", "SYMBOL"]),
+                &types(&["SYMBOL", "INTEGER"])
+            ),
+            RestrictionPrecedence::Different
+        );
+        assert_eq!(
+            type_list_compare(
+                &types(&["INTEGER", "SYMBOL"]),
+                &types(&["INTEGER", "SYMBOL"])
+            ),
+            RestrictionPrecedence::Identical
+        );
     }
 
     /// Build a minimal `RegisteredMethod` for specificity comparison tests.
@@ -10299,7 +10718,10 @@ mod tests {
             parameters: (0..type_restrictions.len())
                 .map(|i| format!("p{i}"))
                 .collect(),
+            parameter_queries: vec![None; type_restrictions.len()],
             type_restrictions,
+            wildcard_type_restrictions: vec![],
+            wildcard_query: None,
             wildcard_parameter: if wildcard {
                 Some("rest".to_string())
             } else {
@@ -10314,12 +10736,12 @@ mod tests {
         let integer_method = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let number_method = make_method(1, vec![vec!["NUMBER".to_string()]], false);
         assert_eq!(
-            compare_method_specificity(&integer_method, &number_method),
+            compare_method_restrictions(&integer_method, &number_method),
             std::cmp::Ordering::Less,
             "INTEGER method should be more specific (Less) than NUMBER method"
         );
         assert_eq!(
-            compare_method_specificity(&number_method, &integer_method),
+            compare_method_restrictions(&number_method, &integer_method),
             std::cmp::Ordering::Greater,
         );
     }
@@ -10329,7 +10751,7 @@ mod tests {
         let restricted = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let unrestricted = make_method(1, vec![vec![]], false);
         assert_eq!(
-            compare_method_specificity(&restricted, &unrestricted),
+            compare_method_restrictions(&restricted, &unrestricted),
             std::cmp::Ordering::Less,
         );
     }
@@ -10339,20 +10761,171 @@ mod tests {
         let fixed = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let variadic = make_method(1, vec![vec!["INTEGER".to_string()]], true);
         assert_eq!(
-            compare_method_specificity(&fixed, &variadic),
+            compare_method_restrictions(&fixed, &variadic),
             std::cmp::Ordering::Less,
         );
     }
 
     #[test]
-    fn compare_specificity_index_tiebreak() {
-        // Two methods with identical type restrictions and no wildcard: lower index wins.
+    fn compare_specificity_identical_restrictions_tie() {
+        // Identical restrictions: neither outranks the other, so definition
+        // order decides.
         let m0 = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let m1 = make_method(1, vec![vec!["INTEGER".to_string()]], false);
         assert_eq!(
-            compare_method_specificity(&m0, &m1),
+            compare_method_restrictions(&m0, &m1),
+            std::cmp::Ordering::Equal,
+        );
+        assert!(!method_has_higher_precedence(&m0, &m1));
+        assert!(!method_has_higher_precedence(&m1, &m0));
+    }
+
+    fn typed_wildcard(
+        mut method: crate::functions::RegisteredMethod,
+        types: &[&str],
+        query: bool,
+    ) -> crate::functions::RegisteredMethod {
+        method.wildcard_type_restrictions = types.iter().map(|kind| (*kind).to_string()).collect();
+        method.wildcard_query = query.then(|| {
+            ferric_rules_parser::ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol("TRUE".into()),
+                span: dummy_span(),
+            })
+        });
+        method
+    }
+
+    #[test]
+    fn compare_specificity_untyped_fixed_prefix_beats_wildcard() {
+        // CLIPS: (?x) outranks (?x $?y), and () outranks ($?y).
+        let fixed = make_method(1, vec![vec![]], false);
+        let variadic = make_method(0, vec![vec![]], true);
+        assert_eq!(
+            compare_method_restrictions(&fixed, &variadic),
             std::cmp::Ordering::Less,
         );
+        let empty = make_method(1, vec![], false);
+        let wildcard = make_method(0, vec![], true);
+        assert_eq!(
+            compare_method_restrictions(&empty, &wildcard),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_typed_wildcard_beats_untyped_fixed_wildcard() {
+        // c4/p3: (($?xs INTEGER)) outranks (?x $?xs).
+        let typed = typed_wildcard(make_method(1, vec![], true), &["INTEGER"], false);
+        let untyped = make_method(2, vec![vec![]], true);
+        assert_eq!(
+            compare_method_restrictions(&typed, &untyped),
+            std::cmp::Ordering::Less,
+        );
+        // p8: (($?xs INTEGER)) outranks (?x ?y $?z).
+        let two_fixed_wild = make_method(2, vec![vec![], vec![]], true);
+        assert_eq!(
+            compare_method_restrictions(&typed, &two_fixed_wild),
+            std::cmp::Ordering::Less,
+        );
+        // p7: a wildcard slot loses to a regular parameter of a method with
+        // no wildcard, whatever its types: (?x ?y) outranks (($?xs INTEGER)).
+        let two_fixed = make_method(2, vec![vec![], vec![]], false);
+        assert_eq!(
+            compare_method_restrictions(&typed, &two_fixed),
+            std::cmp::Ordering::Greater,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_wildcard_slot_compares_with_later_fixed_slot() {
+        // p9: ((?x INTEGER) ($?xs INTEGER)) outranks ((?x INTEGER) ?y $?z).
+        let a = typed_wildcard(
+            make_method(1, vec![vec!["INTEGER".to_string()]], true),
+            &["INTEGER"],
+            false,
+        );
+        let b = make_method(2, vec![vec!["INTEGER".to_string()], vec![]], true);
+        assert_eq!(
+            compare_method_restrictions(&a, &b),
+            std::cmp::Ordering::Less,
+        );
+        // p5: equal shared slots, so more slots wins:
+        // ((?x INTEGER) $?xs) outranks (($?xs INTEGER)).
+        let typed = typed_wildcard(make_method(1, vec![], true), &["INTEGER"], false);
+        let int_fixed_wild = make_method(2, vec![vec!["INTEGER".to_string()]], true);
+        assert_eq!(
+            compare_method_restrictions(&int_fixed_wild, &typed),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_queried_wildcard_beats_untyped_fixed_wildcard() {
+        // p10: (($?xs (> 1 0))) outranks (?x $?xs).
+        let queried = typed_wildcard(make_method(1, vec![], true), &[], true);
+        let untyped = make_method(2, vec![vec![]], true);
+        assert_eq!(
+            compare_method_restrictions(&queried, &untyped),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    fn with_query(
+        mut method: crate::functions::RegisteredMethod,
+        slot: usize,
+    ) -> crate::functions::RegisteredMethod {
+        method.parameter_queries[slot] = Some(ferric_rules_parser::ActionExpr::Literal(
+            ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol("TRUE".into()),
+                span: dummy_span(),
+            },
+        ));
+        method
+    }
+
+    #[test]
+    fn compare_specificity_different_types_stop_before_query() {
+        // CLIPS: ((?x INTEGER SYMBOL)) and ((?x INTEGER STRING (eq ?x 1)))
+        // differ, so the query is never consulted and neither outranks.
+        let plain = make_method(1, vec![types(&["INTEGER", "SYMBOL"])], false);
+        let queried = with_query(
+            make_method(2, vec![types(&["INTEGER", "STRING"])], false),
+            0,
+        );
+        assert_eq!(
+            compare_method_restrictions(&queried, &plain),
+            std::cmp::Ordering::Equal,
+        );
+        assert_eq!(
+            compare_method_restrictions(&plain, &queried),
+            std::cmp::Ordering::Equal,
+        );
+        // With identical types, the query decides.
+        let queried_same = with_query(
+            make_method(2, vec![types(&["INTEGER", "SYMBOL"])], false),
+            0,
+        );
+        assert_eq!(
+            compare_method_restrictions(&queried_same, &plain),
+            std::cmp::Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn compare_specificity_different_types_stop_before_later_slots() {
+        // CLIPS: ((?x INTEGER SYMBOL) ?y) and ((?x INTEGER STRING) (?y
+        // INTEGER)) differ in the first slot, so the second is not compared.
+        let a = make_method(1, vec![types(&["INTEGER", "SYMBOL"]), vec![]], false);
+        let b = make_method(
+            2,
+            vec![types(&["INTEGER", "STRING"]), types(&["INTEGER"])],
+            false,
+        );
+        assert_eq!(
+            compare_method_restrictions(&b, &a),
+            std::cmp::Ordering::Equal
+        );
+        assert!(!method_has_higher_precedence(&b, &a));
     }
 
     // -------------------------------------------------------------------

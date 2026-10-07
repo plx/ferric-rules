@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 656
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 722
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -350,17 +350,26 @@ local in a query predicate is a load error.
 | `run` | No-op when called from RHS (documented behavior) |
 | `reset` | Deferred: sets a flag checked after action execution |
 | `clear` | Deferred: sets a flag checked after action execution |
-| `if`/`then`/`else` | Conditional action execution |
-| `while` | Conditional loop with `do`; shares the configured per-activation action-loop budget |
-| `loop-for-count` | Indexed loop with optional variable binding; shares the configured per-activation action-loop budget |
-| `progn$` / `foreach` | Multifield iteration with element and index binding |
-| `switch`/`case`/`default` | Multi-branch dispatch |
+| `if`/`then`/`else` | Conditional execution; an unmatched condition without `else` returns `FALSE` |
+| `while` | Conditional loop with `do`; returns `FALSE` and shares the configured per-activation action-loop budget |
+| `loop-for-count` | Inclusive count loop with a bare literal, variable, or expression bound, or `(?i end)` / `(?i start end)`; returns `FALSE` and shares the configured per-activation action-loop budget |
+| `progn$` / `foreach` | Multifield iteration with element and index binding; returns the last body value, `FALSE` for an empty collection, or no value after `break` |
+| `switch`/`case`/`default` | Multi-branch dispatch; an unmatched value without `default` returns `FALSE` |
+| `break` | Exit the nearest enclosing loop or action fact query and continue after it |
 | `do-for-fact` | Iterate first matching fact |
 | `do-for-all-facts` | Iterate all matching facts |
 | `delayed-do-for-all-facts` | Deferred all-facts iteration |
 | `any-factp` | Boolean fact existence check |
 | `find-fact` | Find first matching fact |
 | `find-all-facts` | Find all matching facts |
+
+`break` is valid only inside the body of `while`, `loop-for-count`,
+`progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
+multifield collection expressions, and query predicates cannot contain
+`break`, even when the construct is nested inside another loop. Invalid
+placement is rejected at load, including a `break` outside a loop in a rule's
+`test` CE or `:`/`=` pattern constraint (`[PRCDRPSR2]`). `while` and `loop-for-count` return `FALSE`
+after `break` as well as after normal completion.
 
 ### RHS evaluation errors
 
@@ -602,6 +611,15 @@ one `defglobal` group remain available to later initializers. If an initializer
 fails, its name and later names in that group are not installed; earlier globals
 and following top-level constructs retain their incremental load behavior.
 
+Known difference: callable bodies are validated after the whole source is
+read, but initializers run in source order. An initializer can therefore call
+a deffunction or method defined earlier in the same load before that
+callable's validation finishes. If the callable is then rejected (for
+example, for an unknown call in a branch that never ran), the global keeps
+the initializer's value and any side effects of the call remain. CLIPS 6.30
+rejects the callable first and then rejects the initializer, so the global is
+never defined.
+
 ```clp
 (defglobal ?*count* = 0)
 (defglobal ?*label* = "default")
@@ -659,14 +677,26 @@ its argument again. Loop iterators cannot be rebound.
 - **Wildcard parameter**: `$?rest` (collects remaining arguments as a
   multifield; must be the last parameter)
 
+A wildcard flattens multifield arguments into its collected sequence. A fixed
+parameter preserves a supplied multifield as one argument. For example,
+`(?first $?rest)` called with `(create$ 1 2) 3 (create$ 4 5)` binds `?first`
+to `(1 2)` and `?rest` to `(3 4 5)`. An empty multifield adds no elements to
+the wildcard binding.
+
 ### Evaluation
 
 Function bodies are expression sequences. The value of the last expression is
-the return value. `(return)` and `(return <expression>)` immediately unwind the
-current deffunction or generic-method call; an inner callable's return does not
+the return value; an empty body returns `FALSE`. `(return)` and
+`(return <expression>)` immediately unwind the current deffunction or generic-method call; an inner callable's return does not
 unwind its caller. A top-level return is an evaluation error. On a rule RHS,
 `return` follows CLIPS behavior and stops only the remaining actions in that
 activation.
+
+Loop bodies support `break`, which exits their nearest loop and continues the
+current call. Unknown function calls in deffunction and method bodies are
+load errors. Ferric resolves calls against the declarations in the loaded
+source, including forward references; CLIPS requires a prior declaration,
+which can be an empty deffunction body replaced by a later definition.
 
 Bodies are evaluator expressions, not full RHS action lists: expression
 functions such as `str-cat`, `format`, and `printout` are available, but fact
@@ -696,6 +726,19 @@ or load diagnostic before continuing recursive evaluation. Callable bodies
 are checked before registration; a failed function redefinition or implicit
 generic registration preserves the previous registry state.
 
+Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
+the deffunction, so later callers are rejected at load; Ferric keeps the
+previous body and its callers still load. Both keep the previous method when
+a `defmethod` redefinition fails. Until a rejected callable is removed at the
+end of the load, it still counts as using the templates it references, so a
+`deftemplate` replacement later in the same source is refused with
+`[CSTRCPSR4]` where CLIPS accepts it.
+
+Known difference: an undefined global variable in a deffunction body, a
+defmethod body, or a method restriction query does not stop the load. Ferric
+reports it only when the expression is evaluated; CLIPS 6.30 rejects the
+construct at load with `[GLOBLPSR1]`.
+
 Embedding note: release recursion regressions run on 512 KiB native stacks;
 unoptimized development regressions use 2 MiB. These are supported test
 baselines, not a promise for arbitrarily small host stacks. Larger requested
@@ -721,13 +764,86 @@ Ferric supports generic function dispatch via `defgeneric` and `defmethod`.
 (defmethod describe ((?x INTEGER)) (str-cat "integer: " ?x))
 (defmethod describe ((?x STRING)) (str-cat "string: " ?x))
 (defmethod describe ((?x NUMBER)) (str-cat "number: " ?x))
+(defmethod describe ((?x SYMBOL (eq ?x special))) "special symbol")
+(defmethod describe (($?items SYMBOL)) (length$ ?items))
 ```
 
 ### Method Specificity
 
 Methods are ranked by type specificity. More specific types win:
 `INTEGER` > `NUMBER`, `FLOAT` > `NUMBER`, etc. When multiple methods could
-match, the most specific applicable method is selected.
+match, the most specific applicable method is selected. Restrictions are
+compared left to right, with a wildcard counting as its method's last
+restriction. A wildcard loses at once to a regular parameter in the same
+position when that parameter's method has no wildcard. Otherwise, as in
+CLIPS 6.30, the two type lists are compared in written order:
+
+- Any type list outranks an unrestricted parameter, so a type restriction
+  outranks an otherwise unrestricted parameter with a query.
+- At the first position where one listed type is a subclass of the other in
+  the CLIPS class hierarchy, the subclass wins: `INTEGER` and `FLOAT` under
+  `NUMBER`, and `SYMBOL` and `STRING` under `LEXEME`. `INSTANCE-NAME` is not
+  a subclass of `SYMBOL`. So
+  `((?x INTEGER SYMBOL))` outranks `((?x NUMBER))`, although it covers more
+  types.
+- Otherwise the shorter list wins: `((?x INTEGER))` outranks
+  `((?x INTEGER SYMBOL))`.
+- Lists of the same length that differ anywhere, such as `(INTEGER SYMBOL)`
+  and `(INTEGER STRING)`, or `(INTEGER SYMBOL)` and `(SYMBOL INTEGER)`, leave
+  the two methods unranked: neither outranks the other, and their queries and
+  later restrictions are not compared.
+
+A query adds specificity only when the type lists are identical. When every
+shared position ties, a method without a wildcard wins, then the method with
+more restrictions. For example, `(($?xs INTEGER))` outranks `(?x $?xs)`, while
+`(?x ?y)` outranks `(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
+
+This ranking can be cyclic: `(($?x INTEGER))` outranks `((?x NUMBER) $?y)`,
+which outranks `(?x)`, which outranks `(($?x INTEGER))`. As in CLIPS 6.30,
+methods are not sorted. Each method is inserted before the first existing
+method it outranks, or after all of them, so the final order can depend on
+definition order, both for cyclic rankings and for unranked methods. Ferric
+inserts methods in index order, which is definition order unless explicit
+indices are given out of order.
+
+Known differences:
+
+- When explicit indices are given out of definition order, CLIPS 6.30 still
+  inserts methods in definition order. Its dispatch order can then differ from
+  Ferric's whenever those methods do not strictly outrank each other, either
+  because the ranking is cyclic or because their restrictions differ without
+  one outranking the other. For example, after
+  `(defmethod g 2 ((?x INTEGER SYMBOL)) A)` and
+  `(defmethod g 1 ((?x INTEGER FLOAT)) B)`, CLIPS 6.30 returns `A` for
+  `(g 1)` and Ferric returns `B`.
+- A `defmethod` whose restrictions are identical to an existing method's adds
+  a second method after it, where CLIPS 6.30 replaces the existing method.
+- Only `INTEGER`, `FLOAT`, `NUMBER`, `SYMBOL`, `STRING`, `LEXEME`,
+  `INSTANCE-NAME`, `MULTIFIELD` and `EXTERNAL-ADDRESS` match as type
+  restrictions. Other CLIPS class names, such as `PRIMITIVE`, `OBJECT`,
+  `ADDRESS`, `INSTANCE`, `FACT-ADDRESS` and `INSTANCE-ADDRESS`, load as method
+  restrictions but never match, so a restriction that names only such classes
+  makes its method never applicable.
+
+A parameter query follows its optional type restrictions. It is a function
+call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
+read again at each dispatch. A query can reference any method parameter,
+including later ones: all arguments are bound before queries run. Queries
+use CLIPS truthiness and are evaluated only as dispatch searches for the next
+applicable method. For each candidate, dispatch walks
+the arguments left to right: it checks the argument's type and then runs its
+restriction's query, stopping at the first failure. A query therefore runs,
+with its side effects, even when a later argument's type rules the method
+out. Excess arguments share the wildcard restriction, so a wildcard query
+runs once per excess argument and not at all when there are none.
+Lower-priority method queries are not evaluated after a match is found. A
+query error stops dispatch instead of trying a fallback. Queries may bind
+globals, but cannot bind local variables or parameters. `return` anywhere in
+a query is rejected at load (`[PRCDRPSR2]`). Undefined variables
+and templates unavailable when the method is defined are load errors. An
+undefined global in a query is reported only when the query runs, which stops
+dispatch; CLIPS 6.30 rejects the method at load (`[GLOBLPSR1]`), as it does
+for an undefined global in a deffunction or method body.
 
 ```clp
 (defgeneric classify)
@@ -739,7 +855,8 @@ match, the most specific applicable method is selected.
 ### call-next-method
 
 Within a method body, `(call-next-method)` invokes the next less-specific
-applicable method in the dispatch chain:
+applicable method in the dispatch chain. Each invocation searches again and
+reevaluates candidate queries, including their side effects:
 
 ```clp
 (defgeneric annotate)
@@ -750,7 +867,13 @@ applicable method in the dispatch chain:
 
 ### Wildcard Parameters
 
-Methods support wildcard parameters for variable-arity dispatch.
+Methods support wildcard parameters for variable-arity dispatch, with the
+same flattening behavior as deffunction wildcards. Optional type restrictions
+apply to each original supplied argument before flattening; an `INTEGER`
+wildcard therefore rejects a multifield argument containing integers. A call
+with no remaining arguments satisfies the type restriction vacuously, while
+an explicitly supplied empty multifield still has type `MULTIFIELD`. The
+wildcard query and method body receive the flattened binding.
 
 ### Auto-indexing
 
@@ -769,7 +892,8 @@ is a compile error with a diagnostic message.
 
 ### Method Bodies
 
-Method bodies use the same evaluator expression model as deffunction bodies.
+Method bodies use the same evaluator expression model as deffunction bodies,
+including empty bodies returning `FALSE` and load validation of function calls.
 Use the calling rule's RHS for fact mutation and agenda/focus control.
 
 ---

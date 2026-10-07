@@ -1,0 +1,5 @@
+none:integer:0
+empty:fallback:0
+scalars:integer:2
+multifield:fallback:2
+mixed:fallback:3

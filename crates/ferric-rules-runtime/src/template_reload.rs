@@ -49,6 +49,8 @@ impl Engine {
                 method
                     .body
                     .iter()
+                    .chain(method.parameter_queries.iter().flatten())
+                    .chain(method.wildcard_query.as_ref())
                     .any(|expr| self.expr_uses_template(expr, module, id))
             })
         })

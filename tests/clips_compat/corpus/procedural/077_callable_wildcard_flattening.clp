@@ -1,0 +1,8 @@
+(deffunction cnt ($?r) (length$ ?r))
+(deffunction shape (?a $?r)
+  (printout t "first:" ?a " rest:" ?r " length:" (length$ ?r) crlf))
+(defrule run =>
+  (bind ?m (create$ a b c))
+  (printout t (cnt (create$ a b c)) ":" (cnt x (create$ a b) y) ":" (cnt (create$)) crlf)
+  (printout t (cnt ?m) ":" (cnt x ?m y) crlf)
+  (shape (create$ 1 2) 3 (create$ 4 5)))

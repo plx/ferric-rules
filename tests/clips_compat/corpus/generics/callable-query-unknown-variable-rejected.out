@@ -1,0 +1,7 @@
+
+[PRCCODE3] Undefined variable missing referenced in method.
+
+ERROR:
+(defmethod MAIN::rejected
+   ((?x (> ?missing 0)))
+   

@@ -25,7 +25,12 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 4. Deffacts store executable field initializers rather
+The current schema is 5. Generic methods retain fixed-parameter queries,
+wildcard type restrictions, and wildcard queries. Schema 4 lacks that metadata
+and is rejected with `UnsupportedVersion(4)`. This version also uses corrected
+loop, empty-callable, and wildcard argument semantics.
+
+Deffacts store executable field initializers rather
 than values computed at load time, so their expressions and global references
 run on each reset. Schema 3 snapshots lack these initializers and are rejected
 with `UnsupportedVersion(3)` before payload decoding.

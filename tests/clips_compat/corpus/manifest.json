@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "4856fafc8fcc853a70daf658c79f487cb35e75ee",
+    "ferric_revision": "94cd0564d12520842eb9a06a31c444d9cc8d245b",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -632,6 +632,241 @@
       "covers": [
         "generics",
         "variadic-method"
+      ]
+    },
+    {
+      "path": "generics/callable-wildcard-flattening.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "defmethod",
+        "wildcard",
+        "multifield"
+      ]
+    },
+    {
+      "path": "generics/callable-typed-wildcard-original-types.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "original-arguments"
+      ]
+    },
+    {
+      "path": "generics/callable-query-symbols.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard"
+      ]
+    },
+    {
+      "path": "generics/callable-query-later-parameters.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "later-parameter"
+      ]
+    },
+    {
+      "path": "generics/callable-query-wildcard-binding.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "flattened-wildcard"
+      ]
+    },
+    {
+      "path": "generics/callable-query-specificity.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-query-lazy-selection.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "lazy-dispatch",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-query-next-method-reevaluation.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "call-next-method",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-query-error.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "lazy-dispatch",
+        "error-prefix"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "generics/callable-query-return-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-return-nested-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-unknown-variable-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-late-template-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "template-visibility"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-bind-local-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "local-bind"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-bind-global.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "global-bind",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-query-wildcard-per-argument.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "zero-arguments"
+      ]
+    },
+    {
+      "path": "generics/callable-query-argument-order.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "typed-wildcard",
+        "lazy-dispatch",
+        "side-effects"
+      ]
+    },
+    {
+      "path": "generics/callable-wildcard-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence-many.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-type-list-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-query-global-variable.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "defglobal"
       ]
     },
     {
@@ -2401,6 +2636,16 @@
       ]
     },
     {
+      "path": "patterns/402_break_lhs_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "test-ce",
+        "break"
+      ],
+      "error": "load"
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [
@@ -3031,6 +3276,251 @@
       "covers": [
         "switch"
       ]
+    },
+    {
+      "path": "procedural/072_callable_break_count_rhs.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/073_callable_break_function_while.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "deffunction",
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/074_callable_break_nested_loops.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "nearest-loop"
+      ]
+    },
+    {
+      "path": "procedural/075_callable_break_multifield_rhs.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "foreach",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/076_callable_loop_return_values.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "while",
+        "loop-for-count",
+        "return-value"
+      ]
+    },
+    {
+      "path": "procedural/077_callable_wildcard_flattening.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "deffunction",
+        "wildcard",
+        "multifield"
+      ]
+    },
+    {
+      "path": "procedural/078_callable_count_bare_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "loop-for-count",
+        "bare-bound"
+      ]
+    },
+    {
+      "path": "procedural/079_callable_count_list_literal_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "loop-for-count",
+        "invalid-syntax"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/080_callable_empty_bodies.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "deffunction",
+        "defmethod",
+        "empty-body"
+      ]
+    },
+    {
+      "path": "procedural/081_callable_missing_branch_false.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "if",
+        "switch",
+        "return-value"
+      ]
+    },
+    {
+      "path": "procedural/082_callable_unknown_function_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "deffunction",
+        "unknown-call"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/083_callable_unknown_method_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "defmethod",
+        "unknown-call"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/084_callable_forward_declaration.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "deffunction",
+        "forward-reference",
+        "redefinition"
+      ]
+    },
+    {
+      "path": "procedural/085_callable_break_outside_loop_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/086_callable_break_while_condition_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "while",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/087_callable_break_count_bound_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "loop-for-count",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/088_callable_break_foreach_list_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "foreach",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/089_callable_break_progn_list_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "break",
+        "progn$",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/090_callable_multifield_loop_return_values.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "foreach",
+        "progn$",
+        "break",
+        "return-value"
+      ]
+    },
+    {
+      "path": "procedural/091_callable_break_method_body.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "defmethod",
+        "break"
+      ]
+    },
+    {
+      "path": "procedural/092_callable_unimported_function_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "parameter-query",
+        "module-visibility",
+        "unknown-call"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/402_callable_rejected_function_caller_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "procedural",
+        "procedural-callables",
+        "unknown-call",
+        "deffunction",
+        "defrule"
+      ],
+      "error": "load"
     },
     {
       "path": "queries/any-factp-empty.clp",
@@ -4395,6 +4885,64 @@
         "deffacts",
         "do-for-fact"
       ]
+    },
+    {
+      "path": "queries/callable-break-action-forms.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "procedural-callables",
+        "break",
+        "do-for-fact",
+        "do-for-all-facts",
+        "delayed-do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/callable-break-nearest-query.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "procedural-callables",
+        "break",
+        "nearest-loop",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "queries/callable-break-predicate-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "procedural-callables",
+        "break",
+        "query-predicate",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "queries/callable-count-bare-slot-bound.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "procedural-callables",
+        "loop-for-count",
+        "bare-bound",
+        "query-slot"
+      ]
+    },
+    {
+      "path": "queries/callable-count-parenthesized-slot-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "procedural-callables",
+        "loop-for-count",
+        "invalid-syntax",
+        "query-slot"
+      ],
+      "error": "load"
     },
     {
       "path": "stdlib/001_add_integers.clp",

@@ -268,8 +268,14 @@ pub struct RegisteredMethod {
     /// Type restrictions per parameter (same length as `parameters`).
     /// Empty vec for a parameter means "any type".
     pub type_restrictions: Vec<Vec<String>>,
+    /// Optional applicability query for each fixed parameter.
+    pub parameter_queries: Vec<Option<ActionExpr>>,
     /// Optional wildcard parameter name.
     pub wildcard_parameter: Option<String>,
+    /// Restrictions applied to each original excess argument.
+    pub wildcard_type_restrictions: Vec<String>,
+    /// Query evaluated with all parameter bindings in scope.
+    pub wildcard_query: Option<ActionExpr>,
     /// Method body expressions.
     pub body: Vec<ferric_rules_parser::ActionExpr>,
 }
@@ -277,6 +283,7 @@ pub struct RegisteredMethod {
 /// A generic function with its collection of methods.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "GenericFunctionData"))]
 pub struct GenericFunction {
     /// Generic function name.
     pub name: String,
@@ -284,6 +291,33 @@ pub struct GenericFunction {
     pub methods: Vec<RegisteredMethod>,
     /// Next auto-assigned index.
     pub(crate) next_index: i32,
+    /// Positions in `methods`, in dispatch precedence order. Derived from the
+    /// methods, so snapshots omit it and rebuild it on restore.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    precedence: Vec<usize>,
+}
+
+/// The serialized fields of a [`GenericFunction`].
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct GenericFunctionData {
+    name: String,
+    methods: Vec<RegisteredMethod>,
+    next_index: i32,
+}
+
+#[cfg(feature = "serde")]
+impl From<GenericFunctionData> for GenericFunction {
+    fn from(data: GenericFunctionData) -> Self {
+        let mut generic = Self {
+            name: data.name,
+            methods: data.methods,
+            next_index: data.next_index,
+            precedence: Vec::new(),
+        };
+        generic.rebuild_precedence();
+        generic
+    }
 }
 
 impl GenericFunction {
@@ -293,16 +327,62 @@ impl GenericFunction {
             name,
             methods: Vec::new(),
             next_index: 1,
+            precedence: Vec::new(),
         }
     }
 
-    /// Add a method. Methods are kept sorted by index (ascending).
+    /// Add a method. Methods are kept sorted by index (ascending), and the
+    /// precedence order is updated as CLIPS 6.30 orders methods.
     pub fn add_method(&mut self, method: RegisteredMethod) {
         if method.index >= self.next_index {
             self.next_index = method.index + 1;
         }
         let pos = self.methods.partition_point(|m| m.index < method.index);
         self.methods.insert(pos, method);
+        if pos + 1 == self.methods.len() && self.precedence.len() == pos {
+            Self::insert_by_precedence(&self.methods, &mut self.precedence, pos);
+        } else {
+            self.rebuild_precedence();
+        }
+    }
+
+    /// The methods in dispatch precedence order, most specific first.
+    ///
+    /// CLIPS 6.30 does not sort methods: as each one is defined it is inserted
+    /// before the first existing method it has higher precedence over, or
+    /// appended. The slot-wise precedence relation is not transitive, so the
+    /// order depends on definition order. Methods are inserted here in index
+    /// order, which is definition order for auto-assigned indices.
+    pub fn methods_by_precedence(&self) -> impl Iterator<Item = &RegisteredMethod> {
+        let order = if self.precedence.len() == self.methods.len() {
+            std::borrow::Cow::Borrowed(self.precedence.as_slice())
+        } else {
+            std::borrow::Cow::Owned(Self::precedence_order(&self.methods))
+        };
+        (0..order.len()).map(move |i| &self.methods[order[i]])
+    }
+
+    fn rebuild_precedence(&mut self) {
+        self.precedence = Self::precedence_order(&self.methods);
+    }
+
+    fn precedence_order(methods: &[RegisteredMethod]) -> Vec<usize> {
+        let mut order = Vec::with_capacity(methods.len());
+        for position in 0..methods.len() {
+            Self::insert_by_precedence(methods, &mut order, position);
+        }
+        order
+    }
+
+    fn insert_by_precedence(methods: &[RegisteredMethod], order: &mut Vec<usize>, position: usize) {
+        let method = &methods[position];
+        let slot = order
+            .iter()
+            .position(|&placed| {
+                crate::evaluator::method_has_higher_precedence(method, &methods[placed])
+            })
+            .unwrap_or(order.len());
+        order.insert(slot, position);
     }
 
     /// Allocate the next auto index.
@@ -350,6 +430,36 @@ impl GenericRegistry {
         wildcard_parameter: Option<String>,
         body: Vec<ferric_rules_parser::ActionExpr>,
     ) {
+        let parameter_queries = vec![None; parameters.len()];
+        self.register_restricted_method(
+            module,
+            name,
+            index,
+            parameters,
+            type_restrictions,
+            parameter_queries,
+            wildcard_parameter,
+            Vec::new(),
+            None,
+            body,
+        );
+    }
+
+    /// Register a method with type and query restrictions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_restricted_method(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        index: Option<i32>,
+        parameters: Vec<String>,
+        type_restrictions: Vec<Vec<String>>,
+        parameter_queries: Vec<Option<ActionExpr>>,
+        wildcard_parameter: Option<String>,
+        wildcard_type_restrictions: Vec<String>,
+        wildcard_query: Option<ActionExpr>,
+        body: Vec<ActionExpr>,
+    ) -> i32 {
         let generic = get_or_insert_module_entry_with(&mut self.generics, module, name, || {
             GenericFunction::new(name.to_string())
         });
@@ -358,9 +468,13 @@ impl GenericRegistry {
             index: actual_index,
             parameters,
             type_restrictions,
+            parameter_queries,
             wildcard_parameter,
+            wildcard_type_restrictions,
+            wildcard_query,
             body,
         });
+        actual_index
     }
 
     /// Look up a generic function by name.
@@ -413,6 +527,11 @@ impl GenericRegistry {
                         w[1].index
                     );
                 }
+                assert_eq!(
+                    generic.precedence,
+                    GenericFunction::precedence_order(&generic.methods),
+                    "generic `{name}` has a stale method precedence order"
+                );
             }
         }
     }
@@ -731,6 +850,131 @@ mod tests {
         assert_eq!(methods[0].index, 1);
         assert_eq!(methods[1].index, 2);
         assert_eq!(methods[2].index, 3);
+    }
+
+    /// Register the cyclic set A=(($?x INTEGER)), B=((?x NUMBER) $?y), C=(?x):
+    /// A outranks B, B outranks C, and C outranks A.
+    fn register_cyclic_method(reg: &mut GenericRegistry, index: Option<i32>, label: &str) {
+        let (parameters, types, wildcard, wildcard_types) = match label {
+            "A" => (vec![], vec![], Some("x".into()), vec!["INTEGER".into()]),
+            "B" => (
+                vec!["x".into()],
+                vec![vec!["NUMBER".into()]],
+                Some("y".into()),
+                vec![],
+            ),
+            _ => (vec!["x".into()], vec![vec![]], None, vec![]),
+        };
+        let queries = vec![None; parameters.len()];
+        reg.register_restricted_method(
+            main_module(),
+            "g",
+            index,
+            parameters,
+            types,
+            queries,
+            wildcard,
+            wildcard_types,
+            None,
+            vec![ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol(label.into()),
+                span: ferric_rules_parser::Span::point(
+                    ferric_rules_parser::Position {
+                        offset: 0,
+                        line: 1,
+                        column: 1,
+                    },
+                    ferric_rules_parser::FileId(0),
+                ),
+            })],
+        );
+    }
+
+    fn precedence_labels(reg: &GenericRegistry) -> Vec<String> {
+        reg.get(main_module(), "g")
+            .unwrap()
+            .methods_by_precedence()
+            .map(|method| match &method.body[0] {
+                ActionExpr::Literal(literal) => match &literal.value {
+                    ferric_rules_parser::LiteralKind::Symbol(label) => label.clone(),
+                    other => panic!("unexpected label {other:?}"),
+                },
+                other => panic!("unexpected body {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn generic_precedence_inserts_cyclic_methods_in_definition_order() {
+        let mut reg = GenericRegistry::new();
+        for label in ["A", "B", "C"] {
+            register_cyclic_method(&mut reg, None, label);
+        }
+        assert_eq!(precedence_labels(&reg), ["C", "A", "B"]);
+
+        let mut reg = GenericRegistry::new();
+        for label in ["C", "A", "B"] {
+            register_cyclic_method(&mut reg, None, label);
+        }
+        assert_eq!(precedence_labels(&reg), ["B", "C", "A"]);
+        reg.debug_assert_consistency();
+    }
+
+    #[test]
+    fn generic_precedence_keeps_definition_order_for_different_type_lists() {
+        // CLIPS: ((?x INTEGER SYMBOL)) and ((?x INTEGER STRING (eq ?x 1)))
+        // differ without either outranking, so the query does not promote
+        // the later method.
+        let label = |name: &str| {
+            vec![ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value: ferric_rules_parser::LiteralKind::Symbol(name.into()),
+                span: ferric_rules_parser::Span::point(
+                    ferric_rules_parser::Position {
+                        offset: 0,
+                        line: 1,
+                        column: 1,
+                    },
+                    ferric_rules_parser::FileId(0),
+                ),
+            })]
+        };
+        let mut reg = GenericRegistry::new();
+        reg.register_restricted_method(
+            main_module(),
+            "g",
+            None,
+            vec!["x".into()],
+            vec![vec!["INTEGER".into(), "SYMBOL".into()]],
+            vec![None],
+            None,
+            vec![],
+            None,
+            label("first"),
+        );
+        reg.register_restricted_method(
+            main_module(),
+            "g",
+            None,
+            vec!["x".into()],
+            vec![vec!["INTEGER".into(), "STRING".into()]],
+            vec![Some(label("TRUE").remove(0))],
+            None,
+            vec![],
+            None,
+            label("second"),
+        );
+        assert_eq!(precedence_labels(&reg), ["first", "second"]);
+        reg.debug_assert_consistency();
+    }
+
+    #[test]
+    fn generic_precedence_follows_index_order_for_explicit_indices() {
+        let mut reg = GenericRegistry::new();
+        for (index, label) in [(3, "C"), (1, "A"), (2, "B")] {
+            register_cyclic_method(&mut reg, Some(index), label);
+        }
+        assert_eq!(precedence_labels(&reg), ["C", "A", "B"]);
+        reg.debug_assert_consistency();
     }
 
     #[test]
@@ -1244,7 +1488,10 @@ mod tests {
             index,
             parameters: vec!["x".to_string()],
             type_restrictions: vec![vec![]],
+            parameter_queries: vec![None],
             wildcard_parameter: None,
+            wildcard_type_restrictions: vec![],
+            wildcard_query: None,
             body: vec![],
         }
     }

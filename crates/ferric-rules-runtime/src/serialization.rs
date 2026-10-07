@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 4;
+const SCHEMA_VERSION: u16 = 5;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -526,6 +526,61 @@ mod tests {
         )
         .unwrap();
         Engine::deserialize(&bytes, SerializationFormat::Json)
+    }
+
+    #[test]
+    fn snapshots_validate_method_query_metadata_and_dormant_control_flow() {
+        fn method(value: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+            if value.get("parameter_queries").is_some() {
+                return Some(value);
+            }
+            match value {
+                serde_json::Value::Array(entries) => entries.iter_mut().find_map(method),
+                serde_json::Value::Object(entries) => entries.values_mut().find_map(method),
+                _ => None,
+            }
+        }
+        let engine = Engine::with_rules("(defmethod choose ((?x INTEGER (eq ?x 1))) ?x)").unwrap();
+        for corruption in 0..7 {
+            let result = alter_state(&engine, |state| {
+                let method = method(state).unwrap();
+                match corruption {
+                    0 => method["parameter_queries"] = serde_json::json!([]),
+                    1 => method["wildcard_type_restrictions"] = serde_json::json!(["SYMBOL"]),
+                    2 => method["wildcard_query"] = method["parameter_queries"][0].clone(),
+                    4 => {
+                        method["parameter_queries"][0]["FunctionCall"]["name"] =
+                            serde_json::json!("bind");
+                    }
+                    5 => {
+                        method["parameter_queries"][0]["FunctionCall"]["args"][0]["Variable"][0] =
+                            serde_json::json!("missing");
+                    }
+                    6 => {
+                        let call = &mut method["parameter_queries"][0]["FunctionCall"];
+                        call["name"] = serde_json::json!("return");
+                        call["args"] = serde_json::json!([]);
+                    }
+                    _ => {
+                        let call = &mut method["parameter_queries"][0]["FunctionCall"];
+                        call["name"] = serde_json::json!("break");
+                        call["args"] = serde_json::json!([]);
+                    }
+                }
+            });
+            let expected = match corruption {
+                0 => "inconsistent method queries",
+                1 | 2 => "wildcard restrictions without a wildcard parameter",
+                4 => "GENRCPSR12",
+                5 => "PRCCODE3",
+                6 => "[PRCDRPSR2] The return function",
+                _ => "PRCDRPSR2",
+            };
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(expected)),
+                "corruption {corruption}"
+            );
+        }
     }
 
     #[test]
@@ -1556,11 +1611,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-4 fixture: ordered and template splits,
+    /// Source of the committed schema-5 fixture: ordered and template splits,
     /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-4.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-5.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -1682,11 +1737,27 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_four_snapshot_resumes_matches_and_seed_expressions() {
+    fn committed_schema_four_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-4.cbor");
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(4))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_five_snapshot_resumes_matches_initializers_and_method_queries() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-5.cbor");
         let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
         assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
         verify_split_resume(engine);
+
+        let mut methods = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        methods.load_str("(assert (method-result 0 (fixture-method special a b)) (method-result 1 (fixture-method ordinary a b)) (method-result 2 (fixture-method special 7)))").unwrap();
+        assert_eq!(
+            integer_rows(&methods, "method-result"),
+            [[0, 2], [1, -1], [2, -1]]
+        );
 
         // Persisted initializers resolve a replaced function instead of
         // replaying values computed before the snapshot was saved.
@@ -1726,11 +1797,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-4 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_four_fixture() {
+    #[ignore = "regenerates the committed schema-5 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_five_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-4.cbor");
+            .join("tests/fixtures/snapshots/schema-5.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 

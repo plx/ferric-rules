@@ -1,0 +1,7 @@
+
+[EXPRNPSR3] Missing function declaration for missing-call.
+
+ERROR:
+(defmethod MAIN::bad
+   ((?x INTEGER))
+   (+ 1 (missing-call

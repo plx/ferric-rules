@@ -49,16 +49,24 @@ sharing the restored disjunctive paths. Schema 4 rejects these unchanged bytes
 with `UnsupportedVersion(3)`: schema 3 stored seed facts computed at load time,
 without the field initializers needed for correct reset-time evaluation.
 
-`schema-4.cbor` is the current format. Its source, `schema-4.clp`, keeps the
+`schema-4.cbor` preserves the previous format. Its source, `schema-4.clp`, keeps the
 same pending split and disjunction checkpoint, but supplies ordered and
 template seed fields through expressions. An additional ordered seed reads a
 global in an arithmetic expression. Construct with `Engine::with_rules`, run
 one firing, then serialize with CBOR. The committed-byte test checks the
 existing resume behavior, then separately replaces the seed function after
 restoring the fixture and verifies that reset uses its new values. Keep all
-older fixture bytes unchanged. Regenerate schema 4 only after
-an intentional change to its unreleased layout:
+older fixture bytes unchanged. Schema 5 rejects this fixture with
+`UnsupportedVersion(4)` because method restrictions now include query
+expressions and wildcard types.
+
+`schema-5.cbor` is the current format. Its source, `schema-5.clp`, extends the
+schema-4 checkpoint with a generic whose fixed parameter has a query and whose
+wildcard has both type and query restrictions. The committed-byte test resumes
+pending matches, exercises reset-time initializers after callable replacement,
+and checks method selection and wildcard bindings after restoration.
+Regenerate schema 5 only after an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_four_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_five_fixture -- --ignored
 ```

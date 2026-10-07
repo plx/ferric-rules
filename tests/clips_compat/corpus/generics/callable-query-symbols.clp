@@ -1,0 +1,6 @@
+(defgeneric kind)
+(defmethod kind ((?x SYMBOL)) ordinary)
+(defmethod kind ((?x SYMBOL (eq ?x special))) special-sym)
+(defgeneric mc)
+(defmethod mc (($?r SYMBOL)) (length$ ?r))
+(defrule run => (printout t (kind special) ":" (kind other) ":" (mc a b c) crlf))

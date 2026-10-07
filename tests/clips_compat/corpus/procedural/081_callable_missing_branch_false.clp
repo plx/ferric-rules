@@ -1,0 +1,6 @@
+(deffunction missing ()
+  (printout t "if:[" (if FALSE then 7) "]" crlf)
+  (printout t "switch:[" (switch z (case a then 7)) "]" crlf)
+  (printout t (eq (if FALSE then 7) FALSE) ":" (eq (switch z (case a then 7)) FALSE) crlf)
+  (printout t (create$ (if FALSE then 7) (switch z (case a then 7))) crlf))
+(defrule run => (missing))
