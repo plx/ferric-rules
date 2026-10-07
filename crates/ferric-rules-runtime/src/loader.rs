@@ -1041,6 +1041,14 @@ impl Engine {
                             "[GENRCPSR12] Binds are not allowed in query expressions.",
                         ));
                     }
+                    // A query runs outside the method body, so CLIPS rejects
+                    // `return` anywhere in it.
+                    if call.name == "return" {
+                        return Err(Self::compile_error_at(
+                            &call.span,
+                            "[PRCDRPSR2] The return function is not valid in this context.",
+                        ));
+                    }
                 }
                 expression.push_children(&mut pending);
             }

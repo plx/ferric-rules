@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 720
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 722
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -822,7 +822,8 @@ out. Excess arguments share the wildcard restriction, so a wildcard query
 runs once per excess argument and not at all when there are none.
 Lower-priority method queries are not evaluated after a match is found. A
 query error stops dispatch instead of trying a fallback. Queries may bind
-globals, but cannot bind local variables or parameters. Undefined variables
+globals, but cannot bind local variables or parameters. `return` anywhere in
+a query is rejected at load (`[PRCDRPSR2]`). Undefined variables
 and templates unavailable when the method is defined are load errors. An
 undefined global in a query is reported only when the query runs, which stops
 dispatch; CLIPS 6.30 rejects the method at load (`[GLOBLPSR1]`), as it does

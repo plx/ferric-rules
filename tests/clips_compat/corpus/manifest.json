@@ -730,6 +730,28 @@
       "error": "run"
     },
     {
+      "path": "generics/callable-query-return-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "generics/callable-query-return-nested-rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "parameter-query",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
       "path": "generics/callable-query-unknown-variable-rejected.clp",
       "level": "boundary",
       "covers": [
