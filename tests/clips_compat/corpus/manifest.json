@@ -10670,7 +10670,8 @@
       "gap": {
         "issues": [
           "https://github.com/plx/ferric-rules/issues/398",
-          "https://github.com/plx/ferric-rules/issues/400"
+          "https://github.com/plx/ferric-rules/issues/400",
+          "https://github.com/plx/ferric-rules/issues/480"
         ],
         "summary": "Late-install topology boundary: a fresh blocked NCC installed after all facts exist, with its parent asserted before blocker supports, does not replay the transient historical auto-focus push retained by CLIPS 6.30 incremental reset.",
         "observed": {
@@ -10815,6 +10816,31 @@
         "ncc",
         "activation-order"
       ]
+    },
+    {
+      "path": "modules/398_gap_late_ncc_shared_prefix_trailing_test.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "test",
+        "activation-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Late-install boundary: an auto-focus rule built online whose blocked NCC shares the left prefix with an older rule and is followed by a test CE loses the transient focus push CLIPS 6.30 performs during installation; the trailing test is only queued before the fresh subnetwork blocks the token.",
+        "observed": {
+          "phase": "complete",
+          "output": "before:(MAIN)\nbuilt:TRUE\ninstalled:(MAIN)\nreleased:(WATCH MAIN)\nlate1\n",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }

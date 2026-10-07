@@ -1,14 +1,14 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 1057 small programs progress from individual features to
+CLIPS subset. Its 1058 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
 CLIPS-verified output oracle. There are 1047 clean conformance cases, 192 of which
-reproduce a CLIPS error, and 10 active characterizations of documented
+reproduce a CLIPS error, and 11 active characterizations of documented
 differences: CLIPS output that is not UTF-8, malformed `format` directives,
 equal-salience ties involving identical negative/NCC joins or multi-pattern
-`exists`, a transient nested NCC refire, and a late-installed auto-focus NCC
-rule.
+`exists`, a transient nested NCC refire, and two late-installed auto-focus NCC
+rules.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs

@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1057
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1058
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -47,9 +47,11 @@ Docker image.
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
 direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and five track remaining
-network-topology tie differences described with
-[#400](https://github.com/plx/ferric-rules/issues/400):
+[#394](https://github.com/plx/ferric-rules/issues/394), and seven track network
+topology and installation-history differences: five equal-salience ties
+described with [#400](https://github.com/plx/ferric-rules/issues/400) and two
+late-installation focus histories tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480):
 
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
@@ -58,6 +60,7 @@ network-topology tie differences described with
 | Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
+| Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
@@ -336,14 +339,17 @@ declaring auto-focus on one rule does not reorder unrelated rules. Snapshots
 preserve the focus stack without replaying notices for existing activations.
 
 Late installation of a blocked NCC rule follows CLIPS's transient focus push
-when its fresh subnetwork shares the rule's left prefix with an older rule, and
-no push when the subnetwork extends an already populated join, including one
-followed by a deferred test. One characterized difference remains: a fresh
-subnetwork with no shared prefix does not reconstruct every transient
+when its fresh subnetwork shares the rule's left prefix with an older rule,
+unless a test CE follows the NCC, and no push when the subnetwork extends an
+already populated join, including one followed by a deferred test. Two
+characterized differences remain, tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480): with a shared prefix and
+a trailing test CE, the test is only queued before the fresh subnetwork blocks
+the token, so the transient activation and its focus push never happen; and a
+fresh subnetwork with no shared prefix does not reconstruct every transient
 activation from the historical fact assertion order, so such a rule can miss a
-historical focus push. The corpus records that observation under #398/#400.
-Ordinary assertion, reset, and blocker-retraction focus behavior is covered
-separately.
+historical focus push. Ordinary assertion, reset, and blocker-retraction focus
+behavior is covered separately.
 
 `when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,
 and `refresh-agenda` remain unsupported. Invalid or duplicate declarations

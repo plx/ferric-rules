@@ -16,12 +16,16 @@ topology for independent supports, and one nested NCC case records a transient
 refire that CLIPS performs and Ferric avoids. Historical issue descriptions below are not a
 substitute for its exact observations.
 
-One auto-focus case added with [#398](https://github.com/plx/ferric-rules/issues/398)
-records a related late-installation boundary:
+Two auto-focus cases added with [#398](https://github.com/plx/ferric-rules/issues/398)
+record a related late-installation boundary, now tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480):
 [fresh NCC history](modules/398_gap_late_ncc_fresh_parent_first.clp) misses a
-transient focus push from earlier fact order. Shared-prefix, shared-join, and
-deferred-predicate late installation, ordinary activation hooks, and
-deferred-predicate admission have separate conforming coverage.
+transient focus push from earlier fact order, and a
+[shared-prefix NCC followed by a test CE](modules/398_gap_late_ncc_shared_prefix_trailing_test.clp)
+misses the push CLIPS performs during installation. Shared-prefix (without a
+trailing test), shared-join, shared-entry, and deferred-predicate late
+installation, ordinary activation hooks, and deferred-predicate admission have
+separate conforming coverage.
 
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.
