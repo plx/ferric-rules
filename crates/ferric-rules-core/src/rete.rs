@@ -7127,7 +7127,13 @@ mod auto_focus_tests {
             ];
             for (id, conditions) in (1..).zip(&rules) {
                 compiler
-                    .compile_conditions(&mut rete, &facts, RuleId(id), Salience::DEFAULT, conditions)
+                    .compile_conditions(
+                        &mut rete,
+                        &facts,
+                        RuleId(id),
+                        Salience::DEFAULT,
+                        conditions,
+                    )
                     .unwrap();
             }
             assert_relation(&mut rete, &mut facts, item);
