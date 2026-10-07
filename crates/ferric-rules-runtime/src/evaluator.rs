@@ -1800,17 +1800,31 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
     count
 }
 
-/// Compare two methods by specificity. Returns `Ordering::Less` if `a` is more specific
-/// than `b`, `Ordering::Greater` if `b` is more specific, and `Ordering::Equal` only
-/// when the two methods are identical in specificity (resolved by index tie-break).
+/// Whether method `a` has strictly higher dispatch precedence than `b`, as
+/// CLIPS 6.30's `RestrictionsCompare` decides when it places a new method.
+///
+/// The relation is not transitive (a wildcard slot loses at once to a method
+/// without a wildcard, while typed slots compare by type count), so it must
+/// not drive a sort: [`GenericFunction::methods_by_precedence`] uses it to
+/// insert methods one at a time, as CLIPS does.
+pub(crate) fn method_has_higher_precedence(
+    a: &crate::functions::RegisteredMethod,
+    b: &crate::functions::RegisteredMethod,
+) -> bool {
+    compare_method_restrictions(a, b).is_lt()
+}
+
+/// Compare two methods' restrictions. Returns `Ordering::Less` if `a` has
+/// higher precedence than `b`, `Ordering::Greater` if `b` does, and
+/// `Ordering::Equal` when neither outranks the other.
 ///
 /// Following CLIPS 6.30, each method's restriction slots are its fixed
 /// parameters followed by its wildcard, compared left to right. A wildcard slot
 /// loses at once to a regular parameter of a method that has no wildcard.
 /// Otherwise fewer covered primitive types is more specific, then a query
 /// outranks no query. When the shared slots tie, a method without a wildcard
-/// wins, then the method with more slots, then the lower index.
-fn compare_method_specificity(
+/// wins, then the method with more slots.
+fn compare_method_restrictions(
     a: &crate::functions::RegisteredMethod,
     b: &crate::functions::RegisteredMethod,
 ) -> std::cmp::Ordering {
@@ -1835,7 +1849,6 @@ fn compare_method_specificity(
         .is_some()
         .cmp(&b.wildcard_parameter.is_some())
         .then_with(|| b_slots.cmp(&a_slots))
-        .then_with(|| a.index.cmp(&b.index))
 }
 
 /// One restriction slot of a method: a fixed parameter or the wildcard.
@@ -2069,13 +2082,11 @@ fn dispatch_generic(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     let arg_values = eval_args(ctx, args)?;
-    let mut candidates: Vec<_> = generic
-        .methods
-        .iter()
+    let candidates: Vec<_> = generic
+        .methods_by_precedence()
         .filter(|method| method_may_apply(method, &arg_values))
         .cloned()
         .collect();
-    candidates.sort_by(compare_method_specificity);
     if candidates.is_empty() {
         return Err(no_applicable_method(&generic.name, &arg_values, span));
     }
@@ -10685,12 +10696,12 @@ mod tests {
         let integer_method = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let number_method = make_method(1, vec![vec!["NUMBER".to_string()]], false);
         assert_eq!(
-            compare_method_specificity(&integer_method, &number_method),
+            compare_method_restrictions(&integer_method, &number_method),
             std::cmp::Ordering::Less,
             "INTEGER method should be more specific (Less) than NUMBER method"
         );
         assert_eq!(
-            compare_method_specificity(&number_method, &integer_method),
+            compare_method_restrictions(&number_method, &integer_method),
             std::cmp::Ordering::Greater,
         );
     }
@@ -10700,7 +10711,7 @@ mod tests {
         let restricted = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let unrestricted = make_method(1, vec![vec![]], false);
         assert_eq!(
-            compare_method_specificity(&restricted, &unrestricted),
+            compare_method_restrictions(&restricted, &unrestricted),
             std::cmp::Ordering::Less,
         );
     }
@@ -10710,20 +10721,23 @@ mod tests {
         let fixed = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let variadic = make_method(1, vec![vec!["INTEGER".to_string()]], true);
         assert_eq!(
-            compare_method_specificity(&fixed, &variadic),
+            compare_method_restrictions(&fixed, &variadic),
             std::cmp::Ordering::Less,
         );
     }
 
     #[test]
-    fn compare_specificity_index_tiebreak() {
-        // Two methods with identical type restrictions and no wildcard: lower index wins.
+    fn compare_specificity_identical_restrictions_tie() {
+        // Identical restrictions: neither outranks the other, so definition
+        // order decides.
         let m0 = make_method(0, vec![vec!["INTEGER".to_string()]], false);
         let m1 = make_method(1, vec![vec!["INTEGER".to_string()]], false);
         assert_eq!(
-            compare_method_specificity(&m0, &m1),
-            std::cmp::Ordering::Less,
+            compare_method_restrictions(&m0, &m1),
+            std::cmp::Ordering::Equal,
         );
+        assert!(!method_has_higher_precedence(&m0, &m1));
+        assert!(!method_has_higher_precedence(&m1, &m0));
     }
 
     fn typed_wildcard(
@@ -10747,13 +10761,13 @@ mod tests {
         let fixed = make_method(1, vec![vec![]], false);
         let variadic = make_method(0, vec![vec![]], true);
         assert_eq!(
-            compare_method_specificity(&fixed, &variadic),
+            compare_method_restrictions(&fixed, &variadic),
             std::cmp::Ordering::Less,
         );
         let empty = make_method(1, vec![], false);
         let wildcard = make_method(0, vec![], true);
         assert_eq!(
-            compare_method_specificity(&empty, &wildcard),
+            compare_method_restrictions(&empty, &wildcard),
             std::cmp::Ordering::Less,
         );
     }
@@ -10764,20 +10778,20 @@ mod tests {
         let typed = typed_wildcard(make_method(1, vec![], true), &["INTEGER"], false);
         let untyped = make_method(2, vec![vec![]], true);
         assert_eq!(
-            compare_method_specificity(&typed, &untyped),
+            compare_method_restrictions(&typed, &untyped),
             std::cmp::Ordering::Less,
         );
         // p8: (($?xs INTEGER)) outranks (?x ?y $?z).
         let two_fixed_wild = make_method(2, vec![vec![], vec![]], true);
         assert_eq!(
-            compare_method_specificity(&typed, &two_fixed_wild),
+            compare_method_restrictions(&typed, &two_fixed_wild),
             std::cmp::Ordering::Less,
         );
         // p7: a wildcard slot loses to a regular parameter of a method with
         // no wildcard, whatever its types: (?x ?y) outranks (($?xs INTEGER)).
         let two_fixed = make_method(2, vec![vec![], vec![]], false);
         assert_eq!(
-            compare_method_specificity(&typed, &two_fixed),
+            compare_method_restrictions(&typed, &two_fixed),
             std::cmp::Ordering::Greater,
         );
     }
@@ -10791,13 +10805,16 @@ mod tests {
             false,
         );
         let b = make_method(2, vec![vec!["INTEGER".to_string()], vec![]], true);
-        assert_eq!(compare_method_specificity(&a, &b), std::cmp::Ordering::Less,);
+        assert_eq!(
+            compare_method_restrictions(&a, &b),
+            std::cmp::Ordering::Less,
+        );
         // p5: equal shared slots, so more slots wins:
         // ((?x INTEGER) $?xs) outranks (($?xs INTEGER)).
         let typed = typed_wildcard(make_method(1, vec![], true), &["INTEGER"], false);
         let int_fixed_wild = make_method(2, vec![vec!["INTEGER".to_string()]], true);
         assert_eq!(
-            compare_method_specificity(&int_fixed_wild, &typed),
+            compare_method_restrictions(&int_fixed_wild, &typed),
             std::cmp::Ordering::Less,
         );
     }
@@ -10808,7 +10825,7 @@ mod tests {
         let queried = typed_wildcard(make_method(1, vec![], true), &[], true);
         let untyped = make_method(2, vec![vec![]], true);
         assert_eq!(
-            compare_method_specificity(&queried, &untyped),
+            compare_method_restrictions(&queried, &untyped),
             std::cmp::Ordering::Less,
         );
     }

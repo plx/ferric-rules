@@ -808,6 +808,26 @@
       ]
     },
     {
+      "path": "generics/callable-cyclic-precedence.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
+      "path": "generics/callable-cyclic-precedence-many.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "procedural-callables",
+        "typed-wildcard",
+        "specificity"
+      ]
+    },
+    {
       "path": "generics/callable-query-global-variable.clp",
       "level": "boundary",
       "covers": [

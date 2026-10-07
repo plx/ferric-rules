@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 717
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 719
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -777,6 +777,17 @@ the types are the same. When every shared position ties, a method without a
 wildcard wins, then the method with more restrictions. For example,
 `(($?xs INTEGER))` outranks `(?x $?xs)`, while `(?x ?y)` outranks
 `(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
+
+This ranking can be cyclic: `(($?x INTEGER))` outranks `((?x NUMBER) $?y)`,
+which outranks `(?x)`, which outranks `(($?x INTEGER))`. As in CLIPS 6.30,
+methods are not sorted. Each method is inserted before the first existing
+method it outranks, or after all of them, so the final order can depend on
+definition order. Ferric inserts methods in index order, which is definition
+order unless explicit indices are given out of order.
+
+Known difference: when explicit indices are given out of definition order and
+the ranking among those methods is cyclic, CLIPS 6.30 still inserts methods in
+definition order, so its dispatch order can differ from Ferric's.
 
 A parameter query follows its optional type restrictions. It is a function
 call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
