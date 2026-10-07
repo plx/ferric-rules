@@ -141,6 +141,38 @@ fn nested_reset_preserves_callable_locals_output_and_remaining_rhs() {
 }
 
 #[test]
+fn halt_before_a_source_reset_still_stops_the_run() {
+    // CLIPS 6.30 keeps a pending halt across a later RHS or callable reset:
+    // the RHS finishes and the run stops with the fresh activations pending.
+    for (prelude, actions) in [
+        ("", "(halt) (reset)"),
+        ("(deffunction stop () (halt) TRUE)", "(stop) (reset)"),
+        ("(deffunction stop () (halt) (reset) TRUE)", "(stop)"),
+    ] {
+        let mut engine = Engine::with_rules(&format!(
+            r#"{prelude}
+            (defrule r =>
+              (printout t "fire" crlf)
+              {actions}
+              (printout t "after" crlf))
+            (defrule s (declare (salience -10)) =>
+              (printout t "unexpected-s" crlf))"#
+        ))
+        .unwrap();
+        let result = engine.run(RunLimit::Count(5)).unwrap();
+        assert_eq!(result.halt_reason, HaltReason::HaltRequested, "{actions}");
+        assert_eq!(result.rules_fired, 1, "{actions}");
+        assert!(engine.action_diagnostics().is_empty(), "{actions}");
+        assert_eq!(engine.get_output("t"), Some("fire\nafter\n"), "{actions}");
+        assert!(engine.is_halted(), "{actions}");
+        assert_eq!(engine.agenda_len(), 2, "{actions}");
+        // Public reset still clears the halt.
+        engine.reset().unwrap();
+        assert!(!engine.is_halted(), "{actions}");
+    }
+}
+
+#[test]
 fn delayed_query_retains_original_members_across_one_reset_in_each_context() {
     for callable in [false, true] {
         let body = r#"

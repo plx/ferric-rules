@@ -3825,6 +3825,27 @@
       "recoverable_control_notices": true
     },
     {
+      "path": "procedural/401_expression_effects_halt_then_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "deffunction",
+        "halt",
+        "reset"
+      ]
+    },
+    {
+      "path": "procedural/401_expression_effects_halt_then_reset_top_level.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "halt",
+        "reset"
+      ]
+    },
+    {
       "path": "procedural/402_callable_rejected_function_caller_rejected.clp",
       "level": "boundary",
       "covers": [
