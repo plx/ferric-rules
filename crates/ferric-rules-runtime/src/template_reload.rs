@@ -3,10 +3,11 @@
 //! These checks run only during loading. References are read from existing
 //! state instead of maintaining another serialized reference-count registry.
 
-use ferric_rules_core::{AlphaEntryType, Fact, RuleId, TemplateId};
-use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
+use ferric_rules_core::{AlphaEntryType, RuleId, TemplateId};
+use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern, RuleConstruct};
 
 use crate::engine::{rule_index_get, Engine};
+use crate::fact_initializer::PreparedFact;
 use crate::modules::ModuleId;
 
 impl Engine {
@@ -16,11 +17,15 @@ impl Engine {
                 .rete
                 .alpha
                 .contains_entry(&AlphaEntryType::Template(id))
-            || self
-                .registered_deffacts
-                .iter()
-                .flat_map(|definition| &definition.facts)
-                .any(|fact| matches!(fact, Fact::Template(template) if template.template_id == id))
+            || self.registered_deffacts.iter().any(|definition| {
+                definition.facts.iter().any(|fact| {
+                    matches!(fact, PreparedFact::Template { template_id, .. } if *template_id == id)
+                        || fact.all_expressions().any(|expression| {
+                            matches!(expression, crate::evaluator::RuntimeExpr::QueryAction { bindings, .. }
+                                if bindings.iter().any(|(_, name)| self.template_name_is(name, definition.module, id)))
+                        })
+                })
+            })
         {
             return true;
         }
@@ -51,6 +56,33 @@ impl Engine {
 
     pub(crate) fn template_name_is(&self, name: &str, module: ModuleId, id: TemplateId) -> bool {
         self.resolve_template_id(name, module).ok() == Some(id)
+    }
+
+    /// A deffacts body that is still queued in the current load uses a template
+    /// through its head or through a fact query in one of its initializers.
+    pub(crate) fn fact_body_uses_template(
+        &self,
+        fact: &FactBody,
+        module: ModuleId,
+        id: TemplateId,
+    ) -> bool {
+        let initializer_uses = |value: &FactValue| matches!(value, FactValue::Expression(expr) if self.expr_uses_template(expr, module, id));
+        match fact {
+            FactBody::Ordered(fact) => {
+                self.template_name_is(&fact.relation, module, id)
+                    || fact.values.iter().any(initializer_uses)
+            }
+            FactBody::Template(fact) => {
+                self.template_name_is(&fact.template, module, id)
+                    || fact.slot_values.iter().any(|slot| {
+                        slot.values.iter().any(initializer_uses)
+                            || slot
+                                .ordered_expression
+                                .as_deref()
+                                .is_some_and(|expr| self.expr_uses_template(expr, module, id))
+                    })
+            }
+        }
     }
 
     pub(crate) fn rule_uses_template(

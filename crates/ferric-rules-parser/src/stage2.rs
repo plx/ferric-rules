@@ -352,6 +352,10 @@ pub struct FactSlotValue {
     pub name: String,
     /// Every supplied field, in order. Empty is valid for a multislot.
     pub values: Vec<FactValue>,
+    /// The complete list as an ordered-fact expression, when valid. The loader
+    /// resolves whether this list denotes a template slot or an expression;
+    /// slot names such as `if` need not form valid expression syntax.
+    pub ordered_expression: Option<Box<ActionExpr>>,
     pub span: Span,
 }
 
@@ -363,6 +367,8 @@ pub enum FactValue {
     GlobalVariable(String, Span),
     /// Empty multifield value — represents `(slot-name)` with no values.
     EmptyMultifield(Span),
+    /// An expression evaluated when the fact is asserted, including on reset.
+    Expression(Box<ActionExpr>),
 }
 
 // ============================================================================
@@ -1267,7 +1273,7 @@ fn interpret_global(elements: &[SExpr], span: Span) -> Result<GlobalConstruct, I
             });
         }
 
-        let value = interpret_action_expr(&elements[idx])?;
+        let value = interpret_action_expr_inner(&elements[idx])?;
         idx += 1;
 
         globals.push(GlobalDefinition {
@@ -2254,7 +2260,7 @@ fn interpret_fact_mutation_call(
 
     // First arg is the fact variable, parse as normal action expression
     if let Some(first) = rest.first() {
-        args.push(interpret_action_expr(first)?);
+        args.push(interpret_action_expr_inner(first)?);
     }
 
     // Remaining args are slot-value pairs: parse without keyword interception
@@ -2289,7 +2295,7 @@ fn interpret_action_expr_as_slot_pair(expr: &SExpr) -> Result<ActionExpr, Interp
             }
         }
     }
-    interpret_action_expr(expr)
+    interpret_action_expr_inner(expr)
 }
 
 /// Interpret a function call expression.
@@ -2395,7 +2401,7 @@ fn interpret_action_expr_prefix(
     let first = exprs
         .first()
         .ok_or_else(|| InterpretError::missing("action expression", span))?;
-    Ok((interpret_action_expr(first)?, 1))
+    Ok((interpret_action_expr_inner(first)?, 1))
 }
 
 /// Interpret every expression in an argument list or body, without dropping
@@ -2859,8 +2865,39 @@ fn interpret_query_action_expr(
     })
 }
 
-/// Interpret an expression in an action context (RHS).
-fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
+/// Interpret one expression using the same syntax as rule action operands.
+///
+/// Checks the shared nesting limit before recursively interpreting a manually
+/// constructed S-expression, as [`interpret_constructs`] does for constructs.
+///
+/// # Errors
+/// Returns an error for malformed expression syntax or excessive nesting.
+pub fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
+    if let Some((depth, span)) = expr.nesting_depth_violation() {
+        return Err(InterpretError::nesting_depth_exceeded(depth, span));
+    }
+    interpret_action_expr_inner(expr)
+}
+
+/// Interpret a sequence of operands, such as the fields of an asserted fact,
+/// using the same syntax as rule action arguments.
+///
+/// Compact `?fact:slot` references span three lexer atoms and are consumed as
+/// one expression. Every element passes the shared nesting check first.
+///
+/// # Errors
+/// Returns an error for malformed expression syntax or excessive nesting.
+pub fn interpret_action_exprs(exprs: &[SExpr]) -> Result<Vec<ActionExpr>, InterpretError> {
+    for expr in exprs {
+        if let Some((depth, span)) = expr.nesting_depth_violation() {
+            return Err(InterpretError::nesting_depth_exceeded(depth, span));
+        }
+    }
+    interpret_action_expr_sequence(exprs)
+}
+
+/// Interpret an expression after the containing source has passed depth checks.
+fn interpret_action_expr_inner(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
     // Check if it's a list (nested function call or special form)
     if let Some(list) = expr.as_list() {
         // Detect the `(if ...)` special form.
@@ -3153,7 +3190,13 @@ fn interpret_fact_body(expr: &SExpr) -> Result<FactBody, InterpretError> {
         .to_string();
 
     if is_template_style_fields(&list[1..]) {
-        interpret_template_fact(name, &list[1..], expr.span())
+        // Special forms can contain lists that are not expressions by
+        // themselves, such as the variable specification in loop-for-count.
+        // If slot parsing fails, retain a valid ordered expression instead.
+        // A registered template still rejects positional fields in the loader.
+        interpret_template_fact(name.clone(), &list[1..], expr.span()).or_else(|error| {
+            interpret_ordered_fact(name, &list[1..], expr.span()).map_err(|_| error)
+        })
     } else {
         interpret_ordered_fact(name, &list[1..], expr.span())
     }
@@ -3201,6 +3244,7 @@ fn interpret_fact_slot_value(slot_expr: &SExpr) -> Result<FactSlotValue, Interpr
     Ok(FactSlotValue {
         name: slot_name,
         values,
+        ordered_expression: interpret_action_expr_inner(slot_expr).ok().map(Box::new),
         span: slot_expr.span(),
     })
 }
@@ -3224,6 +3268,11 @@ fn interpret_ordered_fact(
 
 /// Interpret a value in a fact body.
 fn interpret_fact_value(expr: &SExpr) -> Result<FactValue, InterpretError> {
+    if expr.as_list().is_some() {
+        return interpret_action_expr_inner(expr)
+            .map(Box::new)
+            .map(FactValue::Expression);
+    }
     let atom = expr
         .as_atom()
         .ok_or_else(|| InterpretError::expected("fact value (atom)", expr.span()))?;
@@ -4262,6 +4311,16 @@ mod tests {
     }
 
     #[test]
+    fn interpret_action_exprs_consumes_compact_references_as_one_operand() {
+        let parsed = parse_sexprs("(bind ?x:y 7) ?x:y tail", file());
+        let expressions = interpret_action_exprs(&parsed.exprs).unwrap();
+        assert_eq!(expressions.len(), 3);
+        assert!(
+            matches!(&expressions[1], ActionExpr::FunctionCall(call) if call.name == "__fact_slot_ref")
+        );
+    }
+
+    #[test]
     fn interpret_action_fact_slot_access_compacts_var_colon_slot() {
         let parsed = parse_sexprs(
             "(defrule test ?p<-(point) => (bind ?x ?p:x) (printout t (+ ?p:x 1)))",
@@ -4292,7 +4351,7 @@ mod tests {
         let parsed = parse_sexprs(source, file());
         assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
         assert_eq!(parsed.exprs.len(), 1);
-        interpret_action_expr(&parsed.exprs[0])
+        interpret_action_expr_inner(&parsed.exprs[0])
             .unwrap_or_else(|error| panic!("{source}: {error:?}"))
     }
 
@@ -4585,7 +4644,7 @@ mod tests {
             let parsed = parse_sexprs(source, file());
             assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
             assert!(
-                interpret_action_expr(&parsed.exprs[0]).is_err(),
+                interpret_action_expr_inner(&parsed.exprs[0]).is_err(),
                 "accepted {source}"
             );
         }
@@ -4636,6 +4695,114 @@ mod tests {
         } else {
             panic!("expected Facts construct");
         }
+    }
+
+    #[test]
+    fn deffacts_preserve_ordered_and_slot_field_expressions() {
+        let parsed = parse_sexprs(
+            "(deffacts seed
+               (ordered (+ 1 2) ?*g* q (create$ a b))
+               (item (n (+ 1 2)) (tags ?*g* (create$ a b))))",
+            file(),
+        );
+        let interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(interpreted.errors.is_empty(), "{:?}", interpreted.errors);
+        let Construct::Facts(definition) = &interpreted.constructs[0] else {
+            panic!("expected deffacts");
+        };
+        let FactBody::Ordered(ordered) = &definition.facts[0] else {
+            panic!("expected ordered fields");
+        };
+        assert_eq!(ordered.values.len(), 4);
+        assert!(matches!(&ordered.values[0], FactValue::Expression(expr)
+            if matches!(&**expr, ActionExpr::FunctionCall(call) if call.name == "+")));
+        assert!(matches!(&ordered.values[1], FactValue::GlobalVariable(name, _) if name == "g"));
+        assert!(matches!(&ordered.values[3], FactValue::Expression(expr)
+            if matches!(&**expr, ActionExpr::FunctionCall(call) if call.name == "create$")));
+        let FactBody::Template(template) = &definition.facts[1] else {
+            panic!("expected named slots");
+        };
+        assert!(matches!(
+            template.slot_values[0].values[0],
+            FactValue::Expression(_)
+        ));
+        assert_eq!(template.slot_values[1].values.len(), 2);
+        assert!(matches!(
+            template.slot_values[1].values[1],
+            FactValue::Expression(_)
+        ));
+    }
+
+    #[test]
+    fn deffacts_list_fields_preserve_special_forms_and_keyword_slot_names() {
+        let parsed = parse_sexprs(
+            "(deffacts seed (ordered (if TRUE then 1 else 2)) (item (if value)))",
+            file(),
+        );
+        let interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(interpreted.errors.is_empty(), "{:?}", interpreted.errors);
+        let Construct::Facts(definition) = &interpreted.constructs[0] else {
+            panic!("expected deffacts");
+        };
+        let FactBody::Template(ambiguous) = &definition.facts[0] else {
+            panic!("a list field retains both possible interpretations");
+        };
+        assert!(matches!(
+            ambiguous.slot_values[0].ordered_expression.as_deref(),
+            Some(ActionExpr::If { .. })
+        ));
+        let FactBody::Template(template) = &definition.facts[1] else {
+            panic!("expected named slot");
+        };
+        assert_eq!(template.slot_values[0].name, "if");
+        assert!(template.slot_values[0].ordered_expression.is_none());
+        assert!(
+            matches!(&template.slot_values[0].values[0], FactValue::Literal(value)
+            if matches!(&value.value, LiteralKind::Symbol(symbol) if symbol == "value"))
+        );
+    }
+
+    #[test]
+    fn deffacts_ordered_special_forms_preserve_lexical_binding_lists() {
+        let parsed = parse_sexprs(
+            "(deffacts seed
+               (count (loop-for-count (?i 1 2) do ?i))
+               (items (foreach ?item (create$ a b) ?item)))",
+            file(),
+        );
+        let interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(interpreted.errors.is_empty(), "{:?}", interpreted.errors);
+        let Construct::Facts(definition) = &interpreted.constructs[0] else {
+            panic!("expected deffacts");
+        };
+        let FactBody::Ordered(count) = &definition.facts[0] else {
+            panic!("loop binding specification requires ordered interpretation");
+        };
+        assert!(matches!(&count.values[0], FactValue::Expression(expression)
+            if matches!(&**expression, ActionExpr::LoopForCount { .. })));
+        let FactBody::Template(items) = &definition.facts[1] else {
+            panic!("foreach field retains both interpretations");
+        };
+        assert!(matches!(
+            items.slot_values[0].ordered_expression.as_deref(),
+            Some(ActionExpr::Progn { .. })
+        ));
+    }
+
+    #[test]
+    fn standalone_action_expression_rejects_programmatic_excessive_nesting() {
+        let mut parsed = parse_sexprs("leaf", file());
+        let mut expr = parsed.exprs.pop().unwrap();
+        let span = expr.span();
+        for _ in 0..=MAX_SEXPR_NESTING_DEPTH {
+            expr = SExpr::List(vec![expr], span);
+        }
+        let error = interpret_action_expr(&expr).unwrap_err();
+        assert_eq!(error.kind, InterpretErrorKind::NestingDepthExceeded);
+        assert_eq!(
+            error.message,
+            nesting_depth_message(MAX_SEXPR_NESTING_DEPTH + 1)
+        );
     }
 
     #[test]
@@ -6364,7 +6531,7 @@ mod tests {
                 let source = format!("({name} {bindings} TRUE)");
                 let parsed = parse_sexprs(&source, file());
                 assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
-                let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+                let error = interpret_action_expr_inner(&parsed.exprs[0]).unwrap_err();
                 assert!(error.message.contains(diagnostic), "{source}: {error:?}");
             }
         }
@@ -6382,7 +6549,7 @@ mod tests {
         ] {
             let source = format!("({name} ((?f item) (?f other)) TRUE)");
             let parsed = parse_sexprs(&source, file());
-            let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+            let error = interpret_action_expr_inner(&parsed.exprs[0]).unwrap_err();
             assert!(
                 error.message.contains("duplicate query member ?f"),
                 "{error:?}"
@@ -6405,7 +6572,7 @@ mod tests {
         ] {
             let source = format!("({name} ((?f item other)) TRUE)");
             let parsed = parse_sexprs(&source, file());
-            let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+            let error = interpret_action_expr_inner(&parsed.exprs[0]).unwrap_err();
             assert!(
                 error
                     .message
@@ -6423,7 +6590,7 @@ mod tests {
                 for trailing in ["ignored", "(printout t wrong)", "?f:other"] {
                     let source = format!("({name} ((?f item)) {predicate} {trailing})");
                     let parsed = parse_sexprs(&source, file());
-                    let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+                    let error = interpret_action_expr_inner(&parsed.exprs[0]).unwrap_err();
                     assert!(
                         error.message.contains("does not accept body expressions"),
                         "{error:?}"

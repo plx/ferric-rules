@@ -95,6 +95,27 @@ Ordered facts are positional sequences of values:
 (assert (data 10 20 30))
 ```
 
+Top-level assertions in source, the REPL, and string-assert binding APIs
+evaluate expressions and globals, just as rule actions do. For example,
+`(assert (data (+ 1 2) (create$ a b)))` asserts `(data 3 a b)`. An invalid
+field reports an error instead of being silently omitted. Ordered fields and
+multislots splice multifield results; single slots reject them even when the
+multifield contains exactly one value. `load-facts` accepts literal fact data
+only, and stops at an invalid fact while retaining earlier valid facts.
+
+As in CLIPS, every fact of an `assert` command is parsed before any is
+asserted. A statically invalid field (an unknown function, an unknown slot, or
+a static multifield in a single slot) rejects the whole command. An evaluation
+error, such as `(/ 1 0)`, an unbound local variable or an undefined global,
+stops the command and keeps the facts it completed earlier. CLIPS 6.30 still
+inserts the failing fact: an ordered fact loses all of its fields (`(bad)`),
+and a template fact keeps its other slots while the failing slot holds an
+unspecified value. Ferric inserts none of it. Each top-level assertion is evaluated in the module current
+at its position in the source, and the last `defmodule` stays current
+afterwards. Void results, such as those of `printout`, are omitted from
+ordered fields and multislots. Template slot expressions are evaluated in the
+template's slot declaration order, not the order the source writes them.
+
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
 `(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
@@ -431,6 +452,21 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
   deffacts in a specific module context.
 - On each `(reset)`, existing user facts are retracted and deffacts are
   reasserted.
+- Field expressions and globals are evaluated on every reset, after globals
+  are restored, in the definition's module. Loading a definition does not
+  execute its expressions. A global may be defined after the deffacts, and
+  replacing a called function affects the next reset. Template slot
+  expressions run in slot declaration order, as for `assert`. Local variables
+  and unknown calls are rejected during loading.
+- An evaluation error during reset stops the reset at that fact. Facts already
+  asserted, including those of earlier definitions, remain; later facts and
+  definitions are not asserted. CLIPS 6.30 behaves the same, except that it
+  still inserts the failing fact: an ordered fact loses all of its fields, and
+  a template fact keeps its other slots while the failing slot holds an
+  unspecified value. Ferric inserts none of it. Rust `reset()`
+  returns `EngineError::FactInitialization { definition, reason }`; Python and
+  Node raise `FerricRuntimeError`; C (and Go through it) returns
+  `FERRIC_ERROR_RUNTIME_ERROR`.
 
 ---
 

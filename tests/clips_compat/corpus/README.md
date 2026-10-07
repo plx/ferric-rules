@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 656 small programs progress from individual features to
+CLIPS subset. Its 672 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 652 clean conformance cases, 62 of which
+CLIPS-verified output oracle. There are 668 clean conformance cases, 68 of which
 reproduce a CLIPS error, and 4 active characterizations of documented
 differences: CLIPS output that is not UTF-8, and malformed `format` directives.
 
@@ -130,10 +130,10 @@ ID once per run and records that ID and the actual version in an optional report
 Every program gets a separate Docker container, a read-only source mount, a
 15-second default deadline, and a 1,000-firing bound. Timed-out containers are
 removed explicitly. Load success, complete output/statistics frames, diagnostics,
-and the firing bound are all checked before accepting output. The specific
-CLIPS warning about redefining the built-in MAIN module in import fixtures and
-the exact integer-overflow scanner notice during source loading are allowed;
-other diagnostic codes fail reference verification unless the case
+and the firing bound are all checked before accepting output. During source
+loading, the specific warnings for redefining the built-in MAIN module or a
+deffunction and the exact integer-overflow scanner notice are allowed.
+Other diagnostic codes fail reference verification unless the case
 declares an `error`. A load-error case is loaded with `load*`, which must fail
 with a diagnostic; a run-error case must print at least one run-time diagnostic.
 

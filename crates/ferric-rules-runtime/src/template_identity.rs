@@ -5,6 +5,7 @@
 //! previously loaded RHS forms using a newly installed template.
 
 use crate::engine::Engine;
+use crate::fact_initializer::PreparedFact;
 use crate::modules::ModuleId;
 use ferric_rules_core::{AlphaEntryType, Fact};
 use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
@@ -19,7 +20,7 @@ impl Engine {
             || self.rete.alpha.entry_types().any(|entry| {
                 matches!(entry, AlphaEntryType::OrderedRelation(symbol) if self.resolve_core_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
             })
-            || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(matches_fact)
+            || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(|fact| matches!(fact, PreparedFact::Ordered { relation, .. } if self.resolve_core_symbol(*relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name))))
         {
             return true;
         }

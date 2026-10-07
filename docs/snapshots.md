@@ -25,7 +25,12 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 3. Field-level `|` constraints now remain a single
+The current schema is 4. Deffacts store executable field initializers rather
+than values computed at load time, so their expressions and global references
+run on each reset. Schema 3 snapshots lack these initializers and are rejected
+with `UnsupportedVersion(3)` before payload decoding.
+
+Field-level `|` constraints remain a single
 predicate in the compiled graph, including inside negated and quantified
 patterns. Schema 2 could store expanded rule variants with incorrect
 multiplicity and matching behavior; it cannot be resumed under the corrected
@@ -65,7 +70,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`3`) |
+| 8–9 | Little-endian schema version (`4`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

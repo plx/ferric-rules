@@ -163,6 +163,161 @@ fn assert_string_ordered_fact() {
 }
 
 #[test]
+fn assert_string_evaluates_ordered_and_template_expressions() {
+    unsafe {
+        let engine = ferric_engine_new();
+        let setup = std::ffi::CString::new(
+            r#"
+            (deftemplate item (slot n) (multislot tags))
+            (defglobal ?*g* = 5 ?*tags* = (create$ a b))
+            (defrule verified
+                (p 3 5 x y a b q)
+                (item (n 6) (tags prefix a b x y))
+                (item (n nil) (tags 5))
+                => (printout t "verified" crlf))
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, setup.as_ptr()),
+            FerricError::Ok
+        );
+        let source = std::ffi::CString::new(
+            "(assert
+                (p (+ 1 2) ?*g* (create$ x y) ?*tags* q)
+                (item (n (+ ?*g* 1)) (tags prefix ?*tags* (create$ x y)))
+                (item (tags ?*g*)))",
+        )
+        .unwrap();
+        let mut first_fact_id = 0;
+        assert_eq!(
+            ferric_engine_assert_string(engine, source.as_ptr(), &mut first_fact_id),
+            FerricError::Ok
+        );
+        assert_ne!(first_fact_id, 0);
+        let mut count = 0;
+        assert_eq!(
+            ferric_engine_fact_count(engine, &mut count),
+            FerricError::Ok
+        );
+        assert_eq!(count, 3);
+        let mut fired = 0;
+        assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
+        assert_eq!(fired, 1);
+        let channel = std::ffi::CString::new("t").unwrap();
+        let output = ferric_engine_get_output(engine, channel.as_ptr());
+        assert!(!output.is_null());
+        assert_eq!(
+            std::ffi::CStr::from_ptr(output).to_str().unwrap(),
+            "verified\n"
+        );
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn assert_string_expression_errors_do_not_assert_partial_facts() {
+    unsafe {
+        let engine = ferric_engine_new();
+        let setup = std::ffi::CString::new("(deftemplate item (slot n) (multislot tags))").unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, setup.as_ptr()),
+            FerricError::Ok
+        );
+        for source in [
+            "(assert (bad prefix ?missing suffix))",
+            "(assert (bad prefix (missing-function) suffix))",
+            "(assert (bad prefix ?*missing* suffix))",
+            "(assert (item (n ?missing)))",
+            "(assert (item (tags prefix (missing-function) suffix)))",
+            "(assert (item (n (create$ 3))))",
+        ] {
+            let source = std::ffi::CString::new(source).unwrap();
+            assert_ne!(
+                ferric_engine_assert_string(engine, source.as_ptr(), std::ptr::null_mut()),
+                FerricError::Ok,
+                "source: {source:?}"
+            );
+            let mut count = 999;
+            assert_eq!(
+                ferric_engine_fact_count(engine, &mut count),
+                FerricError::Ok
+            );
+            assert_eq!(count, 0, "source: {source:?}");
+        }
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn assert_string_error_retains_only_completed_facts() {
+    // An evaluation error keeps earlier facts; a static error asserts nothing.
+    for (expression, retained, firings) in [("?missing", 1, 1), ("(missing-function)", 0, 0)] {
+        unsafe {
+            let engine = ferric_engine_new();
+            let setup = std::ffi::CString::new(
+                r#"(defrule retained (before 3) => (printout t "retained" crlf))"#,
+            )
+            .unwrap();
+            assert_eq!(
+                ferric_engine_load_string(engine, setup.as_ptr()),
+                FerricError::Ok
+            );
+            let source = std::ffi::CString::new(format!(
+                "(assert (before (+ 1 2)) (bad {expression}) (after))"
+            ))
+            .unwrap();
+            assert_ne!(
+                ferric_engine_assert_string(engine, source.as_ptr(), std::ptr::null_mut()),
+                FerricError::Ok
+            );
+            let mut count = 0;
+            assert_eq!(
+                ferric_engine_fact_count(engine, &mut count),
+                FerricError::Ok
+            );
+            assert_eq!(count, retained, "expression: {expression}");
+            let mut fired = 0;
+            assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
+            assert_eq!(fired, firings, "expression: {expression}");
+            ferric_engine_free(engine);
+        }
+    }
+}
+
+#[test]
+fn reset_deffacts_expression_error_is_runtime_error() {
+    unsafe {
+        let engine = ferric_engine_new();
+        let source = std::ffi::CString::new(
+            "(deffacts seed (before (+ 1 2)) (bad (/ 1 0)) (after))
+             (defrule retained (before 3) =>)",
+        )
+        .unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        let mut count = 999;
+        assert_eq!(
+            ferric_engine_fact_count(engine, &mut count),
+            FerricError::Ok
+        );
+        assert_eq!(count, 0);
+        assert_eq!(ferric_engine_reset(engine), FerricError::RuntimeError);
+        assert_eq!(
+            ferric_engine_fact_count(engine, &mut count),
+            FerricError::Ok
+        );
+        assert_eq!(count, 1);
+        let mut fired = 0;
+        assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
+        assert_eq!(fired, 1);
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
 fn assert_string_fact_id_can_be_retracted() {
     unsafe {
         let engine = ferric_engine_new();

@@ -68,6 +68,13 @@ def extract_output(stdout: str, stderr: str, begin: str, end: str, error: str | 
     # Ferric's source lexer clamps silently; only allow this exact load notice.
     # Notices within the execution frame remain part of the returned oracle.
     preamble = preamble.replace(SCANNER_NOTICES[0], "")
+    # Redefinition fixtures deliberately replace callable definitions
+    # before reset. Only their complete load-warning lines are expected.
+    preamble = re.sub(
+        r"(?m)^\[CSTRCPSR1\] WARNING: Redefining deffunction: [^\s]+\n",
+        "",
+        preamble,
+    )
     if re.search(r"\[[A-Z]+\d+\]", preamble + suffix):
         raise ReferenceFailure(f"CLIPS load/protocol diagnostic:\n{prefix}{suffix}")
     # The Debian CLIPS executable also writes runtime errors to stdout. Reserve

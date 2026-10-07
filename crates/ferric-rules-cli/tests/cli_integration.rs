@@ -246,6 +246,113 @@ fn repl_facts_command() {
 // ---- Diagnostic parity through CLI ----
 
 #[test]
+fn repl_assert_evaluates_ordered_and_template_fields() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .args(["repl"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ferric repl");
+    let stdin = child.stdin.as_mut().unwrap();
+    for command in [
+        "(deftemplate item (slot n) (multislot tags))",
+        "(defglobal ?*g* = 5 ?*tags* = (create$ a b))",
+        r#"(defrule verified (p 3 5 x y a b q) (item (n 6) (tags prefix a b x y)) (item (n nil) (tags 5)) => (printout t "expressions verified" crlf))"#,
+        "(reset)",
+        "(assert (p (+ 1 2) ?*g* (create$ x y) ?*tags* q))",
+        "(assert (item (n (+ ?*g* 1)) (tags prefix ?*tags* (create$ x y))))",
+        "(assert (item (tags ?*g*)))",
+        "(run)",
+        "(exit)",
+    ] {
+        writeln!(stdin, "{command}").unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert_exit_code(&output, 0);
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("expressions verified"), "stdout: {stdout}");
+    assert!(output.stderr.is_empty(), "stderr: {}", stderr_str(&output));
+}
+
+#[test]
+/// An unbound local fails while the command runs and keeps the facts already
+/// asserted; an unknown function rejects the whole command.
+fn repl_assert_errors_preserve_completed_facts_and_continue() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .args(["repl"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ferric repl");
+    let stdin = child.stdin.as_mut().unwrap();
+    for command in [
+        r#"(defrule retained (before-variable 3) (not (before-call $?)) (not (bad-variable $?)) (not (bad-call $?)) (not (after-variable)) (not (after-call)) => (printout t "completed facts retained" crlf))"#,
+        "(reset)",
+        "(assert (before-variable (+ 1 2)) (bad-variable prefix ?missing suffix) (after-variable))",
+        "(assert (before-call (+ 2 3)) (bad-call prefix (missing-function) suffix) (after-call))",
+        "(run)",
+        "(exit)",
+    ] {
+        writeln!(stdin, "{command}").unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert_exit_code(&output, 0);
+    let stdout = stdout_str(&output);
+    assert!(
+        stdout.contains("completed facts retained"),
+        "stdout: {stdout}"
+    );
+    let stderr = stderr_str(&output);
+    assert!(stderr.contains("missing"), "stderr: {stderr}");
+    assert!(stderr.contains("missing-function"), "stderr: {stderr}");
+}
+
+#[test]
+fn repl_reset_reports_deffacts_expression_error() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .args(["repl"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ferric repl");
+    let stdin = child.stdin.as_mut().unwrap();
+    for command in [
+        "(deffacts seed (before (+ 1 2)) (bad (/ 1 0)) (after))",
+        r#"(defrule retained (before 3) (not (bad $?)) (not (after)) => (printout t "seed prefix retained" crlf))"#,
+        "(reset)",
+        "(run)",
+        "(exit)",
+    ] {
+        writeln!(stdin, "{command}").unwrap();
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().unwrap();
+    assert_exit_code(&output, 0);
+    let stdout = stdout_str(&output);
+    assert!(stdout.contains("seed prefix retained"), "stdout: {stdout}");
+    let stderr = stderr_str(&output);
+    assert!(stderr.contains("seed"), "stderr: {stderr}");
+    assert!(stderr.contains("zero"), "stderr: {stderr}");
+}
+
+#[test]
 fn run_invalid_source_shows_diagnostic() {
     let path = fixture_path(fixtures::CHECK_INVALID);
     let output = run_ferric(&["run", path.to_str().unwrap()]);

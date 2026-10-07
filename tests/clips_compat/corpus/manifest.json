@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "20f2757ab117ebbc9a7d904d50635929fe16d0ed",
+    "ferric_revision": "4856fafc8fcc853a70daf658c79f487cb35e75ee",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -226,6 +226,131 @@
       "covers": [
         "facts",
         "ordered-empty-pattern-arity"
+      ]
+    },
+    {
+      "path": "facts/017_deffacts_expression_ordered.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "defglobal",
+        "create$"
+      ]
+    },
+    {
+      "path": "facts/018_deffacts_expression_template.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "defglobal",
+        "create$"
+      ]
+    },
+    {
+      "path": "facts/019_deffacts_expression_empty_multifields.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "create$",
+        "length$"
+      ]
+    },
+    {
+      "path": "facts/020_deffacts_expression_unknown_function_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/021_deffacts_expression_local_variable_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/022_deffacts_expression_scalar_multifield_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "create$"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/023_deffacts_expression_nested_local_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/024_deffacts_expression_late_global.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "defglobal",
+        "variable-scope"
+      ]
+    },
+    {
+      "path": "facts/025_deffacts_expression_bound_local_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "bind",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/026_deffacts_expression_lexical_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "bind",
+        "loop-for-count",
+        "variable-scope"
+      ]
+    },
+    {
+      "path": "facts/027_deffacts_expression_query_template_redefinition_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "facts/028_deffacts_expression_void_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "printout"
       ]
     },
     {
@@ -798,6 +923,51 @@
         "defglobal"
       ],
       "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-gensym.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "reset",
+        "gensym*"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-function-redefinition.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "reset",
+        "deffunction"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-evaluation-order.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "reset",
+        "deffunction",
+        "defglobal"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/deffacts-expression-template-slot-order.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "deffunction",
+        "defglobal"
+      ]
     },
     {
       "path": "modules/focus-argument-order.clp",

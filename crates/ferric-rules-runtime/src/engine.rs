@@ -54,7 +54,7 @@ pub(crate) type RuleIndex<T> = Vec<Option<T>>;
 pub(crate) struct RegisteredDeffacts {
     pub module: ModuleId,
     pub name: String,
-    pub facts: Vec<Fact>,
+    pub facts: Vec<crate::fact_initializer::PreparedFact>,
 }
 
 pub(crate) fn rule_index_get<T>(entries: &[Option<T>], rule_id: RuleId) -> Option<&T> {
@@ -1353,7 +1353,7 @@ impl Engine {
     ///
     /// The compiled rule network is preserved — only runtime state is cleared.
     ///
-    /// The `Result` return type is retained for API compatibility.
+    /// Evaluation errors stop reset before publishing the failing fact.
     pub fn reset(&mut self) -> Result<(), EngineError> {
         self.host.clear_facts();
         ferric_span!(info_span, "engine_reset");
@@ -1387,7 +1387,13 @@ impl Engine {
         let mut definitions = self.registered_deffacts.clone();
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
-            for fact in definition.facts {
+            for initializer in definition.facts {
+                let fact = self
+                    .evaluate_prepared_fact(&initializer, definition.module)
+                    .map_err(|reason| EngineError::FactInitialization {
+                        definition: definition.name.clone(),
+                        reason,
+                    })?;
                 self.assert_fact_internal(fact)?;
             }
         }
@@ -1775,6 +1781,9 @@ impl Engine {
 /// Errors that can occur during engine operations.
 #[derive(Debug, Error)]
 pub enum EngineError {
+    #[error("deffacts `{definition}` initializer failed: {reason}")]
+    FactInitialization { definition: String, reason: String },
+
     #[error("handle belongs to a different or cleared engine, or its template has changed")]
     ForeignHandle,
 

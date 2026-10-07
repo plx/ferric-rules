@@ -77,7 +77,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 3")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 4")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -115,7 +115,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 3;
+const SCHEMA_VERSION: u16 = 4;
 
 /// Envelope codec byte. IDs 0 (bincode), 3 (`MessagePack`) and 4 (Postcard)
 /// belonged to removed codecs and must not be reused.
@@ -134,7 +134,7 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 3.
+    bytes.push(0); // No optional capabilities in the current schema.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -300,6 +300,14 @@ fn values_contain_external_address(mut values: &[Value]) -> bool {
     }
 }
 
+/// Scan compiled initializers without evaluating snapshot-controlled code.
+fn expression_contains_external_address(root: &crate::evaluator::RuntimeExpr) -> bool {
+    crate::fact_initializer::RuntimeExpressions::new(root).any(|expression| {
+        matches!(expression, crate::evaluator::RuntimeExpr::Literal(value)
+            if values_contain_external_address(std::slice::from_ref(value)))
+    })
+}
+
 impl Engine {
     /// Serialize this engine to bytes in the given format.
     ///
@@ -427,10 +435,7 @@ impl Engine {
         // Check registered deffacts
         for deffacts in &self.registered_deffacts {
             for fact in &deffacts.facts {
-                let has_external = match fact {
-                    Fact::Ordered(of) => values_contain_external_address(&of.fields),
-                    Fact::Template(tf) => values_contain_external_address(&tf.slots),
-                };
+                let has_external = fact.expressions().any(expression_contains_external_address);
                 if has_external {
                     return Err(SerializationError::ExternalAddressPresent);
                 }
@@ -1551,11 +1556,11 @@ mod tests {
         }
     }
 
-    /// Source of the committed schema-3 fixture: ordered and template splits,
-    /// one fired, plus dormant scalar and sequence field disjunctions.
+    /// Source of the committed schema-4 fixture: ordered and template splits,
+    /// one fired, dormant field disjunctions, and executable seed initializers.
     fn split_fixture_engine() -> Engine {
         let mut engine =
-            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-3.clp")).unwrap();
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-4.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
@@ -1668,9 +1673,47 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_three_snapshot_resumes_pending_splits_and_field_disjunctions() {
+    fn committed_schema_three_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-3.cbor");
-        verify_split_resume(Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap());
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(3))
+        ));
+    }
+
+    #[test]
+    fn committed_schema_four_snapshot_resumes_matches_and_seed_expressions() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-4.cbor");
+        let engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
+        verify_split_resume(engine);
+
+        // Persisted initializers resolve a replaced function instead of
+        // replaying values computed before the snapshot was saved.
+        let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        engine
+            .load_str("(deffunction seed-fields () (create$ x y z))")
+            .unwrap();
+        engine.reset().unwrap();
+        assert_eq!(integer_rows(&engine, "seed-number"), [[8]]);
+        let rows = engine.find_facts("row").unwrap();
+        assert_eq!(rows.len(), 1);
+        let Fact::Ordered(row) = rows[0].1 else {
+            panic!("expected ordered row");
+        };
+        let fields: Vec<_> = row
+            .fields
+            .iter()
+            .map(|value| {
+                let Value::Symbol(symbol) = value else {
+                    panic!("expected symbol seed field");
+                };
+                engine.resolve_core_symbol(*symbol).unwrap()
+            })
+            .collect();
+        assert_eq!(fields, ["x", "y", "z"]);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 10);
+        assert!(engine.action_diagnostics().is_empty());
     }
 
     #[test]
@@ -1683,11 +1726,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-3 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_three_fixture() {
+    #[ignore = "regenerates the committed schema-4 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_four_fixture() {
         let engine = split_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-3.cbor");
+            .join("tests/fixtures/snapshots/schema-4.cbor");
         std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
     }
 
@@ -1978,6 +2021,140 @@ mod tests {
         assert!(
             matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("duplicate named deffacts"))
         );
+    }
+
+    #[test]
+    fn restored_fact_initializers_validate_template_identity_slots_and_cardinality() {
+        let engine = Engine::with_rules(
+            "(deftemplate item (slot n (type INTEGER) (default ?NONE)) (multislot tags))
+             (deffacts seed (item (n (+ 1 2)) (tags a)))",
+        )
+        .unwrap();
+        for (pointer, value, expected) in [
+            (
+                "/registered_deffacts/0/facts/0/Template/template_id",
+                serde_json::to_value(<ferric_rules_core::TemplateId as slotmap::Key>::null())
+                    .unwrap(),
+                "dangling template",
+            ),
+            (
+                "/registered_deffacts/0/facts/0/Template/slots/0/0",
+                serde_json::json!(99),
+                "invalid slot index",
+            ),
+            (
+                "/registered_deffacts/0/facts/0/Template/slots/0/1",
+                serde_json::json!([]),
+                "exactly one expression",
+            ),
+            (
+                "/registered_deffacts/0/facts/0/Template/slots/0/1",
+                serde_json::json!([{ "Literal": { "Integer": 1 } }, { "Literal": { "Integer": 2 } }]),
+                "exactly one expression",
+            ),
+            (
+                "/registered_deffacts/0/facts/0/Template/slots/0/1",
+                serde_json::to_value(vec![crate::evaluator::RuntimeExpr::Literal(
+                    Value::Multifield(Box::new(std::iter::once(Value::Integer(1)).collect())),
+                )])
+                .unwrap(),
+                "one scalar value",
+            ),
+            (
+                "/registered_deffacts/0/facts/0/Template/slots/0/1",
+                serde_json::to_value(vec![crate::evaluator::RuntimeExpr::Literal(Value::Float(
+                    1.5,
+                ))])
+                .unwrap(),
+                "allowed types",
+            ),
+            (
+                "/registered_deffacts/0/facts/0/Template/slots",
+                serde_json::json!([]),
+                "requires a value",
+            ),
+        ] {
+            let result = alter_state(&engine, |state| {
+                *state.pointer_mut(pointer).unwrap() = value;
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(expected)),
+                "{pointer}: {expected}"
+            );
+        }
+        let duplicate = alter_state(&engine, |state| {
+            let slots = state
+                .pointer_mut("/registered_deffacts/0/facts/0/Template/slots")
+                .unwrap()
+                .as_array_mut()
+                .unwrap();
+            slots.push(slots[0].clone());
+        });
+        assert!(
+            matches!(duplicate, Err(SerializationError::InvalidState(message)) if message.contains("duplicate slot"))
+        );
+    }
+
+    #[test]
+    fn restored_fact_initializers_validate_expression_depth_without_evaluation() {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str("(deffacts seed (pending ?*later*))")
+            .unwrap();
+        for format in [SerializationFormat::Json, SerializationFormat::Cbor] {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert!(
+                restored.reset().is_err(),
+                "undefined globals fail when evaluated"
+            );
+            assert!(restored.find_facts("pending").unwrap().is_empty());
+            restored.load_str("(defglobal ?*later* = 7)").unwrap();
+            restored.reset().unwrap();
+            assert_eq!(restored.find_facts("pending").unwrap().len(), 1);
+        }
+        let too_deep = alter_state(&engine, |state| {
+            let field = state
+                .pointer_mut("/registered_deffacts/0/facts/0/Ordered/fields/0")
+                .unwrap();
+            let mut expression = field.clone();
+            for _ in 0..16 {
+                expression = serde_json::json!({ "Call": { "name": "+", "args": [expression], "span": null } });
+            }
+            *field = expression;
+        });
+        assert!(
+            matches!(too_deep, Err(SerializationError::InvalidState(message)) if message.contains("expression-depth"))
+        );
+    }
+
+    #[test]
+    fn serialization_rejects_external_identities_in_dormant_initializer_branches() {
+        use crate::evaluator::RuntimeExpr;
+        use crate::fact_initializer::PreparedFact;
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str("(deffacts seed (pending (if FALSE then 1 else 2)))")
+            .unwrap();
+        let PreparedFact::Ordered { fields, .. } = &mut engine.registered_deffacts[0].facts[0]
+        else {
+            panic!("ordered initializer required");
+        };
+        let RuntimeExpr::If { then_branch, .. } = &mut fields[0] else {
+            panic!("if required")
+        };
+        then_branch[0].1 = Some(Box::new(RuntimeExpr::Literal(Value::ExternalAddress(
+            ferric_rules_core::ExternalAddress {
+                type_id: ferric_rules_core::ExternalTypeId(1),
+                token: 42,
+            },
+        ))));
+        for format in [SerializationFormat::Json, SerializationFormat::Cbor] {
+            assert!(matches!(
+                engine.serialize(format),
+                Err(SerializationError::ExternalAddressPresent)
+            ));
+        }
     }
 
     #[test]

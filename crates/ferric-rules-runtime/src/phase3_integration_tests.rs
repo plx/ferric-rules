@@ -1510,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_template_in_deffacts_produces_compile_error() {
+    fn unknown_ordered_field_function_in_deffacts_produces_compile_error() {
         let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
@@ -1522,11 +1522,11 @@ mod tests {
         assert!(!errors.is_empty(), "expected at least one error");
         let has_compile_error = errors.iter().any(|e| {
             matches!(e, crate::loader::LoadError::Compile(msg)
-                if msg.contains("unknown template"))
+                if msg.contains("Missing function declaration for slot1"))
         });
         assert!(
             has_compile_error,
-            "expected 'unknown template' error, got: {errors:?}"
+            "expected missing function error, got: {errors:?}"
         );
     }
 

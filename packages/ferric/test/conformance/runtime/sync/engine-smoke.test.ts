@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import {
   Engine,
   FerricInstanceName,
+  FerricRuntimeError,
   FerricSymbol,
   HaltReason,
 } from "../../../helpers/ferric";
@@ -118,6 +119,90 @@ test("B-008 assertString returns all asserted fact IDs", () => {
     assert.strictEqual(typeof id, "bigint");
   }
   e.close();
+});
+
+test("assertString evaluates ordered and template fields and splices multifields", () => {
+  const e = new Engine();
+  try {
+    e.load(`
+      (deftemplate item (slot n) (multislot tags))
+      (defglobal ?*g* = 5 ?*tags* = (create$ a b))
+    `);
+    const ids = e.assertString(`
+      (p (+ 1 2) ?*g* (create$ x y) ?*tags* q)
+      (item (n (+ ?*g* 1)) (tags prefix ?*tags* (create$ x y)))
+      (item (tags ?*g*))
+    `);
+    assert.strictEqual(ids.length, 3);
+    const [ordered, template, defaults] = ids.map((id) => e.getFact(id));
+    const sym = (value: string) => new FerricSymbol(value);
+    assert.deepStrictEqual(ordered?.fields, [3, 5, sym("x"), sym("y"), sym("a"), sym("b"), sym("q")]);
+    assert.deepStrictEqual(template?.slots, {
+      n: 6,
+      tags: [sym("prefix"), sym("a"), sym("b"), sym("x"), sym("y")],
+    });
+    assert.deepStrictEqual(defaults?.slots, { n: sym("nil"), tags: [5] });
+  } finally {
+    e.close();
+  }
+});
+
+for (const source of [
+  "(bad prefix ?missing suffix)",
+  "(bad prefix (missing-function) suffix)",
+  "(bad prefix ?*missing* suffix)",
+  "(item (n ?missing))",
+  "(item (tags prefix (missing-function) suffix))",
+  "(item (n (create$ 3)))",
+]) {
+  test(`assertString rejects erroneous fields without asserting a partial fact: ${source}`, () => {
+    const e = new Engine();
+    try {
+      e.load("(deftemplate item (slot n) (multislot tags))");
+      assert.throws(() => e.assertString(source));
+      assert.deepStrictEqual(e.facts(), []);
+    } finally {
+      e.close();
+    }
+  });
+}
+
+test("assertString keeps completed facts when a later expression fails", () => {
+  const e = new Engine();
+  try {
+    assert.throws(() => e.assertString("(before (+ 1 2)) (bad ?missing) (after)"));
+    const facts = e.facts();
+    assert.strictEqual(facts.length, 1);
+    assert.strictEqual(facts[0].relation, "before");
+    assert.deepStrictEqual(facts[0].fields, [3]);
+  } finally {
+    e.close();
+  }
+});
+
+test("assertString asserts nothing when a later fact has a static error", () => {
+  const e = new Engine();
+  try {
+    assert.throws(() => e.assertString("(before (+ 1 2)) (bad (missing-function)) (after)"));
+    assert.deepStrictEqual(e.facts(), []);
+  } finally {
+    e.close();
+  }
+});
+
+test("deffacts expression errors surface as runtime errors at reset", () => {
+  const e = new Engine();
+  try {
+    e.load("(deffacts seed (before (+ 1 2)) (bad (/ 1 0)) (after))");
+    assert.deepStrictEqual(e.facts(), []);
+    assert.throws(() => e.reset(), FerricRuntimeError);
+    const facts = e.facts();
+    assert.strictEqual(facts.length, 1);
+    assert.strictEqual(facts[0].relation, "before");
+    assert.deepStrictEqual(facts[0].fields, [3]);
+  } finally {
+    e.close();
+  }
 });
 
 // ---------------------------------------------------------------------------

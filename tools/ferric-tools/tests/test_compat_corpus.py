@@ -71,6 +71,30 @@ def test_other_source_scanner_notices_remain_protocol_failures(notice):
         extract_output(f"{notice}BEGIN\nvalue\nEND\n", "", "BEGIN", "END")
 
 
+def test_function_redefinition_warnings_are_allowed_only_during_load():
+    warning = "[CSTRCPSR1] WARNING: Redefining deffunction: APP::value\n"
+    assert extract_output(f"{warning}BEGIN\nnew\nEND\n", "", "BEGIN", "END") == "new\n"
+    with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+        extract_output(f"BEGIN\nnew\nEND\n{warning}", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{warning}new\nEND\n", "", "BEGIN", "END")
+
+
+@pytest.mark.parametrize(
+    "warning",
+    [
+        "[CSTRCPSR1] WARNING: Redefining deftemplate: value\n",
+        "[CSTRCPSR1] WARNING: Redefining defglobal: value\n",
+        "[CSTRCPSR1] WARNING: Redefining deffunction: value extra\n",
+        "prefix [CSTRCPSR1] WARNING: Redefining deffunction: value\n",
+        "[CSTRCPSR1] WARNING: Redefining deffunction: \n",
+    ],
+)
+def test_other_redefinition_warning_shapes_remain_protocol_failures(warning):
+    with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+        extract_output(f"{warning}BEGIN\nvalue\nEND\n", "", "BEGIN", "END")
+
+
 def test_literal_bracket_text_inside_output_is_not_a_diagnostic():
     assert extract_output("BEGIN\n[USER123]\nEND\n", "", "BEGIN", "END") == "[USER123]\n"
 

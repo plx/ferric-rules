@@ -1,0 +1,6 @@
+
+[EXPRNPSR3] Missing function declaration for unknown.
+
+ERROR:
+(deffacts MAIN::seed
+   (value (unknown

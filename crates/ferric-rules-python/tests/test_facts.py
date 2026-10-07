@@ -33,6 +33,67 @@ class TestAssertString:
         with pytest.raises(ferric.FerricError):
             engine.assert_string("")
 
+    def test_assert_string_evaluates_and_splices_fields(self, engine):
+        engine.load("""
+            (deftemplate item (slot n) (multislot tags))
+            (defglobal ?*g* = 5 ?*tags* = (create$ a b))
+        """)
+        ids = engine.assert_string("""
+            (p (+ 1 2) ?*g* (create$ x y) ?*tags* q)
+            (item (n (+ ?*g* 1)) (tags prefix ?*tags* (create$ x y)))
+            (item (tags ?*g*))
+        """)
+        assert len(ids) == 3
+        ordered, template, defaults = [engine.get_fact(fid) for fid in ids]
+        symbol = ferric.Symbol
+        assert ordered.fields == [
+            3, 5, symbol("x"), symbol("y"), symbol("a"), symbol("b"), symbol("q")
+        ]
+        assert template.slots == {
+            "n": 6,
+            "tags": [
+                symbol("prefix"), symbol("a"), symbol("b"), symbol("x"), symbol("y")
+            ],
+        }
+        assert defaults.slots == {"n": symbol("nil"), "tags": [5]}
+
+    @pytest.mark.parametrize("source", [
+        "(bad prefix ?missing suffix)",
+        "(bad prefix (missing-function) suffix)",
+        "(bad prefix ?*missing* suffix)",
+        "(item (n ?missing))",
+        "(item (tags prefix (missing-function) suffix))",
+        "(item (n (create$ 3)))",
+    ])
+    def test_assert_string_expression_errors_do_not_drop_fields(self, engine, source):
+        engine.load("(deftemplate item (slot n) (multislot tags))")
+        with pytest.raises(ferric.FerricError):
+            engine.assert_string(source)
+        assert engine.facts() == []
+
+    def test_assert_string_evaluation_error_retains_only_completed_facts(self, engine):
+        with pytest.raises(ferric.FerricError):
+            engine.assert_string("(before (+ 1 2)) (bad ?missing) (after)")
+        facts = engine.facts()
+        assert len(facts) == 1
+        assert facts[0].relation == "before"
+        assert facts[0].fields == [3]
+
+    def test_assert_string_static_error_asserts_no_facts(self, engine):
+        with pytest.raises(ferric.FerricError):
+            engine.assert_string("(before (+ 1 2)) (bad (missing-function)) (after)")
+        assert engine.facts() == []
+
+    def test_deffacts_expression_error_is_raised_at_reset(self, engine):
+        engine.load("(deffacts seed (before (+ 1 2)) (bad (/ 1 0)) (after))")
+        assert engine.facts() == []
+        with pytest.raises(ferric.FerricRuntimeError):
+            engine.reset()
+        facts = engine.facts()
+        assert len(facts) == 1
+        assert facts[0].relation == "before"
+        assert facts[0].fields == [3]
+
 
 class TestAssertFact:
     def test_assert_structured(self, engine):

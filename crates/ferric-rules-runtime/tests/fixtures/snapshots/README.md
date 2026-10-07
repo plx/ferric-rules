@@ -36,7 +36,7 @@ bytes with `UnsupportedVersion(2)`: schema 2 could store field-level disjunction
 as separate rule variants with incorrect matching and firing behavior. Keep
 both its source and bytes as a compatibility boundary regression.
 
-`schema-3.cbor` is the current format. Its source, `schema-3.clp`, retains the
+`schema-3.cbor` preserves the previous format. Its source, `schema-3.clp`, retains the
 same split checkpoint and adds dormant scalar and sequence rules containing
 `~x|y` field constraints. These store disjunctive predicates in the compiled
 graph. Construct with `Engine::with_rules`, run exactly one firing, then
@@ -45,9 +45,20 @@ splits and checks that together they cover every split once, retracts and
 replaces facts, installs rules sharing the restored joins, and resets. It then
 asserts facts that exercise both disjunctions, verifies overlapping alternatives
 fire once per matching field, replaces a supporting fact, and installs rules
-sharing the restored disjunctive paths. Regenerate only after an intentional
-change to the unreleased schema-3 layout:
+sharing the restored disjunctive paths. Schema 4 rejects these unchanged bytes
+with `UnsupportedVersion(3)`: schema 3 stored seed facts computed at load time,
+without the field initializers needed for correct reset-time evaluation.
+
+`schema-4.cbor` is the current format. Its source, `schema-4.clp`, keeps the
+same pending split and disjunction checkpoint, but supplies ordered and
+template seed fields through expressions. An additional ordered seed reads a
+global in an arithmetic expression. Construct with `Engine::with_rules`, run
+one firing, then serialize with CBOR. The committed-byte test checks the
+existing resume behavior, then separately replaces the seed function after
+restoring the fixture and verifies that reset uses its new values. Keep all
+older fixture bytes unchanged. Regenerate schema 4 only after
+an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_three_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_four_fixture -- --ignored
 ```

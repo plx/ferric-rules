@@ -1,0 +1,6 @@
+
+[PRNTUTIL6] Local variables can not be accessed by a deffacts construct.
+
+ERROR:
+(deffacts MAIN::seed
+   (row (bind ?x 3) ?x))
