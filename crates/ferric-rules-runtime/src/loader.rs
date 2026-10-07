@@ -1762,14 +1762,34 @@ impl Engine {
     }
 
     /// Prepare defaults without installing a partially valid template.
+    ///
+    /// `redefining` is the definition this construct replaces. CLIPS removes
+    /// it before parsing the new body, so a default cannot assert or query it;
+    /// such a reference is rejected before any default is evaluated, leaving
+    /// the previous definition installed and redefinable.
     fn template_slot_default(
         &mut self,
         slot: &ferric_rules_parser::SlotDefinition,
         constraints: &crate::slot_constraints::RuntimeSlotConstraints,
         module: crate::modules::ModuleId,
+        redefining: Option<ferric_rules_core::TemplateId>,
         result: &mut LoadResult,
     ) -> Result<(Value, Option<crate::templates::DynamicSlotDefault>), LoadError> {
         use ferric_rules_parser::DefaultValue;
+        let reject_self_reference = |engine: &Self, compiled: &[crate::evaluator::RuntimeExpr]| {
+            if redefining
+                .is_some_and(|id| engine.runtime_expressions_use_template(compiled, module, id))
+            {
+                return Err(Self::compile_error_at(
+                    &slot.span,
+                    &format!(
+                        "default for slot `{}` refers to its own template while that template is being redefined",
+                        slot.name
+                    ),
+                ));
+            }
+            Ok(())
+        };
         let value = match &slot.default {
             Some(DefaultValue::None) => Value::Void,
             Some(DefaultValue::Value(literal)) => self
@@ -1789,11 +1809,13 @@ impl Engine {
             }
             Some(DefaultValue::Expressions(expressions)) => {
                 let compiled = self.prepare_default_expressions(expressions, module)?;
+                reject_self_reference(self, &compiled)?;
                 self.evaluate_static_default(slot.slot_type, &slot.name, &compiled, module)
                     .map_err(|error| Self::compile_error_at(&slot.span, &error))?
             }
             Some(DefaultValue::Dynamic(expressions)) => {
                 let expressions = self.prepare_default_expressions(expressions, module)?;
+                reject_self_reference(self, &expressions)?;
                 return Ok((
                     Value::Void,
                     Some(crate::templates::DynamicSlotDefault {
@@ -1873,7 +1895,7 @@ impl Engine {
                 )
                 .map_err(|error| Self::compile_error_at(&slot.span, &error))?;
             let (value, dynamic) =
-                self.template_slot_default(slot, &constraints, owning_module, result)?;
+                self.template_slot_default(slot, &constraints, owning_module, existing, result)?;
             registered.slot_names.push(slot.name.clone());
             registered.slot_index.insert(slot.name.clone(), index);
             registered.slot_types.push(slot.slot_type);

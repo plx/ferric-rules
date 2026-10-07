@@ -28,11 +28,7 @@ impl Engine {
             })
             || self.template_defs.values().any(|template| {
                 template.dynamic_defaults.iter().flatten().any(|default| {
-                    default.expressions.iter().any(|expression| {
-                        RuntimeExpressions::new(expression).any(|expression| {
-                            self.runtime_expression_uses_template(expression, default.module, id)
-                        })
-                    })
+                    self.runtime_expressions_use_template(&default.expressions, default.module, id)
                 })
             })
         {
@@ -67,6 +63,19 @@ impl Engine {
 
     pub(crate) fn template_name_is(&self, name: &str, module: ModuleId, id: TemplateId) -> bool {
         self.resolve_template_id(name, module).ok() == Some(id)
+    }
+
+    /// Whether compiled expressions, including nested ones, assert or query `id`.
+    pub(crate) fn runtime_expressions_use_template(
+        &self,
+        expressions: &[RuntimeExpr],
+        module: ModuleId,
+        id: TemplateId,
+    ) -> bool {
+        expressions.iter().any(|expression| {
+            RuntimeExpressions::new(expression)
+                .any(|expression| self.runtime_expression_uses_template(expression, module, id))
+        })
     }
 
     fn runtime_expression_uses_template(

@@ -164,16 +164,61 @@ fn static_default_failure_preserves_previous_template_and_flushes_output() {
 }
 
 #[test]
-fn definition_effects_cannot_replace_a_template_they_make_live() {
+fn static_default_cannot_assert_the_template_it_redefines() {
     let mut engine = Engine::with_rules("(deftemplate item (slot n (default 7)))").unwrap();
-    assert!(engine
+    let error = engine
         .load_str(
             "(deftemplate item (slot other
-      (default (fact-index (assert (item))))))"
+      (default (fact-index (assert (item))))))",
         )
-        .is_err());
-    let fact = engine.facts().unwrap().next().unwrap().0;
+        .unwrap_err();
+    assert!(
+        error
+            .iter()
+            .any(|error| error.to_string().contains("being redefined")),
+        "{error:?}"
+    );
+    // The reference is rejected before the default runs, so nothing was asserted.
+    assert_eq!(engine.fact_count(), 0);
+    let fact = engine.assert_template("item", &[], ()).unwrap();
     assert_eq!(integer(&engine, fact, "n"), 7);
+}
+
+#[test]
+fn dynamic_default_cannot_reference_the_template_it_redefines() {
+    for default in [
+        "(assert (item (original 7)))",
+        "(find-all-facts ((?f item)) TRUE)",
+        "(if FALSE then (any-factp ((?f item)) TRUE) else 0)",
+    ] {
+        let mut engine = Engine::with_rules("(deftemplate item (slot original))").unwrap();
+        let error = engine
+            .load_str(&format!(
+                "(deftemplate item (slot replacement (default-dynamic {default})))"
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .iter()
+                .any(|error| error.to_string().contains("being redefined")),
+            "{default}: {error:?}"
+        );
+
+        // The previous layout stays installed and asserts as before.
+        let fact = engine
+            .assert_template("item", &["original"], [Value::Integer(8)])
+            .unwrap();
+        assert_eq!(integer(&engine, fact, "original"), 8);
+        engine.retract(fact).unwrap();
+
+        // Because the rejected default was never installed, it does not keep
+        // the template in use, and a valid redefinition still succeeds.
+        engine
+            .load_str("(deftemplate item (slot fixed (default-dynamic (+ 1 2))))")
+            .unwrap();
+        let fact = engine.assert_template("item", &[], ()).unwrap();
+        assert_eq!(integer(&engine, fact, "fixed"), 3, "{default}");
+    }
 }
 
 #[test]
