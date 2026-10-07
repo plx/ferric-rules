@@ -817,6 +817,7 @@ impl Engine {
                 CallableDefinition::Function(function) => self.validate_callable_body(
                     &function.body,
                     candidate.module,
+                    "deffunction",
                     &function.name,
                     selected.is_some(),
                 ),
@@ -971,7 +972,13 @@ impl Engine {
         module: crate::modules::ModuleId,
         validate_visibility: bool,
     ) -> Result<(), LoadError> {
-        self.validate_callable_body(&method.body, module, &method.name, validate_visibility)?;
+        self.validate_callable_body(
+            &method.body,
+            module,
+            "defmethod",
+            &method.name,
+            validate_visibility,
+        )?;
         let parameters = method
             .parameters
             .iter()
@@ -1015,6 +1022,7 @@ impl Engine {
             existential: &HashSet::new(),
             allow_local_reads: true,
         };
+        let context = format!("defmethod `{name}`");
         for query in queries {
             crate::evaluator::validate_action_depth(query)
                 .map_err(|error| LoadError::Compile(error.to_string()))?;
@@ -1036,13 +1044,13 @@ impl Engine {
                 }
                 expression.push_children(&mut pending);
             }
-            Self::validate_rule_rhs_expr(name, query, &scope, &mut HashSet::new())?;
+            Self::validate_rule_rhs_expr(&context, query, &scope, &mut HashSet::new())?;
             if validate_visibility {
                 self.validate_expression_query_declarations(query, module, Some(name))?;
             } else {
                 self.validate_expression_query_structure(query, module)?;
             }
-            self.validate_action_expr_as_expression(query, module, name, &HashSet::new())?;
+            self.validate_action_expr_as_expression(query, module, &context, &HashSet::new())?;
         }
         Ok(())
     }
@@ -1051,15 +1059,17 @@ impl Engine {
         &self,
         body: &[ActionExpr],
         module: crate::modules::ModuleId,
+        construct: &str,
         name: &str,
         validate_visibility: bool,
     ) -> Result<(), LoadError> {
+        let context = format!("{construct} `{name}`");
         crate::callable_validation::validate_breaks_with_templates(body, &|name| {
             self.resolve_template_id(name, module).is_ok()
         })
         .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
         for expression in body {
-            self.validate_action_expr_as_action(expression, module, name, &HashSet::new())?;
+            self.validate_action_expr_as_action(expression, module, &context, &HashSet::new())?;
             if validate_visibility {
                 self.validate_expression_query_declarations(expression, module, Some(name))?;
             }
@@ -2151,11 +2161,12 @@ impl Engine {
             self.resolve_template_id(name, current_module).is_ok()
         })
         .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
+        let context = format!("rule `{}`", rule.name);
         for action in &rule.actions {
             self.validate_rule_action_call(
                 &action.call,
                 current_module,
-                &rule.name,
+                &context,
                 &HashSet::new(),
             )?;
         }
@@ -2167,7 +2178,7 @@ impl Engine {
         &self,
         call: &FunctionCall,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         Self::validate_query_member_rebinding(call, query_members)?;
@@ -2207,7 +2218,7 @@ impl Engine {
                                     self.validate_action_expr_as_expression(
                                         value_expr,
                                         current_module,
-                                        rule_name,
+                                        context,
                                         query_members,
                                     )?;
                                 }
@@ -2217,7 +2228,7 @@ impl Engine {
                                 self.validate_action_expr_as_expression(
                                     field_expr,
                                     current_module,
-                                    rule_name,
+                                    context,
                                     query_members,
                                 )?;
                             }
@@ -2226,7 +2237,7 @@ impl Engine {
                         self.validate_action_expr_as_expression(
                             arg,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2240,7 +2251,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         target,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2250,7 +2261,7 @@ impl Engine {
                             self.validate_action_expr_as_expression(
                                 value_expr,
                                 current_module,
-                                rule_name,
+                                context,
                                 query_members,
                             )?;
                         }
@@ -2258,7 +2269,7 @@ impl Engine {
                         self.validate_action_expr_as_expression(
                             slot_override,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2270,7 +2281,7 @@ impl Engine {
                     self.validate_action_expr_as_action(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2281,7 +2292,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2292,13 +2303,13 @@ impl Engine {
                     &call.name,
                     &call.span,
                     current_module,
-                    rule_name,
+                    context,
                 )?;
                 for arg in &call.args {
                     self.validate_action_expr_as_expression(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2312,7 +2323,7 @@ impl Engine {
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
@@ -2325,13 +2336,13 @@ impl Engine {
                     &call.name,
                     &call.span,
                     current_module,
-                    rule_name,
+                    context,
                 )?;
                 for arg in &call.args {
                     self.validate_action_expr_as_expression(
                         arg,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2346,14 +2357,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in then_actions {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2361,7 +2372,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2373,14 +2384,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2392,20 +2403,20 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     start,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 self.validate_action_expr_as_expression(
                     end,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2417,14 +2428,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     list_expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_expression(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2450,7 +2461,7 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     query,
                     current_module,
-                    rule_name,
+                    context,
                     &nested_members,
                 )
             }
@@ -2463,21 +2474,21 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for (case_expr, actions) in cases {
                     self.validate_action_expr_as_expression(
                         case_expr,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                     for action in actions {
                         self.validate_action_expr_as_expression(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2487,7 +2498,7 @@ impl Engine {
                         self.validate_action_expr_as_expression(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2502,7 +2513,7 @@ impl Engine {
         &self,
         expr: &ActionExpr,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
         query_members: &HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
@@ -2510,7 +2521,7 @@ impl Engine {
             | ActionExpr::Variable(_, _)
             | ActionExpr::GlobalVariable(_, _) => Ok(()),
             ActionExpr::FunctionCall(call) => {
-                self.validate_rule_action_call(call, current_module, rule_name, query_members)
+                self.validate_rule_action_call(call, current_module, context, query_members)
             }
             ActionExpr::If {
                 condition,
@@ -2521,14 +2532,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in then_actions {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2536,7 +2547,7 @@ impl Engine {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2548,14 +2559,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     condition,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2567,20 +2578,20 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     start,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 self.validate_action_expr_as_expression(
                     end,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2592,14 +2603,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     list_expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -2616,7 +2627,7 @@ impl Engine {
                     return self.validate_action_expr_as_expression(
                         expr,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     );
                 }
@@ -2627,14 +2638,14 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     query,
                     current_module,
-                    rule_name,
+                    context,
                     &nested_members,
                 )?;
                 for action in body {
                     self.validate_action_expr_as_action(
                         action,
                         current_module,
-                        rule_name,
+                        context,
                         &nested_members,
                     )?;
                 }
@@ -2649,21 +2660,21 @@ impl Engine {
                 self.validate_action_expr_as_expression(
                     expr,
                     current_module,
-                    rule_name,
+                    context,
                     query_members,
                 )?;
                 for (case_expr, actions) in cases {
                     self.validate_action_expr_as_expression(
                         case_expr,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                     for action in actions {
                         self.validate_action_expr_as_action(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2673,7 +2684,7 @@ impl Engine {
                         self.validate_action_expr_as_action(
                             action,
                             current_module,
-                            rule_name,
+                            context,
                             query_members,
                         )?;
                     }
@@ -2836,7 +2847,7 @@ impl Engine {
         callable: &str,
         span: &Span,
         current_module: crate::modules::ModuleId,
-        rule_name: &str,
+        context: &str,
     ) -> Result<(), LoadError> {
         if callable == "refresh-agenda" {
             return Err(Self::compile_error_at(
@@ -2848,7 +2859,7 @@ impl Engine {
             return Ok(());
         }
         Err(Self::missing_function_declaration_error(
-            callable, span, rule_name,
+            callable, span, context,
         ))
     }
 
@@ -2892,13 +2903,9 @@ impl Engine {
         }
     }
 
-    fn missing_function_declaration_error(
-        callable: &str,
-        span: &Span,
-        rule_name: &str,
-    ) -> LoadError {
+    fn missing_function_declaration_error(callable: &str, span: &Span, context: &str) -> LoadError {
         LoadError::Compile(format!(
-            "[EXPRNPSR3] Missing function declaration for {callable} in rule `{rule_name}` at line {}, column {}",
+            "[EXPRNPSR3] Missing function declaration for {callable} in {context} at line {}, column {}",
             span.start.line, span.start.column
         ))
     }
@@ -3362,9 +3369,10 @@ impl Engine {
             allow_local_reads: true,
         };
 
+        let context = format!("rule `{}`", rule.name);
         let mut rhs_locals = HashSet::new();
         for action in &rule.actions {
-            Self::validate_rule_rhs_call(&rule.name, &action.call, &scope, &mut rhs_locals)?;
+            Self::validate_rule_rhs_call(&context, &action.call, &scope, &mut rhs_locals)?;
         }
         Ok(())
     }
@@ -3388,7 +3396,7 @@ impl Engine {
     }
 
     fn validate_rule_rhs_call(
-        rule_name: &str,
+        context: &str,
         call: &FunctionCall,
         scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
@@ -3410,7 +3418,7 @@ impl Engine {
         if call.name == "bind" {
             if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
                 for value in call.args.iter().skip(1) {
-                    Self::validate_rule_rhs_expr(rule_name, value, scope, rhs_locals)?;
+                    Self::validate_rule_rhs_expr(context, value, scope, rhs_locals)?;
                 }
                 if scope.allow_local_reads {
                     rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
@@ -3420,14 +3428,14 @@ impl Engine {
         }
 
         for arg in &call.args {
-            Self::validate_rule_rhs_expr(rule_name, arg, scope, rhs_locals)?;
+            Self::validate_rule_rhs_expr(context, arg, scope, rhs_locals)?;
         }
         Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // Mirrors every structured RHS scope in ActionExpr.
     fn validate_rule_rhs_expr(
-        rule_name: &str,
+        context: &str,
         expr: &ActionExpr,
         scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
@@ -3447,14 +3455,14 @@ impl Engine {
                         "is an unbound RHS variable"
                     };
                     return Err(LoadError::Compile(format!(
-                        "[PRCCODE3] rule `{rule_name}` variable {display_name} at line {} {reason}",
+                        "[PRCCODE3] {context} variable {display_name} at line {} {reason}",
                         span.start.line
                     )));
                 }
                 Ok(())
             }
             ActionExpr::FunctionCall(call) => {
-                Self::validate_rule_rhs_call(rule_name, call, scope, rhs_locals)
+                Self::validate_rule_rhs_call(context, call, scope, rhs_locals)
             }
             ActionExpr::If {
                 condition,
@@ -3462,14 +3470,14 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, condition, scope, rhs_locals)?;
                 let mut then_locals = rhs_locals.clone();
                 for action in then_actions {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut then_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut then_locals)?;
                 }
                 let mut else_locals = rhs_locals.clone();
                 for action in else_actions {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut else_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut else_locals)?;
                 }
                 rhs_locals.extend(then_locals);
                 rhs_locals.extend(else_locals);
@@ -3478,10 +3486,10 @@ impl Engine {
             ActionExpr::While {
                 condition, body, ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, condition, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut body_locals)?;
                 }
                 rhs_locals.extend(body_locals);
                 Ok(())
@@ -3493,14 +3501,14 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, start, scope, rhs_locals)?;
-                Self::validate_rule_rhs_expr(rule_name, end, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, start, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, end, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 if let Some(name) = var_name {
                     body_locals.insert(name.clone());
                 }
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut body_locals)?;
                 }
                 if let Some(name) = var_name {
                     body_locals.remove(name);
@@ -3514,12 +3522,12 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, list_expr, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, list_expr, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 body_locals.insert(var_name.clone());
                 body_locals.insert(format!("{var_name}-index"));
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut body_locals)?;
                 }
                 body_locals.remove(var_name);
                 body_locals.remove(&format!("{var_name}-index"));
@@ -3534,9 +3542,9 @@ impl Engine {
             } => {
                 let mut query_locals = rhs_locals.clone();
                 query_locals.extend(bindings.iter().map(|(name, _)| name.clone()));
-                Self::validate_rule_rhs_expr(rule_name, query, scope, &mut query_locals)?;
+                Self::validate_rule_rhs_expr(context, query, scope, &mut query_locals)?;
                 for action in body {
-                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut query_locals)?;
+                    Self::validate_rule_rhs_expr(context, action, scope, &mut query_locals)?;
                 }
                 for (name, _) in bindings {
                     query_locals.remove(name);
@@ -3550,24 +3558,19 @@ impl Engine {
                 default,
                 ..
             } => {
-                Self::validate_rule_rhs_expr(rule_name, expr, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(context, expr, scope, rhs_locals)?;
                 for (case_expr, actions) in cases {
-                    Self::validate_rule_rhs_expr(rule_name, case_expr, scope, rhs_locals)?;
+                    Self::validate_rule_rhs_expr(context, case_expr, scope, rhs_locals)?;
                     let mut case_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_rule_rhs_expr(rule_name, action, scope, &mut case_locals)?;
+                        Self::validate_rule_rhs_expr(context, action, scope, &mut case_locals)?;
                     }
                     rhs_locals.extend(case_locals);
                 }
                 if let Some(actions) = default {
                     let mut default_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_rule_rhs_expr(
-                            rule_name,
-                            action,
-                            scope,
-                            &mut default_locals,
-                        )?;
+                        Self::validate_rule_rhs_expr(context, action, scope, &mut default_locals)?;
                     }
                     rhs_locals.extend(default_locals);
                 }

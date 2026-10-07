@@ -393,3 +393,37 @@ fn many_cyclic_methods_dispatch_without_a_total_order() {
     engine.load_str(&source).unwrap();
     assert_eq!(run_output(&mut engine, "(printout t (g 1) crlf)"), "14\n");
 }
+
+#[test]
+fn callable_body_diagnostics_name_their_construct() {
+    for (definition, label) in [
+        (
+            "(deffunction has-one () (missing))",
+            "in deffunction `has-one`",
+        ),
+        (
+            "(defmethod picks ((?x INTEGER)) (missing))",
+            "in defmethod `picks`",
+        ),
+        (
+            "(defmethod picks ((?x INTEGER (missing ?x))) ?x)",
+            "in defmethod `picks`",
+        ),
+        (
+            "(defmethod picks ((?x INTEGER (> ?unbound 0))) ?x)",
+            "defmethod `picks` variable ?unbound",
+        ),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let errors = engine.load_str(definition).expect_err(definition);
+        let messages: Vec<_> = errors.iter().map(ToString::to_string).collect();
+        assert!(
+            messages.iter().any(|message| message.contains(label)),
+            "{definition}: {messages:?}"
+        );
+        assert!(
+            messages.iter().all(|message| !message.contains("rule `")),
+            "{definition}: {messages:?}"
+        );
+    }
+}
