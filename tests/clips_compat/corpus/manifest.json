@@ -2584,6 +2584,16 @@
       ]
     },
     {
+      "path": "patterns/402_break_lhs_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "test-ce",
+        "break"
+      ],
+      "error": "load"
+    },
+    {
       "path": "procedural/001_function_zero_arguments.clp",
       "level": "boundary",
       "covers": [

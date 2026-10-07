@@ -367,7 +367,8 @@ local in a query predicate is a load error.
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
 multifield collection expressions, and query predicates cannot contain
 `break`, even when the construct is nested inside another loop. Invalid
-placement is rejected at load. `while` and `loop-for-count` return `FALSE`
+placement is rejected at load, including a `break` outside a loop in a rule's
+`test` CE or `:`/`=` pattern constraint (`[PRCDRPSR2]`). `while` and `loop-for-count` return `FALSE`
 after `break` as well as after normal completion.
 
 ### RHS evaluation errors

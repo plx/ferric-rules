@@ -3203,6 +3203,57 @@ impl Engine {
         Ok(())
     }
 
+    /// CLIPS rejects `break` in test CEs and in `:`/`=` constraints with
+    /// PRCDRPSR2; no loop surrounds an LHS expression.
+    fn validate_lhs_breaks(pattern: &Pattern) -> Result<(), LoadError> {
+        let constraints: Vec<&Constraint> = match pattern {
+            Pattern::Ordered(ordered) => ordered.constraints.iter().collect(),
+            Pattern::Template(template) => template
+                .slot_constraints
+                .iter()
+                .flat_map(|slot| &slot.constraints)
+                .collect(),
+            Pattern::Assigned { pattern, .. } => return Self::validate_lhs_breaks(pattern),
+            Pattern::Not(inner, _) => return Self::validate_lhs_breaks(inner),
+            Pattern::And(children, _)
+            | Pattern::Logical(children, _)
+            | Pattern::Exists(children, _)
+            | Pattern::Forall(children, _)
+            | Pattern::Or(children, _) => {
+                return children.iter().try_for_each(Self::validate_lhs_breaks);
+            }
+            Pattern::Test(expression, _) => {
+                return Self::validate_lhs_expression_breaks(expression)
+            }
+        };
+        constraints
+            .into_iter()
+            .try_for_each(Self::validate_constraint_breaks)
+    }
+
+    fn validate_constraint_breaks(constraint: &Constraint) -> Result<(), LoadError> {
+        match constraint {
+            Constraint::Predicate(expression, _) | Constraint::ReturnValue(expression, _) => {
+                Self::validate_lhs_expression_breaks(expression)
+            }
+            Constraint::Not(inner, _) => Self::validate_constraint_breaks(inner),
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                parts.iter().try_for_each(Self::validate_constraint_breaks)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_lhs_expression_breaks(expression: &SExpr) -> Result<(), LoadError> {
+        // Expressions the action interpreter cannot read keep their existing
+        // translation diagnostics.
+        let Ok(expression) = ferric_rules_parser::interpret_action_expr(expression) else {
+            return Ok(());
+        };
+        crate::callable_validation::validate_breaks(std::slice::from_ref(&expression))
+            .map_err(|(span, message)| Self::compile_error_at(&span, &message))
+    }
+
     fn validate_constraint_disjunction_bindings(
         constraint: &Constraint,
         bound: &mut HashSet<String>,
@@ -3973,6 +4024,7 @@ impl Engine {
         let mut bound = HashSet::new();
         for pattern in &rule.patterns {
             Self::validate_disjunction_bindings(pattern, &mut bound)?;
+            Self::validate_lhs_breaks(pattern)?;
         }
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
