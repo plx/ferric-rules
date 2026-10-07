@@ -5769,6 +5769,27 @@ fn resolve_named_callable(
     })
 }
 
+/// Whether a call named `name` would run a deffunction or defgeneric (not a
+/// builtin), resolved from the current module as evaluating the call would.
+pub(crate) fn call_names_user_callable(ctx: &EvalContext<'_>, name: &str) -> bool {
+    if is_module_qualified(name) {
+        let Ok(QualifiedName::Qualified { module, name }) = parse_qualified_name(name) else {
+            return false;
+        };
+        return ctx
+            .module_registry
+            .get_by_name(&module)
+            .is_some_and(|module| {
+                ctx.functions.get(module, &name).is_some()
+                    || ctx.generics.get(module, &name).is_some()
+            });
+    }
+    matches!(
+        resolve_named_callable(ctx, name, None),
+        Ok(NamedCallable::Function(..) | NamedCallable::Generic(..))
+    )
+}
+
 // ===========================================================================
 // I/O and environment builtins
 // ===========================================================================

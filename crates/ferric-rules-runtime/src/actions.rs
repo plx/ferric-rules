@@ -190,6 +190,21 @@ impl ActionEvalEnv {
             .map_err(ActionError::from_action_evaluation)
     }
 
+    /// Whether `expr` is a call that runs a deffunction or defgeneric.
+    fn calls_user_callable(
+        &self,
+        token: &Token,
+        rule_info: &CompiledRuleInfo,
+        expr: &ActionExpr,
+        context: &mut ActionExecutionContext<'_>,
+    ) -> bool {
+        let ActionExpr::FunctionCall(call) = expr else {
+            return false;
+        };
+        let ctx = Self::make_eval_context(token, rule_info, context, &self.compact_facts);
+        crate::evaluator::call_names_user_callable(&ctx, &call.name)
+    }
+
     fn eval_expr(
         &mut self,
         token: &Token,
@@ -2655,6 +2670,15 @@ fn execute_retract(
     // wrong-type target only after retracting the remaining targets.
     let mut wrong_type = None;
     for arg in args {
+        // Once a wrong-type target has set CLIPS's halt flag, a later
+        // deffunction or generic target returns FALSE without running (another
+        // wrong-type target). Builtins, variables and literals still evaluate.
+        // Only a top-level call is checked: a user callable nested inside a
+        // builtin target still runs, as do builtins such as `progn` that
+        // CLIPS also fails while halted.
+        if wrong_type.is_some() && eval_env.calls_user_callable(token, rule_info, arg, context) {
+            continue;
+        }
         let fact_id = match resolve_target_fact_id(
             arg,
             token,

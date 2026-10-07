@@ -5177,6 +5177,21 @@
       "error": "run"
     },
     {
+      "path": "queries/typed-fact-address-retract-wrong-type-callable.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "typed-fact-address",
+        "retract",
+        "wrong-type",
+        "deffunction",
+        "defgeneric",
+        "evaluation-order",
+        "partial-output"
+      ],
+      "error": "run"
+    },
+    {
       "path": "queries/typed-fact-address-joins-and-duplicates.clp",
       "level": "interaction",
       "covers": [

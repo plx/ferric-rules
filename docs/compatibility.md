@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 743
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 744
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1162,7 +1162,11 @@ one, whereas Ferric also accepts a STRING or INSTANCE-NAME slot name.
 `retract` skips a missing index or a stale address and goes on to its next
 target. A negative index ends that `retract` call: later targets are neither
 evaluated nor retracted, and the rule continues. A target of any other type
-stops the rule, after the remaining targets have been retracted. `modify` and
+stops the rule, after the remaining targets have been retracted. As in CLIPS,
+a later target that calls a deffunction or generic function is not called and
+retracts nothing, while variables, literals, and builtin calls are still
+evaluated and retracted. CLIPS 6.30 also fails some builtin targets in that
+state, such as `progn`, which Ferric still evaluates and retracts. `modify` and
 `duplicate` given a missing index do nothing, without evaluating their slot
 overrides, and the rule continues; a negative index or a target of another type
 stops the rule, as in CLIPS. Given a stale address, `modify` and `duplicate`
