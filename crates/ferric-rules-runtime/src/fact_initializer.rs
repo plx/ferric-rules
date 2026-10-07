@@ -509,6 +509,20 @@ mod tests {
     }
 
     #[test]
+    fn pending_deffacts_queries_keep_a_template_live_in_the_same_load() {
+        let mut engine = Engine::new(EngineConfig::default());
+        assert!(engine
+            .load_str(
+                "(deftemplate item (slot n))
+             (deffacts seed (probe ready (if FALSE then (any-factp ((?f item)) TRUE) else FALSE)))
+             (deftemplate item (slot replacement))",
+            )
+            .is_err());
+        engine.reset().unwrap();
+        assert_eq!(engine.find_facts("probe").unwrap().len(), 1);
+    }
+
+    #[test]
     fn empty_assertions_are_errors() {
         let mut engine = Engine::new(EngineConfig::default());
         assert!(engine.load_str("(assert)").is_err());

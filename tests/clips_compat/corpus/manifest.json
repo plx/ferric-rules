@@ -334,6 +334,17 @@
       ]
     },
     {
+      "path": "facts/027_deffacts_expression_query_template_redefinition_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "assertion-expression",
+        "deffacts",
+        "deftemplate",
+        "compile-time-validation"
+      ],
+      "error": "load"
+    },
+    {
       "path": "generics/bare-method-parameter.clp",
       "level": "boundary",
       "covers": [

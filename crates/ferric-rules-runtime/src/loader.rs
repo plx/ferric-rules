@@ -705,23 +705,19 @@ impl Engine {
                                         })
                                     })
                             });
-                        let pending_use = self
-                            .template_definition_identity(&template)
-                            .ok()
-                            .and_then(|(_, id)| id)
-                            .is_some_and(|id| {
-                                rules_with_module.iter().any(|(rule, module)| {
-                                    self.rule_uses_template(rule, *module, id)
-                                }) || deffacts_constructs.iter().any(|(facts, module)| {
-                                    facts.facts.iter().any(|fact| {
-                                        let name = match fact {
-                                            FactBody::Ordered(fact) => &fact.relation,
-                                            FactBody::Template(fact) => &fact.template,
-                                        };
-                                        self.template_name_is(name, *module, id)
+                        let pending_use =
+                            self.template_definition_identity(&template)
+                                .ok()
+                                .and_then(|(_, id)| id)
+                                .is_some_and(|id| {
+                                    rules_with_module.iter().any(|(rule, module)| {
+                                        self.rule_uses_template(rule, *module, id)
+                                    }) || deffacts_constructs.iter().any(|(facts, module)| {
+                                        facts.facts.iter().any(|fact| {
+                                            self.fact_body_uses_template(fact, *module, id)
+                                        })
                                     })
-                                })
-                            });
+                                });
                         if pending_ordered_use {
                             errors.push(Self::ordered_template_conflict(&template));
                         } else if pending_use {
