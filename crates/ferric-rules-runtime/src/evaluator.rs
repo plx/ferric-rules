@@ -6570,11 +6570,55 @@ fn builtin_fact_slot_value(
             ctx.engine.config.string_encoding,
         ));
     };
-    let slot = eval_inner(ctx, &args[1])?;
-    let slot_name = as_lexeme_str(&slot, &ctx.engine.symbol_table, "fact-slot-value", span)?;
-    let value = read_fact_slot_value(ctx, fact_id, &slot_name, "fact-slot-value", span, || {
-        "fact does not exist".into()
-    })?;
+    let value = match &args[1] {
+        // These operands cannot run engine effects, so the designated fact
+        // is still live when its slot is read.
+        RuntimeExpr::Literal(_) | RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {
+            let slot = eval_inner(ctx, &args[1])?;
+            let slot_name =
+                as_lexeme_str(&slot, &ctx.engine.symbol_table, "fact-slot-value", span)?;
+            read_fact_slot_value(ctx, fact_id, &slot_name, "fact-slot-value", span, || {
+                "fact does not exist".into()
+            })?
+        }
+        // A slot expression may run `(reset)` or a retraction, after which
+        // the slotmap key can name a later fact. Like CLIPS 6.30, which keeps
+        // the designated record busy, read the record designated before the
+        // slot argument ran.
+        _ => {
+            let is_initial_fact = ctx.engine.initial_fact_id == Some(fact_id);
+            let record = ctx
+                .engine
+                .fact_base
+                .get(fact_id)
+                .map(|entry| entry.fact.clone());
+            let slot = eval_inner(ctx, &args[1])?;
+            let slot_name =
+                as_lexeme_str(&slot, &ctx.engine.symbol_table, "fact-slot-value", span)?;
+            match record {
+                None => {
+                    return Err(EvalError::TypeError {
+                        function: "fact-slot-value".into(),
+                        expected: "valid fact index".into(),
+                        actual: "fact does not exist".into(),
+                        span: span.cloned(),
+                    });
+                }
+                Some(_) if is_initial_fact => {
+                    // CLIPS's `initial-fact` is a deftemplate without slots.
+                    return Err(EvalError::TypeError {
+                        function: "fact-slot-value".into(),
+                        expected: "valid slot name in template `initial-fact`".into(),
+                        actual: format!("unknown slot `{slot_name}`"),
+                        span: span.cloned(),
+                    });
+                }
+                Some(fact) => {
+                    read_record_slot_value(ctx, &fact, &slot_name, "fact-slot-value", span)?
+                }
+            }
+        }
+    };
     Ok(value.unwrap_or_else(|| {
         clips_false(
             &mut ctx.engine.symbol_table,
