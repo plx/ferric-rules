@@ -292,6 +292,7 @@ fn diagnostic_offset(line: &[u8]) -> Option<usize> {
         b"[PRNTUTIL7] ",
         b"[TMPLTDEF1] ",
         b"[GENRCEXE1] ",
+        b"[GENRCEXE4] ",
         b"[INSFUN3] ",
     ];
     line.iter().enumerate().find_map(|(offset, &byte)| {

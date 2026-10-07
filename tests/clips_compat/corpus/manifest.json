@@ -9439,6 +9439,25 @@
         "issue-403"
       ],
       "resets": 2
+    },
+    {
+      "path": "generics/403g_override_query_order.clp",
+      "level": "interaction",
+      "covers": [
+        "generic-method-control",
+        "override-next-method",
+        "issue-403"
+      ]
+    },
+    {
+      "path": "generics/403g_specific_not_applicable.clp",
+      "level": "boundary",
+      "covers": [
+        "generic-method-control",
+        "call-specific-method",
+        "issue-403"
+      ],
+      "error": "run"
     }
   ]
 }
