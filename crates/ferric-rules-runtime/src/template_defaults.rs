@@ -122,7 +122,16 @@ fn evaluate_dynamic(
         compact_fact_bindings: None,
         allow_engine_effects: ctx.allow_engine_effects,
     };
-    evaluate_expressions(&mut child, slot_type, name, &default.expressions, true)
+    // A default is not lexically inside the asserting callable or loop, so a
+    // `return` or `break` reached through `funcall` must not escape into it.
+    evaluate_expressions(&mut child, slot_type, name, &default.expressions, true).map_err(
+        |failure| match failure {
+            SlotFailure::Eval(error) => {
+                SlotFailure::Eval(evaluator::contain_control_signals(error))
+            }
+            invalid @ SlotFailure::Invalid(_) => invalid,
+        },
+    )
 }
 
 /// One source per slot for a prepared fact, whose overrides may be stored out
@@ -237,7 +246,8 @@ impl Engine {
         })
         .map_err(|failure| match failure {
             SlotFailure::Invalid(reason) => reason,
-            SlotFailure::Eval(error) => error.to_string(),
+            // Static defaults evaluate at a root: contain escaped control signals.
+            SlotFailure::Eval(error) => evaluator::contain_control_signals(error).to_string(),
         })
     }
 

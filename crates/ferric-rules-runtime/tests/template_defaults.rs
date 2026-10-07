@@ -372,6 +372,83 @@ fn diagnostics(engine: &Engine) -> String {
 }
 
 #[test]
+fn funcall_return_in_a_dynamic_default_does_not_return_from_the_asserting_function() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n (default-dynamic (funcall return 7))))
+      (deffunction make () (assert (item)) (printout t after crlf) 1)
+      (defrule run => (printout t result \" \" (make) crlf))",
+    )
+    .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    let output = engine.get_output("t").unwrap_or_default();
+    assert!(!output.contains("result 7"), "{output}");
+    assert!(!output.contains("after"), "{output}");
+    let diagnostics = diagnostics(&engine);
+    assert!(
+        diagnostics.contains("not valid outside a callable"),
+        "{diagnostics}"
+    );
+    assert!(!diagnostics.contains("internal"), "{diagnostics}");
+    assert!(engine.find_facts("item").unwrap().is_empty());
+}
+
+#[test]
+fn funcall_break_in_a_dynamic_default_does_not_end_the_enclosing_loop() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot n (default-dynamic (funcall break))))
+      (defrule run =>
+        (loop-for-count (?i 1 3) (assert (item)) (printout t ?i crlf))
+        (printout t done crlf))",
+    )
+    .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert!(!engine.get_output("t").unwrap_or_default().contains("done"));
+    let diagnostics = diagnostics(&engine);
+    assert!(
+        diagnostics.contains("not valid outside a loop"),
+        "{diagnostics}"
+    );
+    assert!(engine.find_facts("item").unwrap().is_empty());
+}
+
+#[test]
+fn funcall_return_in_root_defaults_and_deffacts_reports_the_user_error() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let error = engine
+        .load_str("(deftemplate item (slot n (default (funcall return 7))))")
+        .unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("not valid outside a callable"),
+        "{message}"
+    );
+    assert!(!message.contains("internal"), "{message}");
+
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(deftemplate item (slot n))
+      (deffacts seed (item (n (funcall return 7))))",
+        )
+        .unwrap();
+    let message = engine
+        .reset()
+        .map_err(|error| error.to_string())
+        .unwrap_err();
+    assert!(
+        message.contains("not valid outside a callable"),
+        "{message}"
+    );
+    assert!(!message.contains("internal"), "{message}");
+}
+
+#[test]
 fn slot_violations_report_their_entry_point_without_a_template_slot_wrapper() {
     let mut engine = Engine::with_rules(
         "(deftemplate item (slot n (range 1 3)))

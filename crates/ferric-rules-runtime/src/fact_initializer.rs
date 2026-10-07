@@ -503,7 +503,10 @@ impl Engine {
                     })
                     .map_err(|error| match error.failure {
                         crate::template_defaults::SlotFailure::Invalid(reason) => reason,
-                        crate::template_defaults::SlotFailure::Eval(error) => error.to_string(),
+                        // Initializers evaluate at a root, as `evaluator::eval` does.
+                        crate::template_defaults::SlotFailure::Eval(error) => {
+                            evaluator::contain_control_signals(error).to_string()
+                        }
                     })?;
                 Ok(Fact::Template(TemplateFact {
                     template_id: *template_id,

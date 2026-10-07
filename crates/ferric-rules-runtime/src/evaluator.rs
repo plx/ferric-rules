@@ -661,11 +661,15 @@ fn is_module_qualified(name: &str) -> bool {
 }
 
 fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, EvalError> {
-    match result {
-        Err(EvalError::ReturnControl { span, .. }) => {
-            Err(EvalError::ReturnOutsideCallable { span })
-        }
-        Err(EvalError::BreakControl { span }) => Err(EvalError::BreakOutsideLoop { span }),
+    result.map_err(contain_control_signals)
+}
+
+/// Report a `return` or `break` signal that reached an evaluation boundary
+/// it may not cross (a root, or a template default) as the user-facing error.
+pub(crate) fn contain_control_signals(error: EvalError) -> EvalError {
+    match error {
+        EvalError::ReturnControl { span, .. } => EvalError::ReturnOutsideCallable { span },
+        EvalError::BreakControl { span } => EvalError::BreakOutsideLoop { span },
         other => other,
     }
 }
