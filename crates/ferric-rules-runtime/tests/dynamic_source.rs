@@ -247,3 +247,86 @@ fn top_level_assert_keeps_its_ordered_relation_implied_while_fields_build() {
     engine.run(RunLimit::Count(30)).unwrap();
     assert_eq!(engine.get_output("t"), Some("(implied)\n"));
 }
+
+fn rejections(engine: &Engine) -> Vec<&str> {
+    engine
+        .get_output("werror")
+        .unwrap_or("")
+        .lines()
+        .filter(|line| line.contains("in use"))
+        .collect()
+}
+
+// A top-level assertion prepares every fact first and keeps all of them, not
+// only the one being evaluated, in use until the last is published. CLIPS
+// 6.30 rejects both builds (CSTRCPSR4 for p and for q) and then prints
+//   q 1 / trigger2 FALSE / trigger FALSE / (x) (implied) / p 42
+#[test]
+fn top_level_assert_holds_every_prepared_fact() {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str(
+            r#"(deftemplate p (slot x))
+        (assert (trigger (build "(deftemplate p (slot y))")) (p (x 42)))
+        (assert (trigger2 (build "(deftemplate q (slot a))")) (q 1))
+        (defrule show => (printout t (deftemplate-slot-names p) " " (deftemplate-slot-names q) crlf)
+          (do-for-all-facts ((?f p)) TRUE (printout t p " " ?f:x crlf)))
+        (defrule t1 (trigger ?x) => (printout t "trigger " ?x crlf))
+        (defrule t2 (trigger2 ?x) => (printout t "trigger2 " ?x crlf))
+        (defrule q (q ?x) => (printout t "q " ?x crlf))"#,
+        )
+        .unwrap();
+    assert_eq!(rejections(&engine).len(), 2);
+    engine.run(RunLimit::Count(30)).unwrap();
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(
+        engine.get_output("t"),
+        Some("q 1\ntrigger2 FALSE\ntrigger FALSE\n(x) (implied)\np 42\n")
+    );
+}
+
+// An eval expression holds the templates and relations it names while it
+// runs, even when its caller does not name them. CLIPS 6.30 rejects all three
+// builds and prints <Fact-1> <Fact-3> <Fact-4>, (x) (implied), p 41, p 42.
+#[test]
+fn eval_holds_the_templates_and_relations_its_expression_names() {
+    let engine = run(r#"(deftemplate p (slot x))
+      (defrule r =>
+        (printout t (eval "(progn (build \"(deftemplate p (slot y))\") (assert (p (x 41))))") " ")
+        (printout t (eval "(assert (trigger (build \"(deftemplate p (slot z))\")) (p (x 42)))") " ")
+        (printout t (eval "(assert (trigger (build \"(deftemplate q (slot a))\")) (q 1))") crlf)
+        (printout t (deftemplate-slot-names p) " " (deftemplate-slot-names q) crlf)
+        (eval "(do-for-all-facts ((?f p)) TRUE (printout t p \" \" ?f:x crlf))"))"#);
+    assert_eq!(rejections(&engine).len(), 3);
+    assert_eq!(
+        engine.get_output("t"),
+        Some("<Fact-1> <Fact-3> <Fact-4>\n(x) (implied)\np 41\np 42\n")
+    );
+}
+
+// The hold ends with the expression: a later build replaces the template.
+#[test]
+fn eval_releases_its_templates_when_it_returns() {
+    let engine = run(r#"(deftemplate p (slot x))
+      (defrule r =>
+        (eval "(progn (assert (p (x 1))) (retract 1))")
+        (printout t (build "(deftemplate p (slot y))") " " (deftemplate-slot-names p) crlf))"#);
+    assert_eq!(engine.get_output("t"), Some("TRUE (y)\n"));
+}
+
+// A rule that removes itself keeps running its actions, and they keep their
+// templates in use. CLIPS 6.30 instead refuses the undefrule
+// ([PRNTUTIL4] Unable to delete defrule r.), then likewise rejects the build
+// (CSTRCPSR4) and prints FALSE and (x).
+#[test]
+fn a_rule_that_removed_itself_keeps_its_templates_in_use() {
+    let engine = run(r#"(deftemplate p (slot x))
+      (defrule r =>
+        (undefrule r)
+        (printout t (build "(deftemplate p (slot y))") " ")
+        (assert (p (x 42)))
+        (printout t (deftemplate-slot-names p) " "
+          (eval "(find-all-facts ((?f p)) (eq ?f:x 42))") crlf))"#);
+    assert_eq!(engine.get_output("t"), Some("FALSE (x) (<Fact-1>)\n"));
+    assert_eq!(rejections(&engine).len(), 1);
+}

@@ -2151,20 +2151,34 @@ impl Engine {
             .map(|fact_expr| self.prepare_assertion(fact_expr))
             .collect::<Result<Vec<_>, _>>()?;
         let module = self.module_registry.current_module();
-        let mut locals = crate::evaluator::CallableLocals::default();
-        for fact in &prepared {
-            // Each fact is evaluated completely before it is published.
-            let fact_id = self
-                .with_active_fact(fact.identity(), |engine| {
+        // Like CLIPS's parsed command, the whole assertion keeps every fact's
+        // template or relation, and whatever its fields name, in use until
+        // the last fact is published: a `build` in an earlier fact cannot
+        // redefine a later one (CSTRCPSR4).
+        let identities: Vec<_> = prepared
+            .iter()
+            .map(crate::fact_initializer::PreparedFact::identity)
+            .collect();
+        let expressions: Vec<_> = prepared
+            .iter()
+            .flat_map(crate::fact_initializer::PreparedFact::expressions)
+            .cloned()
+            .map(std::sync::Arc::new)
+            .collect();
+        self.with_active_expressions(module, expressions, |engine| {
+            engine.with_active_facts(identities, |engine| {
+                let mut locals = crate::evaluator::CallableLocals::default();
+                for fact in &prepared {
+                    // Each fact is evaluated completely before it is published.
                     let fact = engine
                         .evaluate_prepared_fact_with_locals(fact, module, &mut locals)
                         .map_err(LoadError::InvalidAssert)?;
-                    engine.assert_fact_internal(fact).map_err(LoadError::from)
-                })?
-                .fact_id();
-            result.asserted_facts.push(self.host.export(fact_id));
-        }
-        Ok(())
+                    let fact_id = engine.assert_fact_internal(fact)?.fact_id();
+                    result.asserted_facts.push(engine.host.export(fact_id));
+                }
+                Ok(())
+            })
+        })
     }
 
     fn warned_string_value(

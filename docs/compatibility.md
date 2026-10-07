@@ -1319,7 +1319,11 @@ of incremental loading are retained. A currently executing rule or callable
 cannot be replaced, including through a helper's `build` call; the original
 definition remains installed. Likewise, while a fact is being asserted,
 modified, or duplicated, a `build` in its slot or field expressions cannot
-redefine its template or give its ordered relation an explicit template.
+redefine its template or give its ordered relation an explicit template. As in
+CLIPS, code that is running keeps every template and ordered relation it names
+in use: all facts of one `assert` command, an `eval` or `assert-string`
+expression, and the actions of a rule that has removed itself with
+`undefrule`. CLIPS instead refuses to remove an executing rule.
 
 Each engine owns its random state, and snapshots preserve that state. Seeded
 explicit draws match the pinned glibc-based CLIPS 6.30 reference. CLIPS 6.30

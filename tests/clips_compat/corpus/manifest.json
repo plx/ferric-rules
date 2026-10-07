@@ -9468,6 +9468,28 @@
         "deftemplate",
         "issue-403"
       ]
+    },
+    {
+      "path": "stdlib/403e_build_assert_pending_fact.clp",
+      "level": "interaction",
+      "covers": [
+        "build",
+        "assert",
+        "deftemplate",
+        "issue-403"
+      ],
+      "recoverable_build_notices": true
+    },
+    {
+      "path": "stdlib/403e_build_eval_template_use.clp",
+      "level": "interaction",
+      "covers": [
+        "build",
+        "eval",
+        "deftemplate",
+        "issue-403"
+      ],
+      "recoverable_build_notices": true
     }
   ]
 }

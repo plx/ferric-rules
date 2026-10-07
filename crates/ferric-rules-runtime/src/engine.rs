@@ -17,6 +17,7 @@ use ferric_rules_core::{
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
+use crate::evaluator::RuntimeExpr;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
 use crate::host::{
@@ -225,6 +226,11 @@ pub struct Engine {
     /// like `active_templates` so `build` cannot define an explicit template
     /// over the relation underneath its own assertion.
     pub(crate) active_ordered_relations: Vec<Symbol>,
+    /// Compiled source that runs outside any registered construct, held like
+    /// `active_templates`: an `eval`/`assert-string` expression, or the
+    /// fields of a top-level assertion. The templates and ordered relations
+    /// it names stay in use until it returns.
+    pub(crate) active_expressions: Vec<(ModuleId, Arc<RuntimeExpr>)>,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
@@ -337,6 +343,7 @@ impl Engine {
             active_callables: Vec::new(),
             active_templates: Vec::new(),
             active_ordered_relations: Vec::new(),
+            active_expressions: Vec::new(),
             active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
@@ -407,15 +414,49 @@ impl Engine {
         identity: FactIdentity,
         assemble: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        self.with_active_facts([identity], assemble)
+    }
+
+    /// Hold every identity in use, as [`Engine::with_active_fact`] does for
+    /// one, while `assemble` runs. A command that prepares several facts holds
+    /// all of them from before the first is evaluated until the last is
+    /// published, so an earlier fact's fields cannot redefine a later one.
+    pub(crate) fn with_active_facts<T>(
+        &mut self,
+        identities: impl IntoIterator<Item = FactIdentity>,
+        assemble: impl FnOnce(&mut Self) -> T,
+    ) -> T {
         let templates = self.active_templates.len();
         let relations = self.active_ordered_relations.len();
-        match identity {
-            FactIdentity::Template(id) => self.active_templates.push(id),
-            FactIdentity::Ordered(relation) => self.active_ordered_relations.push(relation),
+        for identity in identities {
+            match identity {
+                FactIdentity::Template(id) => self.active_templates.push(id),
+                FactIdentity::Ordered(relation) => self.active_ordered_relations.push(relation),
+            }
         }
         let result = assemble(self);
         self.active_templates.truncate(templates);
         self.active_ordered_relations.truncate(relations);
+        result
+    }
+
+    /// Keep the templates and ordered relations that compiled source outside
+    /// any registered construct names in use while it runs (see
+    /// `active_expressions`). Nested holds unwind to their own depth.
+    pub(crate) fn with_active_expressions<T>(
+        &mut self,
+        module: ModuleId,
+        expressions: impl IntoIterator<Item = Arc<RuntimeExpr>>,
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let depth = self.active_expressions.len();
+        self.active_expressions.extend(
+            expressions
+                .into_iter()
+                .map(|expression| (module, expression)),
+        );
+        let result = run(self);
+        self.active_expressions.truncate(depth);
         result
     }
 
@@ -1635,6 +1676,7 @@ impl Engine {
         self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
         self.active_templates.clear();
         self.active_ordered_relations.clear();
+        self.active_expressions.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the

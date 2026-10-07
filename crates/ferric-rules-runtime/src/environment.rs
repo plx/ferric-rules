@@ -183,28 +183,41 @@ fn dynamic_source(
         interpret_action_expr(&wrapped)
     }
     .map_err(|error| failure(name, &error, span))?;
-    let expression = ctx
-        .engine
-        .prepare_eval_expression(&expression, ctx.current_module)
-        .map_err(|error| failure(name, &error, span))?;
+    let expression = std::sync::Arc::new(
+        ctx.engine
+            .prepare_eval_expression(&expression, ctx.current_module)
+            .map_err(|error| failure(name, &error, span))?,
+    );
     // Dynamic source cannot see the surrounding rule/callable's local variables.
     let bindings = ferric_rules_core::binding::BindingSet::new();
     let variables = ferric_rules_core::binding::VarMap::new();
     let mut locals = evaluator::CallableLocals::default();
-    let mut child = EvalContext {
-        engine: ctx.engine,
-        bindings: &bindings,
-        var_map: &variables,
-        callable_locals: Some(&mut locals),
-        call_depth: ctx.call_depth,
-        expression_depth: ctx.expression_depth,
-        current_module: ctx.current_module,
-        global_module: ctx.global_module,
-        method_chain: None,
-        compact_fact_bindings: None,
-        allow_engine_effects: ctx.allow_engine_effects,
-    };
-    evaluator::eval_inner(&mut child, &expression)
+    let (call_depth, expression_depth) = (ctx.call_depth, ctx.expression_depth);
+    let (current_module, global_module) = (ctx.current_module, ctx.global_module);
+    let allow_engine_effects = ctx.allow_engine_effects;
+    // As in CLIPS, the parsed expression keeps the templates and ordered
+    // relations it names in use while it runs, so its own `build` cannot
+    // redefine them underneath a later assertion (CSTRCPSR4).
+    ctx.engine.with_active_expressions(
+        current_module,
+        [std::sync::Arc::clone(&expression)],
+        |engine| {
+            let mut child = EvalContext {
+                engine,
+                bindings: &bindings,
+                var_map: &variables,
+                callable_locals: Some(&mut locals),
+                call_depth,
+                expression_depth,
+                current_module,
+                global_module,
+                method_chain: None,
+                compact_fact_bindings: None,
+                allow_engine_effects,
+            };
+            evaluator::eval_inner(&mut child, &expression)
+        },
+    )
 }
 
 fn build(

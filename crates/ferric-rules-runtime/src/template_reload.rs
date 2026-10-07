@@ -32,6 +32,19 @@ impl Engine {
                     self.runtime_expressions_use_template(&default.expressions, default.module, id)
                 })
             })
+            || self.active_expressions.iter().any(|(module, expression)| {
+                self.runtime_expressions_use_template(
+                    std::slice::from_ref(expression.as_ref()),
+                    *module,
+                    id,
+                )
+            })
+            // A rule that removed itself keeps running its actions.
+            || self.active_rules.iter().any(|(module, info)| {
+                info.actions
+                    .iter()
+                    .any(|action| self.call_uses_template(&action.call, *module, id))
+            })
         {
             return true;
         }

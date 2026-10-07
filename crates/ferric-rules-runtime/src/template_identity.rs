@@ -41,6 +41,19 @@ impl Engine {
                     .flatten()
                     .any(|default| self.dynamic_default_uses_ordered_name(default, name))
             })
+            || self.active_expressions.iter().any(|(module, expression)| {
+                self.runtime_expressions_use_ordered_name(
+                    std::slice::from_ref(expression.as_ref()),
+                    *module,
+                    name,
+                )
+            })
+            // A rule that removed itself keeps running its actions.
+            || self.active_rules.iter().any(|(module, info)| {
+                info.actions
+                    .iter()
+                    .any(|action| self.call_uses_ordered_name(&action.call, *module, name))
+            })
         {
             return true;
         }
@@ -79,14 +92,23 @@ impl Engine {
         default: &DynamicSlotDefault,
         name: &str,
     ) -> bool {
-        default.expressions.iter().any(|expression| {
+        self.runtime_expressions_use_ordered_name(&default.expressions, default.module, name)
+    }
+
+    /// Whether compiled expressions, including nested ones, assert or query
+    /// `name` as an ordered relation.
+    fn runtime_expressions_use_ordered_name(
+        &self,
+        expressions: &[RuntimeExpr],
+        module: ModuleId,
+        name: &str,
+    ) -> bool {
+        expressions.iter().any(|expression| {
             RuntimeExpressions::new(expression).any(|expression| match expression {
                 RuntimeExpr::QueryAction { bindings, .. } => bindings
                     .iter()
-                    .any(|(_, raw)| self.ordered_name_is(raw, default.module, name)),
-                RuntimeExpr::EffectCall { call } => {
-                    self.call_uses_ordered_name(call, default.module, name)
-                }
+                    .any(|(_, raw)| self.ordered_name_is(raw, module, name)),
+                RuntimeExpr::EffectCall { call } => self.call_uses_ordered_name(call, module, name),
                 _ => false,
             })
         })
