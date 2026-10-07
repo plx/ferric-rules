@@ -9428,6 +9428,17 @@
         "issue-403"
       ],
       "resets": 2
+    },
+    {
+      "path": "procedural/403p_progn_rhs_actions.clp",
+      "level": "interaction",
+      "covers": [
+        "progn",
+        "undefrule",
+        "undeffacts",
+        "issue-403"
+      ],
+      "resets": 2
     }
   ]
 }

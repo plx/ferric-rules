@@ -2436,7 +2436,7 @@ impl Engine {
                 argument,
                 current_module,
                 expansion_allowed,
-                call.name == "progn" || Self::is_rule_action_wrapper(&call.name),
+                Self::is_rule_action_wrapper(&call.name),
             )?;
         }
         crate::builtin_validation::validate_call(call)
@@ -3376,6 +3376,7 @@ impl Engine {
         matches!(
             name,
             "if" | "while"
+                | "progn"
                 | "loop-for-count"
                 | "switch"
                 | "progn$"
