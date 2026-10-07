@@ -2066,12 +2066,24 @@ impl ReteNetwork {
                 }
             }
             self.propagate_to_child(token_id, child_id, fact_base, new_activations);
+            // A released NCC can itself be the entry another nested NCC waits
+            // for (`(exists (exists ...))`), so release transitively, depth
+            // first, keeping each waiting list's order. Every entry is removed
+            // once, so the extra work stays proportional to the postponed NCCs.
             if let Some(waiting) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
-                for ncc in waiting {
+                let mut ready: SmallVec<[NodeId; 4]> = waiting.into_iter().rev().collect();
+                while let Some(ncc) = ready.pop() {
                     self.propagate_to_child(token_id, ncc, fact_base, new_activations);
+                    if let Some(next) = postponed.as_mut().and_then(|p| p.remove(&ncc)) {
+                        ready.extend(next.into_iter().rev());
+                    }
                 }
             }
         }
+        debug_assert!(
+            !postponed.as_ref().is_some_and(|p| !p.is_empty()),
+            "every postponed nested NCC must be released after its entry"
+        );
     }
 
     fn propagate_to_child(
