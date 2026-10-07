@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1014
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1075
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -47,9 +47,12 @@ Docker image.
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
 direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and five track remaining
-network-topology tie differences described with
-[#400](https://github.com/plx/ferric-rules/issues/400):
+[#394](https://github.com/plx/ferric-rules/issues/394), and nine track network
+topology and installation-history differences: five equal-salience ties
+described with [#400](https://github.com/plx/ferric-rules/issues/400) and four
+auto-focus histories tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480), three from late
+installation and one from a queued test CE:
 
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
@@ -58,6 +61,9 @@ network-topology tie differences described with
 | Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
+| Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
+| Late-installed `(exists (and ...))` holding a negation | Building an auto-focus rule whose `(exists (and ...))` conjunction contains a `not` and does not hold when it is installed can make a transient focus push that CLIPS does not make. | `modules/398_gap_late_exists_conjunction_negation` |
+| Test CE after an NCC cancelled before it runs | During reset or assertion, a test CE after an NCC is only queued; when the NCC's subnetwork completes first and retracts the token, Ferric never creates the transient activation, so an auto-focus rule misses the focus push CLIPS keeps. | `modules/398_gap_ncc_deferred_test_cancelled_reset` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
@@ -228,7 +234,8 @@ including all commonly used conditional elements and RHS actions.
 ```clp
 (defrule rule-name
     "optional comment"
-    (declare (salience <integer>))
+    ;; salience is evaluated once, when the rule is defined
+    (declare (salience <integer-expression>) (auto-focus TRUE|FALSE))
     ;; LHS patterns
     (pattern-1)
     ?var <- (pattern-2)
@@ -302,9 +309,12 @@ node-sharing boundary.
 
 ### Salience
 
-Rules may declare one static integer salience in -10000 through 10000.
-Higher salience fires first within the
-chosen conflict resolution strategy:
+Rules may declare one integer or expression salience. Expressions evaluate once
+when the rule is defined, in its owning module, using the globals and callables
+available at that point in the source. The result must be an integer in
+-10000 through 10000. Later global changes, activations, and reset do not
+reevaluate it; OR branches share the single resolved value. Higher salience
+fires first within the chosen conflict resolution strategy:
 
 ```clp
 (defrule high-priority
@@ -316,11 +326,61 @@ chosen conflict resolution strategy:
     (go) => (printout t "low" crlf))
 ```
 
-Dynamic salience expressions, salience-evaluation modes, `refresh-agenda`, and
-`auto-focus` declarations are unsupported. Invalid/unsupported declarations
-reject the construct; they never become salience zero. `refresh-agenda` now
-reports an error instead of returning a successful no-op. These are deliberate
-pre-1.0 corrections to previously silent behavior.
+For example, `(declare (salience (+ ?*BASE* 5)))` uses the value of `BASE`
+at definition time. Local bindings in a salience expression have a fresh scope
+and do not bind RHS variables. Evaluation preserves prior expression effects
+and output if a later operation or the final result is invalid; the invalid
+rule is not installed. Failed replacements retain the previous rule.
+
+`(declare (auto-focus TRUE))` pushes the rule's owning module whenever a new
+activation is created, including during reset, assertion, retraction, or online
+rule installation. `FALSE` is the default; only these two literal symbols are
+accepted. Removing an activation does not undo its focus change. Both explicit
+`focus` and auto-focus skip a push when that module is already on top, while a
+module deeper in the stack may appear again. Predicate and NCC evaluation
+follow depth-first traversal order whether or not auto-focus is used, so
+declaring auto-focus on one rule does not reorder unrelated rules. A rule
+guarded by a pure double negation, `(exists (and ...))` or the equivalent
+`(not (and (not (and ...))))`, pushes its module during reset and assertion
+only once the conjunction holds, even when the conjunction's first join is
+shared with an older rule. Online installation of such a rule does the same
+when the conjunction holds no negation; one with a `not` inside can still
+push transiently when it is installed blocked (see below). An outer `(not (and ...))` with more conditions
+after its nested one, such as `(not (and (not (and (a) (b))) (c)))`, keeps
+CLIPS's transient admission and focus push before those conditions block it.
+A `(not (and ...))` whose first join is shared with an older rule also makes
+CLIPS's transient admission, and focus push, before that join blocks it.
+Snapshots preserve the focus stack without replaying notices for existing
+activations.
+
+Late installation of a blocked NCC rule follows CLIPS's transient focus push
+in two situations: when its fresh subnetwork shares the rule's left prefix with
+an older rule, unless a test CE follows the NCC; and when a fresh join inside
+the NCC follows a shared, already populated subnetwork entry join. There is no
+push when the only thing after that populated shared join is a test CE inside
+the NCC, whether or not the older rule also defers that test. Three
+characterized late-installation differences remain, tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480): with a shared prefix and
+a trailing test CE, the test is only queued before the fresh subnetwork blocks
+the token, so the transient activation and its focus push never happen; a
+fresh subnetwork with no shared prefix does not reconstruct every transient
+activation from the historical fact assertion order, so such a rule can miss a
+historical focus push; and a rule guarded by `(exists (and ...))` whose
+conjunction contains a `not` and does not hold at installation can admit its
+token before the conjunction is primed, making a transient focus push that
+CLIPS does not make.
+
+A queued test CE loses CLIPS's transient focus push during ordinary reset and
+assertion too. When a test CE follows an NCC and the NCC's subnetwork
+completes and retracts the token before the queued test is evaluated, as for
+`(p) (not (and (a) (b))) (a) (test ...)` with `(a)` asserted after `(b)` and
+`(p)`, no activation is created, so the push CLIPS keeps never happens (also
+tracked in #480). Other assertion, reset, and blocker-retraction focus
+behavior has conforming coverage.
+
+`when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,
+and `refresh-agenda` remain unsupported. Invalid or duplicate declarations
+reject the construct; they never silently become salience zero.
 
 ### Fact-query expressions
 
@@ -398,7 +458,7 @@ activation order and the blocker history used for future activations.
 | `duplicate` | Assert a template copy with slot overrides; return its address or `FALSE` for a duplicate |
 | `printout` | Write to a named channel (`t` for stdout) |
 | `halt` | Stop the run once the current RHS finishes (loops and queries in it run to completion) |
-| `focus` | Push one or more modules onto the focus stack; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
+| `focus` | Push one or more modules onto the focus stack, skipping a module already on top; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
 | `agenda` | Print the current agenda |
@@ -1094,7 +1154,9 @@ Constructs can be referenced with `MODULE::name` syntax:
 ### Focus Stack
 
 - `MAIN` is the default focus module after `(reset)`.
-- `(focus MODULE)` pushes a module onto the focus stack.
+- `(focus MODULE)` pushes a module onto the focus stack. Pushing the module
+  already at the top leaves the stack unchanged; a module deeper in the stack
+  may be pushed again. The host `push_focus`/`pushFocus` APIs behave the same.
 - Only rules in the current focus-stack module are eligible to fire.
 - When a module's agenda is empty, it is popped and the next module resumes.
 
@@ -1535,7 +1597,7 @@ The following features are explicitly out of scope.
 | Environment commands `load*`, `facts`, `batch*`, `exit`, `ppfact` | Not supported | Drive loading, inspection, batching, and process lifetime from the host |
 | Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
 | Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
-| `set-salience-evaluation` | Not supported | Salience is static; dynamic salience evaluation is unavailable |
+| `set-salience-evaluation` | Not supported | Only definition-time salience evaluation is supported; when-activated/every-cycle modes are unavailable |
 | Random draws consumed by activation creation | Not supported | CLIPS 6.30 draws once per new activation; Ferric's seeded stream matches only when no activation is created between `seed` and a draw |
 | Load-time result-type checks of nested built-in calls | Not supported | CLIPS rejects e.g. `(abs (str-cat a))` at load; Ferric checks the value when evaluated, so the run stops there |
 | Reentrant `build` during construct initialization | Explicitly rejected | Invoke it after loading; the pinned reference crashes on these initializer cases |

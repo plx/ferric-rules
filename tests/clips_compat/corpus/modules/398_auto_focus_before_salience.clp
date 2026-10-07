@@ -1,0 +1,7 @@
+(defmodule MAIN (export ?ALL))
+(deftemplate go (slot x))
+(defmodule A (import MAIN ?ALL))
+(defrule A::r (declare (auto-focus TRUE) (salience -10)) (go (x ?x)) => (printout t A crlf))
+(defmodule B (import MAIN ?ALL))
+(defrule B::r (declare (auto-focus TRUE) (salience 100)) (go (x ?x)) => (printout t B crlf))
+(defrule MAIN::start => (assert (go (x 1))) (printout t (get-focus-stack) crlf))

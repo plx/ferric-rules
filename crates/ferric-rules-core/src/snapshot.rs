@@ -584,8 +584,8 @@ impl ReteNetwork {
             "snapshot has unfinished NCC results"
         );
         require!(
-            self.pending_predicate_matches.is_empty(),
-            "snapshot has unfinished predicate matches"
+            self.pending_events.is_empty(),
+            "snapshot has unfinished runtime events"
         );
         let mut work = Work(10_000_000);
         self.validate_alpha_snapshot(facts, symbols, &mut work)?;

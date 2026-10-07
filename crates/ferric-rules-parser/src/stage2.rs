@@ -11,6 +11,7 @@ use crate::span::Span;
 use std::collections::HashSet;
 use std::fmt;
 
+mod rule_declarations;
 mod slot_attributes;
 
 // ============================================================================
@@ -445,8 +446,12 @@ pub struct RuleConstruct {
     pub span: Span,
     /// Optional doc comment string.
     pub comment: Option<String>,
-    /// Salience declaration (defaults to 0).
+    /// Literal or resolved salience (defaults to 0).
     pub salience: i32,
+    /// A non-integer-literal salience expression, evaluated once at definition.
+    pub salience_expression: Option<ActionExpr>,
+    /// Whether a new activation automatically focuses the rule's module.
+    pub auto_focus: bool,
     /// LHS patterns (typed).
     pub patterns: Vec<Pattern>,
     /// RHS actions (typed).
@@ -960,57 +965,13 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
         .to_string();
 
     let mut idx = 1;
-    let mut salience = 0;
-    let mut salience_set = false;
-
-    // Check for optional comment (string as second element)
+    // Check for optional comment (string as second element).
     let comment = parse_optional_comment(elements, &mut idx);
-
-    // Check for optional declare forms
-    while idx < elements.len() {
-        if let Some(declare_list) = elements[idx].as_list() {
-            if !declare_list.is_empty() && declare_list[0].as_symbol() == Some("declare") {
-                for decl_item in &declare_list[1..] {
-                    let item_list = decl_item.as_list().ok_or_else(|| {
-                        InterpretError::expected(
-                            "a (salience <integer>) declaration",
-                            decl_item.span(),
-                        )
-                    })?;
-                    if item_list.first().and_then(SExpr::as_symbol) != Some("salience") {
-                        return Err(InterpretError::expected(
-                            "a supported declaration: only static salience is implemented (auto-focus is unsupported)",
-                            decl_item.span(),
-                        ));
-                    }
-                    let Some(Atom::Integer(sal)) = item_list.get(1).and_then(SExpr::as_atom) else {
-                        return Err(InterpretError::expected(
-                            "static integer salience; dynamic expressions are unsupported",
-                            decl_item.span(),
-                        ));
-                    };
-                    if item_list.len() != 2 || !(-10_000..=10_000).contains(sal) {
-                        return Err(InterpretError::expected(
-                            "one salience integer in -10000..=10000",
-                            decl_item.span(),
-                        ));
-                    }
-                    if std::mem::replace(&mut salience_set, true) {
-                        return Err(InterpretError::expected(
-                            "only one salience declaration per rule",
-                            decl_item.span(),
-                        ));
-                    }
-                    salience = i32::try_from(*sal).expect("validated salience range");
-                }
-                idx += 1;
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
+    let rule_declarations::Declarations {
+        salience,
+        salience_expression,
+        auto_focus,
+    } = rule_declarations::interpret(elements, &mut idx)?;
 
     // Find the => separator
     let arrow_pos = elements[idx..]
@@ -1057,6 +1018,8 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
         span,
         comment,
         salience,
+        salience_expression,
+        auto_focus,
         patterns,
         actions,
     })
@@ -3539,6 +3502,8 @@ mod tests {
             // The salience stored on the rule must equal the declared value exactly
             prop_assert_eq!(rule.salience, salience,
                 "salience must be preserved without alteration");
+            prop_assert!(rule.salience_expression.is_none());
+            prop_assert!(!rule.auto_focus);
         }
 
         /// Postcondition: a well-formed `(deffacts NAME (fact1) (fact2))` must parse

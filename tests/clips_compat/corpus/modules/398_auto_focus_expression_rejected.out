@@ -1,0 +1,6 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for auto-focus statement.
+
+ERROR:
+(defrule MAIN::r
+   (declare (auto-focus (

@@ -323,6 +323,30 @@ impl Engine {
         self.prepare_field(expression, module, false)
     }
 
+    pub(crate) fn prepare_salience_expression(
+        &mut self,
+        expression: &ActionExpr,
+        module: ModuleId,
+    ) -> Result<RuntimeExpr, LoadError> {
+        self.validate_source_default_control(expression, module, "salience")?;
+        // Salience is evaluated immediately. An unbound local fails when read,
+        // preserving any preceding expression effects, as CLIPS does.
+        crate::callable_validation::validate_iterator_binds_with_templates(
+            std::slice::from_ref(expression),
+            &|name| self.resolve_template_id(name, module).is_ok(),
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
+        crate::callable_validation::validate_breaks_with_templates(
+            std::slice::from_ref(expression),
+            &|name| self.resolve_template_id(name, module).is_ok(),
+        )
+        .map_err(|(span, message)| invalid_at(span, &message))?;
+        self.validate_expression_query_declarations(expression, module, None)?;
+        self.validate_action_expr_as_expression(expression, module, "salience", &HashSet::new())?;
+        evaluator::from_action_expr(expression, &mut self.symbol_table, &self.config)
+            .map_err(|error| LoadError::Compile(format!("salience: {error}")))
+    }
+
     fn validate_source_default_control(
         &self,
         root: &ActionExpr,

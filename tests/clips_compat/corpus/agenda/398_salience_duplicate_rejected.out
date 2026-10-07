@@ -1,0 +1,6 @@
+
+[PRNTUTIL5] The salience declaration has already been parsed.
+
+ERROR:
+(defrule MAIN::r
+   (declare (salience 1) (salience

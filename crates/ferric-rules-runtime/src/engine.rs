@@ -254,6 +254,9 @@ impl Engine {
         if rules.is_empty() {
             return;
         }
+        // Historical focus notices still refer to this metadata and must be
+        // applied before a retired RuleId can be reused by a new definition.
+        self.drain_network_events();
         let retired: HashSet<_> = rules
             .iter()
             .filter_map(|rule| {
@@ -482,7 +485,7 @@ impl Engine {
             {
                 FactInsertionResult::Inserted(fact_id) => {
                     propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
-                    self.drain_pending_predicate_matches();
+                    self.drain_network_events();
                     FactAssertionResult::Asserted(fact_id)
                 }
                 FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
@@ -508,17 +511,35 @@ impl Engine {
         // protected identity before any match-time expression can run.
         self.initial_fact_id = Some(fact_id);
         propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
-        self.drain_pending_predicate_matches();
+        self.drain_network_events();
         Ok(())
     }
 
-    pub(crate) fn drain_pending_predicate_matches(&mut self) {
+    pub(crate) fn drain_network_events(&mut self) {
         if self.processing_predicates {
             return;
         }
         self.processing_predicates = true;
 
-        while let Some(pending) = self.rete.pop_pending_predicate_match() {
+        while let Some(event) = self.rete.pop_pending_event() {
+            let pending = match event {
+                ferric_rules_core::PendingReteEvent::Predicate(pending) => pending,
+                ferric_rules_core::PendingReteEvent::NccLeft(pending) => {
+                    self.rete
+                        .resolve_ncc_left_activation(pending, &self.fact_base);
+                    continue;
+                }
+                ferric_rules_core::PendingReteEvent::AutoFocus(rule) => {
+                    if let Some(&module) = rule_index_get(&self.rule_modules, rule) {
+                        self.module_registry.push_focus(module);
+                    } else {
+                        self.action_diagnostics.push(ActionError::EvalError(format!(
+                            "internal invariant violation: auto-focus for rule {rule:?} has no module metadata"
+                        )));
+                    }
+                    continue;
+                }
+            };
             let Some(token) = self.rete.token_store.get(pending.parent_token).cloned() else {
                 continue;
             };
@@ -1009,7 +1030,7 @@ impl Engine {
         self.fact_base
             .retract(fact_id)
             .ok_or(EngineError::FactNotFound(handle))?;
-        self.drain_pending_predicate_matches();
+        self.drain_network_events();
         self.host.remove(fact_id);
 
         Ok(())
@@ -1340,7 +1361,7 @@ impl Engine {
         self.active_rules.pop();
         // Retractions and modifications performed by RHS actions can unblock
         // negative nodes and create new predicate candidates.
-        self.drain_pending_predicate_matches();
+        self.drain_network_events();
 
         ferric_event!(
             debug,
@@ -1596,6 +1617,8 @@ impl Engine {
         self.fact_base = FactBase::new();
         self.initial_fact_id = None;
         self.fact_index_starts_at_zero = false;
+        // Reset focus before root matches emit their new auto-focus notices.
+        self.module_registry.reset_focus();
         self.rete.clear_working_memory();
         if !preserve_output {
             self.router.clear();
@@ -1607,15 +1630,12 @@ impl Engine {
         // Note: input_buffer is intentionally NOT cleared on reset.
         // Input is live I/O state that should persist across resets.
 
-        // Reset focus stack to [MAIN] and current module to MAIN
-        self.module_registry.reset_focus();
-
         // Re-initialize globals from registered initial values
         self.globals.clear();
         for (module_id, name, value) in &self.registered_globals {
             self.globals.set(*module_id, name, value.clone());
         }
-        self.drain_pending_predicate_matches();
+        self.drain_network_events();
 
         // Establish the built-in initial fact before any application seed.
         // Unconditional/leading-negative matches already use the non-fact root.
@@ -1730,7 +1750,7 @@ impl Engine {
         self.fact_epoch = epoch;
         self.fact_index_starts_at_zero = true;
         self.host.clear_facts();
-        self.drain_pending_predicate_matches();
+        self.drain_network_events();
         Ok(())
     }
 
@@ -1839,6 +1859,9 @@ impl Engine {
     }
 
     /// Push a module onto the focus stack by name.
+    ///
+    /// Pushing the module already at the top leaves the stack unchanged; a
+    /// module deeper in the stack may be pushed again.
     ///
     /// # Errors
     ///

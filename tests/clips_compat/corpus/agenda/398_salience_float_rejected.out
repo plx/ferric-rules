@@ -1,0 +1,6 @@
+
+[PRNTUTIL10] Salience value must be an integer value.
+
+ERROR:
+(defrule MAIN::r
+   (declare (salience (+ 1 0.5)

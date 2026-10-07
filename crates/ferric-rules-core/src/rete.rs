@@ -34,6 +34,30 @@ pub struct PendingPredicateMatch {
     pub condition_index: u32,
 }
 
+/// An NCC left admission waiting for earlier runtime work to establish blockers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingNccLeftActivation {
+    pub node: NodeId,
+    pub parent_token: TokenId,
+}
+
+/// Runtime work emitted in network traversal order.
+///
+/// A predicate occupies the position where its eventual descendant notices
+/// belong. Every host must drain this unified queue in order with
+/// [`ReteNetwork::pop_pending_event`], whether or not any rule uses
+/// auto-focus: NCC admissions wait here behind earlier predicate evaluations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingReteEvent {
+    Predicate(PendingPredicateMatch),
+    /// Resolve with [`ReteNetwork::resolve_ncc_left_activation`] before popping
+    /// the next event, just as for a predicate evaluation.
+    NccLeft(PendingNccLeftActivation),
+    /// A flagged rule created an activation. The notice remains valid even if
+    /// that activation is later canceled; drain before reusing its rule ID.
+    AutoFocus(RuleId),
+}
+
 /// A removed primary NCC result awaiting chronological migration or unblocking.
 #[derive(Clone, Copy)]
 pub(crate) struct NccResultRetraction {
@@ -114,7 +138,13 @@ pub struct ReteNetwork {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::std_hash_set"))]
     pub(crate) disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
     #[cfg_attr(feature = "serde", serde(skip, default))]
-    pub(crate) pending_predicate_matches: VecDeque<PendingPredicateMatch>,
+    pub(crate) pending_events: VecDeque<PendingReteEvent>,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pending_auto_focus_count: usize,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pending_ncc_left_count: usize,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pub(crate) auto_focus_rules: rustc_hash::FxHashSet<RuleId>,
     #[cfg_attr(feature = "serde", serde(skip, default))]
     pub(crate) pending_ncc_results: Option<NccResultBatch>,
     pub(crate) next_block_order: u64,
@@ -146,7 +176,10 @@ impl ReteNetwork {
             token_store,
             agenda,
             disabled_rules: std::collections::HashSet::new(),
-            pending_predicate_matches: VecDeque::new(),
+            pending_events: VecDeque::new(),
+            pending_auto_focus_count: 0,
+            pending_ncc_left_count: 0,
+            auto_focus_rules: rustc_hash::FxHashSet::default(),
             pending_ncc_results: None,
             next_block_order: 0,
         };
@@ -230,7 +263,9 @@ impl ReteNetwork {
             exists_memories,
             tokens: self.token_store.len(),
             activations: self.agenda.len(),
-            pending_predicate_matches: self.pending_predicate_matches.len(),
+            pending_predicate_matches: self.pending_events.len()
+                - self.pending_auto_focus_count
+                - self.pending_ncc_left_count,
             disabled_rules: self.disabled_rules.len(),
         }
     }
@@ -463,7 +498,9 @@ impl ReteNetwork {
         self.token_store.clear();
         self.beta.clear_all_runtime();
         self.next_block_order = 0;
-        self.pending_predicate_matches.clear();
+        self.pending_events.clear();
+        self.pending_auto_focus_count = 0;
+        self.pending_ncc_left_count = 0;
         let strategy = self.agenda.strategy();
         self.agenda = Agenda::with_strategy(strategy);
 
@@ -507,8 +544,20 @@ impl ReteNetwork {
     ) {
         let root_id = self.beta.root_id();
         let mut new_activations = Vec::new();
+        // Existing shared results must reach a new NCC partner before its left
+        // frontier is admitted. Otherwise a blocked match transiently activates
+        // and emits an incorrect historical auto-focus notice. Fresh subnetworks
+        // retain their original order: CLIPS emits that transient notice when
+        // the right results are first computed during installation.
+        let mut frontier = self.ncc_shared_results_first(first_new_node);
+        frontier.sort_by_key(|(_, child)| {
+            !matches!(
+                self.beta.get_node(*child),
+                Some(BetaNode::NccPartner { .. })
+            )
+        });
 
-        for (parent_id, new_child) in self.ncc_subnetworks_first(first_new_node) {
+        for (parent_id, new_child) in frontier {
             if parent_id == root_id {
                 self.activate_root_children(&[new_child], fact_base);
                 continue;
@@ -545,27 +594,114 @@ impl ReteNetwork {
         }
     }
 
-    /// Order frontier edges as CLIPS builds joins: an NCC's subnetwork, whose
-    /// node IDs follow the NCC's and end at its partner, is primed before the
-    /// NCC itself, so the NCC never decides before its results are known.
-    fn ncc_subnetworks_first(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
+    /// Order frontier edges so an NCC decides after the parts of its
+    /// subnetwork that stand for already-populated CLIPS joins. A subnetwork's
+    /// node IDs follow its NCC's and end at its partner. A frontier edge into
+    /// a predicate or partner there extends an existing (shared) subnetwork
+    /// node: CLIPS attaches a test to the preceding join, so its results exist
+    /// before the NCC is primed and CLIPS never passes the NCC through. Other
+    /// subnetwork edges keep their position after the NCC, as CLIPS primes the
+    /// NCC's left input before computing a fresh right subnetwork.
+    ///
+    /// A pure double negation over a positive conjunction (`(exists (and
+    /// ...))` without a negation inside) is instead primed after every
+    /// frontier edge of its subnetwork, so the nested NCC and its conjunction
+    /// have produced the result that blocks it before it admits a token.
+    /// CLIPS makes no transient activation (or focus push) for that shape at
+    /// installation. A conjunction holding a negation keeps the order above:
+    /// CLIPS pushes there for some shapes and not others (tracked in #480).
+    fn ncc_shared_results_first(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
         let edges = self.beta.installation_frontier(first_new_node);
+        let mut emitted = vec![false; edges.len()];
         let mut ordered = Vec::with_capacity(edges.len());
-        let mut pending: Vec<((NodeId, NodeId), NodeId)> = Vec::new();
-        for edge in edges {
-            while pending
-                .last()
-                .is_some_and(|&(_, partner)| partner.0 < edge.1 .0)
-            {
-                ordered.push(pending.pop().expect("pending NCC edge").0);
+        for (index, &edge) in edges.iter().enumerate() {
+            if emitted[index] {
+                continue;
             }
-            match self.beta.get_node(edge.1) {
-                Some(BetaNode::Ncc { partner, .. }) => pending.push((edge, *partner)),
-                _ => ordered.push(edge),
+            if let Some(BetaNode::Ncc { partner, .. }) = self.beta.get_node(edge.1) {
+                let subnetwork = edge.1 .0 + 1..=partner.0;
+                for (later, &candidate) in edges.iter().enumerate().skip(index + 1) {
+                    if !emitted[later]
+                        && subnetwork.contains(&candidate.1 .0)
+                        && matches!(
+                            self.beta.get_node(candidate.1),
+                            Some(BetaNode::Predicate { .. } | BetaNode::NccPartner { .. })
+                        )
+                    {
+                        emitted[later] = true;
+                        ordered.push(candidate);
+                    }
+                }
+            }
+            emitted[index] = true;
+            ordered.push(edge);
+        }
+        self.prime_positive_double_negations_last(&mut ordered);
+        ordered
+    }
+
+    /// Move each pure positive double-negation NCC edge behind the last
+    /// frontier edge inside its subnetwork (see `ncc_shared_results_first`).
+    fn prime_positive_double_negations_last(&self, edges: &mut Vec<(NodeId, NodeId)>) {
+        let deferred: SmallVec<[NodeId; 2]> = edges
+            .iter()
+            .map(|&(_, child)| child)
+            .filter(|&child| self.is_positive_double_negation(child))
+            .collect();
+        for ncc in deferred {
+            let Some(BetaNode::Ncc { partner, .. }) = self.beta.get_node(ncc) else {
+                continue;
+            };
+            let subnetwork = ncc.0 + 1..=partner.0;
+            let Some(from) = edges.iter().position(|&(_, child)| child == ncc) else {
+                continue;
+            };
+            let Some(last) = edges
+                .iter()
+                .rposition(|&(_, child)| subnetwork.contains(&child.0))
+            else {
+                continue;
+            };
+            if last > from {
+                let edge = edges.remove(from);
+                edges.insert(last, edge);
             }
         }
-        ordered.extend(pending.into_iter().rev().map(|(edge, _)| edge));
-        ordered
+    }
+
+    /// Whether an NCC is a pure double negation whose nested NCC's
+    /// subnetwork holds no negation: no negative, exists or further NCC
+    /// node between the nested NCC's parent and its partner.
+    fn is_positive_double_negation(&self, ncc: NodeId) -> bool {
+        if !self.beta.ncc_is_pure_double_negation(ncc) {
+            return false;
+        }
+        let Some(inner) = self.beta.ncc_subnetwork_entry(ncc) else {
+            return false;
+        };
+        let Some(BetaNode::Ncc {
+            parent, partner, ..
+        }) = self.beta.get_node(inner)
+        else {
+            return false;
+        };
+        let mut current = self.beta.get_node(*partner).and_then(BetaNode::parent_node);
+        while let Some(node_id) = current {
+            if node_id == *parent {
+                return true;
+            }
+            let Some(node) = self.beta.get_node(node_id) else {
+                return false;
+            };
+            if matches!(
+                node,
+                BetaNode::Negative { .. } | BetaNode::Exists { .. } | BetaNode::Ncc { .. }
+            ) {
+                return false;
+            }
+            current = node.parent_node();
+        }
+        false
     }
 
     /// Ensure the root beta memory contains its single empty-prefix token.
@@ -612,8 +748,10 @@ impl ReteNetwork {
     pub fn disable_rule(&mut self, rule_id: crate::beta::RuleId) {
         self.disabled_rules.insert(rule_id);
         let _ = self.agenda.remove_activations_for_rule(rule_id);
-        self.pending_predicate_matches
-            .retain(|pending| pending.rule != rule_id);
+        self.pending_events.retain(|event| {
+            !matches!(event,
+            PendingReteEvent::Predicate(pending) if pending.rule == rule_id)
+        });
     }
 
     /// Reclaim rule-exclusive state without replaying facts into live siblings.
@@ -641,9 +779,18 @@ impl ReteNetwork {
         for rule in rules {
             self.agenda.remove_activations_for_rule(*rule);
             self.disabled_rules.remove(rule);
+            self.auto_focus_rules.remove(rule);
         }
-        self.pending_predicate_matches
-            .retain(|pending| retained.contains(&pending.node));
+        self.pending_events.retain(|event| match event {
+            PendingReteEvent::Predicate(pending) => retained.contains(&pending.node),
+            PendingReteEvent::NccLeft(pending) => retained.contains(&pending.node),
+            PendingReteEvent::AutoFocus(_) => true,
+        });
+        self.pending_ncc_left_count = self
+            .pending_events
+            .iter()
+            .filter(|event| matches!(event, PendingReteEvent::NccLeft(_)))
+            .count();
         let alpha_memories = self.beta.retain_nodes(&retained);
         let mapping = self.alpha.retain_memories(&alpha_memories);
         self.beta.remap_alpha_memories(&mapping);
@@ -657,9 +804,106 @@ impl ReteNetwork {
         self.disabled_rules.contains(&rule_id)
     }
 
+    /// Register whether future activations of a rule request auto-focus.
+    ///
+    /// Register before installing the rule. Changing this flag never creates
+    /// notices for existing activations or erases previously queued notices.
+    /// Registrations are transient: hosts must re-register flagged rules after
+    /// deserializing a core network, before performing further network work.
+    ///
+    /// Notices arrive as [`PendingReteEvent::AutoFocus`] in the unified queue
+    /// drained by [`Self::pop_pending_event`]. NCC admissions are queued there
+    /// as [`PendingReteEvent::NccLeft`] events, which must be resolved with
+    /// [`Self::resolve_ncc_left_activation`] or NCC rules will not activate.
+    pub fn set_rule_auto_focus(&mut self, rule: RuleId, enabled: bool) {
+        if enabled {
+            self.auto_focus_rules.insert(rule);
+        } else {
+            self.auto_focus_rules.remove(&rule);
+        }
+    }
+
+    /// Return whether future activations of a rule request auto-focus.
+    #[must_use]
+    pub fn rule_auto_focus(&self, rule: RuleId) -> bool {
+        self.auto_focus_rules.contains(&rule)
+    }
+
+    /// Pop runtime work in traversal order, including historical auto-focus
+    /// notices. Resolve each predicate or NCC admission before popping the next
+    /// event, allowing newly generated work to precede later siblings.
+    ///
+    /// This is the drain contract for every host: resolve predicates with
+    /// [`Self::resolve_predicate_match`] and NCC admissions with
+    /// [`Self::resolve_ncc_left_activation`] until the queue is empty.
+    pub fn pop_pending_event(&mut self) -> Option<PendingReteEvent> {
+        let event = self.pending_events.pop_front()?;
+        match event {
+            PendingReteEvent::AutoFocus(_) => self.pending_auto_focus_count -= 1,
+            PendingReteEvent::NccLeft(_) => self.pending_ncc_left_count -= 1,
+            PendingReteEvent::Predicate(_) => {}
+        }
+        Some(event)
+    }
+
     /// Pop the next runtime predicate evaluation requested by token propagation.
+    ///
+    /// This compatibility API leaves auto-focus notices queued and cannot
+    /// resolve NCC admissions. NCC admissions are queued as
+    /// [`PendingReteEvent::NccLeft`] events behind pending predicates, with or
+    /// without auto-focus, and must be resolved through
+    /// [`Self::pop_pending_event`] and [`Self::resolve_ncc_left_activation`] or
+    /// NCC rules will not activate. Rather than skip one, this returns `None`
+    /// while an NCC admission precedes the next predicate. Use
+    /// [`Self::pop_pending_event`] instead.
     pub fn pop_pending_predicate_match(&mut self) -> Option<PendingPredicateMatch> {
-        self.pending_predicate_matches.pop_front()
+        let index = self.pending_events.iter().position(|event| {
+            matches!(
+                event,
+                PendingReteEvent::Predicate(_) | PendingReteEvent::NccLeft(_)
+            )
+        })?;
+        if matches!(self.pending_events[index], PendingReteEvent::NccLeft(_)) {
+            return None;
+        }
+        match self.pending_events.remove(index)? {
+            PendingReteEvent::Predicate(pending) => Some(pending),
+            PendingReteEvent::AutoFocus(_) | PendingReteEvent::NccLeft(_) => {
+                unreachable!("selected predicate event")
+            }
+        }
+    }
+
+    /// Admit an NCC left match after earlier predicates have established their
+    /// right-side supports. Removed nodes and stale parent tokens are ignored.
+    pub fn resolve_ncc_left_activation(
+        &mut self,
+        pending: PendingNccLeftActivation,
+        fact_base: &FactBase,
+    ) -> Vec<ActivationId> {
+        let Some(BetaNode::Ncc { parent, .. }) = self.beta.get_node(pending.node) else {
+            return Vec::new();
+        };
+        if !self
+            .token_store
+            .get(pending.parent_token)
+            .is_some_and(|token| token.owner_node == *parent)
+        {
+            return Vec::new();
+        }
+        let waiting_events = self.pending_events.len();
+        let mut new_activations = Vec::new();
+        self.ncc_left_activate_now(
+            pending.node,
+            pending.parent_token,
+            fact_base,
+            &mut new_activations,
+        );
+        // Continuations always retain traversal order even if their original
+        // auto-focus registration was removed before the host drained them.
+        self.pending_events
+            .rotate_right(self.pending_events.len() - waiting_events);
+        new_activations
     }
 
     /// Resolve one pending predicate evaluation.
@@ -733,7 +977,13 @@ impl ReteNetwork {
             .insert_indexed(token_id, bindings);
 
         let mut new_activations = Vec::new();
+        let waiting_events = self.pending_events.len();
         self.propagate_token(token_id, &children, fact_base, &mut new_activations);
+        // Expand the consumed predicate at its original traversal position,
+        // before later siblings, as CLIPS evaluates test CEs inline and depth
+        // first. Nested predicates keep their own positions.
+        let generated_events = self.pending_events.len() - waiting_events;
+        self.pending_events.rotate_right(generated_events);
         new_activations
     }
 
@@ -1343,6 +1593,28 @@ impl ReteNetwork {
     /// If the count is 0 (no conjunction matches), create a pass-through token and propagate.
     /// If the count > 0, the token is blocked (do nothing).
     fn ncc_left_activate(
+        &mut self,
+        ncc_node_id: NodeId,
+        parent_token_id: TokenId,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        // Wait behind earlier predicate evaluations and NCC admissions, which
+        // may still establish this token's blockers. Auto-focus notices alone
+        // cannot, so they never delay an admission.
+        if self.pending_events.len() > self.pending_auto_focus_count {
+            self.pending_events
+                .push_back(PendingReteEvent::NccLeft(PendingNccLeftActivation {
+                    node: ncc_node_id,
+                    parent_token: parent_token_id,
+                }));
+            self.pending_ncc_left_count += 1;
+            return;
+        }
+        self.ncc_left_activate_now(ncc_node_id, parent_token_id, fact_base, new_activations);
+    }
+
+    fn ncc_left_activate_now(
         &mut self,
         ncc_node_id: NodeId,
         parent_token_id: TokenId,
@@ -2052,7 +2324,7 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_propagate", token = ?token_id);
-        self.beta.ensure_nested_ncc_index();
+        self.beta.ensure_ncc_entry_wait_index();
         // Child arrays retain attachment order; CLIPS links new successors at
         // the head, so every propagation visits them newest first.
         //
@@ -2063,39 +2335,55 @@ impl ReteNetwork {
         // a result for the enclosing NCC, so deciding before its own subnetwork
         // has seen the token would retract and recreate the enclosing match,
         // refiring it. Such an NCC waits until its not-yet-visited entry has
-        // run. Both maps are built only once a nested NCC is met, keeping
-        // each child visit O(1).
+        // run. A pure double negation whose nested NCC is waiting, as
+        // `(exists (and ...))` over a shared entry lowers, waits for that
+        // nested NCC: admitting the token first would make a transient
+        // activation (and auto-focus push) that CLIPS never makes. An NCC with
+        // more conditions after its nested NCC keeps CLIPS's transient
+        // admission and does not wait.
+        // The maps are built only once such an NCC is met, keeping each child
+        // visit O(1).
         let mut positions: Option<rustc_hash::FxHashMap<NodeId, usize>> = None;
         let mut postponed: Option<rustc_hash::FxHashMap<NodeId, SmallVec<[NodeId; 2]>>> = None;
+        let mut waiting: Option<rustc_hash::FxHashSet<NodeId>> = None;
         for (index, &child_id) in children.iter().enumerate().rev() {
-            if let Some(entry) = self.beta.nested_ncc_entry(child_id) {
-                let positions = positions.get_or_insert_with(|| {
-                    children
-                        .iter()
-                        .enumerate()
-                        .map(|(position, &child)| (child, position))
-                        .collect()
-                });
-                if positions
-                    .get(&entry)
-                    .is_some_and(|&position| position < index)
-                {
+            if let Some(wait) = self.beta.ncc_entry_wait_for(child_id) {
+                let entry_waiting = waiting.as_ref().is_some_and(|w| w.contains(&wait.entry));
+                let entry_unvisited = wait.nested
+                    && positions
+                        .get_or_insert_with(|| {
+                            children
+                                .iter()
+                                .enumerate()
+                                .map(|(position, &child)| (child, position))
+                                .collect()
+                        })
+                        .get(&wait.entry)
+                        .is_some_and(|&position| position < index);
+                if entry_waiting || entry_unvisited {
                     postponed
                         .get_or_insert_with(rustc_hash::FxHashMap::default)
-                        .entry(entry)
+                        .entry(wait.entry)
                         .or_default()
                         .push(child_id);
+                    waiting
+                        .get_or_insert_with(rustc_hash::FxHashSet::default)
+                        .insert(child_id);
                     continue;
                 }
             }
             self.propagate_to_child(token_id, child_id, fact_base, new_activations);
-            // A released NCC can itself be the entry another nested NCC waits
-            // for (`(exists (exists ...))`), so release transitively, depth
-            // first, keeping each waiting list's order. Every entry is removed
-            // once, so the extra work stays proportional to the postponed NCCs.
-            if let Some(waiting) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
-                let mut ready: SmallVec<[NodeId; 4]> = waiting.into_iter().rev().collect();
+            // A released NCC can itself be the entry another NCC waits for
+            // (`(exists (exists ...))`, `(exists (and ...))`), so release
+            // transitively, depth first, keeping each waiting list's order.
+            // Every entry is removed once, so the extra work stays
+            // proportional to the postponed NCCs.
+            if let Some(released) = postponed.as_mut().and_then(|p| p.remove(&child_id)) {
+                let mut ready: SmallVec<[NodeId; 4]> = released.into_iter().rev().collect();
                 while let Some(ncc) = ready.pop() {
+                    if let Some(waiting) = waiting.as_mut() {
+                        waiting.remove(&ncc);
+                    }
                     self.propagate_to_child(token_id, ncc, fact_base, new_activations);
                     if let Some(next) = postponed.as_mut().and_then(|p| p.remove(&ncc)) {
                         ready.extend(next.into_iter().rev());
@@ -2105,7 +2393,7 @@ impl ReteNetwork {
         }
         debug_assert!(
             !postponed.as_ref().is_some_and(|p| !p.is_empty()),
-            "every postponed nested NCC must be released after its entry"
+            "every postponed NCC must be released after its entry"
         );
     }
 
@@ -2153,6 +2441,11 @@ impl ReteNetwork {
 
                 let act_id = self.agenda.add(activation);
                 new_activations.push(act_id);
+                if !self.auto_focus_rules.is_empty() && self.auto_focus_rules.contains(rule) {
+                    self.pending_events
+                        .push_back(PendingReteEvent::AutoFocus(*rule));
+                    self.pending_auto_focus_count += 1;
+                }
             }
             BetaNode::Join { .. } => {
                 // Perform left activation: token enters as parent for this join
@@ -2163,13 +2456,13 @@ impl ReteNetwork {
                 condition_index,
                 ..
             } => {
-                self.pending_predicate_matches
-                    .push_back(PendingPredicateMatch {
+                self.pending_events
+                    .push_back(PendingReteEvent::Predicate(PendingPredicateMatch {
                         node: child_id,
                         parent_token: token_id,
                         rule: *rule,
                         condition_index: *condition_index,
-                    });
+                    }));
             }
             BetaNode::Negative { .. } => {
                 // Perform negative left activation: token enters as parent for
@@ -2207,6 +2500,22 @@ impl ReteNetwork {
     /// Fallible consistency checks, also available to release-built consumers.
     #[doc(hidden)]
     pub fn validate_consistency(&self) -> Result<(), String> {
+        crate::snapshot::require_eq!(
+            self.pending_auto_focus_count,
+            self.pending_events
+                .iter()
+                .filter(|event| matches!(event, PendingReteEvent::AutoFocus(_)))
+                .count(),
+            "inconsistent pending auto-focus notice count"
+        );
+        crate::snapshot::require_eq!(
+            self.pending_ncc_left_count,
+            self.pending_events
+                .iter()
+                .filter(|event| matches!(event, PendingReteEvent::NccLeft(_)))
+                .count(),
+            "inconsistent pending NCC admission count"
+        );
         // --- Substructure checks ---
         self.token_store.validate_consistency()?;
         self.alpha.validate_consistency()?;
@@ -2734,9 +3043,9 @@ mod tests {
         assert!(immediate.is_empty());
         assert!(rete.agenda.is_empty());
 
-        let rejected = rete
-            .pop_pending_predicate_match()
-            .expect("partial match should request predicate evaluation");
+        let Some(PendingReteEvent::Predicate(rejected)) = rete.pop_pending_event() else {
+            panic!("partial match should request predicate evaluation");
+        };
         let failed = rete.resolve_predicate_match(rejected, false, &fact_base);
         assert!(failed.is_empty());
         assert!(rete.agenda.is_empty());
@@ -2762,9 +3071,9 @@ mod tests {
             .clone();
         let immediate = rete.assert_fact(accepted_id, &accepted_fact, &fact_base);
         assert!(immediate.is_empty());
-        let accepted = rete
-            .pop_pending_predicate_match()
-            .expect("new partial match should reevaluate the predicate");
+        let Some(PendingReteEvent::Predicate(accepted)) = rete.pop_pending_event() else {
+            panic!("new partial match should reevaluate the predicate");
+        };
         let activations = rete.resolve_predicate_match(accepted, true, &fact_base);
         assert_eq!(activations.len(), 1);
         assert_eq!(rete.agenda.len(), 1);
@@ -6289,5 +6598,677 @@ mod tests {
             indexable_tests(&tests, Some(&sequence)).collect::<Vec<_>>(),
             vec![(SlotIndex::Template(0), VarId(2))]
         );
+    }
+}
+
+#[cfg(test)]
+mod auto_focus_tests {
+    use super::*;
+    use crate::compiler::{CompilableCondition, CompilablePattern, ReteCompiler};
+    use crate::{AlphaEntryType, Salience, StringEncoding, Symbol, SymbolTable};
+
+    fn pattern(relation: Symbol) -> CompilableCondition {
+        CompilableCondition::Pattern(CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            sequence: None,
+            variable_slots: vec![],
+            negated_variable_slots: vec![],
+            negated: false,
+            exists: false,
+        })
+    }
+
+    fn assert_relation(rete: &mut ReteNetwork, facts: &mut FactBase, relation: Symbol) -> FactId {
+        let id = facts.assert_ordered(relation, SmallVec::new());
+        rete.assert_fact(id, &facts.get(id).unwrap().fact, facts);
+        id
+    }
+
+    fn drain_events(rete: &mut ReteNetwork, facts: &FactBase, passed: bool) -> Vec<RuleId> {
+        let mut notices = Vec::new();
+        while let Some(event) = rete.pop_pending_event() {
+            match event {
+                PendingReteEvent::Predicate(pending) => {
+                    rete.resolve_predicate_match(pending, passed, facts);
+                }
+                PendingReteEvent::NccLeft(pending) => {
+                    rete.resolve_ncc_left_activation(pending, facts);
+                }
+                PendingReteEvent::AutoFocus(rule) => notices.push(rule),
+            }
+        }
+        rete.debug_assert_consistency();
+        notices
+    }
+
+    struct Fixture {
+        rete: ReteNetwork,
+        facts: FactBase,
+        symbols: SymbolTable,
+        relation: Symbol,
+        join: NodeId,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let mut symbols = SymbolTable::new();
+            let relation = symbols
+                .intern_symbol("item", StringEncoding::Ascii)
+                .unwrap();
+            let mut rete = ReteNetwork::new();
+            let entry = rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(relation));
+            let alpha = rete.alpha.create_memory(entry);
+            let (join, _) = rete
+                .beta
+                .create_join_node(rete.beta.root_id(), alpha, vec![], vec![]);
+            Self {
+                rete,
+                facts: FactBase::new(),
+                symbols,
+                relation,
+                join,
+            }
+        }
+
+        fn rule(&mut self, rule: u32, predicates: u32, auto_focus: bool) {
+            let rule = RuleId(rule);
+            self.rete.set_rule_auto_focus(rule, auto_focus);
+            let mut parent = self.join;
+            for condition in 0..predicates {
+                parent = self
+                    .rete
+                    .beta
+                    .create_predicate_node(parent, rule, condition)
+                    .0;
+            }
+            self.rete
+                .beta
+                .create_terminal_node(parent, rule, Salience::DEFAULT);
+        }
+
+        fn ncc_rule(&mut self, predicates: u32) -> Symbol {
+            let blocker = self
+                .symbols
+                .intern_symbol("blocker", StringEncoding::Ascii)
+                .unwrap();
+            let entry = self
+                .rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(blocker));
+            let alpha = self.rete.alpha.create_memory(entry);
+            let memory = self.rete.beta.allocate_ncc_memory();
+            let (ncc, _) =
+                self.rete
+                    .beta
+                    .create_ncc_node(self.join, self.rete.beta.root_id(), memory);
+            let (mut parent, _) = self
+                .rete
+                .beta
+                .create_join_node(self.join, alpha, vec![], vec![]);
+            for condition in 0..predicates {
+                parent = self
+                    .rete
+                    .beta
+                    .create_predicate_node(parent, RuleId(1), condition)
+                    .0;
+            }
+            let partner = self.rete.beta.create_ncc_partner(parent, ncc, memory);
+            self.rete.beta.set_ncc_partner(ncc, partner);
+            self.rete
+                .beta
+                .create_terminal_node(ncc, RuleId(1), Salience::DEFAULT);
+            self.rete.set_rule_auto_focus(RuleId(1), true);
+            blocker
+        }
+
+        fn assert(&mut self) -> FactId {
+            let id = self.facts.assert_ordered(self.relation, SmallVec::new());
+            self.rete
+                .assert_fact(id, &self.facts.get(id).unwrap().fact, &self.facts);
+            id
+        }
+
+        fn retract(&mut self, id: FactId) {
+            let fact = self.facts.retract(id).unwrap().fact;
+            self.rete.retract_fact(id, &fact, &self.facts);
+        }
+
+        fn drain_passing(&mut self) -> Vec<RuleId> {
+            self.drain_with_predicate_result(true)
+        }
+
+        fn drain_with_predicate_result(&mut self, passed: bool) -> Vec<RuleId> {
+            drain_events(&mut self.rete, &self.facts, passed)
+        }
+    }
+
+    #[test]
+    fn auto_focus_direct_and_deferred_notices_follow_traversal_order() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, true);
+        fixture.assert();
+        assert_eq!(
+            fixture.rete.agenda.len(),
+            1,
+            "direct rule already activated"
+        );
+        assert_eq!(fixture.rete.cardinality().pending_predicate_matches, 1);
+        assert_eq!(fixture.drain_passing(), vec![RuleId(2), RuleId(1)]);
+        assert_eq!(fixture.rete.agenda.len(), 2);
+    }
+
+    #[test]
+    fn auto_focus_nested_predicates_expand_before_later_predicate_siblings() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, true);
+        fixture.rule(3, 2, true);
+        fixture.assert();
+        assert_eq!(
+            fixture.drain_passing(),
+            vec![RuleId(3), RuleId(2), RuleId(1)]
+        );
+    }
+
+    #[test]
+    fn auto_focus_failed_predicate_does_not_emit_a_notice() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, true);
+        fixture.assert();
+        let Some(PendingReteEvent::Predicate(pending)) = fixture.rete.pop_pending_event() else {
+            panic!("predicate must precede direct notice");
+        };
+        fixture
+            .rete
+            .resolve_predicate_match(pending, false, &fixture.facts);
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+        assert_eq!(fixture.rete.agenda.len(), 1);
+    }
+
+    #[test]
+    fn auto_focus_cancellation_retains_history_but_canceled_predicates_emit_nothing() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, true);
+        let fact = fixture.assert();
+        fixture.retract(fact);
+        assert!(fixture.rete.agenda.is_empty());
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+    }
+
+    #[test]
+    fn auto_focus_disable_keeps_emitted_notices_and_discards_unevaluated_predicates() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, true);
+        fixture.assert();
+        fixture.rete.disable_rule(RuleId(1));
+        fixture.rete.disable_rule(RuleId(2));
+        assert!(fixture.rete.agenda.is_empty());
+        assert_eq!(fixture.rete.cardinality().pending_predicate_matches, 0);
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+        fixture.assert();
+        assert!(fixture.drain_passing().is_empty());
+    }
+
+    #[test]
+    fn auto_focus_removal_unregisters_rule_and_rule_id_reuse_needs_registration() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.assert();
+        fixture.rete.remove_rules(&[RuleId(1)]);
+        assert!(!fixture.rete.rule_auto_focus(RuleId(1)));
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+
+        let terminal = fixture.rete.beta.create_terminal_node(
+            fixture.rete.beta.root_id(),
+            RuleId(1),
+            Salience::DEFAULT,
+        );
+        fixture
+            .rete
+            .activate_root_children(&[terminal], &fixture.facts);
+        assert!(fixture.drain_passing().is_empty());
+        fixture.rete.set_rule_auto_focus(RuleId(1), true);
+        assert!(
+            fixture.drain_passing().is_empty(),
+            "registration does not replay the agenda"
+        );
+        fixture.rete.clear_working_memory();
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+    }
+
+    #[test]
+    fn auto_focus_reset_discards_old_notices_then_emits_flagged_root_activations() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, true);
+        let root_rule = RuleId(3);
+        fixture.rete.set_rule_auto_focus(root_rule, true);
+        let root_terminal = fixture.rete.beta.create_terminal_node(
+            fixture.rete.beta.root_id(),
+            root_rule,
+            Salience::DEFAULT,
+        );
+        fixture
+            .rete
+            .activate_root_children(&[root_terminal], &fixture.facts);
+        fixture.assert();
+        fixture.rete.clear_working_memory();
+        assert_eq!(fixture.rete.cardinality().pending_predicate_matches, 0);
+        assert_eq!(fixture.drain_passing(), vec![root_rule]);
+    }
+
+    #[test]
+    fn auto_focus_retraction_unblocking_emits_a_notice() {
+        let mut fixture = Fixture::new();
+        let blocker = fixture
+            .symbols
+            .intern_symbol("blocker", StringEncoding::Ascii)
+            .unwrap();
+        let entry = fixture
+            .rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(blocker));
+        let alpha = fixture.rete.alpha.create_memory(entry);
+        let (negative, _, _) = fixture
+            .rete
+            .beta
+            .create_negative_node(fixture.join, alpha, vec![]);
+        fixture
+            .rete
+            .beta
+            .create_terminal_node(negative, RuleId(1), Salience::DEFAULT);
+        fixture.rete.set_rule_auto_focus(RuleId(1), true);
+        let block = fixture.facts.assert_ordered(blocker, SmallVec::new());
+        fixture.rete.assert_fact(
+            block,
+            &fixture.facts.get(block).unwrap().fact,
+            &fixture.facts,
+        );
+        fixture.assert();
+        assert!(fixture.drain_passing().is_empty());
+        fixture.retract(block);
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+    }
+
+    #[test]
+    fn auto_focus_late_ncc_distinguishes_fresh_and_existing_shared_results() {
+        for shared_results in [false, true] {
+            let mut symbols = SymbolTable::new();
+            let item = symbols
+                .intern_symbol("item", StringEncoding::Ascii)
+                .unwrap();
+            let blocker = symbols
+                .intern_symbol("blocker", StringEncoding::Ascii)
+                .unwrap();
+            let other = symbols
+                .intern_symbol("other", StringEncoding::Ascii)
+                .unwrap();
+            let conditions = vec![
+                pattern(item),
+                CompilableCondition::Ncc(vec![pattern(blocker), pattern(other)]),
+            ];
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            let mut compiler = ReteCompiler::new();
+            // Exercise both an already populated shared result memory and a
+            // fresh right subnetwork below a populated shared left prefix.
+            let early_conditions = if shared_results {
+                &conditions[..]
+            } else {
+                &conditions[..1]
+            };
+            compiler
+                .compile_conditions(
+                    &mut rete,
+                    &facts,
+                    RuleId(1),
+                    Salience::DEFAULT,
+                    early_conditions,
+                )
+                .unwrap();
+            assert_relation(&mut rete, &mut facts, item);
+            let block = assert_relation(&mut rete, &mut facts, blocker);
+            assert_relation(&mut rete, &mut facts, other);
+            rete.set_rule_auto_focus(RuleId(2), true);
+            compiler
+                .compile_conditions(&mut rete, &facts, RuleId(2), Salience::DEFAULT, &conditions)
+                .unwrap();
+            assert_eq!(
+                drain_events(&mut rete, &facts, true),
+                if shared_results {
+                    vec![]
+                } else {
+                    vec![RuleId(2)]
+                },
+                "shared results: {shared_results}"
+            );
+            rete.validate_snapshot(&facts, &symbols).unwrap();
+
+            // A later real unblock still emits its historical focus event.
+            let removed = facts.retract(block).unwrap().fact;
+            rete.retract_fact(block, &removed, &facts);
+            assert_eq!(drain_events(&mut rete, &facts, true), vec![RuleId(2)]);
+            rete.validate_snapshot(&facts, &symbols).unwrap();
+        }
+    }
+
+    #[test]
+    fn auto_focus_ncc_waits_for_deferred_and_nested_right_predicates() {
+        for predicates in [1, 2] {
+            for passed in [false, true] {
+                let mut fixture = Fixture::new();
+                let blocker = fixture.ncc_rule(predicates);
+                assert_relation(&mut fixture.rete, &mut fixture.facts, blocker);
+                fixture.assert();
+                assert!(
+                    fixture.rete.agenda.is_empty(),
+                    "left admission waits for predicates"
+                );
+                assert_eq!(fixture.rete.cardinality().pending_predicate_matches, 1);
+                assert_eq!(
+                    fixture.drain_with_predicate_result(passed),
+                    if passed { vec![] } else { vec![RuleId(1)] }
+                );
+                assert_eq!(fixture.rete.agenda.len(), usize::from(!passed));
+                fixture
+                    .rete
+                    .validate_snapshot(&fixture.facts, &fixture.symbols)
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn auto_focus_ncc_continuation_expands_before_later_sibling_notices() {
+        let mut fixture = Fixture::new();
+        fixture.rule(2, 0, true);
+        let blocker = fixture.ncc_rule(2);
+        assert_relation(&mut fixture.rete, &mut fixture.facts, blocker);
+        fixture.assert();
+        assert_eq!(
+            fixture.drain_with_predicate_result(false),
+            vec![RuleId(1), RuleId(2)]
+        );
+    }
+
+    #[test]
+    fn auto_focus_ncc_continuation_ignores_canceled_or_removed_parent_matches() {
+        for remove_rule in [false, true] {
+            let mut fixture = Fixture::new();
+            let blocker = fixture.ncc_rule(1);
+            assert_relation(&mut fixture.rete, &mut fixture.facts, blocker);
+            let item = fixture.assert();
+            let Some(PendingReteEvent::Predicate(predicate)) = fixture.rete.pop_pending_event()
+            else {
+                panic!()
+            };
+            fixture
+                .rete
+                .resolve_predicate_match(predicate, false, &fixture.facts);
+            let Some(PendingReteEvent::NccLeft(pending)) = fixture.rete.pop_pending_event() else {
+                panic!()
+            };
+            if remove_rule {
+                fixture.rete.remove_rules(&[RuleId(1)]);
+            } else {
+                fixture.retract(item);
+            }
+            assert!(fixture
+                .rete
+                .resolve_ncc_left_activation(pending, &fixture.facts)
+                .is_empty());
+            assert!(fixture.drain_passing().is_empty());
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn auto_focus_ncc_continuations_are_cleared_by_reset_and_rule_removal() {
+        for reset in [false, true] {
+            let mut fixture = Fixture::new();
+            let blocker = fixture.ncc_rule(1);
+            assert_relation(&mut fixture.rete, &mut fixture.facts, blocker);
+            fixture.assert();
+            assert_eq!(fixture.rete.pending_ncc_left_count, 1);
+            if reset {
+                fixture.facts = FactBase::new();
+                fixture.rete.clear_working_memory();
+            } else {
+                fixture.rete.remove_rules(&[RuleId(1)]);
+            }
+            assert_eq!(fixture.rete.pending_ncc_left_count, 0);
+            assert!(fixture.drain_passing().is_empty());
+            fixture
+                .rete
+                .validate_snapshot(&fixture.facts, &fixture.symbols)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn auto_focus_disabling_rule_cannot_activate_queued_ncc_admission() {
+        let mut fixture = Fixture::new();
+        let blocker = fixture.ncc_rule(1);
+        assert_relation(&mut fixture.rete, &mut fixture.facts, blocker);
+        fixture.assert();
+        fixture.rete.disable_rule(RuleId(1));
+        assert_eq!(fixture.rete.cardinality().pending_predicate_matches, 0);
+        assert!(fixture.drain_passing().is_empty());
+        assert!(fixture.rete.agenda.is_empty());
+        fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap();
+    }
+
+    #[test]
+    fn auto_focus_snapshot_requires_drained_notices() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.assert();
+        assert!(fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap_err()
+            .contains("unfinished runtime events"));
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+        fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap();
+    }
+
+    #[test]
+    fn auto_focus_predicate_compatibility_api_keeps_notices_queued() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 1, true);
+        fixture.rule(2, 0, true);
+        fixture.assert();
+        let pending = fixture.rete.pop_pending_predicate_match().unwrap();
+        assert_eq!(pending.rule, RuleId(1));
+        fixture
+            .rete
+            .resolve_predicate_match(pending, false, &fixture.facts);
+        assert_eq!(fixture.drain_passing(), vec![RuleId(2)]);
+    }
+
+    #[test]
+    fn auto_focus_history_keeps_event_order_after_last_flag_is_unregistered() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, true);
+        fixture.rule(2, 1, false);
+        fixture.rule(3, 2, false);
+        fixture.assert();
+        fixture.rete.set_rule_auto_focus(RuleId(1), false);
+        let Some(PendingReteEvent::Predicate(first)) = fixture.rete.pop_pending_event() else {
+            panic!()
+        };
+        assert_eq!((first.rule, first.condition_index), (RuleId(3), 0));
+        fixture
+            .rete
+            .resolve_predicate_match(first, true, &fixture.facts);
+        let Some(PendingReteEvent::Predicate(nested)) = fixture.rete.pop_pending_event() else {
+            panic!()
+        };
+        assert_eq!((nested.rule, nested.condition_index), (RuleId(3), 1));
+        fixture
+            .rete
+            .resolve_predicate_match(nested, true, &fixture.facts);
+        assert_eq!(fixture.drain_passing(), vec![RuleId(1)]);
+    }
+
+    #[test]
+    fn auto_focus_default_core_hosts_expand_predicates_depth_first_without_notices() {
+        let mut fixture = Fixture::new();
+        fixture.rule(1, 0, false);
+        fixture.rule(2, 1, false);
+        fixture.rule(3, 2, false);
+        fixture.assert();
+        let Some(PendingReteEvent::Predicate(first)) = fixture.rete.pop_pending_event() else {
+            panic!("newest predicate is visited first")
+        };
+        assert_eq!((first.rule, first.condition_index), (RuleId(3), 0));
+        fixture
+            .rete
+            .resolve_predicate_match(first, true, &fixture.facts);
+        let Some(PendingReteEvent::Predicate(next)) = fixture.rete.pop_pending_event() else {
+            panic!("nested predicate expands in place")
+        };
+        assert_eq!(
+            (next.rule, next.condition_index),
+            (RuleId(3), 1),
+            "predicates expand depth first, as CLIPS evaluates test CEs inline"
+        );
+        fixture
+            .rete
+            .resolve_predicate_match(next, true, &fixture.facts);
+        assert!(fixture.drain_passing().is_empty());
+        assert_eq!(fixture.rete.agenda.len(), 3);
+    }
+
+    #[test]
+    fn auto_focus_predicate_compatibility_api_does_not_skip_ncc_admissions() {
+        let mut fixture = Fixture::new();
+        fixture.rule(2, 1, false);
+        fixture.ncc_rule(0);
+        fixture.rete.set_rule_auto_focus(RuleId(1), false);
+        fixture.rule(3, 1, false);
+        fixture.assert();
+        let first = fixture.rete.pop_pending_predicate_match().unwrap();
+        assert_eq!(first.rule, RuleId(3));
+        fixture
+            .rete
+            .resolve_predicate_match(first, true, &fixture.facts);
+        assert!(
+            fixture.rete.pop_pending_predicate_match().is_none(),
+            "a queued NCC admission blocks the predicate-only drain"
+        );
+        let Some(PendingReteEvent::NccLeft(pending)) = fixture.rete.pop_pending_event() else {
+            panic!("the NCC admission stays queued")
+        };
+        fixture
+            .rete
+            .resolve_ncc_left_activation(pending, &fixture.facts);
+        let later = fixture.rete.pop_pending_predicate_match().unwrap();
+        assert_eq!(later.rule, RuleId(2));
+        fixture
+            .rete
+            .resolve_predicate_match(later, true, &fixture.facts);
+        assert!(fixture.drain_passing().is_empty());
+        assert_eq!(fixture.rete.agenda.len(), 3);
+    }
+
+    #[test]
+    fn auto_focus_flag_does_not_reorder_unrelated_ncc_admissions() {
+        let mut orders = Vec::new();
+        for flagged in [false, true] {
+            let mut symbols = SymbolTable::new();
+            let item = symbols
+                .intern_symbol("item", StringEncoding::Ascii)
+                .unwrap();
+            let blocker = symbols
+                .intern_symbol("blocker", StringEncoding::Ascii)
+                .unwrap();
+            let other = symbols
+                .intern_symbol("other", StringEncoding::Ascii)
+                .unwrap();
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            let mut compiler = ReteCompiler::new();
+            rete.set_rule_auto_focus(RuleId(3), flagged);
+            let rules = [
+                vec![pattern(item)],
+                vec![
+                    pattern(item),
+                    CompilableCondition::Ncc(vec![pattern(blocker), pattern(other)]),
+                ],
+                vec![pattern(item)],
+            ];
+            for (id, conditions) in (1..).zip(&rules) {
+                compiler
+                    .compile_conditions(
+                        &mut rete,
+                        &facts,
+                        RuleId(id),
+                        Salience::DEFAULT,
+                        conditions,
+                    )
+                    .unwrap();
+            }
+            assert_relation(&mut rete, &mut facts, item);
+            let notices = drain_events(&mut rete, &facts, true);
+            assert_eq!(notices.len(), usize::from(flagged));
+            orders.push(
+                std::iter::from_fn(|| rete.agenda.pop())
+                    .map(|activation| activation.rule)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(orders[0], vec![RuleId(1), RuleId(2), RuleId(3)]);
+        assert_eq!(orders[0], orders[1], "an auto-focus flag elsewhere");
+    }
+
+    #[test]
+    fn auto_focus_exists_conjunction_creates_no_transient_activation() {
+        let mut symbols = SymbolTable::new();
+        let item = symbols
+            .intern_symbol("item", StringEncoding::Ascii)
+            .unwrap();
+        let blocker = symbols
+            .intern_symbol("blocker", StringEncoding::Ascii)
+            .unwrap();
+        let other = symbols
+            .intern_symbol("other", StringEncoding::Ascii)
+            .unwrap();
+        let mut rete = ReteNetwork::new();
+        let mut facts = FactBase::new();
+        let mut compiler = ReteCompiler::new();
+        rete.set_rule_auto_focus(RuleId(1), true);
+        // `(exists (and (blocker) (other)))` lowers to an NCC whose
+        // subnetwork begins with a nested NCC.
+        let conditions = vec![
+            pattern(item),
+            CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                pattern(blocker),
+                pattern(other),
+            ])]),
+        ];
+        compiler
+            .compile_conditions(&mut rete, &facts, RuleId(1), Salience::DEFAULT, &conditions)
+            .unwrap();
+        assert_relation(&mut rete, &mut facts, item);
+        assert!(drain_events(&mut rete, &facts, true).is_empty());
+        assert!(rete.agenda.is_empty());
+        rete.validate_snapshot(&facts, &symbols).unwrap();
     }
 }

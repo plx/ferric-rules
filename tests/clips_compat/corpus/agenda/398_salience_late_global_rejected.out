@@ -1,0 +1,7 @@
+[GLOBLDEF1] Global variable ?*later* is unbound.
+
+[PRNTUTIL8] This error occurred while evaluating the salience for defrule r.
+
+ERROR:
+(defrule MAIN::r
+   (declare (salience ?*later*

@@ -1,0 +1,16 @@
+(defmodule MAIN (export ?ALL))
+(deftemplate MAIN::item (slot value))
+(deftemplate MAIN::blocker (slot marker))
+(deftemplate MAIN::other)
+(defrule MAIN::old (item (value ?x)) =>)
+(defmodule WATCH (import MAIN ?ALL))
+(defrule MAIN::start =>
+  (assert (item (value 1)))
+  (bind ?blocker (assert (blocker (marker 77))))
+  (assert (other))
+  (printout t "before:" (get-focus-stack) crlf)
+  (printout t "built:"
+    (build "(defrule WATCH::late (declare (auto-focus TRUE)) (item (value ?x)) (not (and (blocker) (other))) (test (eq 1 1)) => (printout t late ?x crlf))") crlf)
+  (printout t "installed:" (get-focus-stack) crlf)
+  (retract ?blocker)
+  (printout t "released:" (get-focus-stack) crlf))

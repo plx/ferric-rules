@@ -170,9 +170,13 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 10
+## Pre-1.0 snapshot schema 11
 
-Snapshots are written with schema 10. Schema 9 snapshots are rejected with
+Snapshots are written with schema 11. Schema 10 snapshots are rejected with
+`UnsupportedVersion(10)` because rule auto-focus metadata now persists.
+Definition-time salience is stored as its resolved integer; neither it nor
+pending activations cause new focus changes during restore. Schema 9 snapshots
+are rejected with
 `UnsupportedVersion(9)` because negative and NCC blocker attachment histories
 now persist to preserve activation order after retraction. Schema 8 snapshots
 are rejected with `UnsupportedVersion(8)` because random-generator state,
@@ -197,6 +201,29 @@ Schema 1 snapshots remain rejected with `UnsupportedVersion(1)` because their
 compiled patterns did not check field counts. Restore an old snapshot with the
 version that produced it, export the application data, and assert it into a
 new engine; see [snapshots.md](snapshots.md).
+
+## Pre-1.0 rule declarations and focus
+
+- `focus`, auto-focus, and the host `push_focus` APIs (Rust
+  `Engine::push_focus`, Python `push_focus`, Node `pushFocus`) leave the stack
+  unchanged when the module is already on top, as CLIPS does. Pushing `A`
+  twice now leaves the stack that the host accessors (Rust
+  `Engine::get_focus_stack`, Python `focus_stack`) return bottom-first as
+  `["MAIN", "A"]`, not `["MAIN", "A", "A"]`; a module deeper in the stack may
+  still be pushed again.
+- `ferric_rules_parser::stage2::RuleConstruct` has two new public fields for
+  `(declare (salience <expression>) (auto-focus TRUE|FALSE))`. Struct
+  literals must add `salience_expression: None, auto_focus: false` to keep the
+  previous meaning.
+- Hosts that drive `ferric_rules_core::ReteNetwork` directly must drain its
+  unified event queue in order with `pop_pending_event`: resolve each
+  `PendingReteEvent::Predicate` with `resolve_predicate_match`, each
+  `PendingReteEvent::NccLeft` with `resolve_ncc_left_activation`, and handle
+  `PendingReteEvent::AutoFocus` notices, until the queue is empty. NCC
+  admissions are queued behind pending predicates whether or not any rule uses
+  auto-focus, so NCC rules never activate for a host that only drains
+  predicates. `pop_pending_predicate_match` remains for compatibility but
+  returns `None` while an NCC admission precedes the next predicate.
 
 ## Pre-1.0 CLIPS behavior fixes
 
@@ -573,10 +600,10 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 10); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 11); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6,
-  schema-7, schema-8 and schema-9 snapshots are rejected explicitly. Export durable application data through the
+  schema-7, schema-8, schema-9 and schema-10 snapshots are rejected explicitly. Export durable application data through the
   producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.

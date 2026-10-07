@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "47de248e9e16a936894426fe74fef86d4380dd16",
+    "ferric_revision": "335b4b06d963ca93ef832ac711b474810a467a98",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -10362,6 +10362,728 @@
         "issue-403"
       ],
       "recoverable_introspection_notices": true
+    },
+    {
+      "path": "agenda/398_salience_global_expression.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "defglobal",
+        "evaluation-order"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "agenda/398_salience_once_or_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "deffunction",
+        "or",
+        "reset",
+        "default"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "agenda/398_salience_definition_module.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "defglobal",
+        "defmodule",
+        "focus"
+      ]
+    },
+    {
+      "path": "agenda/398_salience_assertion_effect.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "assert",
+        "default",
+        "find-fact",
+        "reset"
+      ]
+    },
+    {
+      "path": "agenda/398_salience_lexical_locals.clp",
+      "level": "interaction",
+      "covers": [
+        "salience",
+        "bind",
+        "progn",
+        "loop-for-count",
+        "break"
+      ]
+    },
+    {
+      "path": "agenda/398_salience_float_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "primitive-types"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_range_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "integer-boundaries"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_late_global_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "defglobal",
+        "source-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_late_function_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "deffunction",
+        "source-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_local_rhs_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "bind",
+        "lexical-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_return_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "return"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "agenda/398_salience_duplicate_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "salience",
+        "declarations"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "modules/398_auto_focus_issue.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "assert",
+        "reset"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "modules/398_auto_focus_false.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "focus",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_focus_duplicate_top_deeper.clp",
+      "level": "interaction",
+      "covers": [
+        "focus",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_shared_terminal.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_direct_test.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_test_direct.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_direct_predicate.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_predicate_direct.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_negative_unblock.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "not",
+        "retract"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_negative_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "not",
+        "reset"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "modules/398_auto_focus_cancel_retains_stack.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "assert",
+        "retract",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_reset_cancel_retains_focus.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "not",
+        "reset",
+        "activation-cancellation"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_online_rule.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "build",
+        "online-rule-installation"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_before_salience.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "activation-order",
+        "defmodule",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_repeated_modules.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "assert",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_expression_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "auto-focus",
+        "declarations"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "modules/398_auto_focus_duplicate_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "auto-focus",
+        "declarations"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "modules/398_auto_focus_replaced_false.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "rule-replacement",
+        "focus"
+      ]
+    },
+    {
+      "path": "modules/398_gap_late_ncc_fresh_parent_first.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "activation-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/400",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Late-install topology boundary: a fresh blocked NCC installed after all facts exist, with its parent asserted before blocker supports, does not replay the transient historical auto-focus push retained by CLIPS 6.30 incremental reset.",
+        "observed": {
+          "phase": "complete",
+          "output": "before:(MAIN)\nbuilt:TRUE\ninstalled:(MAIN)\nreleased:(WATCH MAIN)\nlate1\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_deferred.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "test"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_join_test.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "test",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_nested_ncc_shared_prefix.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "not",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "agenda/398_test_join_tie_order.clp",
+      "level": "interaction",
+      "covers": [
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "agenda/398_test_chain_tie_order.clp",
+      "level": "interaction",
+      "covers": [
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "agenda/398_ncc_after_pending_test_order.clp",
+      "level": "interaction",
+      "covers": [
+        "ncc",
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_unrelated_tie_order.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "ncc",
+        "test",
+        "activation-order",
+        "deffacts"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_multi_exists_unsupported.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_nested_exists_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "deffacts",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_nested_exists_shared_entry_runtime.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_ncc_shared_entry_transient.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "not",
+        "ncc",
+        "focus",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_multi_exists_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "reset",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_multi_exists_late_support.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "exists",
+        "ncc",
+        "assert",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_ncc_shared_entry_join.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_gap_late_ncc_shared_prefix_trailing_test.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "test",
+        "activation-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Late-install boundary: an auto-focus rule built online whose blocked NCC shares the left prefix with an older rule and is followed by a test CE loses the transient focus push CLIPS 6.30 performs during installation; the trailing test is only queued before the fresh subnetwork blocks the token.",
+        "observed": {
+          "phase": "complete",
+          "output": "before:(MAIN)\nbuilt:TRUE\ninstalled:(MAIN)\nreleased:(WATCH MAIN)\nlate1\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_extra_ce.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_extra_ce_first.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_test_ce.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "test",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_negated_ce.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "not",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_double_negation_explicit_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "ncc",
+        "deffacts",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_holds.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_partial.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_negated_join.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "not",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_exists_conjunction_nested_ncc.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "ncc",
+        "get-focus-stack"
+      ]
+    },
+    {
+      "path": "modules/398_auto_focus_late_double_negation_explicit_shared_entry.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "ncc",
+        "get-focus-stack",
+        "activation-order"
+      ]
+    },
+    {
+      "path": "modules/398_gap_late_exists_conjunction_negation.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "build",
+        "exists",
+        "not",
+        "ncc",
+        "get-focus-stack"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Late-install boundary: an auto-focus rule built online whose (exists (and ...)) conjunction holds a negation and is blocked at installation makes a transient focus push that CLIPS 6.30 does not; the outer NCC admits the token before the conjunction's subnetwork has been primed.",
+        "observed": {
+          "phase": "complete",
+          "output": "stack:(WATCH MAIN)\nplain\n",
+          "diagnostics": []
+        }
+      }
+    },
+    {
+      "path": "modules/398_gap_ncc_deferred_test_cancelled_reset.clp",
+      "level": "interaction",
+      "covers": [
+        "auto-focus",
+        "defmodule",
+        "focus",
+        "deffacts",
+        "ncc",
+        "test",
+        "activation-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/398",
+          "https://github.com/plx/ferric-rules/issues/480"
+        ],
+        "summary": "Deferred test boundary: during ordinary reset, an auto-focus rule whose test CE follows an NCC loses the transient focus push CLIPS 6.30 keeps; the test is only queued when the token reaches it, and the NCC's subnetwork completes and retracts the token before the queued test is evaluated, so no activation is ever created.",
+        "observed": {
+          "phase": "complete",
+          "output": "",
+          "diagnostics": []
+        }
+      }
     }
   ]
 }

@@ -556,6 +556,9 @@ impl Engine {
     }
 
     /// Push a module onto the focus stack.
+    ///
+    /// Pushing the module already at the top leaves the stack unchanged; a
+    /// module deeper in the stack may be pushed again.
     #[napi]
     pub fn push_focus(&self, module_name: String) -> Result<()> {
         self.engine_mut()?

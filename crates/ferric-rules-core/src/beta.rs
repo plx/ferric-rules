@@ -524,14 +524,27 @@ pub struct BetaNetwork {
     /// Reverse index: alpha memory -> list of exists nodes that subscribe to it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     pub(crate) alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
-    /// NCCs nested inside an enclosing NCC's subnetwork -> their subnetwork entry.
+    /// NCCs that may wait for their subnetwork entry during propagation.
     ///
-    /// Only these NCCs can wait for their entry during propagation, so
-    /// top-level NCCs never pay for that check. The compiler registers nested
-    /// NCCs as it builds them. This derived index is omitted from snapshots
-    /// and dropped by rule removal; `None` is rebuilt from the graph on demand.
+    /// This holds every NCC nested inside an enclosing NCC's subnetwork, and
+    /// every pure double negation (`(exists (and ...))`; see
+    /// `ncc_is_pure_double_negation`). Other top-level NCCs never pay for the
+    /// check. The compiler
+    /// registers NCCs as it builds them. This derived index is omitted from
+    /// snapshots and dropped by rule removal; `None` is rebuilt from the
+    /// graph on demand.
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub(crate) nested_ncc_entries: Option<HashMap<NodeId, NodeId>>,
+    pub(crate) ncc_entry_waits: Option<HashMap<NodeId, NccEntryWait>>,
+}
+
+/// How an NCC may wait for its subnetwork entry under the same parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NccEntryWait {
+    /// The child of the NCC's parent that begins its subnetwork.
+    pub(crate) entry: NodeId,
+    /// Whether the NCC's pass-through tokens are results for an enclosing
+    /// NCC, so it waits for an entry that is visited after it.
+    pub(crate) nested: bool,
 }
 
 impl BetaNetwork {
@@ -569,7 +582,7 @@ impl BetaNetwork {
             alpha_to_joins: HashMap::default(),
             alpha_to_negatives: HashMap::default(),
             alpha_to_exists: HashMap::default(),
-            nested_ncc_entries: Some(HashMap::default()),
+            ncc_entry_waits: Some(HashMap::default()),
         }
     }
 
@@ -629,8 +642,8 @@ impl BetaNetwork {
     /// stay stable, so surviving matches and their agenda chronology are intact.
     pub(crate) fn retain_nodes(&mut self, retained: &HashSet<NodeId>) -> HashSet<AlphaMemoryId> {
         self.nodes.retain(|id, _| retained.contains(id));
-        if let Some(nested) = &mut self.nested_ncc_entries {
-            nested.retain(|id, _| retained.contains(id));
+        if let Some(waits) = &mut self.ncc_entry_waits {
+            waits.retain(|id, _| retained.contains(id));
         }
         let mut memory_ids = vec![false; self.memories.len()];
         let mut negative_ids = vec![false; self.neg_memories.len()];
@@ -997,14 +1010,36 @@ impl BetaNetwork {
     /// entry is shared with an older rule, the NCC lands behind whichever
     /// successor was newest instead. Beta-root NCCs are primed like CLIPS's
     /// left-prime joins, newest first, and keep their attachment position.
+    ///
+    /// A pure double negation (`(exists (and ...))` as lowered, or an
+    /// explicit `(not (and (not (and ...))))`) is instead linked just before
+    /// the oldest of its own subnetwork's children of the parent, so the
+    /// nested NCC and its own entry, both newer children, see a parent token
+    /// before the outer NCC decides. Linking second would let the outer NCC
+    /// admit a token before the nested NCC produced the result that blocks
+    /// it, creating a transient activation CLIPS never makes. The subnetwork
+    /// is identified by node ID: `compile_ncc_condition` allocates the NCC
+    /// before its subnetwork and the partner last, so its fresh nodes are
+    /// exactly the IDs in `ncc + 1..=partner`. A subnetwork whose entry is
+    /// shared with an older rule has no child in that range and keeps the
+    /// second-in-visit-order position. When the nested NCC's own entry is
+    /// shared and visited later, propagation postpones both NCCs behind it
+    /// (see `NccEntryWait`). A subnetwork with more conditions after its
+    /// nested NCC keeps the second position: CLIPS admits the token there
+    /// transiently, and keeps the focus push that admission makes.
     pub fn link_ncc_after_subnetwork(&mut self, ncc_node_id: NodeId) {
-        let Some(BetaNode::Ncc { parent, .. }) = self.nodes.get(&ncc_node_id) else {
+        let Some(BetaNode::Ncc {
+            parent, partner, ..
+        }) = self.nodes.get(&ncc_node_id)
+        else {
             return;
         };
         let parent = *parent;
+        let subnetwork = ncc_node_id.0 + 1..=partner.0;
         if parent == self.root_id {
             return;
         }
+        let pure_double_negation = self.ncc_is_pure_double_negation(ncc_node_id);
         if let Some(
             BetaNode::Join { children, .. }
             | BetaNode::Predicate { children, .. }
@@ -1020,7 +1055,16 @@ impl BetaNetwork {
                 .collect();
             // Children are stored oldest first and visited in reverse, so the
             // slot before the last element is second in visit order.
-            linked.insert(linked.len().saturating_sub(1), ncc_node_id);
+            let second = linked.len().saturating_sub(1);
+            let slot = if pure_double_negation {
+                linked
+                    .iter()
+                    .position(|child| subnetwork.contains(&child.0))
+                    .unwrap_or(second)
+            } else {
+                second
+            };
+            linked.insert(slot, ncc_node_id);
             *children = linked.into();
         }
     }
@@ -1041,6 +1085,26 @@ impl BetaNetwork {
             }
             current = above;
         }
+    }
+
+    /// Whether an NCC is a pure double negation: its subnetwork is a single
+    /// nested NCC under the same parent, whose pass-through feeds the outer
+    /// partner directly. `(exists (and ...))` lowers to this shape, and an
+    /// explicit `(not (and (not (and ...))))` has it too. A subnetwork with
+    /// any join, test, negation or further NCC after its nested NCC is not
+    /// one.
+    pub(crate) fn ncc_is_pure_double_negation(&self, ncc_node_id: NodeId) -> bool {
+        let Some(BetaNode::Ncc { partner, .. }) = self.get_node(ncc_node_id) else {
+            return false;
+        };
+        let Some(entry) = self.ncc_subnetwork_entry(ncc_node_id) else {
+            return false;
+        };
+        matches!(self.get_node(entry), Some(BetaNode::Ncc { .. }))
+            && self
+                .get_node(*partner)
+                .and_then(BetaNode::parent_node)
+                .is_some_and(|above| above == entry)
     }
 
     /// Whether an NCC's pass-through tokens are results for an enclosing NCC.
@@ -1066,42 +1130,54 @@ impl BetaNetwork {
         false
     }
 
-    /// Record a completed NCC that the compiler built inside an enclosing
-    /// NCC's subnetwork, caching the subnetwork entry it may wait for.
-    pub(crate) fn register_nested_ncc(&mut self, ncc_node_id: NodeId) {
-        let Some(entry) = self.ncc_subnetwork_entry(ncc_node_id) else {
+    /// How an NCC may wait for its subnetwork entry, or `None` when it never
+    /// waits: a top-level NCC that is not a pure double negation.
+    fn ncc_entry_wait(&self, ncc_node_id: NodeId, nested: bool) -> Option<NccEntryWait> {
+        let entry = self.ncc_subnetwork_entry(ncc_node_id)?;
+        (nested || self.ncc_is_pure_double_negation(ncc_node_id))
+            .then_some(NccEntryWait { entry, nested })
+    }
+
+    /// Record a completed NCC, caching the subnetwork entry it may wait for.
+    ///
+    /// `nested` says whether the compiler built it inside an enclosing NCC's
+    /// subnetwork.
+    pub(crate) fn register_ncc_entry_wait(&mut self, ncc_node_id: NodeId, nested: bool) {
+        let Some(wait) = self.ncc_entry_wait(ncc_node_id, nested) else {
             return;
         };
         // A missing index is rebuilt from the graph, which includes this NCC.
-        if let Some(nested) = &mut self.nested_ncc_entries {
-            nested.insert(ncc_node_id, entry);
+        if let Some(waits) = &mut self.ncc_entry_waits {
+            waits.insert(ncc_node_id, wait);
         }
     }
 
-    /// Rebuild the nested-NCC index from the graph if it was dropped.
-    pub(crate) fn ensure_nested_ncc_index(&mut self) {
-        if self.nested_ncc_entries.is_some() {
+    /// Rebuild the NCC entry-wait index from the graph if it was dropped.
+    pub(crate) fn ensure_ncc_entry_wait_index(&mut self) {
+        if self.ncc_entry_waits.is_some() {
             return;
         }
-        let nested = self
+        let waits = self
             .nodes
             .iter()
             .filter(|(_, node)| matches!(node, BetaNode::Ncc { .. }))
-            .filter(|&(&id, _)| self.ncc_feeds_enclosing_subnetwork(id))
-            .filter_map(|(&id, _)| Some((id, self.ncc_subnetwork_entry(id)?)))
+            .filter_map(|(&id, _)| {
+                let nested = self.ncc_feeds_enclosing_subnetwork(id);
+                Some((id, self.ncc_entry_wait(id, nested)?))
+            })
             .collect();
-        self.nested_ncc_entries = Some(nested);
+        self.ncc_entry_waits = Some(waits);
     }
 
-    /// The subnetwork entry a nested NCC may wait for; `None` for every
-    /// other node, including top-level NCCs.
+    /// The subnetwork entry an NCC may wait for; `None` for every other
+    /// node, including top-level NCCs whose subnetwork begins with a join.
     #[inline]
-    pub(crate) fn nested_ncc_entry(&self, node_id: NodeId) -> Option<NodeId> {
-        match &self.nested_ncc_entries {
-            Some(nested) if nested.is_empty() => None,
-            Some(nested) => nested.get(&node_id).copied(),
+    pub(crate) fn ncc_entry_wait_for(&self, node_id: NodeId) -> Option<NccEntryWait> {
+        match &self.ncc_entry_waits {
+            Some(waits) if waits.is_empty() => None,
+            Some(waits) => waits.get(&node_id).copied(),
             None => {
-                debug_assert!(false, "nested NCC index must be built before lookup");
+                debug_assert!(false, "NCC entry-wait index must be built before lookup");
                 None
             }
         }
