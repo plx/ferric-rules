@@ -147,8 +147,8 @@ Every program gets a separate Docker container, a read-only source mount, a
 removed explicitly. Load success, complete output/statistics frames, diagnostics,
 and the firing bound are all checked before accepting output. During source
 loading, the specific warnings for redefining the built-in MAIN module or a
-deffunction, defgeneric, deftemplate, or defrule, and the exact integer-overflow
-scanner notice are allowed.
+deffunction, deftemplate, or defrule (with the defrule warning's `+j`/`=j`-style
+suffixes), and the exact integer-overflow scanner notice are allowed.
 Other diagnostic codes fail reference verification unless the case
 declares an `error`. A load-error case is loaded with `load*`, which must fail
 with a diagnostic; a run-error case must print at least one run-time diagnostic.
