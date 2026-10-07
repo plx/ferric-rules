@@ -1,0 +1,7 @@
+(defmodule A (export ?ALL))
+(defglobal ?*g* = 19)
+(deffunction local-value () ?*g*)
+(deffunction read-local () (eval "(local-value)"))
+(defmodule MAIN (import A deffunction read-local))
+(defglobal ?*g* = 7)
+(defrule run => (printout t (A::read-local) ":" (eval "?*g*") crlf))

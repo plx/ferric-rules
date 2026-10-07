@@ -138,19 +138,24 @@ explicitly when constructing a replacement.
 `Value` and `AtomKey` have a new `FactAddress` variant, and so does the
 parser's `SlotValueType`. `EngineError` has a new `FactEpochExhausted` variant,
 which `reset` returns when the working-memory epoch counter is exhausted.
-Exhaustive matches on these enums need new arms. Rule variables bound to facts and fact-query results now carry this
+Exhaustive matches on these enums need new arms. For #403, the public
+`ferric_rules_runtime::evaluator::EvalError` enum likewise gains
+`MathDomain`, `MathOverflow` and `MathSingularity` variants. Rule variables bound to facts and fact-query results now carry this
 type instead of integers containing arena keys. It prints `<Fact-N>` using the
 public index retained at assertion time; FACT-ADDRESS slot defaults print
 `<Dummy Fact>`. Integer fact designators always mean public indices.
 
 Addresses are neither INTEGER nor NUMBER. Arithmetic, `str-cat`, and `sym-cat`
-reject them. Missing or negative indices, stale addresses, and designators of
-any other type make `fact-existp`, `fact-relation`, `fact-slot-names`, and
-`fact-slot-value` return `FALSE` (`fact-index` returns `-1` for anything but an
-address), and the rule continues; `fact-slot-value` does not evaluate its slot
-argument in that case. On a live fact, an invalid slot name or a slot argument
-that is not a symbol, string, or instance name stops the rule; CLIPS 6.30
-accepts only a symbol there. `retract` skips missing targets, stops evaluating
+reject them. Missing or negative indices, stale addresses, and computed
+designators of any other type make `fact-existp`, `fact-relation`,
+`fact-slot-names`, and `fact-slot-value` return `FALSE` (`fact-index` returns
+`-1` for anything but an address), and the rule continues; `fact-slot-value`
+does not evaluate its slot argument in that case. On a live fact, an invalid
+slot name or a computed slot argument that is not a symbol, string, or instance
+name stops the rule; CLIPS 6.30 accepts only a symbol there. As in CLIPS, a
+literal STRING or FLOAT designator to these functions or `retract`, any literal
+`fact-index` argument, and a literal STRING slot name to `fact-slot-value`
+reject the containing rule at load with `ARGACCES5`. `retract` skips missing targets, stops evaluating
 its targets at a negative index, and stops the rule for a wrong-type target
 after retracting the rest; later deffunction and generic-function targets are
 not called, while other targets are still retracted, including builtin targets
@@ -165,9 +170,12 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 8
+## Pre-1.0 snapshot schema 9
 
-Snapshots are written with schema 8. Schema 7 snapshots are rejected with
+Snapshots are written with schema 9. Schema 8 snapshots
+are rejected with `UnsupportedVersion(8)` because random-generator state,
+construct declaration order, and allowed-value source order now persist.
+Schema 7 snapshots are rejected with
 `UnsupportedVersion(7)` because template constraints and dynamic default
 expressions now persist in registered template metadata. Schema 6 snapshots are rejected with
 `UnsupportedVersion(6)` because executable effects and immediate lifecycle
@@ -190,7 +198,7 @@ new engine; see [snapshots.md](snapshots.md).
 
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346, #395, #396, #404 and #406 make these cases behave
+The fixes for issues #320 to #346, #395, #396, #403, #404 and #406 make these cases behave
 like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
@@ -246,6 +254,29 @@ like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   (see [the seed and reset changes](#pre-10-seed-and-reset-changes)). A
   statically invalid field rejects the whole `assert` command; an evaluation
   error keeps the facts it asserted earlier.
+- A built-in call with a known wrong argument count or a literal argument of
+  the wrong type, such as `(abs 1 2)`, `(eq a)` or `(min 1 a)`, now rejects the
+  containing construct at load with `ARGACCES4` or `ARGACCES5`. Other
+  definitions in the source still load.
+- Math domain, overflow and singularity errors now stop the rule with
+  `EMATHFUN1`, `EMATHFUN2` or `EMATHFUN3` instead of returning `nan` or `inf`:
+  `(sqrt -1)`, `(log 0)` and `(tan (/ (pi) 2))` are errors. A NaN argument
+  still returns `nan`, as in CLIPS.
+- `length` and `length$` count the bytes of a STRING or SYMBOL, and `length$`
+  accepts those lexemes as well as a multifield.
+- `str-cat` and `sym-cat` reject multifield arguments.
+- `funcall` evaluates all its operands before calling its target, including
+  those of short-circuit targets such as `and` and `eq`.
+- `eq` and `neq` take two or more arguments and compare every later argument
+  with the first.
+- `mod` with a FLOAT operand returns `a - trunc(a / b) * b`, as CLIPS does.
+- The new built-ins (`random`, `seed`, `time`, `eval`, `build`,
+  `assert-string`, `str-assert`, `progn`, `expand$`, `delete-member$`,
+  `replace-member$`, the `deftemplate-slot-*` functions,
+  `get-deftemplate-list`, `get-defglobal-list`, `get-defrule-list`,
+  `next-methodp`, `override-next-method` and `call-specific-method`) take
+  precedence over user deffunctions and defgenerics of the same name, which are
+  no longer called. Rename such functions.
 
 ## Step 1: Check Feature Coverage
 
@@ -540,10 +571,10 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 8); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 9); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6 and
-  schema-7 snapshots are rejected explicitly. Export durable application data through the
+  unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6,
+  schema-7 and schema-8 snapshots are rejected explicitly. Export durable application data through the
   producing version before upgrading; see
   [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.

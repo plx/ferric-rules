@@ -1,0 +1,6 @@
+[ARGACCES5] Function assert-string expected argument #1 to be of type string
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (assert-string symbol)

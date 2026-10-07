@@ -1,0 +1,8 @@
+
+[PRCDRPSR2] The return function is not valid in this context.
+
+ERROR:
+(defrule MAIN::r
+   =>
+   (printout t (progn
+      (

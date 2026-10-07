@@ -1,0 +1,3 @@
+(local)|()|(report)
+(p x r)
+(MAIN::initial-fact A::p B::local)

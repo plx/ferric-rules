@@ -29,6 +29,7 @@ struct Manifest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // Independent manifest opt-ins.
 struct Case {
     path: String,
     level: String,
@@ -43,6 +44,12 @@ struct Case {
     recoverable_fact_notices: bool,
     #[serde(default)]
     recoverable_control_notices: bool,
+    #[serde(default)]
+    recoverable_random_notices: bool,
+    #[serde(default)]
+    recoverable_build_notices: bool,
+    #[serde(default)]
+    recoverable_introspection_notices: bool,
     #[serde(default)]
     gap: Option<Gap>,
 }
@@ -123,11 +130,18 @@ fn golden(
     error: Option<ErrorPhase>,
     recoverable_fact_notices: bool,
     recoverable_control_notices: bool,
+    recoverable_random_notices: bool,
 ) -> Golden {
     let mut output = Vec::new();
     let mut found: [Vec<u8>; 2] = Default::default();
     let mut rest = bytes;
     'scan: while let Some((&first, tail)) = rest.split_first() {
+        if recoverable_random_notices {
+            if let Some(length) = random_notice_length(rest) {
+                rest = &rest[length..];
+                continue 'scan;
+            }
+        }
         if recoverable_fact_notices {
             if let Some(length) = fact_notice_length(rest) {
                 rest = &rest[length..];
@@ -151,6 +165,21 @@ fn golden(
         rest = tail;
     }
     if error == Some(ErrorPhase::Run) {
+        // These parser diagnostics start with their own newline even when eval
+        // or assert-string is called midway through a printout. Remove exactly
+        // that newline, preserving any preceding newline printed by the program.
+        const PARSER_PREFIXES: &[&[u8]] = &[b"[EXPRNPSR3] ", b"[PRCDRPSR2] ", b"[PRNTUTIL2] "];
+        output = output
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &byte)| {
+                (!(byte == b'\n'
+                    && PARSER_PREFIXES
+                        .iter()
+                        .any(|prefix| output[index + 1..].starts_with(prefix))))
+                .then_some(byte)
+            })
+            .collect();
         output = output
             .split_inclusive(|&byte| byte == b'\n')
             .flat_map(|line| &line[..diagnostic_offset(line).unwrap_or(line.len())])
@@ -205,6 +234,18 @@ fn fact_notice_length(bytes: &[u8]) -> Option<usize> {
     .then_some(length)
 }
 
+const RANDOM_NOTICE: &[u8] =
+    b"[MISCFUN3] Function random expected argument #1 to be less than argument #2\n";
+
+const RANDOM_ARITY_NOTICE: &[u8] = b"[MISCFUN2] Function random expected either 0 or 2 arguments\n";
+
+fn random_notice_length(bytes: &[u8]) -> Option<usize> {
+    [RANDOM_NOTICE, RANDOM_ARITY_NOTICE]
+        .into_iter()
+        .find(|notice| bytes.starts_with(notice))
+        .map(<[u8]>::len)
+}
+
 fn control_notice_length(bytes: &[u8]) -> Option<usize> {
     const MODULE: &[u8] = b"[PRNTUTIL1] Unable to find defmodule ";
     const CLEAR: &[u8] = b"[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n";
@@ -219,6 +260,175 @@ fn control_notice_length(bytes: &[u8]) -> Option<usize> {
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_:-".contains(byte)))
     .then_some(MODULE.len() + end + 1)
+}
+
+/// CLIPS rejects a `build` that would redefine a deftemplate in use with
+/// CSTRCPSR4 and echoes the construct up to its module-qualified name.
+/// Return the block's length and the deftemplate name.
+fn build_notice(bytes: &[u8]) -> Option<(usize, &[u8])> {
+    const MESSAGE: &[u8] = b"\n[CSTRCPSR4] Cannot redefine deftemplate ";
+    const ECHO: &[u8] = b" while it is in use.\n\nERROR:\n(deftemplate ";
+    let is_name = |name: &[u8]| {
+        !name.is_empty()
+            && name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(byte))
+    };
+    let rest = bytes.strip_prefix(MESSAGE)?;
+    let name = &rest[..rest.iter().position(|&byte| byte == b' ')?];
+    let echo = rest[name.len()..].strip_prefix(ECHO)?;
+    let line = &echo[..echo.iter().position(|&byte| byte == b'\n')?];
+    let module = line.strip_suffix(name)?.strip_suffix(b"::")?;
+    (is_name(name) && is_name(module)).then_some((
+        MESSAGE.len() + name.len() + ECHO.len() + line.len() + 1,
+        name,
+    ))
+}
+
+/// The notice a recoverable build rejection is compared as.
+fn build_notice_line(name: &[u8]) -> Vec<u8> {
+    [
+        b"[CSTRCPSR4] Cannot redefine deftemplate ".as_slice(),
+        name,
+        b" while it is in use.\n",
+    ]
+    .concat()
+}
+
+/// Move CLIPS's recoverable build rejections out of a golden: return the
+/// golden without them and their notices, in order.
+fn split_build_notices(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (mut output, mut notices) = (Vec::new(), Vec::new());
+    let mut rest = bytes;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let Some((length, name)) = build_notice(rest) {
+            notices.extend(build_notice_line(name));
+            rest = &rest[length..];
+        } else {
+            output.push(first);
+            rest = tail;
+        }
+    }
+    (output, notices)
+}
+
+/// Ferric reports a rejected `build` with its own load error text, one line
+/// per rejection. Compare each such line as CLIPS's notice for the same
+/// deftemplate, so the count and names must still agree.
+fn normalize_ferric_build_notices(notices: &str) -> String {
+    fn rejected_name(line: &str) -> Option<&str> {
+        let rest = line.strip_prefix("compile error: ")?;
+        let (rest, suffix) = match rest.strip_prefix("[CSTRCPSR4] cannot redefine template `") {
+            Some(rest) => (rest, "` while it is in use by facts or constructs at line "),
+            None => (
+                rest.strip_prefix("cannot define template `")?,
+                "` while its ordered relation is in use by facts or constructs at line ",
+            ),
+        };
+        let (name, location) = rest.split_once(suffix)?;
+        let (line, column) = location.strip_suffix('\n')?.split_once(", column ")?;
+        let number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+        (!name.is_empty() && !name.contains(char::is_whitespace) && number(line) && number(column))
+            .then_some(name)
+    }
+    notices
+        .split_inclusive('\n')
+        .map(|line| {
+            rejected_name(line).map_or_else(
+                || line.to_owned(),
+                |name| String::from_utf8(build_notice_line(name.as_bytes())).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// CLIPS's recoverable template and construct introspection notices: a
+/// missing deftemplate, or a first argument that does not name a deftemplate
+/// or defmodule. Return the notice's length.
+fn introspection_notice_length(bytes: &[u8]) -> Option<usize> {
+    const TEMPLATE: &[u8] = b"[PRNTUTIL1] Unable to find deftemplate ";
+    const ARGUMENT: &[u8] = b"[ARGACCES5] Function ";
+    const TEMPLATE_QUERIES: [&str; 10] = [
+        "deftemplate-slot-names",
+        "deftemplate-slot-allowed-values",
+        "deftemplate-slot-types",
+        "deftemplate-slot-default-value",
+        "deftemplate-slot-defaultp",
+        "deftemplate-slot-existp",
+        "deftemplate-slot-multip",
+        "deftemplate-slot-singlep",
+        "deftemplate-slot-range",
+        "deftemplate-slot-cardinality",
+    ];
+    const CONSTRUCT_LISTS: [&str; 3] = [
+        "get-defrule-list",
+        "get-deftemplate-list",
+        "get-defglobal-list",
+    ];
+    let length = bytes.iter().position(|&byte| byte == b'\n')? + 1;
+    let line = &bytes[..length];
+    if let Some(name) = line.strip_prefix(TEMPLATE) {
+        let name = name.strip_suffix(b".\n")?;
+        return (!name.is_empty()
+            && name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_:-".contains(byte)))
+        .then_some(length);
+    }
+    let function = line.strip_prefix(ARGUMENT)?;
+    let expected = |functions: &[&str], kind: &[u8]| {
+        functions.iter().any(|name| {
+            function
+                .strip_prefix(name.as_bytes())
+                .and_then(|rest| rest.strip_prefix(b" expected argument #1 to be of type "))
+                .and_then(|rest| rest.strip_suffix(b" name\n"))
+                == Some(kind)
+        })
+    };
+    (expected(&TEMPLATE_QUERIES, b"deftemplate") || expected(&CONSTRUCT_LISTS, b"defmodule"))
+        .then_some(length)
+}
+
+/// Move CLIPS's recoverable introspection notices out of a golden: return the
+/// golden without them and the notices, in order. Ferric prints them on
+/// `werror`, so they are compared exactly.
+fn split_introspection_notices(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let (mut output, mut notices) = (Vec::new(), Vec::new());
+    let mut rest = bytes;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let Some(length) = introspection_notice_length(rest) {
+            notices.extend_from_slice(&rest[..length]);
+            rest = &rest[length..];
+        } else {
+            output.push(first);
+            rest = tail;
+        }
+    }
+    (output, notices)
+}
+
+/// The golden a corpus case's program is compared with.
+fn case_golden(case: &Case, bytes: &[u8], error: Option<ErrorPhase>) -> Golden {
+    let (bytes, build_notices) = if case.recoverable_build_notices {
+        split_build_notices(bytes)
+    } else {
+        (bytes.to_vec(), Vec::new())
+    };
+    let (bytes, introspection_notices) = if case.recoverable_introspection_notices {
+        split_introspection_notices(&bytes)
+    } else {
+        (bytes, Vec::new())
+    };
+    let mut expected = golden(
+        &bytes,
+        error,
+        case.recoverable_fact_notices,
+        case.recoverable_control_notices,
+        case.recoverable_random_notices,
+    );
+    expected.notices.extend(build_notices);
+    expected.notices.extend(introspection_notices);
+    expected
 }
 
 fn strip_control_notices(bytes: &[u8]) -> Vec<u8> {
@@ -243,11 +453,20 @@ fn diagnostic_offset(line: &[u8]) -> Option<usize> {
     const PREFIXES: &[&[u8]] = &[
         b"[ARGACCES4] ",
         b"[ARGACCES5] ",
+        b"[EMATHFUN1] ",
+        b"[EMATHFUN2] ",
+        b"[EMATHFUN3] ",
+        b"[MULTIFUN1] ",
+        b"[STRNGFUN2] ",
+        b"[EXPRNPSR3] ",
+        b"[PRCDRPSR2] ",
+        b"[PRNTUTIL2] ",
         b"[PRCCODE4] ",
         b"[PRCCODE5] ",
         b"[PRNTUTIL7] ",
         b"[TMPLTDEF1] ",
         b"[GENRCEXE1] ",
+        b"[GENRCEXE4] ",
         b"[INSFUN3] ",
     ];
     line.iter().enumerate().find_map(|(offset, &byte)| {
@@ -491,6 +710,7 @@ fn assert_run_diagnostics_are_listed(case: &Case, expected: &[u8]) {
         None,
         case.recoverable_fact_notices,
         case.recoverable_control_notices,
+        case.recoverable_random_notices,
     )
     .output
     .split(|&byte| byte == b'\n')
@@ -505,6 +725,51 @@ fn assert_run_diagnostics_are_listed(case: &Case, expected: &[u8]) {
                 String::from_utf8_lossy(code)
             );
         }
+    }
+}
+
+/// A case that opts in to recoverable notices must succeed and its golden
+/// must hold at least one notice of each kind it allows.
+fn assert_recoverable_notices_are_present(case: &Case, expected: &[u8]) {
+    if case.recoverable_fact_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            (0..expected.len()).any(|index| fact_notice_length(&expected[index..]).is_some()),
+            "missing recoverable fact notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_control_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            (0..expected.len()).any(|index| control_notice_length(&expected[index..]).is_some()),
+            "missing recoverable control notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_random_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            (0..expected.len()).any(|index| random_notice_length(&expected[index..]).is_some()),
+            "missing recoverable random notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_build_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            !split_build_notices(expected).1.is_empty(),
+            "missing recoverable build notice: {}",
+            case.path
+        );
+    }
+    if case.recoverable_introspection_notices {
+        assert!(case.error.is_none(), "recoverable notices require success");
+        assert!(
+            !split_introspection_notices(expected).1.is_empty(),
+            "missing recoverable introspection notice: {}",
+            case.path
+        );
     }
 }
 
@@ -549,35 +814,14 @@ fn manifest_covers_every_program() {
         );
         assert_eq!(
             case.error.is_some(),
-            golden(
-                &expected,
-                None,
-                case.recoverable_fact_notices,
-                case.recoverable_control_notices
-            )
-            .output
-            .split(|&byte| byte == b'\n')
-            .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
+            case_golden(case, &expected, None)
+                .output
+                .split(|&byte| byte == b'\n')
+                .any(|line| is_diagnostic(line) || diagnostic_offset(line).is_some()),
             "only a golden with a CLIPS diagnostic has an error phase: {}",
             case.path
         );
-        if case.recoverable_fact_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                (0..expected.len()).any(|index| fact_notice_length(&expected[index..]).is_some()),
-                "missing recoverable fact notice: {}",
-                case.path
-            );
-        }
-        if case.recoverable_control_notices {
-            assert!(case.error.is_none(), "recoverable notices require success");
-            assert!(
-                (0..expected.len())
-                    .any(|index| control_notice_length(&expected[index..]).is_some()),
-                "missing recoverable control notice: {}",
-                case.path
-            );
-        }
+        assert_recoverable_notices_are_present(case, &expected);
         if case.error == Some(ErrorPhase::Run) {
             assert_run_diagnostics_are_listed(case, &expected);
         }
@@ -628,11 +872,10 @@ fn selected_programs() -> Vec<Program> {
                 input: input_path
                     .is_file()
                     .then(|| std::fs::read_to_string(input_path).unwrap()),
-                expected: golden(
+                expected: case_golden(
+                    &case,
                     &std::fs::read(root.join(&case.path).with_extension("out")).unwrap(),
                     case.error,
-                    case.recoverable_fact_notices,
-                    case.recoverable_control_notices,
                 ),
                 case,
             }
@@ -651,6 +894,16 @@ impl Program {
         if self.case.recoverable_control_notices {
             observation.notices =
                 String::from_utf8(strip_control_notices(observation.notices.as_bytes())).unwrap();
+        }
+        if self.case.recoverable_build_notices {
+            observation.notices = normalize_ferric_build_notices(&observation.notices);
+        }
+        if self.case.recoverable_random_notices {
+            for notice in [RANDOM_NOTICE, RANDOM_ARITY_NOTICE] {
+                observation.notices = observation
+                    .notices
+                    .replace(std::str::from_utf8(notice).unwrap(), "");
+            }
         }
         Some(observation)
     }
@@ -776,25 +1029,66 @@ fn golden_run_error_preserves_exact_partial_output() {
         Some(ErrorPhase::Run),
         false,
         false,
+        false,
     );
     assert_eq!(expected.output, b"ready\nprefix \xff ");
     assert!(expected.notices.is_empty());
 }
 
 #[test]
+fn golden_run_error_strips_verified_math_and_multifield_diagnostics() {
+    for code in ["EMATHFUN1", "EMATHFUN2", "EMATHFUN3", "MULTIFUN1"] {
+        let output = format!("prefix [{code}] runtime failure\n[PRCCODE4] Execution halted.\n");
+        let expected = golden(
+            output.as_bytes(),
+            Some(ErrorPhase::Run),
+            false,
+            false,
+            false,
+        );
+        assert_eq!(expected.output, b"prefix ", "{code}");
+        assert!(expected.notices.is_empty());
+    }
+}
+
+#[test]
 fn golden_run_error_preserves_non_diagnostic_bracket_text() {
     let output = b"[USER123] literal\nprefix [USER123] literal\n[USER123]\n\
         [lower1] literal\n[CODE] literal\n[CODE1]\tliteral\n";
-    let expected = golden(output, Some(ErrorPhase::Run), false, false);
+    let expected = golden(output, Some(ErrorPhase::Run), false, false, false);
     assert_eq!(expected.output, output);
     assert!(expected.notices.is_empty());
+}
+
+#[test]
+fn golden_dynamic_parser_errors_remove_only_the_diagnostic_leading_newline() {
+    for code in ["EXPRNPSR3", "PRCDRPSR2", "PRNTUTIL2"] {
+        for prefix in ["prefix:", "prefix:\n"] {
+            let output = format!("{prefix}\n[{code}] parser failure\n[PRCCODE4] halted\n");
+            let expected = golden(
+                output.as_bytes(),
+                Some(ErrorPhase::Run),
+                false,
+                false,
+                false,
+            );
+            assert_eq!(expected.output, prefix.as_bytes(), "{code}");
+            assert!(expected.notices.is_empty());
+        }
+    }
+    let literal = b"prefix:\n[USER123] literal\n[EXPRNPSR3]\tliteral\n\
+        [PRCDRPSR2]\ninline [PRNTUTIL2]literal\n";
+    assert_eq!(
+        golden(literal, Some(ErrorPhase::Run), false, false, false).output,
+        literal
+    );
 }
 
 #[test]
 fn golden_preserves_diagnostics_outside_run_error_cases() {
     let output = b"prefix [ARGACCES5] invalid operand\n[PRCCODE4] Execution halted.\n";
     for phase in [None, Some(ErrorPhase::Load)] {
-        let expected = golden(output, phase, false, false);
+        let expected = golden(output, phase, false, false, false);
         assert_eq!(expected.output, output);
         assert!(expected.notices.is_empty());
     }
@@ -804,7 +1098,13 @@ fn golden_preserves_diagnostics_outside_run_error_cases() {
 fn golden_run_error_retains_scanner_notices_separately() {
     let notice = NOTICES[0].1;
     let output = format!("prefix {notice}tail [ARGACCES5] invalid operand\n");
-    let expected = golden(output.as_bytes(), Some(ErrorPhase::Run), false, false);
+    let expected = golden(
+        output.as_bytes(),
+        Some(ErrorPhase::Run),
+        false,
+        false,
+        false,
+    );
     assert_eq!(expected.output, b"prefix tail ");
     assert_eq!(expected.notices, notice.as_bytes());
 }
@@ -817,10 +1117,10 @@ fn golden_fact_notices_preserve_exact_partial_output() {
         [ARGACCES5] Function fact-index expected argument #1 to be of type fact-address\n\
         -1\n\
         continued\n";
-    let expected = golden(source, None, true, false);
+    let expected = golden(source, None, true, false, false);
     assert_eq!(expected.output, b"before:FALSE\n-1\ncontinued\n");
     assert!(expected.notices.is_empty());
-    assert_eq!(golden(source, None, false, false).output, source);
+    assert_eq!(golden(source, None, false, false, false).output, source);
 }
 
 #[test]
@@ -831,7 +1131,7 @@ fn golden_fact_notices_retain_fatal_errors_and_literal_near_matches() {
         [ARGACCES5] Function fact-slot-value expected argument #2 to be of type symbol\n\
         [ARGACCES5] Function fact-index expected argument #1 to be of type fact-address or fact-index\n\
         [PRCCODE4] Execution halted.\n[USER123] literal\n";
-    assert_eq!(golden(source, None, true, false).output, source);
+    assert_eq!(golden(source, None, true, false, false).output, source);
 }
 
 #[test]
@@ -840,10 +1140,10 @@ fn golden_control_notices_preserve_prefix_and_require_opt_in() {
         b"clear:[[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n]\n\
         focus:[[PRNTUTIL1] Unable to find defmodule MISSING.\nFALSE]\ncontinued\n";
     assert_eq!(
-        golden(source, None, false, true).output,
+        golden(source, None, false, true, false).output,
         b"clear:[]\nfocus:[FALSE]\ncontinued\n"
     );
-    assert_eq!(golden(source, None, false, false).output, source);
+    assert_eq!(golden(source, None, false, false, false).output, source);
     assert_eq!(
         strip_control_notices(source),
         b"clear:[]\nfocus:[FALSE]\ncontinued\n"
@@ -857,6 +1157,90 @@ fn control_notice_filter_retains_literal_near_matches_and_fatal_errors() {
         [PRNTUTIL1] Unable to find deftemplate MISSING.\n\
         [ARGACCES5] Function focus expected argument #1 to be of type symbol\n\
         [PRCCODE4] Execution halted.\n[USER123] literal\n";
-    assert_eq!(golden(source, None, false, true).output, source);
+    assert_eq!(golden(source, None, false, true, false).output, source);
     assert_eq!(strip_control_notices(source), source);
+}
+
+#[test]
+fn golden_random_notice_is_exact_and_requires_opt_in() {
+    let source = [b"before".as_slice(), RANDOM_NOTICE, b"after\n"].concat();
+    assert_eq!(
+        golden(&source, None, false, false, true).output,
+        b"beforeafter\n"
+    );
+    assert_eq!(golden(&source, None, false, false, false).output, source);
+    let near_match =
+        b"[MISCFUN3] Function random expected argument #1 to be less than argument #3\n";
+    assert_eq!(
+        golden(near_match, None, false, false, true).output,
+        near_match
+    );
+}
+
+#[test]
+fn golden_build_notices_become_exact_notices() {
+    let block = b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\nERROR:\n(deftemplate MAIN::p\n";
+    let source = [
+        b"before".as_slice(),
+        block,
+        b"<Fact-1>\n",
+        block,
+        b"after\n",
+    ]
+    .concat();
+    let (output, notices) = split_build_notices(&source);
+    assert_eq!(output, b"before<Fact-1>\nafter\n");
+    let line = b"[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n";
+    assert_eq!(notices, [line.as_slice(), line].concat());
+    for near_match in [
+        b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\nERROR:\n(deftemplate MAIN::q\n".as_slice(),
+        b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\nERROR:\n(deftemplate p\n",
+        b"\n[CSTRCPSR4] Cannot redefine defrule p while it is in use.\n\nERROR:\n(defrule MAIN::p\n",
+        b"\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n",
+    ] {
+        assert_eq!(split_build_notices(near_match), (near_match.to_vec(), Vec::new()));
+    }
+}
+
+#[test]
+fn golden_introspection_notices_become_exact_notices() {
+    let missing = b"[PRNTUTIL1] Unable to find deftemplate missing.\n".as_slice();
+    let template =
+        b"[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type deftemplate name\n"
+            .as_slice();
+    let module =
+        b"[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name\n"
+            .as_slice();
+    let source = [missing, b"()\n", template, b"()\n", module, b"()\nafter\n"].concat();
+    let (output, notices) = split_introspection_notices(&source);
+    assert_eq!(output, b"()\n()\n()\nafter\n");
+    assert_eq!(notices, [missing, template, module].concat());
+    for near_match in [
+        b"[PRNTUTIL1] Unable to find deftemplate missing. extra\n".as_slice(),
+        b"[PRNTUTIL1] Unable to find fact f-9.\n",
+        b"[ARGACCES5] Function deftemplate-slot-types expected argument #2 to be of type symbol\n",
+        b"[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type defmodule name\n",
+        b"[ARGACCES5] Function get-defrule-list expected argument #1 to be of type deftemplate name\n",
+        b"[ARGACCES5] Function focus expected argument #1 to be of type defmodule name\n",
+    ] {
+        assert_eq!(
+            split_introspection_notices(near_match),
+            (near_match.to_vec(), Vec::new())
+        );
+    }
+}
+
+#[test]
+fn ferric_build_rejections_normalize_to_their_clips_notice() {
+    let notices = "compile error: [CSTRCPSR4] cannot redefine template `p` while it is in use by facts or constructs at line 1, column 1\n\
+        compile error: cannot define template `q` while its ordered relation is in use by facts or constructs at line 1, column 1\n\
+        compile error: unknown template `q` at line 1, column 1\n\
+        compile error: cannot define template `q` while its ordered relation is in use by facts or constructs\n";
+    assert_eq!(
+        normalize_ferric_build_notices(notices),
+        "[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n\
+        [CSTRCPSR4] Cannot redefine deftemplate q while it is in use.\n\
+        compile error: unknown template `q` at line 1, column 1\n\
+        compile error: cannot define template `q` while its ordered relation is in use by facts or constructs\n"
+    );
 }

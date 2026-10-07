@@ -4,7 +4,7 @@
 //! for embedding applications, including fact assertion/retraction and
 //! transferable ownership for serialized host work.
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use thiserror::Error;
@@ -17,6 +17,7 @@ use ferric_rules_core::{
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
+use crate::evaluator::RuntimeExpr;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
 use crate::host::{
@@ -106,6 +107,23 @@ impl<Id: Copy> FactAssertionResult<Id> {
     }
 }
 
+/// The construct identity a fact holds in use while it is assembled
+/// (see [`Engine::with_active_fact`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FactIdentity {
+    Template(TemplateId),
+    Ordered(Symbol),
+}
+
+impl FactIdentity {
+    pub(crate) fn of(fact: &Fact) -> Self {
+        match fact {
+            Fact::Template(fact) => Self::Template(fact.template_id),
+            Fact::Ordered(fact) => Self::Ordered(fact.relation),
+        }
+    }
+}
+
 /// The Ferric rules engine.
 ///
 /// This is the main entry point for embedding applications. The engine is
@@ -159,6 +177,10 @@ pub struct Engine {
     // retain a cheap handle; redefinition installs a fresh allocation so captured
     // facts keep the exact shape against which they were validated.
     pub(crate) template_defs: slotmap::SlotMap<TemplateId, Arc<RegisteredTemplate>>,
+    /// Persistent template names in declaration order, including implicit ordered relations.
+    pub(crate) template_declarations: Vec<(ModuleId, String)>,
+    /// Derived membership index; omitted from snapshots.
+    pub(crate) template_declaration_names: HashSet<String>,
     pub(crate) template_local_ids: crate::loader::TemplateLocalIndex,
     /// Output router for capturing `printout` and related I/O.
     pub(crate) router: OutputRouter,
@@ -174,6 +196,8 @@ pub struct Engine {
     pub(crate) module_registry: ModuleRegistry,
     /// Rule-to-module association for focus-aware execution.
     pub(crate) rule_modules: RuleIndex<ModuleId>,
+    /// Active source rule names in declaration order, independent of reused executable slots.
+    pub(crate) rule_declarations: Vec<(ModuleId, String)>,
     /// Template-to-module association for visibility checking.
     pub(crate) template_modules: slotmap::SecondaryMap<ferric_rules_core::TemplateId, ModuleId>,
     /// Function-to-module association for consistency-check bookkeeping.
@@ -191,6 +215,24 @@ pub struct Engine {
     pub(crate) fact_epoch: u64,
     pub(crate) fact_index_starts_at_zero: bool,
     pub(crate) reset_in_progress: bool,
+    pub(crate) source_load_depth: usize,
+    /// Transient executing callable identities, retained across nested evaluator frames.
+    pub(crate) active_callables: Vec<(ModuleId, String)>,
+    /// Templates whose fact is being assembled or published; transient like
+    /// `active_callables`. A slot expression or dynamic default cannot
+    /// redefine such a template underneath its own assertion.
+    pub(crate) active_templates: Vec<TemplateId>,
+    /// Ordered relations whose fact is being assembled or published, held
+    /// like `active_templates` so `build` cannot define an explicit template
+    /// over the relation underneath its own assertion.
+    pub(crate) active_ordered_relations: Vec<Symbol>,
+    /// Compiled source that runs outside any registered construct, held like
+    /// `active_templates`: an `eval`/`assert-string` expression, or the
+    /// fields of a top-level assertion. The templates and ordered relations
+    /// it names stay in use until it returns.
+    pub(crate) active_expressions: Vec<(ModuleId, Arc<RuntimeExpr>)>,
+    /// Currently executing RHS definitions; transient across snapshot transfer.
+    pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
@@ -212,6 +254,21 @@ impl Engine {
         if rules.is_empty() {
             return;
         }
+        let retired: HashSet<_> = rules
+            .iter()
+            .filter_map(|rule| {
+                let info = rule_index_get(&self.rule_info, *rule)?;
+                let module = *rule_index_get(&self.rule_modules, *rule)?;
+                Some((
+                    module,
+                    info.name
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&info.name)
+                        .to_owned(),
+                ))
+            })
+            .collect();
         for rule in rules {
             if let Some(slot) = self.rule_info.get_mut(rule.0 as usize) {
                 *slot = None;
@@ -220,6 +277,19 @@ impl Engine {
                 *slot = None;
             }
         }
+        let remaining: HashSet<_> = self
+            .rule_info
+            .iter()
+            .zip(&self.rule_modules)
+            .filter_map(|(info, module)| {
+                Some((
+                    *module.as_ref()?,
+                    info.as_ref()?.name.rsplit("::").next()?.to_owned(),
+                ))
+            })
+            .collect();
+        self.rule_declarations
+            .retain(|entry| !retired.contains(entry) || remaining.contains(entry));
         self.compiler.remove_rules(&mut self.rete, rules);
     }
 
@@ -250,6 +320,8 @@ impl Engine {
             rule_info: Vec::new(),
             template_ids: HashMap::default(),
             template_defs: slotmap::SlotMap::with_key(),
+            template_declarations: vec![(ModuleId(0), "initial-fact".to_owned())],
+            template_declaration_names: std::iter::once("initial-fact".to_owned()).collect(),
             template_local_ids: crate::loader::TemplateLocalIndex::default(),
             router: OutputRouter::new(),
             functions: FunctionEnv::new(),
@@ -258,6 +330,7 @@ impl Engine {
             generics: GenericRegistry::new(),
             module_registry: ModuleRegistry::new(),
             rule_modules: Vec::new(),
+            rule_declarations: Vec::new(),
             template_modules: slotmap::SecondaryMap::new(),
             function_modules: HashMap::default(),
             global_modules: HashMap::default(),
@@ -266,6 +339,12 @@ impl Engine {
             fact_epoch: 0,
             fact_index_starts_at_zero: false,
             reset_in_progress: false,
+            source_load_depth: 0,
+            active_callables: Vec::new(),
+            active_templates: Vec::new(),
+            active_ordered_relations: Vec::new(),
+            active_expressions: Vec::new(),
+            active_rules: Vec::new(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
             eval_depth_floor: (0, 0),
@@ -325,10 +404,77 @@ impl Engine {
         self.config.set_fact_duplication(enabled)
     }
 
+    /// Keep a fact's template or ordered relation in use while the fact is
+    /// assembled and published. Its slot expressions, fields and dynamic
+    /// defaults may run `build`; like CLIPS 6.30, a redefinition of that
+    /// template, or an explicit template over that relation, is then rejected
+    /// (CSTRCPSR4) instead of publishing the fact under a different layout.
+    pub(crate) fn with_active_fact<T>(
+        &mut self,
+        identity: FactIdentity,
+        assemble: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.with_active_facts([identity], assemble)
+    }
+
+    /// Hold every identity in use, as [`Engine::with_active_fact`] does for
+    /// one, while `assemble` runs. A command that prepares several facts holds
+    /// all of them from before the first is evaluated until the last is
+    /// published, so an earlier fact's fields cannot redefine a later one.
+    pub(crate) fn with_active_facts<T>(
+        &mut self,
+        identities: impl IntoIterator<Item = FactIdentity>,
+        assemble: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let templates = self.active_templates.len();
+        let relations = self.active_ordered_relations.len();
+        for identity in identities {
+            match identity {
+                FactIdentity::Template(id) => self.active_templates.push(id),
+                FactIdentity::Ordered(relation) => self.active_ordered_relations.push(relation),
+            }
+        }
+        let result = assemble(self);
+        self.active_templates.truncate(templates);
+        self.active_ordered_relations.truncate(relations);
+        result
+    }
+
+    /// Keep the templates and ordered relations that compiled source outside
+    /// any registered construct names in use while it runs (see
+    /// `active_expressions`). Nested holds unwind to their own depth.
+    pub(crate) fn with_active_expressions<T>(
+        &mut self,
+        module: ModuleId,
+        expressions: impl IntoIterator<Item = Arc<RuntimeExpr>>,
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let depth = self.active_expressions.len();
+        self.active_expressions.extend(
+            expressions
+                .into_iter()
+                .map(|expression| (module, expression)),
+        );
+        let result = run(self);
+        self.active_expressions.truncate(depth);
+        result
+    }
+
     pub(crate) fn assert_fact_internal(
         &mut self,
         fact: Fact,
     ) -> Result<FactAssertionResult<FactId>, EngineError> {
+        if let Fact::Ordered(ordered) = &fact {
+            // Almost every relation is already declared. An unqualified name
+            // is its own local name, so check before allocating a copy.
+            if let Some(name) = self
+                .resolve_core_symbol(ordered.relation)
+                .filter(|name| !self.template_declaration_names.contains(*name))
+                .map(str::to_owned)
+            {
+                self.declare_implicit_template(&name, self.module_registry.current_module());
+            }
+        }
         Ok(
             match self
                 .fact_base
@@ -707,8 +853,30 @@ impl Engine {
                     reason,
                 })?;
         }
+        let def = std::sync::Arc::clone(def);
+        // Dynamic defaults may run `build`; hold the template until published.
+        self.with_active_fact(FactIdentity::Template(tid), |engine| {
+            engine.assert_template_slots_with_defaults(
+                template_name,
+                tid,
+                &def,
+                slots,
+                &seen,
+                dynamic,
+            )
+        })
+    }
+
+    fn assert_template_slots_with_defaults(
+        &mut self,
+        template_name: &str,
+        tid: TemplateId,
+        def: &std::sync::Arc<crate::templates::RegisteredTemplate>,
+        slots: Vec<Value>,
+        seen: &[bool],
+        dynamic: bool,
+    ) -> Result<FactAssertionResult, EngineError> {
         let slots = if dynamic {
-            let def = std::sync::Arc::clone(def);
             let sources = slots
                 .into_iter()
                 .enumerate()
@@ -720,7 +888,7 @@ impl Engine {
                     }
                 })
                 .collect();
-            self.evaluate_template_defaults(&def, sources, self.module_registry.current_module())
+            self.evaluate_template_defaults(def, sources, self.module_registry.current_module())
                 .map_err(|error| EngineError::InvalidSlotValue {
                     template: template_name.to_owned(),
                     slot: def.slot_names[error.index].clone(),
@@ -1161,6 +1329,7 @@ impl Engine {
             self.fact_index_starts_at_zero,
         );
 
+        self.active_rules.push((current_module, Arc::clone(&info)));
         let (fired, errors) = {
             let mut action_context = actions::ActionExecutionContext {
                 engine: self,
@@ -1168,6 +1337,7 @@ impl Engine {
             };
             actions::execute_actions(&token, info.as_ref(), &mut action_context, &collected_facts)
         };
+        self.active_rules.pop();
         // Retractions and modifications performed by RHS actions can unblock
         // negative nodes and create new predicate candidates.
         self.drain_pending_predicate_matches();
@@ -1457,13 +1627,15 @@ impl Engine {
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
             for initializer in definition.facts {
-                let fact = self
-                    .evaluate_prepared_fact(&initializer, definition.module)
-                    .map_err(|reason| EngineError::FactInitialization {
-                        definition: definition.name.clone(),
-                        reason,
-                    })?;
-                self.assert_fact_internal(fact)?;
+                self.with_active_fact(initializer.identity(), |engine| {
+                    let fact = engine
+                        .evaluate_prepared_fact(&initializer, definition.module)
+                        .map_err(|reason| EngineError::FactInitialization {
+                            definition: definition.name.clone(),
+                            reason,
+                        })?;
+                    engine.assert_fact_internal(fact)
+                })?;
             }
         }
 
@@ -1500,13 +1672,23 @@ impl Engine {
         self.template_ids.clear();
         self.template_defs = slotmap::SlotMap::with_key();
         self.template_local_ids.clear();
+        self.template_declarations = vec![(ModuleId(0), "initial-fact".to_owned())];
+        self.template_declaration_names = std::iter::once("initial-fact".to_owned()).collect();
+        self.active_templates.clear();
+        self.active_ordered_relations.clear();
+        self.active_expressions.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
+        // Clear removes constructs and bindings, but does not reseed the
+        // environment's random stream (nor affect another engine's stream).
+        let random = std::mem::take(&mut self.globals.random);
         self.globals = GlobalStore::new();
+        self.globals.random = random;
         self.registered_globals.clear();
         self.generics = GenericRegistry::new();
         self.module_registry = ModuleRegistry::new();
         self.rule_modules.clear();
+        self.rule_declarations.clear();
         self.template_modules = slotmap::SecondaryMap::new();
         self.function_modules.clear();
         self.global_modules.clear();

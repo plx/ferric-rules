@@ -1,0 +1,8 @@
+(initial-fact a z seeded nested never)
+(second first report)
+(implied)|(initial-fact a z seeded nested never)
+(first report)
+(initial-fact a z seeded nested never)
+(first report)
+(implied)|(initial-fact a z seeded nested never)
+(first report)

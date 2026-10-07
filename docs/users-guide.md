@@ -461,6 +461,53 @@ optional types and a query, as in `(($?r SYMBOL))`. See
 [Generic Functions and Methods](compatibility.md#168-generic-functions-and-methods)
 for dispatch order and specificity.
 
+`next-methodp` checks for another applicable method without advancing the
+chain. `override-next-method` supplies replacement arguments to the remaining
+methods; `call-specific-method` selects a generic's explicit method index.
+Parameter queries are evaluated during these searches, so querying the next
+method can itself have side effects.
+
+### Standard-library calls
+
+Built-ins cover arithmetic, strings, multifields, fact and template inspection,
+and dynamic source. For example, this rule prints `3 (b c) 6`:
+
+```clips
+(defrule library-demo =>
+    (printout t
+        (eval "(+ 1 2)") " "
+        (delete-member$ (create$ a b a c) a) " "
+        (+ (expand$ (create$ 1 2 3))) crlf))
+```
+
+`expand$` supplies a multifield's fields as individual function arguments.
+`replace-member$` replaces matching fields or subsequences. Ordinary `progn`
+evaluates a sequence and returns its last value; `progn$` still iterates over
+a multifield. `eq` and `neq` accept two or more values and short-circuit;
+`neq` compares each later value with the first. `mod` preserves fractional
+operands. `length` and `length$` count UTF-8 bytes for strings and symbols,
+and fields for multifields. Use `implode$` to turn a multifield into text:
+`str-cat` and `sym-cat` accept scalar atoms, not multifields.
+
+`eval` evaluates one expression from text; `build` loads one construct.
+`assert-string` and its alias `str-assert` assert one fact from a string.
+These calls use the active module without capturing surrounding local
+variables. Run `build` after initial loading; calling it from a construct
+initializer is explicitly unsupported. Host loading remains useful when you
+want structured load errors and control over each load operation.
+
+`get-deftemplate-list`, `get-defglobal-list`, and `get-defrule-list` list a
+module's own definitions. `deftemplate-slot-*` functions expose names, types,
+allowed values, bounds, and defaults. Asking for a dynamic default's value
+evaluates it, including its effects.
+
+`seed` and `random` provide an engine-owned random stream; `time` returns wall
+clock seconds. Snapshots preserve the random state. Explicit seeded draws
+match the pinned CLIPS reference, but agenda activation creation does not
+consume that stream, so interleaving activations and draws can differ from
+CLIPS. See [the compatibility reference](compatibility.md#1610-standard-library)
+for exact signatures and remaining boundaries.
+
 ---
 
 ## 8. Globals
@@ -665,6 +712,10 @@ Use `nil` to return the string without writing it, as in this `printout`:
     (printout t "got: " ?line crlf))
 ```
 
+File-backed logical-name routers and `open` are not supported. Use host file
+I/O with these buffers, or `load-facts` and `save-facts` for fact files. The
+`close` command is a compatibility stub.
+
 ---
 
 ## 12. Configuration
@@ -720,6 +771,11 @@ Two categories of things can go wrong:
 Host operations such as `assert_*` and `retract` return `EngineError` for
 problems such as missing templates, encoding violations, or stale or foreign
 handles.
+
+Known built-in arity and literal type errors are also load errors: a rule
+containing `(abs 1 2)` or `(min 1 wrong)` is rejected before execution. Failed
+replacements retain the earlier definition, and other valid constructs in the
+same source can still load. Values computed at runtime are checked when used.
 
 **Non-fatal action diagnostics** are warnings from the most recent `run` or
 `step` — for example, division by zero during expression evaluation. The

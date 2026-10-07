@@ -13,7 +13,8 @@ use crate::modules::ModuleId;
 
 impl Engine {
     pub(crate) fn template_is_in_use(&self, id: TemplateId) -> bool {
-        if self.fact_base.facts_by_template(id).next().is_some()
+        if self.active_templates.contains(&id)
+            || self.fact_base.facts_by_template(id).next().is_some()
             || self
                 .rete
                 .alpha
@@ -30,6 +31,19 @@ impl Engine {
                 template.dynamic_defaults.iter().flatten().any(|default| {
                     self.runtime_expressions_use_template(&default.expressions, default.module, id)
                 })
+            })
+            || self.active_expressions.iter().any(|(module, expression)| {
+                self.runtime_expressions_use_template(
+                    std::slice::from_ref(expression.as_ref()),
+                    *module,
+                    id,
+                )
+            })
+            // A rule that removed itself keeps running its actions.
+            || self.active_rules.iter().any(|(module, info)| {
+                info.actions
+                    .iter()
+                    .any(|action| self.call_uses_template(&action.call, *module, id))
             })
         {
             return true;

@@ -19,7 +19,7 @@ use ferric_rules_core::{
 };
 use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
-use crate::evaluator::CompactFactBinding;
+use crate::evaluator::{CompactFactBinding, EvalError};
 use crate::modules::ModuleRegistry;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::query_cursor::{ActionQueryCursor, QueryCandidate};
@@ -635,8 +635,39 @@ fn execute_single_action(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    if takes_expanded_operands(call) {
+        let call =
+            expand_action_operands(token, rule_info, call, context, eval_env, collected_facts)?;
+        return execute_single_action(
+            token,
+            rule_info,
+            &call,
+            None,
+            context,
+            eval_env,
+            collected_facts,
+        );
+    }
     match call.name.as_str() {
         "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear" => {
+            if let Some(runtime_expr) = runtime_call {
+                eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
+            } else {
+                eval_env.eval_expr(
+                    token,
+                    rule_info,
+                    &ActionExpr::FunctionCall(call.clone()),
+                    context,
+                    collected_facts,
+                )
+            }
+            .map(|_| ())
+        }
+        "printout" | "bind"
+            if call.args.iter().any(
+                |arg| matches!(arg, ActionExpr::FunctionCall(expansion) if expansion.name == "expand$"),
+            ) =>
+        {
             if let Some(runtime_expr) = runtime_call {
                 eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
             } else {
@@ -791,6 +822,25 @@ fn execute_single_action(
                 };
                 eval_result.map(|_| ())
             }
+        }
+        "progn" => {
+            let compiled_args = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => Some(args),
+                _ => None,
+            };
+            let body: Vec<_> = call
+                .args
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    let compiled = compiled_args
+                        .and_then(|args| args.get(index))
+                        .cloned()
+                        .map(Box::new);
+                    (source.clone(), compiled)
+                })
+                .collect();
+            execute_loop_body(token, rule_info, &body, context, eval_env, collected_facts)
         }
         "if" => {
             // `(if <cond> then <action>* [else <action>*])` special form.
@@ -1206,6 +1256,114 @@ fn execute_single_action(
             eval_result.map(|_| ())
         }
     }
+}
+
+/// Whether `call` is a dedicated action handler, which evaluates its own
+/// operands, given an explicit `expand$` operand. The evaluator expands
+/// `printout`, `bind` and ordinary function calls itself, and `println`
+/// prints expanded fields directly, so fields without a literal form (such
+/// as fact addresses) still print.
+fn takes_expanded_operands(call: &FunctionCall) -> bool {
+    matches!(
+        call.name.as_str(),
+        "list-focus-stack"
+            | "agenda"
+            | "rules"
+            | "undefrule"
+            | "undeffacts"
+            | "ppdefrule"
+            | "load"
+            | "load-facts"
+            | "save-facts"
+    ) && call.args.iter().any(is_expansion)
+}
+
+fn is_expansion(argument: &ActionExpr) -> bool {
+    matches!(argument, ActionExpr::FunctionCall(expansion) if expansion.name == "expand$")
+}
+
+/// Replace each `expand$` operand with literals of its fields, evaluating the
+/// expansions first, in source order, as the evaluator does for function
+/// calls. Other operands stay expressions. The expanded count is rechecked.
+fn expand_action_operands(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    call: &FunctionCall,
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<FunctionCall, ActionError> {
+    let span_of = |call: &FunctionCall| crate::evaluator::SourceSpan {
+        line: call.span.start.line,
+        column: call.span.start.column,
+    };
+    let mut args = Vec::with_capacity(call.args.len());
+    for argument in &call.args {
+        let ActionExpr::FunctionCall(expansion) = argument else {
+            args.push(argument.clone());
+            continue;
+        };
+        if expansion.name != "expand$" {
+            args.push(argument.clone());
+            continue;
+        }
+        let [operand] = expansion.args.as_slice() else {
+            return Err(ActionError::Evaluator(EvalError::ArityMismatch {
+                name: "expand$".into(),
+                expected: "1".into(),
+                actual: expansion.args.len(),
+                span: Some(span_of(expansion)),
+            }));
+        };
+        let value = eval_env.eval_expr(token, rule_info, operand, context, collected_facts)?;
+        let Value::Multifield(fields) = value else {
+            return Err(ActionError::Evaluator(EvalError::TypeError {
+                function: "expand$".into(),
+                expected: "MULTIFIELD".into(),
+                actual: runtime_value_type_name(&value).into(),
+                span: Some(span_of(expansion)),
+            }));
+        };
+        for field in fields.iter() {
+            let symbols = &context.engine.symbol_table;
+            let text = |symbol| symbols.resolve_symbol_str(symbol).map(str::to_owned);
+            let literal = match field {
+                Value::Integer(value) => Some(LiteralKind::Integer(*value)),
+                Value::Float(value) => Some(LiteralKind::Float(*value)),
+                Value::Symbol(symbol) => text(*symbol).map(LiteralKind::Symbol),
+                Value::String(value) => Some(LiteralKind::String(value.as_str().to_owned())),
+                Value::InstanceName(name) => text(name.as_symbol()).map(LiteralKind::InstanceName),
+                _ => None,
+            };
+            let Some(value) = literal else {
+                return Err(ActionError::Evaluator(EvalError::TypeError {
+                    function: call.name.clone(),
+                    expected: "a number, SYMBOL, STRING, or INSTANCE-NAME".into(),
+                    actual: runtime_value_type_name(field).into(),
+                    span: Some(span_of(call)),
+                }));
+            };
+            args.push(ActionExpr::Literal(ferric_rules_parser::LiteralValue {
+                value,
+                span: expansion.span,
+            }));
+        }
+    }
+    crate::builtin_validation::validate_runtime_arity(&call.name, args.len()).map_err(
+        |expected| {
+            ActionError::Evaluator(EvalError::ArityMismatch {
+                name: call.name.clone(),
+                expected,
+                actual: args.len(),
+                span: Some(span_of(call)),
+            })
+        },
+    )?;
+    Ok(FunctionCall {
+        name: call.name.clone(),
+        args,
+        span: call.span,
+    })
 }
 
 /// Clone the metadata used by temporary action binding frames.
@@ -2278,7 +2436,44 @@ fn execute_println(
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
+        let value = match arg {
+            ActionExpr::FunctionCall(expansion) if expansion.name == "expand$" => {
+                let span = Some(crate::evaluator::SourceSpan {
+                    line: expansion.span.start.line,
+                    column: expansion.span.start.column,
+                });
+                let [operand] = expansion.args.as_slice() else {
+                    return Err(ActionError::Evaluator(EvalError::ArityMismatch {
+                        name: "expand$".into(),
+                        expected: "1".into(),
+                        actual: expansion.args.len(),
+                        span,
+                    }));
+                };
+                let value =
+                    eval_env.eval_expr(token, rule_info, operand, context, collected_facts)?;
+                let Value::Multifield(fields) = value else {
+                    return Err(ActionError::Evaluator(EvalError::TypeError {
+                        function: "expand$".into(),
+                        expected: "MULTIFIELD".into(),
+                        actual: runtime_value_type_name(&value).into(),
+                        span,
+                    }));
+                };
+                // Each expanded field is its own println argument.
+                for field in fields.iter() {
+                    crate::value_print::append_printout_value(
+                        field,
+                        &context.engine.symbol_table,
+                        &mut output,
+                    );
+                    write_output(context, "t", &output);
+                    output.clear();
+                }
+                continue;
+            }
+            _ => eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?,
+        };
         crate::value_print::append_printout_value(
             &value,
             &context.engine.symbol_table,

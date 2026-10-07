@@ -7,7 +7,7 @@ use ferric_rules_parser::{
     interpret_action_exprs, ActionExpr, FactBody, FactValue, FunctionCall, SExpr, SlotType, Span,
 };
 
-use crate::engine::Engine;
+use crate::engine::{Engine, FactIdentity};
 use crate::evaluator::{self, EvalContext, RuntimeExpr};
 use crate::loader::{LoadError, TemplateLookupError};
 use crate::modules::ModuleId;
@@ -28,6 +28,13 @@ pub(crate) enum PreparedFact {
 }
 
 impl PreparedFact {
+    pub(crate) fn identity(&self) -> FactIdentity {
+        match self {
+            Self::Ordered { relation, .. } => FactIdentity::Ordered(*relation),
+            Self::Template { template_id, .. } => FactIdentity::Template(*template_id),
+        }
+    }
+
     pub(crate) fn expressions(&self) -> impl Iterator<Item = &RuntimeExpr> {
         let (ordered, slots): (&[RuntimeExpr], &[(usize, Vec<RuntimeExpr>)]) = match self {
             Self::Ordered { fields, .. } => (fields, &[]),
@@ -298,16 +305,29 @@ impl Engine {
         expressions
             .iter()
             .map(|expression| {
-                self.validate_source_default_control(expression, module)?;
+                self.validate_source_default_control(expression, module, "template default")?;
                 self.prepare_field(expression, module, false)
             })
             .collect()
+    }
+
+    pub(crate) fn prepare_eval_expression(
+        &mut self,
+        expression: &ActionExpr,
+        module: ModuleId,
+    ) -> Result<RuntimeExpr, LoadError> {
+        self.validate_source_default_control(expression, module, "eval")?;
+        // As when loading source, parsing an assertion declares its implied
+        // template, whether or not the assertion runs.
+        self.declare_expression_templates(expression, module);
+        self.prepare_field(expression, module, false)
     }
 
     fn validate_source_default_control(
         &self,
         root: &ActionExpr,
         module: ModuleId,
+        context: &str,
     ) -> Result<(), LoadError> {
         let mut pending = vec![root];
         while let Some(expression) = pending.pop() {
@@ -316,7 +336,7 @@ impl Engine {
                     if call.name == "return" {
                         return Err(invalid_at(
                             call.span,
-                            "[PRCDRPSR2] The return function is not valid in a template default.",
+                            &format!("[PRCDRPSR2] The return function is not valid in {context}."),
                         ));
                     }
                     pending.extend(crate::effects::evaluated_arguments(self, module, call));
@@ -366,6 +386,10 @@ impl Engine {
         module: ModuleId,
         allow_local_reads: bool,
     ) -> Result<PreparedFact, LoadError> {
+        self.declare_implicit_template(name, module);
+        for expression in fields {
+            self.declare_expression_templates(expression, module);
+        }
         let relation = self
             .symbol_table
             .intern_symbol(name, self.config.string_encoding)

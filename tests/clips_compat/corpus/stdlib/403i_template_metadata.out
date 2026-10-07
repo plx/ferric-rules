@@ -1,0 +1,9 @@
+(free values mixed n tags required dynamic)
+(FLOAT INTEGER SYMBOL STRING EXTERNAL-ADDRESS FACT-ADDRESS INSTANCE-ADDRESS INSTANCE-NAME)
+FALSE|(-oo +oo)
+(a 1 "s" 2.5 [one])
+(1 2 x y "s" "t")
+(FLOAT INTEGER)|(1 9.0)|1
+TRUE|FALSE|(2 3)|(x x)
+FALSE|?NONE
+dynamic|0|1|2|2

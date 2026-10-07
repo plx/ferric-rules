@@ -1,0 +1,40 @@
+[PRNTUTIL1] Unable to find deftemplate missing.
+0
+[PRNTUTIL1] Unable to find deftemplate missing.
+()
+[PRNTUTIL1] Unable to find deftemplate missing.
+()
+[PRNTUTIL1] Unable to find deftemplate missing.
+()
+[PRNTUTIL1] Unable to find deftemplate missing.
+()
+[PRNTUTIL1] Unable to find deftemplate missing.
+FALSE
+[PRNTUTIL1] Unable to find deftemplate missing.
+FALSE
+[PRNTUTIL1] Unable to find deftemplate missing.
+FALSE
+[PRNTUTIL1] Unable to find deftemplate missing.
+FALSE
+[PRNTUTIL1] Unable to find deftemplate missing.
+FALSE
+[PRNTUTIL1] Unable to find deftemplate missing.
+FALSE
+[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type deftemplate name
+()
+[ARGACCES5] Function deftemplate-slot-cardinality expected argument #1 to be of type deftemplate name
+()
+[ARGACCES5] Function deftemplate-slot-names expected argument #1 to be of type deftemplate name
+FALSE
+[ARGACCES5] Function deftemplate-slot-existp expected argument #1 to be of type deftemplate name
+FALSE
+[ARGACCES5] Function deftemplate-slot-default-value expected argument #1 to be of type deftemplate name
+FALSE
+[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name
+()
+[ARGACCES5] Function get-deftemplate-list expected argument #1 to be of type defmodule name
+()
+[ARGACCES5] Function get-defglobal-list expected argument #1 to be of type defmodule name
+()
+(go)
+after

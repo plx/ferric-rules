@@ -1,0 +1,6 @@
+[ARGACCES5] Function expand$ expected argument #1 to be of type multifield
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (+ (expand$ 1)

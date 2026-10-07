@@ -1,0 +1,6 @@
+[ARGACCES4] Function str-length expected exactly 1 argument(s)
+
+ERROR:
+(defrule MAIN::fail
+   =>
+   (str-length)

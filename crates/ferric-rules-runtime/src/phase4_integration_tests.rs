@@ -275,8 +275,8 @@ fn action_error_stops_current_rhs_and_run_without_discarding_later_activations()
 #[test]
 fn action_error_preserves_arity_type_and_domain_diagnostics() {
     for (label, failing_expression) in [
-        ("arity", r#"(str-length "a" "b")"#),
-        ("type", "(+ 1 not-a-number)"),
+        ("arity", r#"(funcall str-length "a" "b")"#),
+        ("type", "(funcall + 1 not-a-number)"),
         ("domain", "(/ 1 0)"),
     ] {
         let source = format!(
@@ -1369,13 +1369,13 @@ fn str_cat_mixed_types() {
 }
 
 #[test]
-fn str_cat_zero_args_returns_empty_string() {
+fn str_cat_empty_string_operand_returns_empty_string() {
     let mut engine = new_utf8_engine();
     load_ok(
         &mut engine,
         r#"
         (defrule test (go)
-            => (printout t "|" (str-cat) "|" crlf))
+            => (printout t "|" (str-cat "") "|" crlf))
         (deffacts startup (go))
     "#,
     );

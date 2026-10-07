@@ -1,0 +1,6 @@
+[ARGACCES4] Function expand$ expected exactly 1 argument(s)
+
+ERROR:
+(defrule MAIN::run
+   =>
+   (+ (expand$)

@@ -77,7 +77,9 @@ fn rule_reference_blocks_reload_until_undefrule_reclaims_its_alpha_path() {
     .unwrap();
     rejected(&mut engine);
     engine
-        .load_str("(defrule remove-record-rule => (undefrule use-record remove-record-rule))")
+        .load_str(
+            "(defrule remove-record-rule => (undefrule use-record) (undefrule remove-record-rule))",
+        )
         .unwrap();
     run(&mut engine, 1);
     engine

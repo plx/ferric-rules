@@ -71,8 +71,12 @@ def test_other_source_scanner_notices_remain_protocol_failures(notice):
         extract_output(f"{notice}BEGIN\nvalue\nEND\n", "", "BEGIN", "END")
 
 
-def test_function_redefinition_warnings_are_allowed_only_during_load():
-    warning = "[CSTRCPSR1] WARNING: Redefining deffunction: APP::value\n"
+@pytest.mark.parametrize(
+    "construct",
+    ["deffunction: APP::value", "deftemplate: value", "defrule: value", "defrule: APP::value =j+j"],
+)
+def test_construct_redefinition_warnings_are_allowed_only_during_load(construct):
+    warning = f"[CSTRCPSR1] WARNING: Redefining {construct}\n"
     assert extract_output(f"{warning}BEGIN\nnew\nEND\n", "", "BEGIN", "END") == "new\n"
     with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
         extract_output(f"BEGIN\nnew\nEND\n{warning}", "", "BEGIN", "END")
@@ -83,7 +87,8 @@ def test_function_redefinition_warnings_are_allowed_only_during_load():
 @pytest.mark.parametrize(
     "warning",
     [
-        "[CSTRCPSR1] WARNING: Redefining deftemplate: value\n",
+        "[CSTRCPSR1] WARNING: Redefining deftemplate: value extra\n",
+        "[CSTRCPSR1] WARNING: Redefining defrule: value =j+j extra\n",
         "[CSTRCPSR1] WARNING: Redefining defglobal: value\n",
         "[CSTRCPSR1] WARNING: Redefining deffunction: value extra\n",
         "prefix [CSTRCPSR1] WARNING: Redefining deffunction: value\n",
@@ -350,6 +355,175 @@ def test_control_notice_flag_requires_success_and_boolean(tmp_path, value, error
         run_reference(
             tmp_path,
             {"path": "facts/a.clp", "recoverable_control_notices": value, "error": error},
+            "unused",
+            1,
+        )
+
+
+@pytest.mark.parametrize("notice", [corpus.RANDOM_NOTICE, corpus.RANDOM_ARITY_NOTICE])
+def test_random_notice_requires_opt_in_and_remains_in_captured_output(notice):
+    output = f"value:{notice}71876166;continued\n"
+    assert (
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_random_notices=True)
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output("BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_random_notices=True)
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        corpus.RANDOM_NOTICE.rstrip("\n") + " extra\n",
+        corpus.RANDOM_ARITY_NOTICE.rstrip("\n") + " extra\n",
+        "[MISCFUN3] different notice\n",
+        "[ARGACCES5] Function random expected argument #1 to be of type integer\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_random_notice_allowance_does_not_mask_fatal_or_changed_messages(unexpected):
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{corpus.RANDOM_NOTICE}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_random_notices=True,
+        )
+    assert unexpected.replace(corpus.RANDOM_NOTICE, "") == unexpected
+
+
+def test_random_notice_allowance_is_confined_to_execution_frame():
+    notice = corpus.RANDOM_NOTICE
+    for stdout in (f"{notice}BEGIN\n{notice}END\n", f"BEGIN\n{notice}END\n{notice}"):
+        with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+            extract_output(stdout, "", "BEGIN", "END", recoverable_random_notices=True)
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_random_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "stdlib/a.clp", "recoverable_random_notices": value, "error": error},
+            "unused",
+            1,
+        )
+
+
+BUILD_NOTICE = (
+    "\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n"
+    "\nERROR:\n(deftemplate MAIN::p\n"
+)
+
+
+def test_build_notice_requires_opt_in_and_remains_in_captured_output():
+    output = f"before{BUILD_NOTICE}<Fact-1>\n"
+    assert (
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_build_notices=True)
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output("BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_build_notices=True)
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        BUILD_NOTICE.replace("MAIN::p", "MAIN::q"),
+        BUILD_NOTICE.replace("ERROR:\n", ""),
+        BUILD_NOTICE.replace("deftemplate p", "defrule p"),
+        "\n[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_build_notice_allowance_does_not_mask_changed_messages(unexpected):
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{BUILD_NOTICE}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_build_notices=True,
+        )
+
+
+def test_build_notice_allowance_is_confined_to_execution_frame():
+    for stdout in (
+        f"{BUILD_NOTICE}BEGIN\n{BUILD_NOTICE}END\n",
+        f"BEGIN\n{BUILD_NOTICE}END\n{BUILD_NOTICE}",
+    ):
+        with pytest.raises(ReferenceFailure, match="load/protocol diagnostic"):
+            extract_output(stdout, "", "BEGIN", "END", recoverable_build_notices=True)
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_build_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "stdlib/a.clp", "recoverable_build_notices": value, "error": error},
+            "unused",
+            1,
+        )
+
+
+INTROSPECTION_NOTICES = (
+    "[PRNTUTIL1] Unable to find deftemplate missing.\n"
+    "[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type "
+    "deftemplate name\n"
+    "[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name\n"
+)
+
+
+def test_introspection_notice_requires_opt_in_and_remains_in_captured_output():
+    output = f"{INTROSPECTION_NOTICES}()\n"
+    assert (
+        extract_output(
+            f"BEGIN\n{output}END\n", "", "BEGIN", "END", recoverable_introspection_notices=True
+        )
+        == output
+    )
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(f"BEGIN\n{output}END\n", "", "BEGIN", "END")
+    with pytest.raises(ReferenceFailure, match="expected a recoverable"):
+        extract_output(
+            "BEGIN\nclean\nEND\n", "", "BEGIN", "END", recoverable_introspection_notices=True
+        )
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        "[PRNTUTIL1] Unable to find deftemplate missing. extra\n",
+        "[ARGACCES5] Function deftemplate-slot-types expected argument #2 to be of type symbol\n",
+        "[ARGACCES5] Function get-defrule-list expected argument #1 to be of type "
+        "deftemplate name\n",
+        "[ARGACCES5] Function focus expected argument #1 to be of type defmodule name\n",
+        "[PRCCODE4] Execution halted.\n",
+    ],
+)
+def test_introspection_notice_allowance_does_not_mask_changed_messages(unexpected):
+    with pytest.raises(ReferenceFailure, match="runtime diagnostic"):
+        extract_output(
+            f"BEGIN\n{INTROSPECTION_NOTICES}{unexpected}END\n",
+            "",
+            "BEGIN",
+            "END",
+            recoverable_introspection_notices=True,
+        )
+
+
+@pytest.mark.parametrize("value,error", [("true", None), (True, "load"), (True, "run")])
+def test_introspection_notice_flag_requires_success_and_boolean(tmp_path, value, error):
+    with pytest.raises(ReferenceFailure, match="requires a successful run"):
+        run_reference(
+            tmp_path,
+            {"path": "stdlib/a.clp", "recoverable_introspection_notices": value, "error": error},
             "unused",
             1,
         )

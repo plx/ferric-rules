@@ -115,14 +115,15 @@ fn negative_and_wrong_type_mutation_targets_still_stop_execution() {
 #[test]
 fn wrong_type_retract_targets_stop_the_rule_after_retracting_later_targets() {
     // CLIPS 6.30 reports the wrong-type operand, keeps retracting the
-    // remaining targets, and then halts the rule.
+    // remaining targets, and then halts the rule. A literal string operand is
+    // rejected when the rule loads, so the string is computed.
     let mut engine = Engine::new(EngineConfig::default());
     engine
         .load_str(
             "(deffacts seed (item))
              (defrule inspect ?f <- (item) =>
                (printout t before)
-               (retract \"not an address\" ?f)
+               (retract (str-cat \"not an address\") ?f)
                (printout t after))",
         )
         .unwrap();

@@ -1,0 +1,7 @@
+(deffunction helper () (next-methodp))
+        (defgeneric cross)
+        (defmethod cross 1 (?x) (printout t "cross:" ?x ":" (next-methodp) ";") ?x)
+        (defgeneric scope)
+        (defmethod scope 1 (?x) (printout t "base:" ?x ";") ?x)
+        (defmethod scope 2 ((?x INTEGER)) (create$ (helper) (call-specific-method cross 1 8) (next-methodp) (call-next-method)))
+        (defrule report => (printout t (scope 7) crlf))

@@ -43,6 +43,7 @@ fn validate_break_call(
         }
     }
     match call.name.as_str() {
+        "progn" => validate_break_body(&call.args, allowed, is_template),
         "assert" => {
             for argument in &call.args {
                 if let ActionExpr::FunctionCall(fact) = argument {

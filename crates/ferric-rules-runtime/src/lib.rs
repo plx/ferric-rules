@@ -39,10 +39,12 @@
 mod tracing_support;
 
 pub mod actions;
+mod builtin_validation;
 mod callable_validation;
 pub mod config;
 mod effects;
 pub mod engine;
+mod environment;
 pub mod evaluator;
 pub mod execution;
 mod fact_address;
@@ -51,11 +53,13 @@ mod field_scanner;
 mod formatting;
 pub mod functions;
 pub mod host;
+mod introspection;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
 mod query_cursor;
 mod query_validation;
+mod random;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;

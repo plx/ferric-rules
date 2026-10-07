@@ -1,0 +1,5 @@
+(defgeneric change)
+        (defmethod change 1 (?x) (printout t "B:" ?x ":" (next-methodp) ";") ?x)
+        (defmethod change 2 ((?x SYMBOL)) (printout t "S:" ?x ";") ?x)
+        (defmethod change 3 ((?x INTEGER)) (printout t "I:" ?x ";") (create$ (override-next-method text) (call-next-method)))
+        (defrule report => (printout t (change 7) crlf))

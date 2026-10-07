@@ -116,12 +116,61 @@ fn evaluate_actions(
     evaluate_expressions(ctx, slot_type, name, &expressions, VoidPolicy::Omit)
 }
 
-fn evaluate_dynamic(
+pub(crate) fn evaluate_dynamic(
     ctx: &mut EvalContext<'_>,
     default: &DynamicSlotDefault,
     slot_type: SlotType,
     name: &str,
 ) -> Result<Value, SlotFailure> {
+    with_dynamic_context(ctx, default, |child| {
+        evaluate_expressions(
+            child,
+            slot_type,
+            name,
+            &default.expressions,
+            VoidPolicy::NilOrOmit,
+        )
+    })
+    .map_err(|failure| match failure {
+        SlotFailure::Eval(error) => SlotFailure::Eval(evaluator::contain_control_signals(error)),
+        invalid @ SlotFailure::Invalid(_) => invalid,
+    })
+}
+
+/// Evaluate a dynamic default as `deftemplate-slot-default-value` reports it.
+/// Like CLIPS, a single expression for a single-field slot keeps its result,
+/// even a void or multifield one; otherwise the results are spliced into a
+/// multifield and void results are omitted. No slot shape or constraint is
+/// checked: that happens only when a fact is asserted.
+pub(crate) fn evaluate_dynamic_raw(
+    ctx: &mut EvalContext<'_>,
+    default: &DynamicSlotDefault,
+    slot_type: SlotType,
+) -> Result<Value, EvalError> {
+    with_dynamic_context(ctx, default, |child| {
+        if let (SlotType::Single, [expression]) = (slot_type, default.expressions.as_slice()) {
+            return evaluator::eval_inner(child, expression);
+        }
+        let mut fields = ferric_rules_core::Multifield::new();
+        for expression in &default.expressions {
+            match evaluator::eval_inner(child, expression)? {
+                Value::Multifield(values) => fields.extend(values.iter().cloned()),
+                Value::Void => {}
+                value => fields.push(value),
+            }
+        }
+        Ok(Value::Multifield(Box::new(fields)))
+    })
+    .map_err(evaluator::contain_control_signals)
+}
+
+/// Run `evaluate` in a dynamic default's own frame: the default's module,
+/// fresh locals, and the caller's depth, budget and global scope.
+fn with_dynamic_context<T>(
+    ctx: &mut EvalContext<'_>,
+    default: &DynamicSlotDefault,
+    evaluate: impl FnOnce(&mut EvalContext<'_>) -> T,
+) -> T {
     let bindings = BindingSet::new();
     let variables = VarMap::new();
     let mut locals = CallableLocals::default();
@@ -142,18 +191,9 @@ fn evaluate_dynamic(
         allow_engine_effects: ctx.allow_engine_effects,
     };
     // A default is not lexically inside the asserting callable or loop, so a
-    // `return` or `break` reached through `funcall` must not escape into it.
-    evaluate_expressions(
-        &mut child,
-        slot_type,
-        name,
-        &default.expressions,
-        VoidPolicy::NilOrOmit,
-    )
-    .map_err(|failure| match failure {
-        SlotFailure::Eval(error) => SlotFailure::Eval(evaluator::contain_control_signals(error)),
-        invalid @ SlotFailure::Invalid(_) => invalid,
-    })
+    // `return` or `break` reached through `funcall` must not escape into it:
+    // callers contain control signals in the result.
+    evaluate(&mut child)
 }
 
 /// One source per slot for a prepared fact, whose overrides may be stored out

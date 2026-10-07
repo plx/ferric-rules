@@ -73,6 +73,10 @@ pub fn lex(source: &str, file_id: FileId) -> Result<Vec<SpannedToken>, Vec<LexEr
     lexer.lex_all()
 }
 
+pub(crate) fn lex_first(source: &str, file_id: FileId) -> Result<Vec<SpannedToken>, Vec<LexError>> {
+    Lexer::new(source, file_id).lex_until(true)
+}
+
 struct Lexer<'a> {
     source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
@@ -96,9 +100,15 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn lex_all(self) -> Result<Vec<SpannedToken>, Vec<LexError>> {
+        self.lex_until(false)
+    }
+
     #[allow(clippy::too_many_lines)]
-    fn lex_all(mut self) -> Result<Vec<SpannedToken>, Vec<LexError>> {
+    fn lex_until(mut self, first_only: bool) -> Result<Vec<SpannedToken>, Vec<LexError>> {
+        let mut depth = 0_usize;
         while let Some(&(_, ch)) = self.chars.peek() {
+            let previous_tokens = self.tokens.len();
             match ch {
                 // Whitespace
                 ' ' | '\t' | '\n' | '\r' => {
@@ -201,6 +211,21 @@ impl<'a> Lexer<'a> {
                         span,
                         ParseErrorKind::UnexpectedCharacter,
                     ));
+                }
+            }
+            if first_only {
+                if !self.errors.is_empty() {
+                    break;
+                }
+                for token in &self.tokens[previous_tokens..] {
+                    match token.token {
+                        Token::LeftParen => depth += 1,
+                        Token::RightParen => depth = depth.saturating_sub(1),
+                        _ => {}
+                    }
+                }
+                if self.tokens.len() != previous_tokens && depth == 0 {
+                    break;
                 }
             }
         }
