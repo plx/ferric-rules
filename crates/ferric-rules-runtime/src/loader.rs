@@ -1899,6 +1899,22 @@ impl Engine {
                 .map_err(|error| Self::compile_error_at(&slot.span, &error))?;
             let (value, dynamic) =
                 self.template_slot_default(slot, &constraints, owning_module, existing, result)?;
+            // An ordered-form assertion of a new template's own name would
+            // stop working once the template is installed. CLIPS 6.30 instead
+            // creates a second, implied template, which Ferric does not model.
+            if existing.is_none()
+                && dynamic.as_ref().is_some_and(|default| {
+                    self.dynamic_default_uses_ordered_name(default, &local_name)
+                })
+            {
+                return Err(Self::compile_error_at(
+                    &slot.span,
+                    &format!(
+                        "default for slot `{}` uses its own template `{}` as an ordered relation",
+                        slot.name, template.name
+                    ),
+                ));
+            }
             registered.slot_names.push(slot.name.clone());
             registered.slot_index.insert(slot.name.clone(), index);
             registered.slot_types.push(slot.slot_type);

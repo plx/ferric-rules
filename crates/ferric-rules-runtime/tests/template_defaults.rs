@@ -224,6 +224,37 @@ fn dynamic_default_cannot_reference_the_template_it_redefines() {
 }
 
 #[test]
+fn new_template_dynamic_default_cannot_assert_its_own_ordered_relation() {
+    // A Ferric-only rejection: CLIPS 6.30 accepts this definition and creates a
+    // second, implied `item` template that shadows the explicit one.
+    let mut engine = Engine::new(EngineConfig::default());
+    for default in [
+        "(assert (item 7))",
+        "(if FALSE then (assert (item)) else 0)",
+    ] {
+        let error = engine
+            .load_str(&format!(
+                "(deftemplate item (slot value (default-dynamic {default})))"
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .iter()
+                .any(|error| error.to_string().contains("as an ordered relation")),
+            "{default}: {error:?}"
+        );
+        assert!(engine.template_slot_names("item").is_none(), "{default}");
+    }
+
+    // Nothing was installed, so a plain definition still loads and asserts.
+    engine.load_str("(deftemplate item (slot value))").unwrap();
+    let fact = engine
+        .assert_template("item", &["value"], [Value::Integer(3)])
+        .unwrap();
+    assert_eq!(integer(&engine, fact, "value"), 3);
+}
+
+#[test]
 fn dynamic_defaults_share_one_budget_across_slots_and_reset_it_after_errors() {
     let mut config = EngineConfig::default();
     config.max_action_loop_iterations = 3;

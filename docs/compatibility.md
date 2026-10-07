@@ -485,9 +485,11 @@ body, so a default there that asserts the replaced template with slot syntax
 (`[EXPRNPSR3]`) or queries it (`[PRNTUTIL1]`) is rejected at load in both
 engines. An ordered-form `(assert (item))` is different: CLIPS creates a second,
 implied `item` deftemplate, a state Ferric does not model, so Ferric rejects any
-assertion or query of the template being redefined. Ferric checks each slot's
-default before evaluating it; static defaults of earlier slots have already run,
-as in CLIPS. Ferric keeps the previous definition installed and redefinable,
+assertion or query of the template being redefined. For the same reason, Ferric
+rejects a new template whose `default-dynamic` asserts its own name in ordered
+form, which CLIPS accepts by adding the shadowing implied template. Ferric
+checks each slot's default before evaluating it; static defaults of earlier
+slots have already run, as in CLIPS. Ferric keeps the previous definition installed and redefinable,
 where CLIPS has already removed it.
 
 Without an explicit default, or with `(default ?DERIVE)`, Ferric derives a value
