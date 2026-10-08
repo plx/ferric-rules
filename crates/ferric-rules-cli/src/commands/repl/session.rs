@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use ferric_rules_core::Value;
 use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
 
-use super::commands::ReplCommand;
+use super::commands::{ReplCommand, SourceForm};
 use super::display;
 use crate::commands::common::{emit_error, emit_warning};
 
@@ -51,8 +51,8 @@ impl ReplSession {
             ReplCommand::Rules => self.cmd_rules(),
             ReplCommand::Load { path } => self.cmd_load(Path::new(&path), echo)?,
             ReplCommand::Help => Self::cmd_help(),
-            ReplCommand::Construct { source } => self.load_source(&source.located())?,
-            ReplCommand::Eval { source } => self.cmd_eval(&source.located(), echo)?,
+            ReplCommand::Construct { source } => self.load_form(&source)?,
+            ReplCommand::Eval { source } => self.cmd_eval(&source, echo)?,
         }
         Ok(false)
     }
@@ -83,6 +83,12 @@ impl ReplSession {
 
     pub fn load_source(&mut self, source: &str) -> Result<(), ()> {
         let result = self.engine.load_str(source);
+        self.drain();
+        self.report_load(result)
+    }
+
+    fn load_form(&mut self, form: &SourceForm) -> Result<(), ()> {
+        let result = self.engine.load_str_at(&form.text, form.line, form.column);
         self.drain();
         self.report_load(result)
     }
@@ -174,8 +180,8 @@ impl ReplSession {
         Ok(())
     }
 
-    fn cmd_eval(&mut self, source: &str, echo: bool) -> Result<(), ()> {
-        let result = self.engine.eval_str(source);
+    fn cmd_eval(&mut self, form: &SourceForm, echo: bool) -> Result<(), ()> {
+        let result = self.engine.eval_str_at(&form.text, form.line, form.column);
         self.drain();
         match result {
             Ok(value) => {

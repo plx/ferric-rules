@@ -47,7 +47,8 @@ pub use error::{LexError, ParseError, ParseErrorKind};
 pub use lexer::{lex, SpannedToken, Token};
 pub use qualified_name::{parse_qualified_name, QualifiedName};
 pub use sexpr::{
-    parse_first_sexpr, parse_sexprs, Atom, Connective, ParseResult, SExpr, MAX_SEXPR_NESTING_DEPTH,
+    parse_first_sexpr, parse_sexprs, parse_sexprs_at, Atom, Connective, ParseResult, SExpr,
+    MAX_SEXPR_NESTING_DEPTH,
 };
 pub use span::{FileId, Position, Span};
 pub use stage2::{

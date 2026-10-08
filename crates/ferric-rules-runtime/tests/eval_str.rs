@@ -198,3 +198,26 @@ fn source_reset_selects_main_for_the_shell_and_remaining_root_operands() {
         Value::Integer(7)
     ));
 }
+
+#[test]
+fn excerpt_entry_points_locate_diagnostics_in_the_enclosing_source() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let error = engine.eval_str_at("(missing-function)", 3, 3).unwrap_err();
+    assert!(error.to_string().contains("line 3, column 3"), "{error}");
+    let error = engine.eval_str_at("(+ 1\n (", 8, 4).unwrap_err();
+    assert!(matches!(
+        &error,
+        EvalStrError::Source(errors) if matches!(&errors[0],
+            ferric_rules_runtime::LoadError::Parse(error) if error.span.start.line == 9)
+    ));
+    let errors = engine
+        .load_str_at("(defrule r\n  =>\n  (missing-function))", 20, 5)
+        .unwrap_err();
+    let text = errors[0].to_string();
+    assert!(text.contains("line 22, column 3"), "{text}");
+    assert!(engine.load_str_at("(defrule ok =>)", 40, 1).is_ok());
+    assert!(matches!(
+        engine.eval_str_at("(+ 1 2)", 7, 9).unwrap(),
+        Value::Integer(3)
+    ));
+}

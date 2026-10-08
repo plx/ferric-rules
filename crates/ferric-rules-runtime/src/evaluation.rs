@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ferric_rules_core::{BindingSet, Value, VarMap};
-use ferric_rules_parser::{interpret_action_expr, parse_sexprs, FileId};
+use ferric_rules_parser::{interpret_action_expr, parse_sexprs_at, FileId};
 
 use crate::evaluator::{self, CallableLocals, EvalContext, EvalError};
 use crate::{Engine, LoadError};
@@ -32,15 +32,26 @@ impl Engine {
     /// in [`Self::load_str`]. The language's `eval` builtin has its own first-form
     /// parsing and variable-scope policy.
     pub fn eval_str(&mut self, source: &str) -> Result<Value, EvalStrError> {
+        self.eval_str_at(source, 1, 1)
+    }
+
+    /// Like [`Self::eval_str`], for an excerpt that begins at `line`/`column`
+    /// of a larger source; diagnostics report locations in that source.
+    pub fn eval_str_at(
+        &mut self,
+        source: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<Value, EvalStrError> {
         crate::source_limits::check_source_size(source.len())?;
-        let mut parsed = parse_sexprs(source, FileId(0));
+        let mut parsed = parse_sexprs_at(source, FileId(0), line, column);
         if !parsed.errors.is_empty() {
             return Err(EvalStrError::Source(
                 parsed.errors.into_iter().map(LoadError::Parse).collect(),
             ));
         }
         if parsed.exprs.len() != 1 {
-            let (line, column) = parsed.exprs.get(1).map_or((1, 1), |expression| {
+            let (line, column) = parsed.exprs.get(1).map_or((line, column), |expression| {
                 (expression.span().start.line, expression.span().start.column)
             });
             return Err(LoadError::Compile(format!(

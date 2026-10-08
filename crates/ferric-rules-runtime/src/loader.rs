@@ -20,10 +20,10 @@ use ferric_rules_core::{
     SlotIndex, Value,
 };
 use ferric_rules_parser::{
-    interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody, FileId,
-    FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct, InterpretError,
-    InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct, OrderedPattern, ParseError,
-    Pattern, RuleConstruct, SExpr, SlotType, Span, TemplateConstruct,
+    interpret_constructs, parse_sexprs, parse_sexprs_at, ActionExpr, Atom, Constraint, Construct,
+    FactBody, FileId, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
+    InterpretError, InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct,
+    OrderedPattern, ParseError, Pattern, RuleConstruct, SExpr, SlotType, Span, TemplateConstruct,
 };
 
 use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
@@ -1114,22 +1114,42 @@ impl Engine {
     /// assert_eq!(result.asserted_facts.len(), 1);
     /// ```
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
+        self.load_str_at(source, 1, 1)
+    }
+
+    /// Like [`Self::load_str`], for an excerpt that begins at `line`/`column`
+    /// of a larger source; diagnostics report locations in that source.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::load_str`].
+    pub fn load_str_at(
+        &mut self,
+        source: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<LoadResult, Vec<LoadError>> {
         let previous_depth = self.source_load_depth;
         self.source_load_depth += 1;
-        let result = self.load_str_inner(source);
+        let result = self.load_str_inner(source, line, column);
         self.source_load_depth = previous_depth;
         result
     }
 
     #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
-    fn load_str_inner(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
+    fn load_str_inner(
+        &mut self,
+        source: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
         crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
         // Parse the source into S-expressions (Stage 1)
         let parse_result = {
             ferric_span!(debug_span, "load_parse");
-            parse_sexprs(source, FileId(0))
+            parse_sexprs_at(source, FileId(0), line, column)
         };
         ferric_event!(
             debug,
