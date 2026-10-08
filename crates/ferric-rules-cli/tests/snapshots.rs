@@ -90,3 +90,48 @@ fn explicit_json_codec_works_and_legacy_errors_are_useful() {
     );
     assert!(stderr.contains("export application data"), "{stderr}");
 }
+
+#[test]
+fn snapshot_reports_match_time_errors_raised_while_loading() {
+    let consumer = tempfile::tempdir().unwrap();
+    std::fs::write(
+        consumer.path().join("match-error.clp"),
+        "(defrule bad (item ?x) (test (> (/ 1 ?x) 0)) => (printout t bad crlf))
+         (assert (item 0))",
+    )
+    .unwrap();
+    for json in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ferric"));
+        command.current_dir(consumer.path()).arg("snapshot");
+        if json {
+            command.arg("--json");
+        }
+        let output = command
+            .args(["match-error.clp", "-o", "state.ferric"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(consumer.path().join("state.ferric").exists());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        // The confirmation line is not a diagnostic.
+        let lines: Vec<_> = stderr
+            .lines()
+            .filter(|line| !line.starts_with("Wrote "))
+            .collect();
+        assert_eq!(lines.len(), 1, "{stderr}");
+        let message = if json {
+            let diagnostic: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+            assert_eq!(diagnostic["command"], "snapshot");
+            assert_eq!(diagnostic["level"], "warning");
+            assert_eq!(diagnostic["kind"], "action_warning");
+            diagnostic["message"].as_str().unwrap().to_owned()
+        } else {
+            assert!(
+                lines[0].starts_with("ferric snapshot: warning:"),
+                "{stderr}"
+            );
+            stderr
+        };
+        assert_eq!(message.matches("zero").count(), 1, "{message}");
+    }
+}
