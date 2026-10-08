@@ -266,6 +266,9 @@ impl EngineSnapshotOwned {
             active_rules: Vec::new(),
             active_callables: Vec::new(),
             active_query_targets: Vec::new(),
+            active_templates: Vec::new(),
+            active_ordered_relations: Vec::new(),
+            active_expressions: Vec::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,
@@ -298,6 +301,7 @@ impl EngineSnapshotOwned {
             fact_index_starts_at_zero: self.fact_index_starts_at_zero,
             action_diagnostics: self.action_diagnostics,
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: self.halted,
             input_buffer: self.input_buffer,
         };
@@ -838,7 +842,7 @@ mod tests {
             }
         }
         let engine = Engine::with_rules("(defmethod choose ((?x INTEGER (eq ?x 1))) ?x)").unwrap();
-        for corruption in 0..6 {
+        for corruption in 0..7 {
             let result = alter_state(&engine, |state| {
                 let method = method(state).unwrap();
                 match corruption {
@@ -853,6 +857,11 @@ mod tests {
                         method["parameter_queries"][0]["FunctionCall"]["args"][0]["Variable"][0] =
                             serde_json::json!("missing");
                     }
+                    6 => {
+                        let call = &mut method["parameter_queries"][0]["FunctionCall"];
+                        call["name"] = serde_json::json!("return");
+                        call["args"] = serde_json::json!([]);
+                    }
                     _ => {
                         let call = &mut method["parameter_queries"][0]["FunctionCall"];
                         call["name"] = serde_json::json!("break");
@@ -865,6 +874,7 @@ mod tests {
                 1 | 2 => "wildcard restrictions without a wildcard parameter",
                 4 => "GENRCPSR12",
                 5 => "PRCCODE3",
+                6 => "[PRCDRPSR2] The return function",
                 _ => "PRCDRPSR2",
             };
             assert!(
@@ -1452,6 +1462,32 @@ mod tests {
             assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
             assert_eq!(resumed.find_facts("observed").unwrap().len(), 2);
         }
+    }
+
+    #[test]
+    fn two_nested_exists_serialize_but_three_exceed_the_ncc_depth() {
+        // Each `exists` is a double negation: two levels reach the snapshot
+        // NCC depth of four, and a third exceeds it.
+        let mut engine = Engine::with_rules(
+            "(deffacts seed (a))
+             (defrule two (exists (exists (a))) => (printout t two crlf))",
+        )
+        .unwrap();
+        engine.reset().unwrap();
+        let snapshot = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&snapshot, SerializationFormat::Cbor).unwrap();
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(restored.get_output("t"), Some("two\n"));
+
+        let engine = Engine::with_rules(
+            "(defrule three (exists (exists (exists (a)))) => (printout t three crlf))",
+        )
+        .unwrap();
+        let error = engine
+            .serialize(SerializationFormat::Cbor)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("NCC nesting exceeds 4"), "{error}");
     }
 
     #[test]

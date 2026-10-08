@@ -76,6 +76,37 @@ fn rhs_printout_and_bind_expand_and_nil_router_still_runs_expansions() {
 }
 
 #[test]
+fn println_prints_expanded_fields_without_a_literal_form() {
+    assert_eq!(
+        output(
+            r#"
+      (deffacts seed (a))
+      (deffunction mark (?tag ?value) (printout t ?tag ";") ?value)
+      (defrule run ?f <- (a) =>
+       (println "g=" (expand$ (create$ ?f 1 x)))
+       (println (mark A "a") (expand$ (mark B (create$ b))) (mark C "c"))
+       (println "done"))
+    "#
+        ),
+        "g=<Fact-1>1x\nA;aB;bC;c\ndone\n"
+    );
+}
+
+#[test]
+fn println_expansion_of_a_non_multifield_is_a_type_error() {
+    let engine = run(r#"(defrule run => (println "before" (expand$ (+ 1 2)) "after"))"#);
+    assert!(
+        engine
+            .action_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.to_string().contains("expand$")),
+        "{:?}",
+        engine.action_diagnostics()
+    );
+    assert_eq!(engine.get_output("t"), Some("before"));
+}
+
+#[test]
 fn progn_keeps_bindings_and_propagates_return_and_break_to_their_owners() {
     assert_eq!(
         output(

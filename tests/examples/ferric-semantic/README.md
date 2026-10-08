@@ -38,8 +38,8 @@ its oracle scenario.
 The rehabilitation scenarios cover replacement and removal, reset and named
 deffacts, depth/breadth chronology, module visibility/focus, typed joins and
 assertions, blocker/retraction transitions, incremental errors, and one-action
-launch selection. All 35 match pinned CLIPS 6.30; the existing corpus now has
-20 equivalent cases and two retained LEX/MEA divergences. The FR-RETE-012
+launch selection. All 35 match pinned CLIPS 6.30; all 22 existing cases are
+now equivalent, including the LEX/MEA pair repaired in #412. The FR-RETE-012
 expectation changes only its diagnostic classification: the refreshed CLIPS
 CSTRCPSR4 rejection is a construct-load error. Its facts/output expectations
 remain unchanged and pass after the empty-LHS reset-order fix.

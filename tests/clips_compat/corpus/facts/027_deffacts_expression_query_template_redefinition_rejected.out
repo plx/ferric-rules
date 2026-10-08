@@ -1,0 +1,5 @@
+
+[CSTRCPSR4] Cannot redefine deftemplate item while it is in use.
+
+ERROR:
+(deftemplate MAIN::item

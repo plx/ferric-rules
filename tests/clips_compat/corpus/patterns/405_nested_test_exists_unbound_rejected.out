@@ -1,0 +1,12 @@
+
+[ANALYSIS4] Variable ?zz found in the expression (> ?zz 0)
+was referenced in CE #3 before being defined.
+
+ERROR:
+(defrule MAIN::r
+   (seed)
+   (exists
+        (c ?)
+        (test (> ?zz 0)))
+   =>
+   (printout t "fired" crlf))

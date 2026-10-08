@@ -1,0 +1,6 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for the exists conditional element.
+
+ERROR:
+(defrule MAIN::r
+   (exists)

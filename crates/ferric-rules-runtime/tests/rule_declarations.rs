@@ -366,13 +366,16 @@ fn check_blocked_late_ncc(engine: &Engine) {
 }
 
 // (shared NCC, deferred support predicate, parent asserted before supports).
-// Fresh parent-first installation and shared deferred support have separate,
-// exact compatibility characterizations in the 398 late-NCC corpus fixtures.
-const CONFORMING_LATE_NCC_CASES: [(bool, bool, bool); 4] = [
+// Only fresh parent-first installation remains outside this set; it, and a
+// shared prefix followed by a trailing test CE, have exact compatibility
+// characterizations in the 398 late-NCC gap corpus fixtures (#480).
+const CONFORMING_LATE_NCC_CASES: [(bool, bool, bool); 6] = [
     (false, false, false),
     (false, true, false),
     (true, false, false),
     (true, false, true),
+    (true, true, false),
+    (true, true, true),
 ];
 
 fn release_late_ncc(engine: &mut Engine, shared: bool) {
@@ -464,4 +467,16 @@ fn late_ncc_focus_history_and_blocked_state_survive_every_snapshot_format() {
             release_late_ncc(&mut engine, shared);
         }
     }
+}
+
+#[test]
+fn host_push_focus_skips_the_module_already_on_top() {
+    let mut engine = Engine::with_rules("(defmodule A) (defmodule B)").unwrap();
+    engine.reset().unwrap();
+    engine.push_focus("A").unwrap();
+    engine.push_focus("A").unwrap();
+    assert_eq!(engine.get_focus_stack(), ["MAIN", "A"]);
+    engine.push_focus("B").unwrap();
+    engine.push_focus("A").unwrap();
+    assert_eq!(engine.get_focus_stack(), ["MAIN", "A", "B", "A"]);
 }
