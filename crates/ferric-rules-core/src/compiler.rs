@@ -483,6 +483,7 @@ impl ReteCompiler {
                         &mut var_map,
                         &bound_vars,
                         &mut alpha_memories,
+                        false,
                     );
                 }
             }
@@ -952,6 +953,7 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
+        nested: bool,
     ) -> NodeId {
         debug_assert!(
             !subconditions.is_empty(),
@@ -997,6 +999,7 @@ impl ReteCompiler {
                         var_map,
                         &sub_bound_vars,
                         alpha_memories,
+                        true,
                     );
                 }
             }
@@ -1006,6 +1009,8 @@ impl ReteCompiler {
             .beta
             .create_ncc_partner(sub_parent, ncc_id, ncc_memory_id);
         rete.beta.set_ncc_partner(ncc_id, partner_id);
+        rete.beta.link_ncc_after_subnetwork(ncc_id);
+        rete.beta.register_ncc_entry_wait(ncc_id, nested);
 
         ncc_id
     }

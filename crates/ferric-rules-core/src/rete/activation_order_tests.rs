@@ -1,8 +1,8 @@
 //! Activation creation order is separate from agenda depth/breadth ranking.
 use crate::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, ConflictResolutionStrategy,
-    ConstantTest, ConstantTestType, Fact, FactBase, FactId, ReteCompiler, ReteNetwork, RuleId,
-    Salience, SlotIndex, StringEncoding, SymbolTable, Value,
+    ConstantTest, ConstantTestType, Fact, FactBase, FactId, PendingReteEvent, ReteCompiler,
+    ReteNetwork, RuleId, Salience, SlotIndex, StringEncoding, SymbolTable, Value,
 };
 
 struct Network {
@@ -64,6 +64,35 @@ impl Network {
             .unwrap();
     }
 
+    fn install_conditions(&mut self, id: u32, conditions: &[CompilableCondition]) {
+        self.compiler
+            .compile_conditions(
+                &mut self.rete,
+                &self.facts,
+                RuleId(id),
+                Salience::DEFAULT,
+                conditions,
+            )
+            .unwrap();
+    }
+
+    fn assert_with_activations(&mut self, relation: &str, fields: &[i64]) -> usize {
+        let relation = self
+            .symbols
+            .intern_symbol(relation, StringEncoding::Ascii)
+            .unwrap();
+        let id = self.facts.assert_ordered(
+            relation,
+            fields.iter().copied().map(Value::Integer).collect(),
+        );
+        let created = self
+            .rete
+            .assert_fact(id, &self.facts.get(id).unwrap().fact, &self.facts)
+            .len();
+        self.rete.debug_assert_consistency();
+        created
+    }
+
     fn assert(&mut self, relation: &str, fields: &[i64]) -> FactId {
         let relation = self
             .symbols
@@ -110,6 +139,22 @@ impl Network {
 
     fn rules(&mut self) -> Vec<u32> {
         self.drain().into_iter().map(|(rule, _)| rule).collect()
+    }
+
+    /// Drain the event queue, returning the rules of auto-focus notices.
+    fn auto_focus_notices(&mut self) -> Vec<u32> {
+        let mut notices = Vec::new();
+        while let Some(event) = self.rete.pop_pending_event() {
+            match event {
+                PendingReteEvent::Predicate(_) => unreachable!("no test CEs"),
+                PendingReteEvent::NccLeft(pending) => {
+                    self.rete.resolve_ncc_left_activation(pending, &self.facts);
+                }
+                PendingReteEvent::AutoFocus(rule) => notices.push(rule.0),
+            }
+        }
+        self.rete.debug_assert_consistency();
+        notices
     }
 }
 
@@ -272,5 +317,324 @@ fn unified_right_pass_keeps_prepropagation_positive_parent_capture() {
         network.drain().len(),
         3,
         "the new fact produces precisely the three new ordered pairs"
+    );
+}
+
+#[test]
+fn nested_ncc_waits_for_shared_subnetwork_entry() {
+    for (strategy, rebuild_index) in [
+        (ConflictResolutionStrategy::Depth, false),
+        (ConflictResolutionStrategy::Breadth, false),
+        (ConflictResolutionStrategy::Depth, true),
+        (ConflictResolutionStrategy::Breadth, true),
+    ] {
+        let mut network = Network::new(strategy);
+        let [a, b, c] = ["a", "b", "c"].map(|relation| network.pattern(relation, false));
+        // helper: (a) (b) (c); nested: (not (and (a) (not (and (b) (c))))).
+        network.install(1, vec![a.clone(), b.clone(), c.clone()]);
+        network.install_conditions(
+            2,
+            &[CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(a),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(b),
+                    CompilableCondition::Pattern(c),
+                ]),
+            ])],
+        );
+        // Only the inner NCC is nested, and the outer subnetwork begins with
+        // a join. The compiler's registration must match the graph-derived
+        // index that snapshot restore rebuilds.
+        let compiled = network.rete.beta.ncc_entry_waits.clone().unwrap();
+        assert_eq!(compiled.len(), 1);
+        network.rete.beta.ncc_entry_waits = None;
+        network.rete.beta.ensure_ncc_entry_wait_index();
+        assert_eq!(network.rete.beta.ncc_entry_waits, Some(compiled));
+        if rebuild_index {
+            // Exercise propagation's own rebuild of a dropped index.
+            network.rete.beta.ncc_entry_waits = None;
+        }
+
+        network.rete.clear_working_memory();
+        network.assert("b", &[]);
+        network.assert("c", &[]);
+        assert_eq!(network.rules(), vec![2]);
+
+        // The inner subnetwork shares helper's (b) join, so (a) must reach
+        // it before the inner NCC decides. Otherwise a transient inner
+        // pass-through retracts and recreates the fired outer match.
+        assert_eq!(
+            network.assert_with_activations("a", &[]),
+            1,
+            "only helper is activated; nested is neither added nor removed"
+        );
+        assert_eq!(network.rules(), vec![1]);
+    }
+}
+
+#[test]
+fn exists_conjunction_waits_for_nested_ncc_over_shared_entry() {
+    for (strategy, rebuild_index) in [
+        (ConflictResolutionStrategy::Depth, false),
+        (ConflictResolutionStrategy::Breadth, false),
+        (ConflictResolutionStrategy::Depth, true),
+    ] {
+        let mut network = Network::new(strategy);
+        let [p, a, b] = ["p", "a", "b"].map(|relation| network.pattern(relation, false));
+        // older: (p) (a); watched: (p) (exists (and (a) (b))), which lowers to
+        // (not (not (and (a) (b)))). The nested NCC's entry is older's
+        // (p)(a) join, visited after both NCCs.
+        network.install(1, vec![p.clone(), a.clone()]);
+        network.rete.set_rule_auto_focus(RuleId(2), true);
+        network.install_conditions(
+            2,
+            &[
+                CompilableCondition::Pattern(p),
+                CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(a),
+                    CompilableCondition::Pattern(b),
+                ])]),
+            ],
+        );
+        // Both NCCs wait: the nested one for the shared join, the outer one
+        // for the nested NCC its subnetwork begins with.
+        let compiled = network.rete.beta.ncc_entry_waits.clone().unwrap();
+        assert_eq!(compiled.len(), 2);
+        network.rete.beta.ncc_entry_waits = None;
+        network.rete.beta.ensure_ncc_entry_wait_index();
+        assert_eq!(network.rete.beta.ncc_entry_waits, Some(compiled));
+        if rebuild_index {
+            network.rete.beta.ncc_entry_waits = None;
+        }
+
+        // The outer NCC must not admit (p) before the nested NCC has blocked
+        // it: no transient activation and no focus notice.
+        assert_eq!(network.assert_with_activations("p", &[]), 0);
+        assert!(network.auto_focus_notices().is_empty());
+        assert!(network.rete.agenda.is_empty());
+
+        network.assert("a", &[]);
+        assert!(network.auto_focus_notices().is_empty());
+        assert_eq!(network.rules(), vec![1]);
+
+        network.assert("b", &[]);
+        assert_eq!(network.auto_focus_notices(), vec![2]);
+        assert_eq!(network.rules(), vec![2]);
+    }
+}
+
+#[test]
+fn top_level_ncc_over_shared_entry_keeps_transient_admission() {
+    for strategy in [
+        ConflictResolutionStrategy::Depth,
+        ConflictResolutionStrategy::Breadth,
+    ] {
+        let mut network = Network::new(strategy);
+        let [p, a, b, c] = ["p", "a", "b", "c"].map(|relation| network.pattern(relation, false));
+        // older: (p) (a); older2: (p) (c); watched: (p) (not (and (a) (b))).
+        network.install(1, vec![p.clone(), a.clone()]);
+        network.install(2, vec![p.clone(), c]);
+        network.rete.set_rule_auto_focus(RuleId(3), true);
+        network.install_conditions(
+            3,
+            &[
+                CompilableCondition::Pattern(p),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(a),
+                    CompilableCondition::Pattern(b),
+                ]),
+            ],
+        );
+        assert!(
+            network
+                .rete
+                .beta
+                .ncc_entry_waits
+                .as_ref()
+                .unwrap()
+                .is_empty(),
+            "a top-level NCC over a join never waits"
+        );
+        network.assert("a", &[]);
+        network.assert("b", &[]);
+
+        // CLIPS 6.30 visits this NCC before the shared (p)(a) join, so it
+        // admits (p) and pushes the focus before the join blocks it.
+        network.assert("p", &[]);
+        assert_eq!(network.auto_focus_notices(), vec![3]);
+        assert_eq!(network.rules(), vec![1]);
+    }
+}
+
+/// The outer NCC of `(p) (not (and <nested> <trailer>))` for rule `id`.
+fn outer_ncc(network: &Network, id: u32) -> crate::NodeId {
+    use crate::beta::BetaNode;
+    let terminal = network
+        .rete
+        .beta
+        .iter_nodes()
+        .find_map(|(node_id, node)| match node {
+            BetaNode::Terminal { rule, .. } if rule.0 == id => Some(node_id),
+            _ => None,
+        })
+        .unwrap();
+    network
+        .rete
+        .beta
+        .get_node(terminal)
+        .unwrap()
+        .parent_node()
+        .unwrap()
+}
+
+#[test]
+fn only_a_nested_ncc_feeding_the_partner_is_a_pure_double_negation() {
+    let mut network = Network::new(ConflictResolutionStrategy::Depth);
+    let [item, first, second, third, fourth] =
+        ["p", "a", "b", "c", "d"].map(|relation| network.pattern(relation, false));
+    let nested = || {
+        CompilableCondition::Ncc(vec![
+            CompilableCondition::Pattern(first.clone()),
+            CompilableCondition::Pattern(second.clone()),
+        ])
+    };
+    let mut negated = fourth.clone();
+    negated.negated = true;
+    // `exists` is rejected inside an NCC, so it needs no shape here.
+    let shapes: [(Vec<CompilableCondition>, bool); 5] = [
+        (vec![nested()], true),
+        (
+            vec![nested(), CompilableCondition::Pattern(third.clone())],
+            false,
+        ),
+        (
+            vec![
+                nested(),
+                CompilableCondition::Predicate { condition_index: 0 },
+            ],
+            false,
+        ),
+        (vec![nested(), CompilableCondition::Pattern(negated)], false),
+        (
+            vec![
+                nested(),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(third),
+                    CompilableCondition::Pattern(fourth),
+                ]),
+            ],
+            false,
+        ),
+    ];
+    for (id, (subconditions, pure)) in (1..).zip(shapes) {
+        network.install_conditions(
+            id,
+            &[
+                CompilableCondition::Pattern(item.clone()),
+                CompilableCondition::Ncc(subconditions),
+            ],
+        );
+        let outer = outer_ncc(&network, id);
+        assert_eq!(
+            network.rete.beta.ncc_is_pure_double_negation(outer),
+            pure,
+            "shape {id}"
+        );
+        // Only a pure double negation waits for its nested NCC.
+        assert_eq!(
+            network.rete.beta.ncc_entry_wait_for(outer).is_some(),
+            pure,
+            "shape {id}"
+        );
+    }
+    let compiled = network.rete.beta.ncc_entry_waits.clone().unwrap();
+    network.rete.beta.ncc_entry_waits = None;
+    network.rete.beta.ensure_ncc_entry_wait_index();
+    assert_eq!(network.rete.beta.ncc_entry_waits, Some(compiled));
+}
+
+#[test]
+fn ncc_with_conditions_after_its_nested_ncc_keeps_transient_admission() {
+    for strategy in [
+        ConflictResolutionStrategy::Depth,
+        ConflictResolutionStrategy::Breadth,
+    ] {
+        let mut network = Network::new(strategy);
+        let [p, a, b, c] = ["p", "a", "b", "c"].map(|relation| network.pattern(relation, false));
+        // watched: (p) (not (and (not (and (a) (b))) (c))).
+        network.rete.set_rule_auto_focus(RuleId(1), true);
+        network.install_conditions(
+            1,
+            &[
+                CompilableCondition::Pattern(p),
+                CompilableCondition::Ncc(vec![
+                    CompilableCondition::Ncc(vec![
+                        CompilableCondition::Pattern(a),
+                        CompilableCondition::Pattern(b),
+                    ]),
+                    CompilableCondition::Pattern(c),
+                ]),
+            ],
+        );
+        network.assert("c", &[]);
+        // CLIPS 6.30 admits (p) before the nested NCC reaches (c), so the
+        // focus push survives the cancelled activation.
+        network.assert("p", &[]);
+        assert_eq!(network.auto_focus_notices(), vec![1]);
+        assert!(network.rete.agenda.is_empty());
+    }
+}
+
+#[test]
+fn online_positive_double_negation_is_primed_after_its_subnetwork() {
+    let mut network = Network::new(ConflictResolutionStrategy::Depth);
+    let [p, a, b] = ["p", "a", "b"].map(|relation| network.pattern(relation, false));
+    network.install(1, vec![p.clone()]);
+    network.assert("p", &[]);
+    assert_eq!(network.rules(), vec![1]);
+
+    // watched: (p) (exists (and (a) (b))), installed while (p) exists.
+    let first_new = network.rete.beta.next_node_id();
+    network.rete.set_rule_auto_focus(RuleId(2), true);
+    network.install_conditions(
+        2,
+        &[
+            CompilableCondition::Pattern(p.clone()),
+            CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(a.clone()),
+                CompilableCondition::Pattern(b.clone()),
+            ])]),
+        ],
+    );
+    let outer = outer_ncc(&network, 2);
+    let frontier = network.rete.beta.installation_frontier(first_new);
+    assert_eq!(frontier.first().map(|edge| edge.1), Some(outer));
+    let ordered = network.rete.ncc_shared_results_first(first_new);
+    assert_eq!(ordered.len(), frontier.len());
+    assert_eq!(
+        ordered.last().map(|edge| edge.1),
+        Some(outer),
+        "the outer NCC is primed after the nested NCC and its conjunction"
+    );
+    assert!(network.auto_focus_notices().is_empty());
+    assert!(network.rete.agenda.is_empty());
+
+    // A negation inside the conjunction keeps the original frontier order.
+    let mut negated = b;
+    negated.negated = true;
+    let first_new = network.rete.beta.next_node_id();
+    network.install_conditions(
+        3,
+        &[
+            CompilableCondition::Pattern(p),
+            CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(a),
+                CompilableCondition::Pattern(negated),
+            ])]),
+        ],
+    );
+    assert_eq!(
+        network.rete.ncc_shared_results_first(first_new),
+        network.rete.beta.installation_frontier(first_new)
     );
 }

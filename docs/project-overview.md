@@ -71,7 +71,7 @@ bindings-conformance` runs through the Rust, C, Go, Node, and Python adapters.
   `just assess-compatibility`).
 - `tests/harnesses/`, `tests/generated/` — run harnesses and tool-generated
   segments/expectations for the `.bat`-derived examples.
-- `crates/ferric-rules/tests/scaling_tests.rs` — twelve `#[ignore]`
+- `crates/ferric-rules/tests/scaling_tests.rs` — thirteen `#[ignore]`
   complexity-class checks run by `just scaling-check`.
 
 ## 4. Benchmarks

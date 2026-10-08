@@ -1,0 +1,6 @@
+[ARGACCES5] Function fact-existp expected argument #1 to be of type fact-address or fact-index
+FALSE [ARGACCES5] Function fact-relation expected argument #1 to be of type fact-address or fact-index
+FALSE [ARGACCES5] Function fact-slot-names expected argument #1 to be of type fact-address or fact-index
+FALSE [ARGACCES5] Function fact-slot-value expected argument #1 to be of type fact-address or fact-index
+FALSE
+continued
