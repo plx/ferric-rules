@@ -2890,7 +2890,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         restriction,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
@@ -3084,7 +3084,7 @@ impl Engine {
                     self.validate_action_expr_as_expression(
                         restriction,
                         current_module,
-                        rule_name,
+                        context,
                         query_members,
                     )?;
                 }
