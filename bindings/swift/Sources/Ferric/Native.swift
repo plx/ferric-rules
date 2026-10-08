@@ -223,3 +223,14 @@ func checkedCount(_ count: UInt) throws -> Int {
   }
   return result
 }
+
+/// Copy action diagnostics while still on the native operation's dispatch thread.
+func nativeActionDiagnostics(handle: OpaquePointer) throws -> [String] {
+  var count: UInt = 0
+  try check(ferric_engine_action_diagnostic_count(handle, &count), handle: handle)
+  return try (0..<checkedCount(count)).map { index in
+    try requiredString(handle: handle) {
+      ferric_engine_action_diagnostic_copy(handle, UInt(index), $0, $1, $2)
+    }
+  }
+}

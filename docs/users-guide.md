@@ -995,7 +995,10 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   [its README](../packages/ferric/README.md) and the
   [normative contract](typescript-binding-normative-contract.md).
 - **Swift**: `bindings/swift` is a local Swift 6 package over the C ABI for
-  macOS 15 and iOS 18 or newer. See
+  macOS 15 and iOS 18 or newer. Runs support cooperative task cancellation and
+  synchronous `halt()`; `close()` stops the active run before queued cleanup.
+  Configuration, single-step execution, input, globals, fact lookup, and
+  inspection are exposed as owned Swift values. See
   [its README](../bindings/swift/README.md) for building and use.
 - **Go**: `bindings/go` provides an idiomatic `Engine` façade; see its
   [README](../bindings/go/README.md).
