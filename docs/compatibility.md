@@ -410,11 +410,18 @@ expressions, deffunctions and methods; the find forms return a multifield of
 [fact addresses](#fact-addresses).
 
 Queries, `if`, and `switch` also work in LHS test CEs and predicate/return-value
-constraints. These expressions observe facts when the matching token reaches
-the test; a later change to a queried relation does not independently reevaluate
-an existing token. Queries can compare members with fact addresses bound by
-earlier patterns. Unbound or later-bound variable references in these queries
-are load errors. Match-time expressions cannot mutate the engine.
+constraints. As in CLIPS, a test CE observes facts when the matching token
+reaches the test; a later change to a queried relation does not independently
+reevaluate an existing token. Queries can compare members with fact addresses
+bound by earlier patterns. Unbound or later-bound variable references in these
+queries are load errors. Match-time expressions cannot mutate the engine.
+
+Ferric evaluates predicate and return-value constraints the same way, when the
+token reaches them. CLIPS instead evaluates a constraint that references only
+its own pattern's variables once, in the pattern network, when the fact is
+asserted, so a query or global read in such a constraint can see different
+facts or values in CLIPS
+([#488](https://github.com/plx/ferric-rules/issues/488)).
 
 Each visited query member costs one iteration of the action-loop budget
 (`EngineConfig::max_action_loop_iterations`), as does each delayed body.
@@ -429,9 +436,14 @@ value, `FALSE` if no body ran, or no value after `break`.
 
 Literal names follow source declaration order, including within one rule or
 function. An ordered assertion declares its relation before its initializer
-expressions. Dynamic names use the current callable's definition module and
-remain fixed for that query invocation. Resolved targets remain in use until
-the query finishes, even if its body retracts every matching fact.
+expressions. In RHS actions, deffunctions and methods, dynamic names use the
+current callable's definition module and remain fixed for that query
+invocation. In LHS expressions Ferric resolves dynamic names in the rule's
+module, while CLIPS uses the module current when the match runs (typically the
+module of the rule whose action asserted the fact)
+([#489](https://github.com/plx/ferric-rules/issues/489)). Resolved targets
+remain in use until the query finishes, even if its body retracts every
+matching fact.
 
 Query members are scoped to their predicate and body. Restriction expressions
 can read caller locals and bind locals; nested query and iterator bindings can
