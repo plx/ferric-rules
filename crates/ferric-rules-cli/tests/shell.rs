@@ -9,6 +9,9 @@ fn invoke(args: &[&str], input: &str, directory: &std::path::Path) -> Output {
         .args(args)
         .current_dir(directory)
         .env_remove("HOME")
+        // rustyline prompts on piped stdin when TERM is dumb, cons25 or emacs;
+        // keep the asserted output independent of the caller's terminal.
+        .env_remove("TERM")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
