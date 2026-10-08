@@ -13047,6 +13047,19 @@
         "no-match",
         "anonymous-captures"
       ]
+    },
+    {
+      "path": "procedural/413_clear_eval_names_template.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "eval",
+        "refusal",
+        "fact-query"
+      ],
+      "recoverable_control_notices": true
     }
   ]
 }
