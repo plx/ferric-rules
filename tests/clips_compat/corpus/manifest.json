@@ -13062,6 +13062,19 @@
       "recoverable_control_notices": true
     },
     {
+      "path": "procedural/413_clear_keeps_called_deffunction.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "eval",
+        "refusal",
+        "deffunction"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
       "path": "procedural/413_watch_items_accepted.clp",
       "level": "basic",
       "covers": [

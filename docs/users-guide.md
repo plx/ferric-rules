@@ -960,8 +960,9 @@ A non-exhaustive list worth internalizing:
 - **Source `clear` preserves active constructs.** It removes facts, refuses
   construct removal, and continues the current execution. During fact
   initialization, or when the prompt expression itself asserts or queries
-  facts, it refuses before removing facts. At the prompt, with no constructs
-  in use, it clears constructs and restores `initial-fact` as f-0.
+  facts or calls a deffunction or generic function, it refuses before
+  removing facts. At the prompt, with no constructs in use, it clears
+  constructs and restores `initial-fact` as f-0.
 - **Equal-salience order follows network construction.** Under depth and
   breadth, ties follow activation creation order, which depends on how the
   rules' network is built. It is deterministic, the same on every run, and

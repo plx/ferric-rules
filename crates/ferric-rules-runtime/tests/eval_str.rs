@@ -133,19 +133,69 @@ fn root_clear_refuses_while_the_expression_names_a_template_or_relation() {
     assert!(engine.eval_str("(assert (foo (x 1)))").is_err());
 }
 
+/// CLIPS 6.30 refuses a clear from a deffunction that a top-level command
+/// calls, directly or through `funcall`, and keeps the facts: after
+/// `(assert (p))` both `(keep)` and `(funcall keep)` print CONSTRCT1 and 9,
+/// and `(facts)` still lists f-1 (p).
 #[test]
-fn in_use_callable_clear_keeps_the_callable_but_retracts_facts() {
+fn root_called_callable_clear_keeps_the_callable_and_facts() {
     let mut engine = Engine::with_rules("(deffunction keep () (clear) 9)").unwrap();
     engine.eval_str("(assert (p))").unwrap();
+    for source in ["(keep)", "(funcall keep)", r#"(eval "(keep)")"#] {
+        assert!(matches!(
+            engine.eval_str(source).unwrap(),
+            Value::Integer(9)
+        ));
+        assert_eq!(engine.facts().unwrap().count(), 1, "{source}");
+    }
+    assert_eq!(
+        engine
+            .get_output("werror")
+            .unwrap()
+            .matches("CONSTRCT1")
+            .count(),
+        3
+    );
+}
+
+/// CLIPS binds the callables a top-level command names when it parses it, so
+/// a clear inside the same expression refuses: with `(deffunction f () 7)`,
+/// `(progn (clear) (f))` and `(eval "(progn (clear) (f))")` print CONSTRCT1
+/// and return 7, while `(eval "(progn (clear) (+ 1 2))")` clears and gives 3.
+#[test]
+fn root_clear_refuses_while_the_expression_calls_a_user_callable() {
+    let mut engine = Engine::with_rules(
+        "(deffunction f () 7) (defgeneric g) (defmethod g () 8)",
+    )
+    .unwrap();
+    engine.eval_str("(assert (p))").unwrap();
+    for (source, expected) in [
+        ("(progn (clear) (f))", 7),
+        (r#"(eval "(progn (clear) (f))")"#, 7),
+        ("(progn (clear) (g))", 8),
+        ("(progn (clear) (MAIN::f))", 7),
+    ] {
+        assert!(
+            matches!(engine.eval_str(source).unwrap(), Value::Integer(value) if value == expected),
+            "{source}"
+        );
+        assert_eq!(engine.facts().unwrap().count(), 1, "{source}");
+    }
+    assert_eq!(
+        engine
+            .get_output("werror")
+            .unwrap()
+            .matches("CONSTRCT1")
+            .count(),
+        4
+    );
     assert!(matches!(
-        engine.eval_str("(keep)").unwrap(),
-        Value::Integer(9)
+        engine
+            .eval_str(r#"(eval "(progn (clear) (+ 1 2))")"#)
+            .unwrap(),
+        Value::Integer(3)
     ));
-    assert_eq!(engine.facts().unwrap().count(), 0);
-    assert!(matches!(
-        engine.eval_str("(keep)").unwrap(),
-        Value::Integer(9)
-    ));
+    assert!(engine.eval_str("(f)").is_err());
 }
 
 #[test]

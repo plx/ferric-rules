@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1262
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1263
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -551,9 +551,10 @@ a callable, survives the reset: the RHS finishes and the run stops. A nested
 reset during reset-time initialization is ignored. Clear during active
 execution emits a recoverable refusal (`[CONSTRCT1]`), retains constructs and
 refraction, removes facts, and restarts public fact indices at zero. During
-fact initialization, or while the running top-level expression or `eval`
+fact initialization, while the running top-level expression or `eval`
 source names a template or ordered relation (in a fact assertion or fact
-query), it refuses before removing facts. Later actions and eligible
+query) or calls a deffunction or generic function, or while a callable runs
+outside any rule, it refuses before removing facts. Later actions and eligible
 activations continue. At an ordinary expression root with no constructs in
 use, clear removes constructs, restores `initial-fact` as f-0, and selects
 MAIN; the next user assertion is f-1. A root clear or reset inside `eval`

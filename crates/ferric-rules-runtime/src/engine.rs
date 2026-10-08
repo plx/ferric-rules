@@ -1869,6 +1869,9 @@ impl Engine {
             || !self.active_templates.is_empty()
             || !self.active_ordered_relations.is_empty()
             || self.active_expressions_name_facts()
+            || self.active_expressions_name_callables()
+            // Outside a rule, CLIPS keeps facts while a callable runs.
+            || (self.active_rules.is_empty() && !self.active_callables.is_empty())
         {
             self.router.write(
                 "werror",

@@ -29,6 +29,68 @@ impl Engine {
         })
     }
 
+    /// Whether compiled source running outside any construct calls a user
+    /// deffunction or defgeneric visible from its module. CLIPS binds such a
+    /// call when it parses the expression, so the callable stays in use and
+    /// `clear` refuses rather than leave the call without a target.
+    pub(crate) fn active_expressions_name_callables(&self) -> bool {
+        self.active_expressions.iter().any(|(module, expression)| {
+            RuntimeExpressions::new(expression).any(|expression| match expression {
+                RuntimeExpr::Call { name, .. } => self.names_user_callable(name, *module),
+                RuntimeExpr::EffectCall { call } => self.effect_names_callables(call, *module),
+                _ => false,
+            })
+        })
+    }
+
+    fn effect_names_callables(&self, call: &FunctionCall, module: ModuleId) -> bool {
+        self.names_user_callable(&call.name, module)
+            || crate::effects::evaluated_arguments(self, module, call)
+                .iter()
+                .any(|expr| self.expr_names_callables(expr, module))
+    }
+
+    fn expr_names_callables(&self, expr: &ActionExpr, module: ModuleId) -> bool {
+        match expr {
+            ActionExpr::FunctionCall(call) => self.effect_names_callables(call, module),
+            _ => {
+                let mut children = Vec::new();
+                expr.push_children(&mut children);
+                children
+                    .into_iter()
+                    .any(|child| self.expr_names_callables(child, module))
+            }
+        }
+    }
+
+    /// Whether `name`, called from `module`, names a registered deffunction or
+    /// defgeneric there or one that module can see.
+    fn names_user_callable(&self, name: &str, module: ModuleId) -> bool {
+        if let Ok(crate::QualifiedName::Qualified { module, name }) =
+            crate::parse_qualified_name(name)
+        {
+            return self
+                .module_registry
+                .get_by_name(&module)
+                .is_some_and(|owner| {
+                    self.functions.contains(owner, &name) || self.generics.contains(owner, &name)
+                });
+        }
+        let visible = |owner: &ModuleId, construct_type| {
+            self.module_registry
+                .is_construct_visible(module, *owner, construct_type, name)
+        };
+        self.functions
+            .modules_for_name(name)
+            .iter()
+            .any(|owner| visible(owner, "deffunction"))
+            || self
+                .generics
+                .modules_for_name(name)
+                .iter()
+                .any(|owner| visible(owner, "defgeneric"))
+    }
+
     fn call_names_facts(&self, call: &FunctionCall, module: ModuleId) -> bool {
         (call.name == "assert"
             && call
