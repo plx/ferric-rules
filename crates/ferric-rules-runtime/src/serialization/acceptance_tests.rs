@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::fact_initializer::PreparedFact;
-use crate::{EngineConfig, RunLimit};
+use crate::{EngineConfig, HostValue, RunLimit};
 
 fn roundtrip(engine: &Engine, format: SerializationFormat) -> Engine {
     let bytes = engine.serialize(format).unwrap();
@@ -120,6 +120,30 @@ fn issue_rule_base_beyond_the_old_budget_roundtrips_in_both_codecs() {
         assert_eq!(restored.agenda_len(), 1);
         restored.assert_ordered("c7", [1, 2]).unwrap();
         assert_eq!(restored.agenda_len(), 0);
+    }
+}
+
+#[test]
+fn write_side_readback_reports_decoder_step_limit() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let a = engine.symbol_value("a").unwrap();
+    let fields: Vec<HostValue> = vec![a; 750_000];
+    let handle = engine.assert_ordered("t", fields).unwrap();
+    // Repeated symbols cost few bytes per decode step: this payload is about
+    // 11 MB of CBOR (16.5 MB of JSON), under MAX_SNAPSHOT_BYTES, so only the
+    // read-back decode inside serialize can raise this limit.
+    for &format in SerializationFormat::ALL {
+        assert!(
+            matches!(
+                engine.serialize(format),
+                Err(SerializationError::LimitExceeded("decoder step"))
+            ),
+            "{format:?}"
+        );
+    }
+    engine.retract(handle).unwrap();
+    for &format in SerializationFormat::ALL {
+        roundtrip(&engine, format);
     }
 }
 
