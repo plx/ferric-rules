@@ -3,6 +3,7 @@
 use super::*;
 use crate::fact_initializer::PreparedFact;
 use crate::{EngineConfig, HostValue, RunLimit};
+use std::fmt::Write as _;
 
 fn roundtrip(engine: &Engine, format: SerializationFormat) -> Engine {
     let bytes = engine.serialize(format).unwrap();
@@ -107,9 +108,14 @@ fn issue_rule_base_beyond_the_old_budget_roundtrips_in_both_codecs() {
     // Issue #410's fact-free rule base first failed at 1,915 rules; 2,500
     // rules (about 5.9 MB of CBOR) exceed the old 1M-step budget in both codecs.
     const COUNT: usize = 2_500;
-    let source: String = (0..COUNT)
-        .map(|i| format!("(defrule r{i} (a{i} ?x) (b{i} ?y&:(> ?y ?x)) (not (c{i} ?x ?y)) =>)\n"))
-        .collect();
+    let mut source = String::new();
+    for i in 0..COUNT {
+        writeln!(
+            source,
+            "(defrule r{i} (a{i} ?x) (b{i} ?y&:(> ?y ?x)) (not (c{i} ?x ?y)) =>)"
+        )
+        .unwrap();
+    }
     let engine = Engine::with_rules(&source).unwrap();
     assert_eq!(engine.rules().len(), COUNT);
     for &format in SerializationFormat::ALL {
