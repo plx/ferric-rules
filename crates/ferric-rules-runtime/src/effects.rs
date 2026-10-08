@@ -200,8 +200,14 @@ fn eval_call_inner(
                         .clear_for_evaluation()
                         .map_err(|error| failure(name, error.to_string(), span))?
                     {
-                        ctx.engine.root_dynamic_module =
-                            Some(ctx.engine.module_registry.current_module());
+                        let main = ctx.engine.module_registry.current_module();
+                        ctx.engine.root_dynamic_module = Some(main);
+                        // The clear deleted the expression's module, and module
+                        // ids restart. It refused if the expression names a
+                        // template, fact or user callable, so nothing left in
+                        // it is bound to the old module.
+                        ctx.current_module = main;
+                        ctx.global_module = None;
                     }
                 }
                 _ => unreachable!(),

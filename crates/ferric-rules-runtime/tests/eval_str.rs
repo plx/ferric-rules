@@ -315,6 +315,102 @@ fn root_reset_keeps_the_expression_bound_to_its_module() {
     );
 }
 
+/// Names an expression looks up while it runs resolve in the module a root
+/// reset selects. With MAIN's `gt` and generic `g` and module A current,
+/// CLIPS 6.30 gives `(1 2 3)` for `(progn (reset) (sort gt 1 3 2))`, TRUE for
+/// `(progn (reset) (funcall gt 2 1))`, 8 for
+/// `(progn (reset) (call-specific-method g 1 4))` and accepts
+/// `(progn (reset) (watch deffunctions gt))`. With A's own `f` and A current,
+/// `(progn (reset) (funcall f))` does not find `f`.
+#[test]
+fn root_reset_moves_runtime_name_lookups_to_main() {
+    let engine_in_a = || {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(deffunction gt (?a ?b) (> ?a ?b))
+                 (defgeneric g) (defmethod g ((?x INTEGER)) (* ?x 2))
+                 (defmodule A) (deffunction f () 7)",
+            )
+            .unwrap();
+        assert_eq!(engine.current_module(), "A");
+        engine
+    };
+    let mut engine = engine_in_a();
+    let Value::Multifield(sorted) = engine.eval_str("(progn (reset) (sort gt 1 3 2))").unwrap()
+    else {
+        panic!("expected a multifield");
+    };
+    assert!(
+        matches!(
+            sorted.as_slice(),
+            [Value::Integer(1), Value::Integer(2), Value::Integer(3)]
+        ),
+        "{sorted:?}"
+    );
+    let mut engine = engine_in_a();
+    let value = engine.eval_str("(progn (reset) (funcall gt 2 1))").unwrap();
+    assert!(
+        matches!(value, Value::Symbol(symbol) if engine.resolve_core_symbol(symbol) == Some("TRUE"))
+    );
+    let mut engine = engine_in_a();
+    assert!(matches!(
+        engine
+            .eval_str("(progn (reset) (call-specific-method g 1 4))")
+            .unwrap(),
+        Value::Integer(8)
+    ));
+    let mut engine = engine_in_a();
+    engine
+        .eval_str("(progn (reset) (watch deffunctions gt))")
+        .unwrap();
+    let mut engine = engine_in_a();
+    assert!(engine.eval_str("(progn (reset) (funcall f))").is_err());
+}
+
+/// A root clear deletes the expression's module, so later lookups resolve in
+/// the new MAIN: after `(defmodule A)`, CLIPS 6.30 returns 5 for
+/// `(progn (clear) (build "(deffunction h () 5)") (funcall h))`.
+#[test]
+fn root_clear_moves_runtime_name_lookups_to_the_new_main() {
+    let mut engine = engine_in_module_a();
+    let value = engine
+        .eval_str(r#"(progn (clear) (build "(deffunction h () 5)") (funcall h))"#)
+        .unwrap();
+    assert!(matches!(value, Value::Integer(5)), "{value:?}");
+    assert_eq!(engine.current_module(), "MAIN");
+}
+
+/// `save-facts` checks each selector and saves in the module current once the
+/// selectors have run. With `MAIN::p` and `A::p` deffacts and A current, CLIPS
+/// 6.30's `(save-facts F local (progn (reset) p))` returns TRUE and writes
+/// only `(p (x main))`.
+#[test]
+fn save_facts_selectors_follow_a_root_reset_to_main() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(defmodule MAIN (export ?ALL))
+             (deftemplate MAIN::p (slot x)) (deffacts MAIN::d (p (x main)))
+             (defmodule A)
+             (deftemplate A::p (slot x)) (deffacts A::da (p (x a)))",
+        )
+        .unwrap();
+    assert_eq!(engine.current_module(), "A");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("saved.fct");
+    let value = engine
+        .eval_str(&format!(
+            r#"(save-facts "{}" local (progn (reset) p))"#,
+            path.display()
+        ))
+        .unwrap();
+    assert!(
+        matches!(value, Value::Symbol(symbol) if engine.resolve_core_symbol(symbol) == Some("TRUE"))
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "(p (x main))\n");
+}
+
 #[test]
 fn clear_during_fact_initialization_keeps_old_facts_and_releases_guard_on_errors() {
     let mut engine = Engine::with_rules(

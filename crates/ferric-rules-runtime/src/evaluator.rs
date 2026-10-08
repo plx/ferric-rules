@@ -503,17 +503,15 @@ fn global_lookup_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
     ctx.global_module.unwrap_or(ctx.current_module)
 }
 
+/// The modules among `modules` whose `construct_type` named `local_name` is
+/// visible from `lookup_module`.
 fn visible_modules_for_construct(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     modules: &[crate::modules::ModuleId],
     construct_type: &str,
     local_name: &str,
 ) -> Vec<crate::modules::ModuleId> {
-    let lookup_module = if construct_type == "defglobal" {
-        global_lookup_module(ctx)
-    } else {
-        ctx.current_module
-    };
     sorted_dedup_modules(
         modules
             .iter()
@@ -536,8 +534,10 @@ struct AmbiguityMessages<'a> {
     actual: &'a str,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_visible_owner_module(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     all_modules: &[crate::modules::ModuleId],
     construct_type: &str,
     local_name: &str,
@@ -545,20 +545,14 @@ fn resolve_visible_owner_module(
     ambiguity: AmbiguityMessages<'_>,
     span: Option<SourceSpan>,
 ) -> Result<crate::modules::ModuleId, EvalError> {
-    let visible = visible_modules_for_construct(ctx, all_modules, construct_type, local_name);
+    let visible =
+        visible_modules_for_construct(ctx, lookup_module, all_modules, construct_type, local_name);
     match visible.as_slice() {
         [owner] => Ok(*owner),
         [] => Err(EvalError::NotVisible {
             name: display_name.to_string(),
             construct_type: construct_type.to_string(),
-            from_module: module_label(
-                ctx,
-                if construct_type == "defglobal" {
-                    global_lookup_module(ctx)
-                } else {
-                    ctx.current_module
-                },
-            ),
+            from_module: module_label(ctx, lookup_module),
             owning_module: module_label(ctx, all_modules[0]),
             span,
         }),
@@ -571,23 +565,26 @@ fn resolve_visible_owner_module(
     }
 }
 
+/// Resolve an unqualified deffunction or defgeneric name from `lookup_module`:
+/// a binding there wins, otherwise the single visible owner.
 fn resolve_unqualified_callable_module(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     name: &str,
     construct_type: &str,
     modules_for_name: &[crate::modules::ModuleId],
-    local_binding_exists: bool,
     ambiguity: AmbiguityMessages<'_>,
     span: Option<SourceSpan>,
 ) -> Result<Option<crate::modules::ModuleId>, EvalError> {
     if modules_for_name.is_empty() {
         return Ok(None);
     }
-    if local_binding_exists {
-        return Ok(Some(ctx.current_module));
+    if modules_for_name.contains(&lookup_module) {
+        return Ok(Some(lookup_module));
     }
     let owner = resolve_visible_owner_module(
         ctx,
+        lookup_module,
         modules_for_name,
         construct_type,
         name,
@@ -757,6 +754,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
 
             let owner = resolve_visible_owner_module(
                 ctx,
+                global_lookup_module(ctx),
                 &all_modules,
                 "defglobal",
                 name,
@@ -812,10 +810,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         sorted_dedup_modules(ctx.engine.functions.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
                         ctx,
+                        ctx.current_module,
                         name,
                         "deffunction",
                         &function_modules,
-                        ctx.engine.functions.contains(ctx.current_module, name),
                         AmbiguityMessages {
                             expected: "unambiguous deffunction resolution",
                             actual: "multiple visible deffunctions; use MODULE::name",
@@ -837,10 +835,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         sorted_dedup_modules(ctx.engine.generics.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
                         ctx,
+                        ctx.current_module,
                         name,
                         "defgeneric",
                         &generic_modules,
-                        ctx.engine.generics.contains(ctx.current_module, name),
                         AmbiguityMessages {
                             expected: "unambiguous defgeneric resolution",
                             actual: "multiple visible defgenerics; use MODULE::name",
@@ -2377,10 +2375,10 @@ fn specific_generic(
             let owners = ctx.engine.generics.modules_for_name(name);
             let owner = resolve_unqualified_callable_module(
                 ctx,
+                crate::effects::dynamic_module(ctx),
                 name,
                 "defgeneric",
                 &owners,
-                ctx.engine.generics.contains(ctx.current_module, name),
                 AmbiguityMessages {
                     expected: "unambiguous generic function",
                     actual: "multiple visible generic functions",
@@ -3643,7 +3641,13 @@ fn dispatch_bind(
                         span: span.cloned(),
                     });
                 }
-                let visible = visible_modules_for_construct(ctx, &all_modules, "defglobal", &name);
+                let visible = visible_modules_for_construct(
+                    ctx,
+                    global_lookup_module(ctx),
+                    &all_modules,
+                    "defglobal",
+                    &name,
+                );
                 match visible.as_slice() {
                     [module_id] => *module_id,
                     [] => {
@@ -5273,12 +5277,14 @@ fn watch_argument_error(
 }
 
 /// Whether `raw` names a construct of the given watch construct type from the
-/// current module. COOL classes have no registry, so class names are accepted.
+/// module dynamic lookups resolve in. COOL classes have no registry, so class
+/// names are accepted.
 fn watch_construct_exists(ctx: &EvalContext<'_>, construct: &str, raw: &str) -> bool {
     let engine = &*ctx.engine;
+    let lookup_module = crate::effects::dynamic_module(ctx);
     if construct == "deftemplate" {
-        return engine.resolve_template_id(raw, ctx.current_module).is_ok()
-            || engine.has_implicit_template(raw, ctx.current_module);
+        return engine.resolve_template_id(raw, lookup_module).is_ok()
+            || engine.has_implicit_template(raw, lookup_module);
     }
     let Ok(parsed) = parse_qualified_name(raw) else {
         return false;
@@ -5295,7 +5301,7 @@ fn watch_construct_exists(ctx: &EvalContext<'_>, construct: &str, raw: &str) -> 
     let (modules, construct_type) = match construct {
         "defrule" => {
             // Rules are never imported: an unqualified name is local.
-            let module = module.unwrap_or(ctx.current_module);
+            let module = module.unwrap_or(lookup_module);
             return engine
                 .rule_declarations
                 .iter()
@@ -5308,10 +5314,15 @@ fn watch_construct_exists(ctx: &EvalContext<'_>, construct: &str, raw: &str) -> 
         }
         _ => return true,
     };
-    match module {
-        Some(module) => modules.contains(&module),
-        None => !visible_modules_for_construct(ctx, &modules, construct_type, local).is_empty(),
+    if let Some(module) = module {
+        return modules.contains(&module);
     }
+    let lookup_module = if construct_type == "defglobal" {
+        global_lookup_module(ctx)
+    } else {
+        lookup_module
+    };
+    !visible_modules_for_construct(ctx, lookup_module, &modules, construct_type, local).is_empty()
 }
 
 /// `str-length` — the character length of a STRING, SYMBOL or INSTANCE-NAME.
@@ -6412,7 +6423,7 @@ fn builtin_sort(
         .resolve_symbol_str(symbol)
         .unwrap_or("")
         .to_string();
-    let predicate = resolve_named_callable(ctx, &name, span)?;
+    let predicate = resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &name, span)?;
     let mut fields = Vec::new();
     for arg in &args[1..] {
         match eval_inner(ctx, arg)? {
@@ -6502,7 +6513,7 @@ fn builtin_funcall(
             })
         }
     };
-    resolve_named_callable(ctx, &fn_name, span)?;
+    resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span)?;
     // funcall evaluates its operands before invoking even a short-circuit target
     // or checking that target's arity. Resolve first so an unknown name does not
     // evaluate operands; preserve values as single arguments until dispatch.
@@ -6515,7 +6526,12 @@ fn builtin_funcall(
         validate_expanded_arity(&fn_name, arguments.len(), span)?;
     }
     // Eager operands may build a replacement before the target starts executing.
-    resolve_named_callable(ctx, &fn_name, span)?.call(ctx, &fn_name, &arguments, span.cloned())
+    resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span)?.call(
+        ctx,
+        &fn_name,
+        &arguments,
+        span.cloned(),
+    )
 }
 
 /// A function named by a runtime value (`funcall`, `sort`).
@@ -6541,10 +6557,11 @@ impl NamedCallable {
     }
 }
 
-/// Resolve a function name from the current module: builtins first, then
-/// visible deffunctions, then visible defgenerics.
+/// Resolve a function name from `lookup_module`: builtins first, then visible
+/// deffunctions, then visible defgenerics.
 fn resolve_named_callable(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     name: &str,
     span: Option<&SourceSpan>,
 ) -> Result<NamedCallable, EvalError> {
@@ -6555,10 +6572,10 @@ fn resolve_named_callable(
     let function_modules = sorted_dedup_modules(ctx.engine.functions.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
+        lookup_module,
         name,
         "deffunction",
         &function_modules,
-        ctx.engine.functions.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous deffunction resolution",
             actual: "multiple visible deffunctions; use MODULE::name",
@@ -6573,10 +6590,10 @@ fn resolve_named_callable(
     let generic_modules = sorted_dedup_modules(ctx.engine.generics.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
+        lookup_module,
         name,
         "defgeneric",
         &generic_modules,
-        ctx.engine.generics.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous defgeneric resolution",
             actual: "multiple visible defgenerics; use MODULE::name",
@@ -6611,7 +6628,7 @@ pub(crate) fn call_names_user_callable(ctx: &EvalContext<'_>, name: &str) -> boo
             });
     }
     matches!(
-        resolve_named_callable(ctx, name, None),
+        resolve_named_callable(ctx, ctx.current_module, name, None),
         Ok(NamedCallable::Function(..) | NamedCallable::Generic(..))
     )
 }

@@ -559,13 +559,13 @@ activations continue. At an ordinary expression root with no constructs in
 use, clear removes constructs, restores `initial-fact` as f-0, and selects
 MAIN; the next user assertion is f-1. A root clear or reset, including one
 inside `eval` source, also selects MAIN for dynamic source that the enclosing
-expression evaluates afterwards (`build`, `eval`, `assert-string`, fact files
-and construct lookups by name), so a later `build` defines into MAIN as in
-CLIPS. As in CLIPS, the
-expression's own function and template references stay bound to the module
-it was parsed in. Inside a rule, later dynamic source still resolves in the
-rule's module, where CLIPS uses MAIN after the reset. Source clear preserves queued input,
-printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
+expression evaluates afterwards (`build`, `eval`, `assert-string`, fact files,
+`save-facts` selectors and construct lookups by name such as `funcall`, `sort`
+and construct lists), so a later `build` defines into MAIN as in CLIPS. As in
+CLIPS, the expression's own function and template references stay bound to
+the module it was parsed in. Inside a rule, later dynamic source still
+resolves in the rule's module, where CLIPS uses MAIN after the reset. Source
+clear preserves queued input, printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
 the same expression through `assert-string` does not keep its relation in use.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,

@@ -89,10 +89,12 @@ pub(crate) fn eval_call(
             format!("[ARGACCES2] Function save-facts was unable to open file {filename}.\n"),
         ));
     };
-    let module = crate::effects::dynamic_module(ctx);
     let mut selectors = Vec::new();
     for (index, argument) in args.iter().enumerate().skip(2) {
         let value = evaluator::eval_inner(ctx, argument)?;
+        // As in CLIPS, each selector is checked in the module current once it
+        // has evaluated, so one that runs a root `reset` resolves in MAIN.
+        let module = crate::effects::dynamic_module(ctx);
         let Value::Symbol(symbol) = value else {
             // CLIPS reports a selector that is not a SYMBOL and continues.
             return Ok(notice(
@@ -121,6 +123,7 @@ pub(crate) fn eval_call(
         }
         selectors.push(name);
     }
+    let module = crate::effects::dynamic_module(ctx);
     match save(ctx.engine, module, file, visible, &selectors) {
         Ok(()) => Ok(boolean(ctx, true)),
         Err(_) => Ok(notice(
