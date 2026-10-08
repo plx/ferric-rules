@@ -134,7 +134,10 @@ are distinct, and nested multifields are supported up to
 `.void`, including nested instances, before allocating C values; it represents
 an absent result rather than durable fact data. Use an application symbol such
 as `.symbol("nil")` for a stored sentinel. External addresses have no Swift
-representation and are rejected explicitly. Embedded NUL text is rejected at C string/value boundaries instead
+representation and are rejected explicitly. Rule-created fact addresses (`?f`,
+including `<Dummy Fact>` slot defaults and addresses inside multifields) are
+rejected through the C ABI as well, so `facts()` throws while any fact holds
+one. Use `FactID`s and application keys instead. Embedded NUL text is rejected at C string/value boundaries instead
 of being silently truncated. `FactID` retains the full unsigned 64-bit native ID and belongs to one engine
 instance. Reset and restore invalidate old IDs; query new IDs and persist
 application keys instead of raw fact IDs. Copied symbol/string values are owned

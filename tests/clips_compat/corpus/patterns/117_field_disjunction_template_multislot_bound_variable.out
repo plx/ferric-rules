@@ -1,0 +1,6 @@
+pick b 1 a
+pick b 1 b
+has c
+lacks c
+every b
+done

@@ -2,24 +2,54 @@
 
 use ferric_rules_core::binding::{BindingSet, VarMap};
 use ferric_rules_core::Value;
-use ferric_rules_parser::SlotType;
+use ferric_rules_parser::{ActionExpr, SlotType};
 
 use crate::evaluator::{self, CallableLocals, EvalContext, EvalError, RuntimeExpr};
 use crate::modules::ModuleId;
 use crate::templates::{DynamicSlotDefault, RegisteredTemplate};
 use crate::Engine;
 
-pub(crate) struct SlotEvaluationError {
-    pub index: usize,
-    pub error: EvalError,
+/// Where one slot's value comes from. Callers list one source per slot in
+/// declaration order, so explicit fields and omitted defaults interleave.
+pub(crate) enum SlotSource<'a> {
+    /// A host value the caller has already checked against the slot.
+    Supplied(Value),
+    /// Prepared runtime expressions, such as a deffacts slot.
+    Exprs(&'a [RuntimeExpr]),
+    /// Source fields of an RHS assertion, converted when their slot is reached.
+    Actions(&'a [ActionExpr]),
+    /// The template default: a dynamic default is evaluated, a static one copied.
+    Default,
 }
 
-fn invalid_slot(name: &str, reason: impl Into<String>) -> EvalError {
-    EvalError::UnsupportedOperation {
-        operation: format!("template slot `{name}`"),
-        reason: reason.into(),
-        span: None,
+/// Each entry point reports a constraint or shape violation in its own form;
+/// evaluation failures keep their original error.
+pub(crate) enum SlotFailure {
+    Invalid(String),
+    Eval(EvalError),
+}
+
+impl From<EvalError> for SlotFailure {
+    fn from(error: EvalError) -> Self {
+        Self::Eval(error)
     }
+}
+
+pub(crate) struct SlotEvaluationError {
+    pub index: usize,
+    pub failure: SlotFailure,
+}
+
+/// How a void result (such as `printout`'s) is treated in a slot expression.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoidPolicy {
+    /// Supplied slot fields: a void multislot element is omitted.
+    Omit,
+    /// Dynamic defaults: a void single-field value becomes `nil`, and a void
+    /// multislot element is omitted.
+    NilOrOmit,
+    /// Static defaults: CLIPS 6.30 rejects any void result (CSTRNCHK1).
+    Reject,
 }
 
 /// Evaluate one complete slot; multifield expressions splice into the aggregate.
@@ -29,35 +59,61 @@ fn evaluate_expressions(
     slot_type: SlotType,
     name: &str,
     expressions: &[RuntimeExpr],
-    void_as_nil: bool,
-) -> Result<Value, EvalError> {
+    void_policy: VoidPolicy,
+) -> Result<Value, SlotFailure> {
     if slot_type == SlotType::Single {
         let [expression] = expressions else {
-            return Err(invalid_slot(name, "requires exactly one scalar expression"));
+            return Err(SlotFailure::Invalid(format!(
+                "single-field slot `{name}` requires exactly one scalar expression"
+            )));
         };
         let mut value = evaluator::eval_inner(ctx, expression)?;
-        if void_as_nil && matches!(value, Value::Void) {
+        if void_policy == VoidPolicy::NilOrOmit && matches!(value, Value::Void) {
             value = Value::Symbol(
                 ctx.engine
                     .symbol_table
                     .intern_symbol("nil", ctx.engine.config.string_encoding)
-                    .map_err(|error| invalid_slot(name, error.to_string()))?,
+                    .map_err(|error| SlotFailure::Invalid(error.to_string()))?,
             );
         }
         if matches!(value, Value::Multifield(_) | Value::Void) {
-            return Err(invalid_slot(name, "requires one scalar value"));
+            return Err(SlotFailure::Invalid(format!(
+                "single-field slot `{name}` requires one scalar value"
+            )));
         }
         return Ok(value);
     }
     let mut fields = ferric_rules_core::Multifield::new();
+    let mut produced_void = false;
     for expression in expressions {
         match evaluator::eval_inner(ctx, expression)? {
             Value::Multifield(values) => fields.extend(values.iter().cloned()),
-            Value::Void => {}
+            Value::Void => produced_void = true,
             value => fields.push(value),
         }
     }
+    // Like CLIPS, every element runs before the whole default is checked.
+    if produced_void && void_policy == VoidPolicy::Reject {
+        return Err(SlotFailure::Invalid(format!(
+            "static default for multislot `{name}` produced no value"
+        )));
+    }
     Ok(Value::Multifield(Box::new(fields)))
+}
+
+fn evaluate_actions(
+    ctx: &mut EvalContext<'_>,
+    slot_type: SlotType,
+    name: &str,
+    fields: &[ActionExpr],
+) -> Result<Value, SlotFailure> {
+    let expressions = fields
+        .iter()
+        .map(|field| {
+            evaluator::from_action_expr(field, &mut ctx.engine.symbol_table, &ctx.engine.config)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    evaluate_expressions(ctx, slot_type, name, &expressions, VoidPolicy::Omit)
 }
 
 pub(crate) fn evaluate_dynamic(
@@ -65,7 +121,56 @@ pub(crate) fn evaluate_dynamic(
     default: &DynamicSlotDefault,
     slot_type: SlotType,
     name: &str,
+) -> Result<Value, SlotFailure> {
+    with_dynamic_context(ctx, default, |child| {
+        evaluate_expressions(
+            child,
+            slot_type,
+            name,
+            &default.expressions,
+            VoidPolicy::NilOrOmit,
+        )
+    })
+    .map_err(|failure| match failure {
+        SlotFailure::Eval(error) => SlotFailure::Eval(evaluator::contain_control_signals(error)),
+        invalid @ SlotFailure::Invalid(_) => invalid,
+    })
+}
+
+/// Evaluate a dynamic default as `deftemplate-slot-default-value` reports it.
+/// Like CLIPS, a single expression for a single-field slot keeps its result,
+/// even a void or multifield one; otherwise the results are spliced into a
+/// multifield and void results are omitted. No slot shape or constraint is
+/// checked: that happens only when a fact is asserted.
+pub(crate) fn evaluate_dynamic_raw(
+    ctx: &mut EvalContext<'_>,
+    default: &DynamicSlotDefault,
+    slot_type: SlotType,
 ) -> Result<Value, EvalError> {
+    with_dynamic_context(ctx, default, |child| {
+        if let (SlotType::Single, [expression]) = (slot_type, default.expressions.as_slice()) {
+            return evaluator::eval_inner(child, expression);
+        }
+        let mut fields = ferric_rules_core::Multifield::new();
+        for expression in &default.expressions {
+            match evaluator::eval_inner(child, expression)? {
+                Value::Multifield(values) => fields.extend(values.iter().cloned()),
+                Value::Void => {}
+                value => fields.push(value),
+            }
+        }
+        Ok(Value::Multifield(Box::new(fields)))
+    })
+    .map_err(evaluator::contain_control_signals)
+}
+
+/// Run `evaluate` in a dynamic default's own frame: the default's module,
+/// fresh locals, and the caller's depth, budget and global scope.
+fn with_dynamic_context<T>(
+    ctx: &mut EvalContext<'_>,
+    default: &DynamicSlotDefault,
+    evaluate: impl FnOnce(&mut EvalContext<'_>) -> T,
+) -> T {
     let bindings = BindingSet::new();
     let variables = VarMap::new();
     let mut locals = CallableLocals::default();
@@ -73,7 +178,7 @@ pub(crate) fn evaluate_dynamic(
     // global reference observes the assertion caller. A called function gets
     // its own ordinary lexical global scope from execute_callable_body.
     let mut child = EvalContext {
-        global_module: Some(ctx.global_module.unwrap_or(ctx.current_module)),
+        global_module: Some(evaluator::global_lookup_module(ctx)),
         engine: ctx.engine,
         bindings: &bindings,
         var_map: &variables,
@@ -85,22 +190,64 @@ pub(crate) fn evaluate_dynamic(
         compact_fact_bindings: None,
         allow_engine_effects: ctx.allow_engine_effects,
     };
+    // A default is not lexically inside the asserting callable or loop, so a
+    // `return` or `break` reached through `funcall` must not escape into it:
+    // callers contain control signals in the result.
+    // The counter makes `clear` refuse while a fact initializer is running.
     child.engine.active_fact_initializers += 1;
-    let result = evaluate_expressions(&mut child, slot_type, name, &default.expressions, true);
+    let result = evaluate(&mut child);
     child.engine.active_fact_initializers -= 1;
     result
 }
 
-/// Explicit fields and missing defaults interleave in slot declaration order.
-/// Every caller supplies indexed overrides already checked for duplicate slots.
+/// One source per slot for a prepared fact, whose overrides may be stored out
+/// of declaration order (older snapshots) and are checked for duplicates here.
+pub(crate) fn prepared_sources<'a>(
+    template: &RegisteredTemplate,
+    overrides: &'a [(usize, Vec<RuntimeExpr>)],
+) -> Result<Vec<SlotSource<'a>>, SlotEvaluationError> {
+    let mut sources = default_sources(template);
+    for (index, expressions) in overrides {
+        let entry = sources.get_mut(*index).ok_or_else(|| SlotEvaluationError {
+            index: *index,
+            failure: SlotFailure::Invalid(format!(
+                "unknown slot position {index} in template `{}`",
+                template.name
+            )),
+        })?;
+        if !matches!(
+            std::mem::replace(entry, SlotSource::Exprs(expressions)),
+            SlotSource::Default
+        ) {
+            return Err(SlotEvaluationError {
+                index: *index,
+                failure: SlotFailure::Invalid(format!(
+                    "duplicate slot `{}` in template `{}`",
+                    template.slot_names[*index], template.name
+                )),
+            });
+        }
+    }
+    Ok(sources)
+}
+
+/// Every slot of `template` taking its default.
+pub(crate) fn default_sources<'a>(template: &RegisteredTemplate) -> Vec<SlotSource<'a>> {
+    std::iter::repeat_with(|| SlotSource::Default)
+        .take(template.slot_names.len())
+        .collect()
+}
+
+/// Evaluate every slot in declaration order and validate each computed value.
+/// Supplied values were checked by the caller and are moved into place as-is.
 pub(crate) fn evaluate_slots(
     ctx: &mut EvalContext<'_>,
     template: &RegisteredTemplate,
-    overrides: &[(usize, Vec<RuntimeExpr>)],
+    sources: Vec<SlotSource<'_>>,
 ) -> Result<Vec<Value>, SlotEvaluationError> {
     let owns_budget = ctx.engine.config.begin_action_loop_budget_if_inactive();
     ctx.engine.active_fact_initializers += 1;
-    let result = evaluate_slots_inner(ctx, template, overrides);
+    let result = evaluate_slots_inner(ctx, template, sources);
     ctx.engine.active_fact_initializers -= 1;
     if owns_budget {
         ctx.engine.config.end_action_loop_budget();
@@ -111,39 +258,33 @@ pub(crate) fn evaluate_slots(
 fn evaluate_slots_inner(
     ctx: &mut EvalContext<'_>,
     template: &RegisteredTemplate,
-    overrides: &[(usize, Vec<RuntimeExpr>)],
+    sources: Vec<SlotSource<'_>>,
 ) -> Result<Vec<Value>, SlotEvaluationError> {
-    let mut by_index = vec![None; template.slot_names.len()];
-    for (index, expressions) in overrides {
-        let entry = by_index
-            .get_mut(*index)
-            .ok_or_else(|| SlotEvaluationError {
-                index: *index,
-                error: invalid_slot(&template.name, "unknown slot position"),
-            })?;
-        if entry.replace(expressions.as_slice()).is_some() {
-            return Err(SlotEvaluationError {
-                index: *index,
-                error: invalid_slot(&template.slot_names[*index], "duplicate slot"),
-            });
-        }
-    }
-    let mut values = Vec::with_capacity(by_index.len());
-    for (index, explicit) in by_index.into_iter().enumerate() {
+    debug_assert_eq!(sources.len(), template.slot_names.len());
+    let mut values = Vec::with_capacity(sources.len());
+    for (index, source) in sources.into_iter().enumerate() {
         let name = &template.slot_names[index];
-        let result = if let Some(expressions) = explicit {
-            evaluate_expressions(ctx, template.slot_types[index], name, expressions, false)
-        } else if let Some(default) = &template.dynamic_defaults[index] {
-            evaluate_dynamic(ctx, default, template.slot_types[index], name)
-        } else {
-            Ok(template.defaults[index].clone())
+        let slot_type = template.slot_types[index];
+        let result = match source {
+            SlotSource::Supplied(value) => {
+                values.push(value);
+                continue;
+            }
+            SlotSource::Exprs(expressions) => {
+                evaluate_expressions(ctx, slot_type, name, expressions, VoidPolicy::Omit)
+            }
+            SlotSource::Actions(fields) => evaluate_actions(ctx, slot_type, name, fields),
+            SlotSource::Default => match &template.dynamic_defaults[index] {
+                Some(default) => evaluate_dynamic(ctx, default, slot_type, name),
+                None => Ok(template.defaults[index].clone()),
+            },
         };
-        let value = result.map_err(|error| SlotEvaluationError { index, error })?;
+        let value = result.map_err(|failure| SlotEvaluationError { index, failure })?;
         template
             .validate_slot(index, &value)
             .map_err(|reason| SlotEvaluationError {
                 index,
-                error: invalid_slot(name, reason),
+                failure: SlotFailure::Invalid(reason),
             })?;
         values.push(value);
     }
@@ -155,10 +296,10 @@ impl Engine {
     pub(crate) fn evaluate_template_defaults(
         &mut self,
         template: &RegisteredTemplate,
-        overrides: &[(usize, Vec<RuntimeExpr>)],
+        sources: Vec<SlotSource<'_>>,
         module: ModuleId,
     ) -> Result<Vec<Value>, SlotEvaluationError> {
-        self.with_default_context(module, |ctx| evaluate_slots(ctx, template, overrides))
+        self.with_default_context(module, |ctx| evaluate_slots(ctx, template, sources))
     }
 
     pub(crate) fn evaluate_static_default(
@@ -167,9 +308,14 @@ impl Engine {
         name: &str,
         expressions: &[RuntimeExpr],
         module: ModuleId,
-    ) -> Result<Value, EvalError> {
+    ) -> Result<Value, String> {
         self.with_default_context(module, |ctx| {
-            evaluate_expressions(ctx, slot_type, name, expressions, false)
+            evaluate_expressions(ctx, slot_type, name, expressions, VoidPolicy::Reject)
+        })
+        .map_err(|failure| match failure {
+            SlotFailure::Invalid(reason) => reason,
+            // Static defaults evaluate at a root: contain escaped control signals.
+            SlotFailure::Eval(error) => evaluator::contain_control_signals(error).to_string(),
         })
     }
 
@@ -182,14 +328,17 @@ impl Engine {
         let bindings = BindingSet::new();
         let variables = VarMap::new();
         let mut locals = CallableLocals::default();
+        // A template defined or asserted by an engine effect counts against
+        // the effect's evaluator depth instead of starting a fresh root.
+        let (call_depth, expression_depth) = self.eval_depth_floor;
         let mut ctx = EvalContext {
             global_module: None,
             engine: self,
             bindings: &bindings,
             var_map: &variables,
             callable_locals: Some(&mut locals),
-            call_depth: 0,
-            expression_depth: 0,
+            call_depth,
+            expression_depth,
             current_module: module,
             method_chain: None,
             compact_fact_bindings: None,

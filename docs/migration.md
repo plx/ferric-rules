@@ -21,6 +21,11 @@ reset after global initialization; globals defined later and callable
 replacements affect those values. Loading a deffacts definition has no expression side
 effects. `load-facts` accepts literal data only.
 
+Rust code that matches or constructs parser fact types must handle the new
+`FactValue::Expression` variant and the `FactSlotValue::ordered_expression`
+field. `EngineError` has a new `FactInitialization { definition, reason }`
+variant, which `Engine::reset()` now returns when a deffacts initializer fails.
+
 A definition is identified by module and local name. Successful replacement
 moves it to the end of that module's definition order; reset visits modules
 in creation order, then their definitions in order. `undeffacts` removes
@@ -85,6 +90,15 @@ preserve multifields as single arguments. Unknown calls in function and method
 bodies now fail during loading, including calls in branches that never execute.
 Forward references within a load remain supported.
 
+Calls to a deffunction or generic from rule RHS actions, function and method
+bodies, and method queries now fail during loading unless the callable is
+visible in the calling module: defined there, or exported by its module and
+imported by the caller (see [Export/Import](compatibility.md#exportimport)).
+Previously the loader accepted an unqualified call to a callable defined in
+any module. Module-qualified calls such as `(OTHER::f)` to a nonexistent
+module or callable also fail during loading instead of at run time. Add the missing
+`export`/`import` declarations to programs that relied on the old lookup.
+
 Parser `MethodParameter` struct literals need a `query` field. `MethodConstruct`
 and runtime `RegisteredMethod` also store wildcard type/query restrictions;
 `RegisteredMethod` stores one optional query per fixed parameter. Use `None`
@@ -98,17 +112,19 @@ Fact mutation, `halt`, `focus`, `reset`, `clear`, and action queries now work
 inside expressions, deffunctions, and methods. `assert`, `modify`, and
 `duplicate` return typed fact addresses or `FALSE` when insertion is
 suppressed. `modify` replaces the original assertion even when its values do
-not change. Missing mutation targets return `FALSE` for modify/duplicate
-and are ignored by retract. Effects completed before a later evaluation error
-remain visible.
+not change. A missing index makes modify/duplicate return `FALSE` without
+evaluating their slot overrides, and retract ignores missing targets; other
+unresolved targets behave as described under typed fact addresses below.
+Effects completed before a later evaluation error remain visible.
 
 Source `(reset)` now executes immediately, preserves output and active local
 bindings, and continues the current RHS or callable. It also allows the run to
 select new activations. A nested reset inside reset-time initialization is
-ignored. Source `(clear)` inside an active rule or callable removes facts and
-restarts public fact numbering at zero, then preserves in-use constructs and
-continues execution. During fact initialization it refuses before removing
-facts. At the prompt, with no constructs in use, clear removes constructs and
+ignored. Source `(clear)` inside an active rule removes facts and restarts
+public fact numbering at zero, then preserves in-use constructs and continues
+execution. During fact initialization, in a callable called outside a rule,
+or when the prompt expression calls a deffunction or generic function, it
+refuses before removing facts. At the prompt, with no constructs in use, clear removes constructs and
 restores `initial-fact` as f-0; the next user assertion is f-1. Source clear
 preserves input and output. Public host `reset()` and `clear()` retain their
 output-clearing and construct-removal contracts.
@@ -123,17 +139,35 @@ explicitly when constructing a replacement.
 
 ## Typed fact addresses
 
-`Value` and `AtomKey` have a new `FactAddress` variant. Exhaustive matches must
-handle it. Rule variables bound to facts and fact-query results now carry this
+`Value` and `AtomKey` have a new `FactAddress` variant, and so does the
+parser's `SlotValueType`. `EngineError` has a new `FactEpochExhausted` variant,
+which `reset` returns when the working-memory epoch counter is exhausted.
+Exhaustive matches on these enums need new arms. For #403, the public
+`ferric_rules_runtime::evaluator::EvalError` enum likewise gains
+`MathDomain`, `MathOverflow` and `MathSingularity` variants. Rule variables bound to facts and fact-query results now carry this
 type instead of integers containing arena keys. It prints `<Fact-N>` using the
 public index retained at assertion time; FACT-ADDRESS slot defaults print
 `<Dummy Fact>`. Integer fact designators always mean public indices.
 
 Addresses are neither INTEGER nor NUMBER. Arithmetic, `str-cat`, and `sym-cat`
-reject them. Missing or negative indices make `retract` a no-op and
-`fact-slot-value` return `FALSE`; invalid operand types and live invalid slots
-still report errors. `FactAddress` equality uses the assertion identity and
-working-memory epoch, so stale addresses cannot alias facts created after reset.
+reject them. Missing or negative indices, stale addresses, and computed
+designators of any other type make `fact-existp`, `fact-relation`,
+`fact-slot-names`, and `fact-slot-value` return `FALSE` (`fact-index` returns
+`-1` for anything but an address), and the rule continues; `fact-slot-value`
+does not evaluate its slot argument in that case. On a live fact, an invalid
+slot name or a computed slot argument that is not a symbol, string, or instance
+name stops the rule; CLIPS 6.30 accepts only a symbol there. As in CLIPS, a
+literal STRING or FLOAT designator to these functions or `retract`, any literal
+`fact-index` argument, and a literal STRING slot name to `fact-slot-value`
+reject the containing rule at load with `ARGACCES5`. `retract` skips missing targets, stops evaluating
+its targets at a negative index, and stops the rule for a wrong-type target
+after retracting the rest; later deffunction and generic-function targets are
+not called, while other targets are still retracted, including builtin targets
+such as `progn$`, `switch`, and `funcall` that CLIPS 6.30 skips. `modify` and
+`duplicate` given a missing index do nothing; negative indices, stale
+addresses, and wrong-type targets stop the rule.
+`FactAddress` equality uses the assertion identity and working-memory epoch, so
+stale addresses cannot alias facts created after reset.
 
 Rust host assertions reject fact-address values even when nested or copied from
 an owned fact. C, Python, and Node value conversion also rejects them. Use host
@@ -187,10 +221,33 @@ compiled patterns did not check field counts. Restore an old snapshot with the
 version that produced it, export the application data, and assert it into a
 new engine; see [snapshots.md](snapshots.md).
 
+## Pre-1.0 rule declarations and focus
+
+- `focus`, auto-focus, and the host `push_focus` APIs (Rust
+  `Engine::push_focus`, Python `push_focus`, Node `pushFocus`) leave the stack
+  unchanged when the module is already on top, as CLIPS does. Pushing `A`
+  twice now leaves the stack that the host accessors (Rust
+  `Engine::get_focus_stack`, Python `focus_stack`) return bottom-first as
+  `["MAIN", "A"]`, not `["MAIN", "A", "A"]`; a module deeper in the stack may
+  still be pushed again.
+- `ferric_rules_parser::stage2::RuleConstruct` has two new public fields for
+  `(declare (salience <expression>) (auto-focus TRUE|FALSE))`. Struct
+  literals must add `salience_expression: None, auto_focus: false` to keep the
+  previous meaning.
+- Hosts that drive `ferric_rules_core::ReteNetwork` directly must drain its
+  unified event queue in order with `pop_pending_event`: resolve each
+  `PendingReteEvent::Predicate` with `resolve_predicate_match`, each
+  `PendingReteEvent::NccLeft` with `resolve_ncc_left_activation`, and handle
+  `PendingReteEvent::AutoFocus` notices, until the queue is empty. NCC
+  admissions are queued behind pending predicates whether or not any rule uses
+  auto-focus, so NCC rules never activate for a host that only drains
+  predicates. `pop_pending_predicate_match` remains for compatibility but
+  returns `None` while an NCC admission precedes the next predicate.
+
 ## Pre-1.0 CLIPS behavior fixes
 
-The fixes for issues #320 to #346 make these cases behave like CLIPS 6.30.
-Programs that relied on the earlier behavior need changes:
+The fixes for issues #320 to #346, #395, #396, #403, #404 and #406 make these cases behave
+like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
 
 - An ordered pattern matches only facts with the same number of fields:
   `(data ?x)` no longer matches `(data 1 2)`. Use `$?` to match the rest.
@@ -203,6 +260,12 @@ Programs that relied on the earlier behavior need changes:
   returns only the first field of its line.
 - `format` rejects an argument count that does not match its directives, `%s`
   of a number, and a malformed directive such as `%5-3d`.
+- `format` writes its result to its logical name unless that name is `nil`, so
+  `(printout t (format t ...) crlf)` now prints the text twice; use `nil` when
+  the result goes into another output call. `printout` and `println` write each
+  argument as soon as it is evaluated, so output from nested calls appears in
+  place and text written before an argument error stays visible.
+  `(printout nil ...)` no longer evaluates its arguments.
 - `str-cat` and `sym-cat` spell FLOATs like `printout` (`(str-cat 1e20)` is
   `"1e+20"`), and `printout` quotes STRING fields inside a multifield.
 - `round` breaks half ties toward the lower integer, and `min`/`max` return the
@@ -222,6 +285,95 @@ Programs that relied on the earlier behavior need changes:
   parameter such as `((?x))` (write `(?x)`), a single-field slot pattern with
   several field constraints such as `(color red green)`, and a slot that
   appears twice in one template pattern.
+- A variable must be bound before an `|` alternative uses it, so
+  `(item ?x|99)` and `(mnj (x ?x|?y) (y ?x|?y))` are now load errors, as in
+  CLIPS. `?x&a|b` binds `?x` for every alternative. Overlapping alternatives
+  no longer fire twice, and `not`, `exists` and `forall` test the whole
+  disjunction.
+- Source files, the REPL and `load-facts` scan numbers like `explode$`: a
+  lexeme that starts with a digit, sign or `.` runs to the next CLIPS
+  delimiter. `(place 1st)` now has one field, not `1 st`; `1-2`, `0x10`,
+  `12abc` and `5e` are single SYMBOLs; `1.`, `.5` and `1.e3` are FLOATs (`.5`
+  was a SYMBOL). Integers outside the signed 64-bit range saturate instead of
+  rejecting the file. A `;` comment ends at CR as well as LF. The parser no
+  longer reports `ParseErrorKind::InvalidNumber`.
+- Top-level `assert` evaluates field expressions and globals in the module
+  current at its source position, and deffacts evaluate theirs at each reset
+  (see [the seed and reset changes](#pre-10-seed-and-reset-changes)). A
+  statically invalid field rejects the whole `assert` command; an evaluation
+  error keeps the facts it asserted earlier.
+- A built-in call with a known wrong argument count or a literal argument of
+  the wrong type, such as `(abs 1 2)`, `(eq a)` or `(min 1 a)`, now rejects the
+  containing construct at load with `ARGACCES4` or `ARGACCES5`. Other
+  definitions in the source still load.
+- Math domain, overflow and singularity errors now stop the rule with
+  `EMATHFUN1`, `EMATHFUN2` or `EMATHFUN3` instead of returning `nan` or `inf`:
+  `(sqrt -1)`, `(log 0)` and `(tan (/ (pi) 2))` are errors. A NaN argument
+  still returns `nan`, as in CLIPS.
+- `length` and `length$` count the bytes of a STRING or SYMBOL, and `length$`
+  accepts those lexemes as well as a multifield.
+- `str-cat` and `sym-cat` reject multifield arguments.
+- `funcall` evaluates all its operands before calling its target, including
+  those of short-circuit targets such as `and` and `eq`. A module-qualified
+  name, or a name that reaches no visible function, prints `[ARGACCES5]` and
+  returns FALSE instead of stopping the evaluation.
+- `eq` and `neq` take two or more arguments and compare every later argument
+  with the first.
+- `mod` with a FLOAT operand returns `a - trunc(a / b) * b`, as CLIPS does.
+- The new built-ins (`random`, `seed`, `time`, `eval`, `build`,
+  `assert-string`, `str-assert`, `progn`, `expand$`, `delete-member$`,
+  `replace-member$`, the `deftemplate-slot-*` functions,
+  `get-deftemplate-list`, `get-defglobal-list`, `get-defrule-list`,
+  `next-methodp`, `override-next-method` and `call-specific-method`) take
+  precedence over user deffunctions and defgenerics of the same name, which are
+  no longer called. Rename such functions.
+
+## Pre-1.0 shell and inspection changes
+
+The fixes for issue #413 change these command-line and inspection behaviors:
+
+- `ferric run` still loads a construct-only file, resets, and runs it. A file
+  with any top-level procedural form, including `assert`, `printout`, or
+  `watch`, is now a script: its forms run in source order with no implicit
+  reset or run. A script that relied on the old implicit reset/run loads its
+  rules but never fires them, and still exits 0. Add explicit `(reset)` and
+  `(run)` forms where the program should start.
+- `ferric run` reads piped standard input when `read` or `readline` asks for a
+  line, instead of ignoring it, and prints every standard logical channel to
+  stdout in emission order, not only `t`. A program that never reads leaves
+  its standard input unread. A read error or invalid UTF-8 prints one warning
+  and then reads as end of input. Output printed before a read, such as a
+  prompt, reaches stdout before the read waits for input, as in CLIPS. Hosts
+  can supply the same on-demand input with `Engine::set_input_source`, and
+  receive pending output before each source read with
+  `Engine::set_before_input`.
+- The REPL's `(save "file")` command is removed. Use
+  `(save-facts "file.fct")` and `(load-facts "file.fct")`, which also work in
+  rules and expressions and reload template facts with their slot names.
+- `(agenda)` now prints CLIPS rows such as `0      pos: f-1`, with `*` for a
+  negated condition or an empty LHS and a `For a total of N activations.`
+  tally. `(agenda *)` adds module headings.
+  An empty agenda prints nothing, not `(no activations)`. `(facts)` and
+  `(rules)` print CLIPS listings with their tallies.
+- `watch` and `unwatch` previously accepted any argument, traced nothing, and
+  returned `TRUE`. They now return no value. `facts`, `rules`, and `all` trace
+  assertions, retractions, and firings; the other CLIPS 6.30 watch items are
+  accepted without effect. An unknown item, or a construct name that does not
+  name an existing construct of the right kind, stops the evaluation.
+- `load-facts` returns `FALSE` with a notice when the file cannot be opened. A
+  lexical, syntax, template, value, or source-limit error in the file stops
+  the enclosing evaluation (an RHS halts the run); facts loaded before it stay
+  asserted. The first token that does not open a fact ends the file quietly,
+  even before a later error. `save-facts` returns `FALSE` for an unknown symbol mode or a bad
+  template selector, and stops the evaluation when its mode is not a symbol.
+- Source `set-strategy` and `get-strategy` now work for `depth`, `breadth`,
+  `lex`, and `mea`; `set-strategy` returns the previous strategy and reorders
+  pending activations. An unknown strategy name writes CLIPS's `[ARGACCES5]`
+  notice and keeps the current strategy. `complexity`, `simplicity`, and
+  `random` are rejected.
+
+See [Command-line evaluation and inspection](compatibility.md#command-line-evaluation-and-inspection)
+for the full contract.
 
 ## Step 1: Check Feature Coverage
 
@@ -236,14 +388,17 @@ Review your CLIPS codebase for features that Ferric does not support:
 **Partially supported:**
 - Pattern nesting: up to four combined `not`/`exists`/`forall` levels are
   supported, subject to compiled-condition limits. Triple and four-deep
-  negation work. Single-operand `(exists (not fact-pattern))`, nested `forall`,
-  and `forall` under `not` or `exists` remain unsupported. `forall` takes exactly one fact
+  negation work, and `and`/`or` groups nest freely inside each other, `not`,
+  and `exists`. Nested `forall` and `forall` under `not` or `exists` remain
+  unsupported. `forall` takes exactly one fact
   condition and one fact or test-only requirement; other operands are rejected
   with a source location. Positive `and`/`or` groups accept fact-address
-  bindings, and `(not (or ...))` is supported.
-  Snapshot validation has a separate four-level NCC dependency limit; nested
-  multi-pattern `exists` can load successfully yet exceed that persistence
-  limit. See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
+  bindings, and `(not (or ...))`, `(exists (not ...))` and `(exists (or ...))`
+  are supported.
+  Snapshot validation allows eight compiled NCC dependency levels, enough for
+  every rule within the four-level source limit (each `exists` compiles to a
+  double negation). See
+  [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
 
 If your rules use only `defrule`, `deftemplate`, `deffacts`, `deffunction`,
 `defglobal`, `defmodule`, `defgeneric`, and `defmethod` with standard
@@ -301,21 +456,6 @@ To select matching rules with the condition instead, use a `test` CE:
     (value ?x) (test (> ?x 10)) => (printout t "big" crlf))
 (defrule classify-small
     (value ?x) (test (<= ?x 10)) => (printout t "small" crlf))
-```
-
-### Replace (exists (not ...))
-
-```clp
-;; CLIPS (unsupported nesting)
-(exists (not (done ?x)))
-
-;; Ferric: use a helper rule
-(defrule find-undone
-    (item ?x) (not (done ?x))
-    => (assert (has-undone-item)))
-
-(defrule process-undone
-    (has-undone-item) => ...)
 ```
 
 ## Step 4: Review format Usage
@@ -458,10 +598,10 @@ was never populated.
 | `defrule` | Supported |
 | `deftemplate` | Supported |
 | `deffacts` | Supported |
-| `deffunction` | Supported (evaluator expressions; no fact mutation/control actions) |
+| `deffunction` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `defglobal` | Supported |
 | `defmodule` | Supported |
-| `defgeneric` / `defmethod` | Supported (evaluator expressions; no fact mutation/control actions) |
+| `defgeneric` / `defmethod` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
 | `printout` / `format` / `read` / `readline` | Supported |
 | `not` / `exists` / `forall` / `test` | Supported within the four-level source nesting and quantified-operand limits above |
@@ -508,9 +648,12 @@ dynamic-constraint setting. A failed `modify` leaves the original fact intact;
 a failed RHS action produces a diagnostic and stops that RHS. Effects from
 expressions evaluated before an error remain visible.
 
-`FACT-ADDRESS` and `INSTANCE-NAME` values and constraints are supported;
-external-address slots still require `(default ?NONE)` or an explicit valid
-value because Ferric does not manufacture host identity tokens. For the few
+`FACT-ADDRESS` and `INSTANCE-NAME` values and constraints are supported; a
+derived `FACT-ADDRESS` default is `<Dummy Fact>`. `INSTANCE-ADDRESS` and
+instance-class type declarations are rejected because the supported value model
+has no corresponding tagged value. External-address slots still require
+`(default ?NONE)` or an explicit valid value because Ferric does not
+manufacture host identity tokens. For the few
 CLIPS 6.30 derivation cases that produce a value violating their own constraint,
 Ferric chooses a valid default; see [compatibility.md](compatibility.md).
 
@@ -523,9 +666,10 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
   See [host-api.md](host-api.md).
 - Snapshots use a bounded, versioned envelope (schema 13); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
-  unversioned, schema-1, schema-2 and schema-3 snapshots are rejected explicitly. Export durable
-  application data through the producing version before upgrading; see
-  [snapshots.md](snapshots.md).
+  unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6,
+  schema-7, schema-8, schema-9, schema-10, schema-11 and schema-12 snapshots
+  are rejected explicitly. Export durable application data through the producing version
+  before upgrading; see [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
   Python `None`, Node `null`, and Swift `.void` cannot be stored in facts.

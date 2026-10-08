@@ -167,20 +167,28 @@ for (const source of [
   });
 }
 
-for (const expression of ["?missing", "(missing-function)"]) {
-  test(`assertString keeps completed facts when a later expression fails: ${expression}`, () => {
-    const e = new Engine();
-    try {
-      assert.throws(() => e.assertString(`(before (+ 1 2)) (bad ${expression}) (after)`));
-      const facts = e.facts();
-      assert.strictEqual(facts.length, 1);
-      assert.strictEqual(facts[0].relation, "before");
-      assert.deepStrictEqual(facts[0].fields, [3]);
-    } finally {
-      e.close();
-    }
-  });
-}
+test("assertString keeps completed facts when a later expression fails", () => {
+  const e = new Engine();
+  try {
+    assert.throws(() => e.assertString("(before (+ 1 2)) (bad ?missing) (after)"));
+    const facts = e.facts();
+    assert.strictEqual(facts.length, 1);
+    assert.strictEqual(facts[0].relation, "before");
+    assert.deepStrictEqual(facts[0].fields, [3]);
+  } finally {
+    e.close();
+  }
+});
+
+test("assertString asserts nothing when a later fact has a static error", () => {
+  const e = new Engine();
+  try {
+    assert.throws(() => e.assertString("(before (+ 1 2)) (bad (missing-function)) (after)"));
+    assert.deepStrictEqual(e.facts(), []);
+  } finally {
+    e.close();
+  }
+});
 
 test("deffacts expression errors surface as runtime errors at reset", () => {
   const e = new Engine();

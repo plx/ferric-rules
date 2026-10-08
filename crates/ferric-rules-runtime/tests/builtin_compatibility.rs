@@ -185,6 +185,32 @@ fn valid_math_boundaries_and_clips_infinities_continue_normally() {
     );
 }
 
+// CLIPS 6.30 rejects only out-of-range arguments, so NaN propagates; a
+// negative base with a NaN exponent is still a domain error for `**`.
+#[test]
+fn nan_arguments_propagate_through_math_domain_checks() {
+    assert_eq!(
+        output(
+            r#"(defrule check => (bind ?n (- (exp 1000) (exp 1000))) (printout t
+      (sqrt ?n) "|" (asin ?n) "|" (acos ?n) "|" (acosh ?n) "|" (atanh ?n) "|"
+      (log ?n) "|" (log10 ?n) "|" (** ?n 0.5) crlf))"#
+        ),
+        "nan.0|nan.0|nan.0|nan.0|nan.0|nan.0|nan.0|nan.0\n"
+    );
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str("(defrule check => (** -2 (- (exp 1000) (exp 1000))))")
+        .unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError
+    );
+    assert!(engine
+        .action_diagnostics()
+        .iter()
+        .any(|error| error.to_string().contains("EMATHFUN1")));
+}
+
 #[test]
 fn concatenation_rejects_multifields_and_void_without_evaluating_later_operands() {
     for function in ["str-cat", "sym-cat"] {
@@ -225,6 +251,10 @@ fn invalid_builtin_calls_do_not_replace_a_rule_or_prevent_later_rules_loading() 
         ("(length$ 1)", "ARGACCES5"),
         ("(sqrt wrong)", "ARGACCES5"),
         ("(str-cat)", "ARGACCES4"),
+        ("(retract \"x\")", "ARGACCES5"),
+        ("(fact-existp 1.5)", "ARGACCES5"),
+        ("(fact-index 1)", "ARGACCES5"),
+        ("(fact-slot-value 1 \"x\")", "ARGACCES5"),
     ] {
         let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
         let errors = engine

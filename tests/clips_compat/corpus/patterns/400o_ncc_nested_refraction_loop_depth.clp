@@ -1,0 +1,5 @@
+(defglobal ?*n* = 0)
+(deffacts seed (b) (c))
+(defrule nested (not (and (a ?) (not (and (b) (c)))))
+  => (bind ?*n* (+ ?*n* 1)) (printout t nested " " ?*n* crlf)
+     (if (< ?*n* 5) then (assert (a ?*n*))))

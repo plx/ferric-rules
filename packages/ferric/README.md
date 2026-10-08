@@ -32,7 +32,7 @@ integer range must use signed 64-bit `bigint`. Unsafe integral numbers are
 rejected, including values formerly guessed as floats. Run limits and counts
 are safe-integer numbers. Raw fact IDs are opaque bigint handles belonging
 to their engine; persist application keys and query fresh IDs after restore.
-Stored null/void values, including nested ones, are rejected. Use a `FerricSymbol("nil")` for the CLIPS symbol. Multifields allow at most 32 nested levels and one million values per assertion. External addresses are rejected instead of silently becoming null.
+Stored null/void values, including nested ones, are rejected. Use a `FerricSymbol("nil")` for the CLIPS symbol. Multifields allow at most 32 nested levels and one million values per assertion. External addresses are rejected instead of silently becoming null. Rule-created fact addresses (`?f`, including `<Dummy Fact>` slot defaults and addresses inside multifields) are rejected too: reading a global or fact holding one throws, and `facts()` fails as a whole while any fact holds one (`findFacts()` when one of its facts does). Use fact IDs and application keys instead.
 
 Configuration and format selectors reject fractional/out-of-range numbers.
 `maxCallDepth` accepts integers from zero through 4294967295; zero disallows

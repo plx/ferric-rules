@@ -204,3 +204,119 @@ fn restored_declaration_membership_deduplicates_and_clear_discards_old_names() {
         assert_eq!(restored.get_output("t"), Some("(initial-fact new)\n"));
     }
 }
+
+// CLIPS 6.30 treats initial-fact as a deftemplate without slots: `()`,
+// FALSE, then `[TMPLTDEF1] Invalid slot implied not defined in
+// corresponding deftemplate initial-fact.` halts the rule. An ordered
+// relation still reports its `implied` multislot.
+#[test]
+fn initial_fact_metadata_has_no_implied_slot() {
+    assert_eq!(
+        output(
+            "(defrule report => (printout t (deftemplate-slot-names initial-fact) \" \"
+               (deftemplate-slot-existp initial-fact implied) \" \"
+               (deftemplate-slot-names MAIN::initial-fact) \" \"
+               (deftemplate-slot-names go) \" \" (deftemplate-slot-existp go implied) crlf))
+             (defrule declare-go (go) =>)"
+        ),
+        "() FALSE () (implied) TRUE\n"
+    );
+    for query in [
+        "multip",
+        "singlep",
+        "types",
+        "range",
+        "cardinality",
+        "allowed-values",
+        "defaultp",
+        "default-value",
+    ] {
+        let mut engine = Engine::with_rules(&format!(
+            "(defrule report => (printout t (deftemplate-slot-{query} initial-fact implied) crlf))"
+        ))
+        .unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(engine.get_output("t").unwrap_or(""), "", "{query}");
+        assert!(
+            format!("{:?}", engine.action_diagnostics()).contains("TMPLTDEF1"),
+            "{query}"
+        );
+    }
+}
+
+// Querying a dynamic default does not check slot constraints: CLIPS 6.30
+// prints `dynamic 20`. Ferric's assertion of that default is still rejected,
+// intentionally stricter than CLIPS's default dynamic-constraint setting
+// (see the migration guide).
+#[test]
+fn dynamic_default_value_query_does_not_check_constraints() {
+    let mut engine = Engine::with_rules(
+        "(deffunction f () 20)
+         (deftemplate item (slot x (range 0 10) (default-dynamic (f))))
+         (defrule report => (printout t (deftemplate-slot-defaultp item x) \" \"
+           (deftemplate-slot-default-value item x) crlf)
+           (assert (item)))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(engine.get_output("t"), Some("dynamic 20\n"));
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("range"));
+}
+
+// The query returns the evaluated expression without the assertion-time slot
+// shape: CLIPS 6.30 prints `[]`, `(1 2) 2` and `(1 2 3)`. Asserting the
+// single-field multifield default is still rejected.
+#[test]
+fn dynamic_default_value_query_keeps_void_and_multifield_results() {
+    let mut engine = Engine::with_rules(
+        "(deffunction two () (create$ 1 2))
+         (deffunction none () (printout t \"\"))
+         (deftemplate item
+           (slot x (default-dynamic (two)))
+           (slot z (default-dynamic (none)))
+           (multislot m (default-dynamic (none) (two) 3)))
+         (defrule report =>
+           (printout t \"[\" (deftemplate-slot-default-value item z) \"]\" crlf
+             (deftemplate-slot-default-value item x) \" \"
+             (length$ (deftemplate-slot-default-value item x)) crlf
+             (deftemplate-slot-default-value item m) crlf)
+           (assert (item)))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(engine.get_output("t"), Some("[]\n(1 2) 2\n(1 2 3)\n"));
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("single-field slot `x`"));
+}
+
+// CLIPS 6.30 recovers from a missing template and from a first argument that
+// is not a SYMBOL: it prints a notice, returns `()` for the multifield-valued
+// template queries and the construct lists and FALSE otherwise, and keeps
+// running the rule. A slot name that is not a SYMBOL still halts it.
+#[test]
+fn introspection_recovers_from_missing_templates_and_invalid_first_arguments() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate p (slot x))
+         (deffunction s () \"p\")
+         (defrule report =>
+           (printout t (deftemplate-slot-types missing x) (deftemplate-slot-range missing x)
+             (deftemplate-slot-multip missing x) (deftemplate-slot-cardinality (s) x)
+             (deftemplate-slot-names (s)) (get-defglobal-list (s)) crlf)
+           (printout t (deftemplate-slot-existp p (s)) crlf)
+           (printout t after crlf))",
+    )
+    .unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(engine.get_output("t"), Some("()()FALSE()FALSE()\n"));
+    assert_eq!(
+        engine.get_output("werror"),
+        Some(
+            "[PRNTUTIL1] Unable to find deftemplate missing.\n\
+             [PRNTUTIL1] Unable to find deftemplate missing.\n\
+             [PRNTUTIL1] Unable to find deftemplate missing.\n\
+             [ARGACCES5] Function deftemplate-slot-cardinality expected argument #1 to be of type deftemplate name\n\
+             [ARGACCES5] Function deftemplate-slot-names expected argument #1 to be of type deftemplate name\n\
+             [ARGACCES5] Function get-defglobal-list expected argument #1 to be of type defmodule name\n"
+        )
+    );
+    assert!(format!("{:?}", engine.action_diagnostics()).contains("deftemplate-slot-existp"));
+}

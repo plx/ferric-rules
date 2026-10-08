@@ -1,0 +1,7 @@
+pick b x after 0
+pick b b after 1
+pick b b after 1
+has b
+has z
+lacks z
+done

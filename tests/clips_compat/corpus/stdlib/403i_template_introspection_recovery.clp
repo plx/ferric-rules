@@ -1,0 +1,30 @@
+;; A missing deftemplate, or a first argument that is not a SYMBOL, prints a
+;; notice and returns a fallback, and the rule continues: an empty multifield
+;; for the multifield-valued template queries and the construct lists, FALSE
+;; for the other template queries.
+(deftemplate p (slot x))
+(defglobal ?*g* = 1)
+(deffunction s () "p")
+(deffunction num () 3)
+(defrule go =>
+  (printout t (length$ (deftemplate-slot-types missing x)) crlf)
+  (printout t (deftemplate-slot-types missing x) crlf)
+  (printout t (deftemplate-slot-allowed-values missing x) crlf)
+  (printout t (deftemplate-slot-range missing x) crlf)
+  (printout t (deftemplate-slot-cardinality missing x) crlf)
+  (printout t (deftemplate-slot-names missing) crlf)
+  (printout t (deftemplate-slot-default-value missing x) crlf)
+  (printout t (deftemplate-slot-defaultp missing x) crlf)
+  (printout t (deftemplate-slot-existp missing x) crlf)
+  (printout t (deftemplate-slot-multip missing x) crlf)
+  (printout t (deftemplate-slot-singlep missing x) crlf)
+  (printout t (deftemplate-slot-types (s) x) crlf)
+  (printout t (deftemplate-slot-cardinality (num) x) crlf)
+  (printout t (deftemplate-slot-names (s)) crlf)
+  (printout t (deftemplate-slot-existp (s) x) crlf)
+  (printout t (deftemplate-slot-default-value (num) x) crlf)
+  (printout t (get-defrule-list (str-cat MAIN)) crlf)
+  (printout t (get-deftemplate-list (num)) crlf)
+  (printout t (get-defglobal-list (str-cat "MAIN")) crlf)
+  (printout t (get-defrule-list (sym-cat MAIN)) crlf)
+  (printout t "after" crlf))
