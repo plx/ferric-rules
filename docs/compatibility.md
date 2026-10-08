@@ -1677,9 +1677,11 @@ Ferric reports a format error. Ferric also rejects a width or precision above
 
 ### Command-line evaluation and inspection
 
-`ferric run file.clp` queues non-terminal standard input before loading and
-executing the file, so initializer and rule calls to `read`/`readline` can consume
-it. Construct-only files receive an implicit reset and unlimited run. A file
+`ferric run file.clp` reads non-terminal standard input line by line, only
+when a `read` or `readline` (including one in a deffacts or defglobal
+initializer) asks for it, as CLIPS does. A program that never reads neither
+waits for nor consumes its caller's input. A read error or invalid UTF-8 on
+standard input prints one warning and then reads as end of input. Construct-only files receive an implicit reset and unlimited run. A file
 containing any procedural form, including `assert`, is a script: its forms
 execute in source order, with no additional reset/run or expression-result echo.
 Use explicit `(reset)` and `(run)` where needed. The entire bounded file is

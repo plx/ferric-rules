@@ -3,9 +3,9 @@
 use std::io::{BufRead, IsTerminal, Read};
 use std::path::Path;
 
-use ferric_rules_runtime::{Engine, EngineConfig, MAX_SOURCE_BYTES};
+use ferric_rules_runtime::{Engine, EngineConfig, InputSource, MAX_SOURCE_BYTES};
 
-use super::common::emit_error;
+use super::common::{emit_error, emit_warning};
 use super::repl::commands::{parse_commands, ReplCommand};
 use super::repl::session::ReplSession;
 
@@ -30,22 +30,10 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
         .iter()
         .all(|command| matches!(command, ReplCommand::Construct { .. }));
     let mut engine = Engine::new(EngineConfig::default());
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        for line in stdin.lock().lines() {
-            match line {
-                Ok(line) => engine.push_input(&line),
-                Err(error) => {
-                    emit_error(
-                        json_mode,
-                        "run",
-                        "io_error",
-                        format_args!("reading stdin: {error}"),
-                    );
-                    return 1;
-                }
-            }
-        }
+    if !std::io::stdin().is_terminal() {
+        // Read piped input lazily, one line per `read`/`readline`, so programs
+        // that never read neither wait for nor consume the caller's input.
+        engine.set_input_source(Some(stdin_line_source(json_mode)));
     }
     let mut session = ReplSession::with_engine(engine, Some(json_mode));
     if construct_only {
@@ -66,6 +54,35 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
         }
     }
     0
+}
+
+/// One line of standard input per call. EOF, a read error, or invalid UTF-8
+/// ends input (the latter two with a single warning).
+fn stdin_line_source(json_mode: bool) -> InputSource {
+    let mut finished = false;
+    Box::new(move || {
+        if finished {
+            return None;
+        }
+        let mut line = String::new();
+        match std::io::stdin().lock().read_line(&mut line) {
+            Ok(0) => {
+                finished = true;
+                None
+            }
+            Ok(_) => Some(line),
+            Err(error) => {
+                finished = true;
+                emit_warning(
+                    json_mode,
+                    "run",
+                    "io_error",
+                    format_args!("reading stdin: {error}; treating it as end of input"),
+                );
+                None
+            }
+        }
+    })
 }
 
 fn read_source(path: &Path) -> Result<String, std::io::Error> {

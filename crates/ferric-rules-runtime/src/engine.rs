@@ -251,7 +251,17 @@ pub struct Engine {
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
     pub(crate) input_buffer: VecDeque<String>,
+    /// Transient host source that `read`/`readline` pull single lines from
+    /// once `input_buffer` is empty; never serialized.
+    pub(crate) input_source: Option<InputSource>,
 }
+
+/// A host-supplied line source for `read` and `readline`.
+///
+/// Each call returns the next line without its terminator, or `None` at end
+/// of input. It is called only when a `read` or `readline` needs a line that
+/// [`Engine::push_input`] has not already queued.
+pub type InputSource = Box<dyn FnMut() -> Option<String> + Send + Sync>;
 
 impl Engine {
     /// Remove executable metadata and reclaim only rule-exclusive graph state.
@@ -361,6 +371,7 @@ impl Engine {
             eval_depth_floor: (0, 0),
             halted: false,
             input_buffer: VecDeque::new(),
+            input_source: None,
         }
     }
 
@@ -1717,6 +1728,32 @@ impl Engine {
     /// in a rule RHS pops one entry from this buffer.
     pub fn push_input(&mut self, line: &str) {
         self.input_buffer.push_back(line.to_string());
+    }
+
+    /// Install (or remove, with `None`) a lazy line source for `read` and
+    /// `readline`.
+    ///
+    /// Lines queued with [`push_input`](Self::push_input) are consumed first;
+    /// the source is asked for exactly one line each time the queue is empty.
+    /// The source is transient host state: snapshots do not record it, and
+    /// `clear` keeps it in place.
+    pub fn set_input_source(&mut self, source: Option<InputSource>) {
+        self.input_source = source;
+    }
+
+    /// Take the next input line: the queued input first, then the source.
+    pub(crate) fn next_input_line(&mut self) -> Option<String> {
+        if let Some(line) = self.input_buffer.pop_front() {
+            return Some(line);
+        }
+        let mut line = (self.input_source.as_mut()?)()?;
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        Some(line)
     }
 
     /// Clear the engine: remove all rules, facts, templates, functions, globals,

@@ -6853,13 +6853,14 @@ fn intern_eof_symbol(
     Ok(Value::Symbol(sym))
 }
 
-/// `read` — read one CLIPS field from the queued input lines.
+/// `read` — read one CLIPS field from the queued input lines, then from the
+/// engine's input source.
 ///
 /// `(read)` or `(read <channel>)`
 ///
 /// Like CLIPS reading `stdin`, each call consumes whole lines until one
 /// contains a field, returns that line's first field and discards the rest.
-/// Returns the symbol `EOF` when the queue runs out first.
+/// Returns the symbol `EOF` when the input runs out first.
 fn builtin_read(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6879,7 +6880,7 @@ fn builtin_read(
     }
 
     loop {
-        let Some(line) = ctx.engine.input_buffer.pop_front() else {
+        let Some(line) = ctx.engine.next_input_line() else {
             return intern_eof_symbol(ctx, span);
         };
         match scan_field(ctx, &mut FieldScanner::new(line.as_bytes())) {
@@ -6892,7 +6893,8 @@ fn builtin_read(
     }
 }
 
-/// `readline` — read a complete line from the input buffer as a string.
+/// `readline` — read a complete line from the queued input, or else from the
+/// engine's input source, as a string.
 ///
 /// `(readline)` or `(readline <channel>)`
 ///
@@ -6915,7 +6917,7 @@ fn builtin_readline(
         let _ = eval_inner(ctx, &args[0])?;
     }
 
-    match ctx.engine.input_buffer.pop_front() {
+    match ctx.engine.next_input_line() {
         Some(line) => {
             let fs = FerricString::new(&line, ctx.engine.config.string_encoding).map_err(|_| {
                 EvalError::TypeError {

@@ -697,7 +697,9 @@ clears the channel buffers. Pending events survive reset and clear, while
 snapshots retain only the ordinary channel buffers, not live observation state.
 
 For *input*, `(read)` and `(readline)` consume from an engine-managed
-input buffer. Push lines from Rust before the run:
+input buffer. Push lines from Rust before the run (or install a lazy line
+source with `engine.set_input_source(...)`, which they pull from, one line at a
+time, once the pushed lines run out):
 
 <!-- example: 10-io-channels/src/main.rs -->
 ```rust
@@ -1009,8 +1011,9 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   batch-style or drops you into a REPL. `ferric check [--json] file.clp`
   validates without running; `ferric run` executes. Construct-only files get an
   implicit reset/run. Files with procedural forms execute as scripts, so include
-  `(reset)` and `(run)` explicitly. Piped input is queued for `read`/`readline`
-  before loading, and standard logical output channels print to stdout in order.
+  `(reset)` and `(run)` explicitly. Piped input is read line by line when
+  `read`/`readline` asks for it, and standard logical output channels print to
+  stdout in order.
   The REPL evaluates expressions such as `(+ 1 2)` and echoes their values.
   Use `(save-facts "file.fct")` and `(load-facts "file.fct")` to exchange facts;
   `(facts)`, `(agenda)`, and watch output show public fact indices and real

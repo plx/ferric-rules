@@ -308,6 +308,7 @@ impl EngineSnapshotOwned {
             eval_depth_floor: (0, 0),
             halted: self.halted,
             input_buffer: self.input_buffer,
+            input_source: None,
         };
         // The registry is derived; restoring existing activations must not
         // synthesize focus notices or alter the saved focus stack.

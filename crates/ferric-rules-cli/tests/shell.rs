@@ -5,25 +5,47 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 fn invoke(args: &[&str], input: &str, directory: &std::path::Path) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ferric"))
-        .args(args)
+    invoke_with(
+        Command::new(env!("CARGO_BIN_EXE_ferric"))
+            .args(args)
+            .env_remove("HOME")
+            // rustyline prompts on piped stdin when TERM is dumb, cons25 or
+            // emacs; keep the asserted output independent of the caller's
+            // terminal.
+            .env_remove("TERM"),
+        input.as_bytes(),
+        directory,
+    )
+}
+
+/// Run `command` with `input` on a pipe. `ferric run` reads stdin only on
+/// demand, so a program that never reads may exit and close the pipe before
+/// the write completes.
+fn invoke_with(command: &mut Command, input: &[u8], directory: &std::path::Path) -> Output {
+    let mut child = command
         .current_dir(directory)
-        .env_remove("HOME")
-        // rustyline prompts on piped stdin when TERM is dumb, cons25 or emacs;
-        // keep the asserted output independent of the caller's terminal.
-        .env_remove("TERM")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    if let Err(error) = child.stdin.take().unwrap().write_all(input) {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     child.wait_with_output().unwrap()
+}
+
+/// Spawn `ferric run program.clp` with piped stdio; the caller owns stdin.
+fn spawn_run(directory: &std::path::Path, source: &str) -> std::process::Child {
+    std::fs::write(directory.join("program.clp"), source).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .args(["run", "program.clp"])
+        .current_dir(directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
 }
 
 fn run(source: &str, input: &str, json: bool) -> Output {
@@ -51,7 +73,7 @@ fn successful(output: &Output) {
 }
 
 #[test]
-fn run_queues_stdin_before_loading_and_preserves_lines_and_eof() {
+fn run_reads_stdin_on_demand_and_preserves_lines_and_eof() {
     let output = run(
         r#"(defglobal ?*first* = (read))
         (defrule ask =>
@@ -65,6 +87,83 @@ fn run_queues_stdin_before_loading_and_preserves_lines_and_eof() {
         stdout(&output),
         "first=17;n=42;line=[];last=[last line];eof=EOF\n"
     );
+}
+
+#[test]
+fn run_without_reads_finishes_while_the_stdin_pipe_stays_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = spawn_run(
+        directory.path(),
+        "(defrule hello => (printout t \"hello\" crlf))",
+    );
+    // Hold the write end open: nothing ever sends EOF.
+    let stdin = child.stdin.take().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("ferric run waited for stdin although the program never reads");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert!(status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "hello\n");
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn run_leaves_unread_stdin_for_the_next_reader() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("noread.clp"),
+        "(defrule hello => (printout t \"ran\" crlf))",
+    )
+    .unwrap();
+    let output = invoke_with(
+        Command::new("sh").args([
+            "-c",
+            "\"$0\" run noread.clp; cat",
+            env!("CARGO_BIN_EXE_ferric"),
+        ]),
+        b"a\nb\n",
+        directory.path(),
+    );
+    successful(&output);
+    assert_eq!(stdout(&output), "ran\na\nb\n");
+}
+
+#[test]
+fn invalid_utf8_stdin_fails_neither_unread_runs_nor_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("program.clp"),
+        "(defrule hello => (printout t \"ran\" crlf))",
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ferric"));
+    command.args(["run", "program.clp"]);
+    let output = invoke_with(&mut command, b"\xff\xfe\n", directory.path());
+    successful(&output);
+    assert_eq!(stdout(&output), "ran\n");
+
+    // A read reaching invalid input warns once and then sees end of input.
+    std::fs::write(
+        directory.path().join("program.clp"),
+        "(defrule ask => (printout t (readline) \"|\" (read) crlf))",
+    )
+    .unwrap();
+    let output = invoke_with(&mut command, b"\xff\xfe\nlater\n", directory.path());
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "EOF|EOF\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("reading stdin").count(), 1, "{stderr}");
 }
 
 #[test]
