@@ -12473,6 +12473,17 @@
       "error": "load"
     },
     {
+      "path": "procedural/407_defglobal_query_error_keeps_earlier.clp",
+      "level": "boundary",
+      "covers": [
+        "defglobal",
+        "global-multiple",
+        "global-expression-initializer",
+        "fact-query"
+      ],
+      "error": "load"
+    },
+    {
       "path": "agenda/412_template_slot_specificity_lex.clp",
       "level": "interaction",
       "covers": [

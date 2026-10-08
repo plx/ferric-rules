@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1241
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1242
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -896,8 +896,9 @@ Ferric supports `defglobal` with the `?*name*` naming convention.
 
 Each named global is installed after its initializer succeeds. Earlier names in
 one `defglobal` group remain available to later initializers. If an initializer
-fails, its name and later names in that group are not installed; earlier globals
-and following top-level constructs retain their incremental load behavior.
+fails, including when a query in it names an unknown deftemplate, its name and
+later names in that group are not installed; earlier globals and following
+top-level constructs retain their incremental load behavior.
 
 Known difference: callable bodies are validated after the whole source is
 read, but initializers run in source order. An initializer can therefore call
