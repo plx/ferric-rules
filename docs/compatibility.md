@@ -46,10 +46,12 @@ stamp alone is not a passed run. Main CI verifies the goldens automatically.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
-direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and nine track network
-topology and installation-history differences: five equal-salience ties
-described with [#400](https://github.com/plx/ferric-rules/issues/400) and four
+direction. Four cases record the output/format differences accepted as
+permanent in [#394](https://github.com/plx/ferric-rules/issues/394) (see
+[Accepted UTF-8 and format divergences](#accepted-utf-8-and-format-divergences)),
+and nine track network topology and installation-history differences: five
+equal-salience ties described with
+[#400](https://github.com/plx/ferric-rules/issues/400) and four
 auto-focus histories tracked in
 [#480](https://github.com/plx/ferric-rules/issues/480), three from late
 installation and one from a queued test CE:
@@ -1467,7 +1469,7 @@ unterminated string keeps its text; for these CLIPS writes a `[SCANNER1]`
 notice to the `wwarning` or `werror` router, and so does Ferric (`ferric run`
 prints only `t`, so it does not show them). A string that ends in a backslash
 at the end of input gives CLIPS a byte that is not UTF-8, which Ferric holds as
-U+FFFD.
+U+FFFD (an [accepted permanent difference](#accepted-utf-8-and-format-divergences)).
 
 Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
@@ -1742,8 +1744,10 @@ count bytes, as in C, so `%.Ns` that cuts a multibyte character, and `%c` of a
 byte of 128 or more, produce U+FFFD where C emits bytes that are not UTF-8.
 CLIPS adds its `ll` length modifier and passes a malformed directive such as
 `%5-3d` to `printf`, which on glibc prints it back as `%5-3lld`; Ferric reports
-a format error. Ferric also rejects a width or precision above 4096 (CLIPS 6.30
-crashes on `%5000d`).
+a format error. These are accepted permanent differences (see
+[Accepted UTF-8 and format divergences](#accepted-utf-8-and-format-divergences)).
+Ferric also rejects a width or precision above 4096 (CLIPS 6.30 crashes on
+`%5000d`).
 
 ### Command-line evaluation and inspection
 
@@ -1881,8 +1885,9 @@ of UTF-8 text, and comparisons use the bytes. Ferric strings and symbols are
 always valid UTF-8, while CLIPS can build byte strings that are not. Where
 CLIPS would produce such bytes (`%c` of a byte of 128 or more, `%.Ns` that cuts
 a multibyte character, or a scanned string that ends in an escaped end of
-input), Ferric holds U+FFFD instead; the corpus records each of these as a gap
-case (see [Granular corpus](#granular-corpus)).
+input), Ferric holds U+FFFD instead; these are accepted permanent differences,
+each still characterized as a corpus gap case (see
+[Accepted UTF-8 and format divergences](#accepted-utf-8-and-format-divergences)).
 
 ### Guidance for Unicode Users
 
