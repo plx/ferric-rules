@@ -4235,19 +4235,22 @@ impl Engine {
         Self::parse_predicate_operand(expr).is_some()
     }
 
-    /// Normalize nested or CEs by distributing them across enclosing contexts.
+    /// Normalize conditional elements so that `or` survives only at rule level.
     ///
-    /// Transforms:
-    /// - `not(and(A, or(B, C), D))` → `and(not(and(A, B, D)), not(and(A, C, D)))`
-    /// - `exists(or(P1, P2))` → `or(exists(P1), exists(P2))`
-    ///
-    /// This runs recursively so that or CEs at any nesting depth are resolved.
+    /// Works bottom-up: every child is normalized before its parent is rebuilt.
+    /// - `and` groups are spliced into their enclosing conjunction.
+    /// - `or` branches that are themselves `or` groups are spliced in source
+    ///   order, and a branch conjunction containing `or` is distributed into
+    ///   several branches, so no branch contains an `or`.
+    /// - `not(and(A, or(B, C)))` → `not(and(A, B))`, `not(and(A, C))`
+    ///   (De Morgan, including `not(or(B, C))` → `not(B)`, `not(C)`).
+    /// - `not(exists(A, B ...))` → `not(and(A, B ...))`, and
+    ///   `not(not(and(A, B ...)))` → `exists(A, B ...)`.
+    /// - `exists(A, or(B, C))` → `not(and(not(and(A, B)), not(and(A, C))))`:
+    ///   `exists` is one boolean condition, so it is rewritten as its double
+    ///   negation instead of being split into separately firing rule variants.
     fn normalize_nested_or_ces(rule: &RuleConstruct) -> RuleConstruct {
-        let patterns = rule
-            .patterns
-            .iter()
-            .flat_map(Self::normalize_pattern)
-            .collect();
+        let patterns = Self::normalize_conjunction(&rule.patterns);
 
         RuleConstruct {
             name: rule.name.clone(),
@@ -4261,10 +4264,112 @@ impl Engine {
         }
     }
 
-    /// Recursively normalize a single pattern, resolving or CEs in nested
-    /// contexts. May return multiple patterns if a `Not(And(...Or...))` is
-    /// distributed.
-    #[allow(clippy::too_many_lines)] // Keep each CE normalization and its enclosing scope together.
+    /// Normalize a sequence of conjuncts into one flat conjunction. The only
+    /// `or` CEs in the result are direct members, and their branches contain
+    /// no `or`.
+    fn normalize_conjunction(patterns: &[Pattern]) -> Vec<Pattern> {
+        let mut conjunction = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            for normalized in Self::normalize_pattern(pattern) {
+                Self::push_conjunct(&mut conjunction, normalized);
+            }
+        }
+        conjunction
+    }
+
+    /// Append a pattern to a conjunction, splicing nested `and` groups.
+    fn push_conjunct(conjunction: &mut Vec<Pattern>, pattern: Pattern) {
+        match pattern {
+            Pattern::And(children, _) => {
+                for child in children {
+                    Self::push_conjunct(conjunction, child);
+                }
+            }
+            pattern => conjunction.push(pattern),
+        }
+    }
+
+    /// Distribute a normalized conjunction over its `or` members. Alternatives
+    /// keep source order, with the first `or` varying slowest.
+    fn conjunction_disjuncts(conjunction: Vec<Pattern>) -> Vec<Vec<Pattern>> {
+        let mut disjuncts = vec![Vec::with_capacity(conjunction.len())];
+        for pattern in conjunction {
+            match pattern {
+                Pattern::Or(branches, _) if !branches.is_empty() => {
+                    let mut next = Vec::with_capacity(disjuncts.len() * branches.len());
+                    for prefix in &disjuncts {
+                        for branch in &branches {
+                            let mut disjunct = prefix.clone();
+                            Self::push_conjunct(&mut disjunct, branch.clone());
+                            next.push(disjunct);
+                        }
+                    }
+                    disjuncts = next;
+                }
+                pattern => {
+                    for disjunct in &mut disjuncts {
+                        disjunct.push(pattern.clone());
+                    }
+                }
+            }
+        }
+        disjuncts
+    }
+
+    fn conjunction_pattern(mut conjunction: Vec<Pattern>, span: Span) -> Pattern {
+        if conjunction.len() == 1 {
+            conjunction.pop().expect("one conjunct")
+        } else {
+            Pattern::And(conjunction, span)
+        }
+    }
+
+    /// Negate a normalized conjunction. An `or` member is distributed first,
+    /// so the result is a conjunction of negations that contains no `or`.
+    fn negate_conjunction(conjunction: Vec<Pattern>, inner_span: Span, span: Span) -> Vec<Pattern> {
+        if !conjunction
+            .iter()
+            .any(|pattern| matches!(pattern, Pattern::Or(..)))
+        {
+            return vec![Self::negated_pattern(
+                Self::conjunction_pattern(conjunction, inner_span),
+                span,
+            )];
+        }
+        Self::conjunction_disjuncts(conjunction)
+            .into_iter()
+            .map(|disjunct| {
+                Self::negated_pattern(Self::conjunction_pattern(disjunct, inner_span), span)
+            })
+            .collect()
+    }
+
+    /// Build `(not inner)` from a normalized, `or`-free operand.
+    fn negated_pattern(inner: Pattern, span: Span) -> Pattern {
+        // `(not (exists X ...))` is `(not (and X ...))`, through any number
+        // of directly nested `exists`.
+        let mut inner = inner;
+        while let Pattern::Exists(children, exists_span) = inner {
+            if children.is_empty() {
+                inner = Pattern::Exists(children, exists_span);
+                break;
+            }
+            inner = Self::conjunction_pattern(children, exists_span);
+        }
+        // A doubly negated conjunction is the existential tuple condition.
+        if let Pattern::Not(negated, _) = &inner {
+            if let Pattern::And(children, _) = negated.as_ref() {
+                return Pattern::Exists(children.clone(), span);
+            }
+        }
+        let negated = Pattern::Not(Box::new(inner), span);
+        match Self::test_only_pattern_expression(&negated) {
+            Some(expression) => Pattern::Test(expression, span),
+            None => negated,
+        }
+    }
+
+    /// Recursively normalize a single pattern into a conjunction of patterns.
     fn normalize_pattern(pattern: &Pattern) -> Vec<Pattern> {
         // Pure tests beneath a quantifier have no fact tuple to retain. Collapse
         // them to a predicate while preserving ordinary OR-CE multiplicity.
@@ -4274,131 +4379,63 @@ impl Engine {
             }
         }
         match pattern {
-            Pattern::Or(children, _) if children.len() == 1 => {
-                Self::normalize_pattern(&children[0])
-            }
+            Pattern::And(children, _) => Self::normalize_conjunction(children),
             Pattern::Or(children, span) => {
-                let branches = children
-                    .iter()
-                    .map(|child| {
-                        let mut normalized = Self::normalize_pattern(child);
-                        if normalized.len() == 1 {
-                            normalized.pop().unwrap()
-                        } else {
-                            // Splitting one branch into a conjunction must not
-                            // turn those conjuncts into additional OR branches.
-                            Pattern::And(normalized, *pattern_source_span(child))
-                        }
-                    })
-                    .collect();
+                let mut branches = Vec::with_capacity(children.len());
+                for child in children {
+                    let child_span = *pattern_source_span(child);
+                    let conjunction = Self::normalize_conjunction(std::slice::from_ref(child));
+                    // Splitting one branch into a conjunction must not turn
+                    // those conjuncts into additional OR branches; only its
+                    // own `or` members multiply it.
+                    branches.extend(
+                        Self::conjunction_disjuncts(conjunction)
+                            .into_iter()
+                            .map(|disjunct| Self::conjunction_pattern(disjunct, child_span)),
+                    );
+                }
+                if branches.len() == 1 {
+                    let mut conjunction = Vec::new();
+                    Self::push_conjunct(&mut conjunction, branches.pop().expect("one branch"));
+                    return conjunction;
+                }
                 vec![Pattern::Or(branches, *span)]
             }
             Pattern::Not(inner, span) => {
-                if let Pattern::Or(branches, _) = inner.as_ref() {
-                    return branches
-                        .iter()
-                        .flat_map(|branch| {
-                            Self::normalize_pattern(&Pattern::Not(Box::new(branch.clone()), *span))
-                        })
-                        .collect();
-                }
-                if let Pattern::And(children, and_span) = inner.as_ref() {
-                    // Check if any child is an Or CE
-                    let or_idx = children.iter().position(|c| matches!(c, Pattern::Or(..)));
-                    if let Some(idx) = or_idx {
-                        if let Pattern::Or(branches, _) = &children[idx] {
-                            // Distribute: not(and(A, or(B, C), D))
-                            // → [not(and(A, B, D)), not(and(A, C, D))]
-                            // If a branch is itself an And, flatten it into the parent:
-                            // not(and(A, or(and(B, C), D))) → [not(and(A, B, C)), not(and(A, D))]
-                            let mut results = Vec::new();
-                            for branch in branches {
-                                let mut new_children = children.clone();
-                                if let Pattern::And(branch_children, _) = branch {
-                                    // Flatten: replace the or slot with the And's children
-                                    new_children.splice(idx..=idx, branch_children.iter().cloned());
-                                } else {
-                                    new_children[idx] = branch.clone();
-                                }
-                                let new_and = Pattern::And(new_children, *and_span);
-                                let new_not = Pattern::Not(Box::new(new_and), *span);
-                                // Recursively normalize in case there are more or CEs
-                                results.extend(Self::normalize_pattern(&new_not));
-                            }
-                            return results;
-                        }
-                    }
-                    // No or CE found — recurse into children
-                    let normalized_children: Vec<Pattern> =
-                        children.iter().flat_map(Self::normalize_pattern).collect();
-                    vec![Pattern::Not(
-                        Box::new(Pattern::And(normalized_children, *and_span)),
-                        *span,
-                    )]
-                } else {
-                    // Recurse into the inner pattern
-                    let normalized = Self::normalize_pattern(inner);
-                    if normalized.len() == 1 {
-                        vec![Pattern::Not(
-                            Box::new(normalized.into_iter().next().unwrap()),
-                            *span,
-                        )]
-                    } else {
-                        // A normalization result is a conjunction. Preserve
-                        // that conjunction beneath the outer negation.
-                        vec![Pattern::Not(
-                            Box::new(Pattern::And(normalized, *span)),
-                            *span,
-                        )]
-                    }
-                }
+                let inner_span = *pattern_source_span(inner);
+                let conjunction = match inner.as_ref() {
+                    // `(not (exists X ...))` is `(not (and X ...))`.
+                    Pattern::Exists(children, _) => Self::normalize_conjunction(children),
+                    inner => Self::normalize_conjunction(std::slice::from_ref(inner)),
+                };
+                Self::negate_conjunction(conjunction, inner_span, *span)
             }
             Pattern::Exists(children, span) => {
-                // Check if any child is an Or CE
-                let or_idx = children.iter().position(|c| matches!(c, Pattern::Or(..)));
-                if let Some(idx) = or_idx {
-                    if let Pattern::Or(branches, _) = &children[idx] {
-                        // exists(A, or(B, C), D) → or(exists(A, B, D), exists(A, C, D))
-                        // If a branch is an And, flatten: exists(A, or(and(B,C), D))
-                        // → or(exists(A, B, C), exists(A, D))
-                        let mut or_branches = Vec::new();
-                        for branch in branches {
-                            let mut new_children = children.clone();
-                            if let Pattern::And(branch_children, _) = branch {
-                                new_children.splice(idx..=idx, branch_children.iter().cloned());
-                            } else {
-                                new_children[idx] = branch.clone();
-                            }
-                            or_branches.push(Pattern::Exists(new_children, *span));
-                        }
-                        return vec![Pattern::Or(or_branches, *span)];
-                    }
+                let body = Self::normalize_conjunction(children);
+                if body
+                    .iter()
+                    .any(|pattern| matches!(pattern, Pattern::Or(..)))
+                {
+                    // CLIPS treats `exists` as `(not (not (and ...)))`: one
+                    // condition however many disjuncts hold. Distributing the
+                    // `or` into rule variants would fire once per true branch.
+                    let negated = Self::negate_conjunction(body, *span, *span);
+                    return Self::negate_conjunction(negated, *span, *span);
                 }
-                // Recurse into children
-                let normalized: Vec<Pattern> =
-                    children.iter().flat_map(Self::normalize_pattern).collect();
-                vec![Pattern::Exists(normalized, *span)]
-            }
-            Pattern::And(children, span) => {
-                let normalized: Vec<Pattern> =
-                    children.iter().flat_map(Self::normalize_pattern).collect();
-                vec![Pattern::And(normalized, *span)]
+                vec![Pattern::Exists(body, *span)]
             }
             Pattern::Assigned {
                 variable,
                 pattern: inner,
                 span,
-            } => {
-                let normalized = Self::normalize_pattern(inner);
-                normalized
-                    .into_iter()
-                    .map(|p| Pattern::Assigned {
-                        variable: variable.clone(),
-                        pattern: Box::new(p),
-                        span: *span,
-                    })
-                    .collect()
-            }
+            } => Self::normalize_pattern(inner)
+                .into_iter()
+                .map(|p| Pattern::Assigned {
+                    variable: variable.clone(),
+                    pattern: Box::new(p),
+                    span: *span,
+                })
+                .collect(),
             // All other patterns pass through unchanged
             _ => vec![pattern.clone()],
         }
@@ -4449,6 +4486,11 @@ impl Engine {
 
     /// Expand `Pattern::Or` CEs via rule duplication.
     /// Returns a vec of rule variants (1 if no disjunctions, N*M*... for Cartesian product).
+    ///
+    /// Runs to a fixpoint: top-level `and` groups are flattened and each
+    /// rule-level `or` (possibly under a fact assignment) is replaced by its
+    /// branches until none remains. Variants keep source order, with the first
+    /// `or` varying slowest.
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
         // Without any `or` CE, every pattern has exactly one
         // alternative; skip building (and cloning) the single-variant product.
@@ -4456,42 +4498,14 @@ impl Engine {
             return vec![rule.clone()];
         }
 
-        // First flatten top-level And to expose Or patterns
-        let mut flat_patterns: Vec<Pattern> = Vec::new();
+        let mut flat_patterns = Vec::with_capacity(rule.patterns.len());
         for pattern in &rule.patterns {
-            match pattern {
-                Pattern::And(inner, _) => {
-                    flat_patterns.extend(inner.iter().cloned());
-                }
-                _ => flat_patterns.push(pattern.clone()),
-            }
+            Self::push_conjunct(&mut flat_patterns, pattern.clone());
         }
-
-        // Build Cartesian product of all pattern-level alternatives.
-        // Alternatives come from:
-        // - top-level `or` CEs
-        // - assigned wrappers over top-level `or` CEs
-        let mut pattern_options: Vec<Vec<Pattern>> = Vec::new();
-        for pattern in &flat_patterns {
-            pattern_options.push(Self::pattern_disjunction_options(pattern));
-        }
-
-        if pattern_options.iter().all(|options| options.len() <= 1) {
+        let mut combinations = Vec::new();
+        Self::expand_disjunction_variants(flat_patterns, &mut combinations);
+        if combinations.len() <= 1 {
             return vec![rule.clone()];
-        }
-
-        // Compute Cartesian product
-        let mut combinations: Vec<Vec<Pattern>> = vec![vec![]];
-        for options in &pattern_options {
-            let mut new_combinations = Vec::new();
-            for combo in &combinations {
-                for option in options {
-                    let mut new_combo = combo.clone();
-                    new_combo.push(option.clone());
-                    new_combinations.push(new_combo);
-                }
-            }
-            combinations = new_combinations;
         }
 
         // Create rule variants
@@ -4510,6 +4524,22 @@ impl Engine {
             .collect()
     }
 
+    /// Replace the first rule-level `or` with each branch, then expand the
+    /// rest of each variant the same way.
+    fn expand_disjunction_variants(patterns: Vec<Pattern>, out: &mut Vec<Vec<Pattern>>) {
+        let Some(index) = patterns.iter().position(Self::is_rule_disjunction) else {
+            out.push(patterns);
+            return;
+        };
+        for option in Self::pattern_disjunction_options(&patterns[index]) {
+            let mut variant = Vec::with_capacity(patterns.len());
+            variant.extend(patterns[..index].iter().cloned());
+            Self::push_conjunct(&mut variant, option);
+            variant.extend(patterns[index + 1..].iter().cloned());
+            Self::expand_disjunction_variants(variant, out);
+        }
+    }
+
     /// Whether a pattern contains an `or` CE. Field disjunctions stay in one test.
     fn pattern_has_disjunction(pattern: &Pattern) -> bool {
         match pattern {
@@ -4522,6 +4552,15 @@ impl Engine {
             | Pattern::Exists(children, _)
             | Pattern::Forall(children, _)
             | Pattern::Logical(children, _) => children.iter().any(Self::pattern_has_disjunction),
+        }
+    }
+
+    /// Whether a rule-level pattern is an `or` CE, possibly under an assignment.
+    fn is_rule_disjunction(pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::Or(branches, _) => !branches.is_empty(),
+            Pattern::Assigned { pattern, .. } => Self::is_rule_disjunction(pattern),
+            _ => false,
         }
     }
 
@@ -4954,7 +4993,7 @@ impl Engine {
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
                 span,
-                "standalone and conditional elements are not supported; use (not (and ...))",
+                "internal invariant violated: and groups are flattened during normalization",
             )),
             Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
                 "logical",
@@ -4964,7 +5003,7 @@ impl Engine {
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
                 span,
-                "or cannot be used in this nested pattern position",
+                "internal invariant violated: or CEs are expanded into rule variants during normalization",
             )),
             _ => Ok(CompilableCondition::Pattern(self.translate_pattern(
                 pattern,
@@ -4987,13 +5026,23 @@ impl Engine {
         embedded_generated_tests: &mut HashSet<usize>,
     ) -> Result<Vec<CompilableCondition>, LoadError> {
         let first_test = generated_tests.len();
-        let condition = self.translate_condition(
+        let condition = match self.translate_condition(
             pattern,
             generated_tests,
             internal_slot_var_seed,
             test_condition_base,
             embedded_generated_tests,
-        )?;
+        )? {
+            // NCC subnetworks have no support-counted exists node. Express an
+            // existential member as the complement of its negation instead.
+            CompilableCondition::Pattern(mut compiled) if compiled.exists => {
+                compiled.exists = false;
+                CompilableCondition::Ncc(vec![CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(compiled),
+                ])])
+            }
+            condition => condition,
+        };
         let mut conditions = vec![condition];
         for index in first_test..generated_tests.len() {
             if embedded_generated_tests.insert(index) {
@@ -5434,7 +5483,7 @@ impl Engine {
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
                 span,
-                "and conditional elements are only supported inside (not (and ...))",
+                "internal invariant violated: and groups are flattened during normalization",
             )),
             Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
                 "logical",
@@ -5444,7 +5493,7 @@ impl Engine {
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
                 span,
-                "or cannot be used in this nested pattern position",
+                "internal invariant violated: or CEs are expanded into rule variants during normalization",
             )),
         }
     }
@@ -7375,6 +7424,7 @@ mod tests {
         let mut engine = new_utf8_engine();
         let result = engine.load_str(
             r"
+            (deffacts seed (a) (b) (c) (d) (e) (f))
             (defrule t
               (exists
                 (or
@@ -7391,6 +7441,10 @@ mod tests {
             result.is_ok(),
             "exists(or(...)) with nested multi-pattern exists should compile: {result:?}"
         );
+        // Both disjuncts hold, but exists is one condition (CLIPS 6.30
+        // crashes on this rule, so there is no reference behavior to pin).
+        engine.reset().unwrap();
+        assert_eq!(engine.agenda_len(), 1);
     }
 
     #[test]

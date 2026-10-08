@@ -264,3 +264,78 @@ fn positive_or_normalizes_each_branch_without_changing_multiplicity() {
     engine.retract(blocker).unwrap();
     fire(&mut engine, 1);
 }
+
+#[test]
+fn exists_over_or_is_one_condition_however_many_branches_hold() {
+    for (rule, seed) in [
+        (
+            "(defrule any (exists (or (a 1) (b 1))) => (printout t any crlf))",
+            &[] as &[&str],
+        ),
+        (
+            "(defrule any (exists (x) (or (not (c)) (b 1))) => (printout t any crlf))",
+            &["x"] as &[&str],
+        ),
+    ] {
+        for late in [false, true] {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            if !late {
+                engine.load_str(rule).unwrap();
+            }
+            for relation in seed {
+                engine.assert_ordered(relation, ()).unwrap();
+            }
+            let a = engine.assert_ordered("a", 1_i64).unwrap();
+            let b = engine.assert_ordered("b", 1_i64).unwrap();
+            if late {
+                engine.load_str(rule).unwrap();
+            }
+            // Every branch holds, but exists still yields one activation.
+            fire(&mut engine, 1);
+            engine.retract(a).unwrap();
+            fire(&mut engine, 0);
+            engine.retract(b).unwrap();
+            let blocker = engine.assert_ordered("c", ()).unwrap();
+            fire(&mut engine, 0);
+            engine.retract(blocker).unwrap();
+            // Without (x), the second rule's body has no tuple at all.
+            fire(&mut engine, usize::from(!seed.is_empty()));
+            engine.assert_ordered("b", 1_i64).unwrap();
+            fire(&mut engine, usize::from(seed.is_empty()));
+            assert_eq!(engine.get_output("t"), Some("any\nany\n"), "{rule}");
+        }
+    }
+}
+
+#[test]
+fn nested_groups_flatten_and_distribute_into_rule_level_disjuncts() {
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (b) (c) (x))
+         (defrule or-or (or (or (a) (b)) (z)) => (printout t or-or crlf))
+         (defrule or-and-or (or (and (or (a) (b)) (c)) (d)) => (printout t or-and-or crlf))
+         (defrule and-and-or (and (and (or (a) (b)))) => (printout t and-and-or crlf))
+         (defrule not-exists-or (x) (not (exists (or (a) (d)))) => (printout t not-exists-or crlf))
+         (defrule not-and-and (not (and (x) (and (b) (d)))) => (printout t not-and-and crlf))
+         (defrule exists-and-and (exists (and (b) (and (c) (x)))) => (printout t exists-and-and crlf))
+         (defrule not-not-and (not (not (and (b) (c)))) => (printout t not-not-and crlf))",
+    )
+    .unwrap();
+    fire(&mut engine, 7);
+    let mut lines: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "and-and-or",
+            "exists-and-and",
+            "not-and-and",
+            "not-exists-or",
+            "not-not-and",
+            "or-and-or",
+            "or-or",
+        ]
+    );
+    // A second disjunct of each positive or adds its own activation.
+    engine.assert_ordered("a", ()).unwrap();
+    fire(&mut engine, 3);
+}
