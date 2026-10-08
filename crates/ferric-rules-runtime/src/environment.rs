@@ -263,6 +263,14 @@ fn dynamic_source(
             .prepare_eval_expression(&expression, ctx.current_module)
             .map_err(|error| failure(name, &error, span))?,
     );
+    eval_detached(ctx, &expression)
+}
+
+/// Evaluate prepared `eval`/`assert-string` source in a fresh local scope.
+fn eval_detached(
+    ctx: &mut EvalContext<'_>,
+    expression: &std::sync::Arc<RuntimeExpr>,
+) -> Result<Value, EvalError> {
     // Dynamic source cannot see the surrounding rule/callable's local variables.
     let bindings = ferric_rules_core::binding::BindingSet::new();
     let variables = ferric_rules_core::binding::VarMap::new();
@@ -275,7 +283,7 @@ fn dynamic_source(
     // redefine them underneath a later assertion (CSTRCPSR4).
     let (result, final_module, final_global_module) = ctx.engine.with_active_expressions(
         current_module,
-        [std::sync::Arc::clone(&expression)],
+        [std::sync::Arc::clone(expression)],
         |engine| {
             let mut child = EvalContext {
                 engine,
@@ -290,7 +298,7 @@ fn dynamic_source(
                 compact_fact_bindings: None,
                 allow_engine_effects,
             };
-            let result = evaluator::eval_inner(&mut child, &expression);
+            let result = evaluator::eval_inner(&mut child, expression);
             (result, child.current_module, child.global_module)
         },
     );
