@@ -160,13 +160,18 @@ impl ReplSession {
         Ok(())
     }
 
+    /// List the current module's rules, as CLIPS does; an empty list prints nothing.
     fn cmd_rules(&self) {
-        let rules = self.engine.rules();
-        for (name, _) in &rules {
+        let rules = self.engine.current_module_rule_names();
+        for name in &rules {
             println!("{name}");
         }
         if !rules.is_empty() {
-            println!("For a total of {} rules.", rules.len());
+            println!(
+                "For a total of {} defrule{}.",
+                rules.len(),
+                if rules.len() == 1 { "" } else { "s" }
+            );
         }
     }
 

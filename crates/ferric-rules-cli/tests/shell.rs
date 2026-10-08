@@ -343,3 +343,26 @@ fn source_reset_selects_main_for_the_default_agenda_view() {
         "0      main: *\nFor a total of 1 activation.\n"
     );
 }
+
+#[test]
+fn facts_include_initial_fact_and_rules_list_the_current_module() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = invoke(
+        &["repl"],
+        "(defrule first =>)\n(defrule second =>)\n(defmodule EXTRA)\n(defrule third =>)\n\
+         (rules)\n(reset)\n(facts)\n(rules)\n(assert (a))\n(facts)\n\
+         (clear)\n(facts)\n(rules)\n(defrule only =>)\n(rules)\n(exit)\n",
+        directory.path(),
+    );
+    successful(&output);
+    // Each listing's text was taken from CLIPS 6.30 given the same input.
+    let expected = "third\nFor a total of 1 defrule.\n\
+        f-0     (initial-fact)\nFor a total of 1 fact.\n\
+        first\nsecond\nFor a total of 2 defrules.\n\
+        <Fact-1>\n\
+        f-0     (initial-fact)\nf-1     (a)\nFor a total of 2 facts.\n\
+        f-0     (initial-fact)\nFor a total of 1 fact.\n\
+        only\nFor a total of 1 defrule.\n";
+    let out = stdout(&output);
+    assert!(out.ends_with(expected), "{out}");
+}

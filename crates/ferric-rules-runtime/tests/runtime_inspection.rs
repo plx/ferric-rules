@@ -260,3 +260,31 @@ fn firing_watch_ordinals_continue_a_run_and_restart_for_a_new_run() {
         Some("FIRE    1 show: f-3\nFIRE    2 show: f-2\nFIRE    1 show: f-1\n")
     );
 }
+
+#[test]
+fn fact_listing_includes_initial_fact_and_rule_names_follow_the_current_module() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(defrule b =>) (defrule a =>) (defmodule EXTRA) (defrule c =>)
+             (deffacts seed (item 1))",
+        )
+        .unwrap();
+    assert_eq!(engine.current_module_rule_names(), ["c"]);
+    engine.reset().unwrap();
+    assert_eq!(engine.current_module_rule_names(), ["b", "a"]);
+    let listing: Vec<_> = engine
+        .fact_listing()
+        .into_iter()
+        .map(|(index, fact)| (index, engine.format_fact(fact).unwrap()))
+        .collect();
+    assert_eq!(
+        listing,
+        [(0, "(initial-fact)".to_owned()), (1, "(item 1)".to_owned())]
+    );
+    // Host fact queries keep hiding the protected fact.
+    assert_eq!(engine.facts().unwrap().count(), 1);
+    engine.eval_str("(clear)").unwrap();
+    assert!(engine.current_module_rule_names().is_empty());
+    assert_eq!(engine.fact_listing().len(), 1);
+}

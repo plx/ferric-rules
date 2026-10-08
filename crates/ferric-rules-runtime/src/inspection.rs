@@ -70,6 +70,40 @@ impl Engine {
         )
     }
 
+    /// List every live fact with its CLIPS index, in index order.
+    ///
+    /// Unlike [`Self::facts`], this includes the protected `(initial-fact)` as
+    /// `f-0`, as the CLIPS `facts` command does.
+    #[must_use]
+    pub fn fact_listing(&self) -> Vec<(u64, &Fact)> {
+        let mut facts: Vec<_> = self
+            .fact_base
+            .iter()
+            .filter_map(|(id, entry)| {
+                crate::fact_address::public_fact_index(
+                    &self.fact_base,
+                    self.initial_fact_id,
+                    self.fact_index_starts_at_zero,
+                    id,
+                )
+                .map(|index| (index, &entry.fact))
+            })
+            .collect();
+        facts.sort_unstable_by_key(|(index, _)| *index);
+        facts
+    }
+
+    /// Unqualified names of the current module's rules, in definition order.
+    #[must_use]
+    pub fn current_module_rule_names(&self) -> Vec<&str> {
+        let module = self.module_registry.current_module();
+        self.rule_declarations
+            .iter()
+            .filter(|(owner, _)| *owner == module)
+            .map(|(_, name)| name.as_str())
+            .collect()
+    }
+
     /// Render a value for a CLIPS prompt, quoting strings and retaining literal control symbols.
     #[must_use]
     pub fn format_value(&self, value: &Value) -> String {

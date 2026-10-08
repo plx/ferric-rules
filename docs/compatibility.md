@@ -1694,8 +1694,14 @@ retain their usual text/JSON error handling.
 
 The REPL accepts constructs, shell commands such as `(run)` and `(facts)`, and
 ordinary expressions. It echoes non-void values, including assertion addresses,
-and uses the runtime's CLIPS value/fact formatter. `(agenda [module])` prints
-ordered rows with fact bases; `*` lists all modules. `(watch facts)` records each
+and uses the runtime's CLIPS value/fact formatter. `(facts)` lists working
+memory by fact index, including `f-0     (initial-fact)`, with CLIPS's
+`For a total of N fact(s).` tally. A fresh Ferric engine has no
+`initial-fact` until it is reset or cleared or loads a rule, where CLIPS
+lists f-0 from start-up. `(rules)` lists the current module's rules
+unqualified, in definition order, with a `defrule(s)` tally. As in CLIPS,
+an empty `(facts)`, `(rules)`, or `(agenda)` listing prints nothing.
+`(agenda [module])` prints ordered rows with fact bases; `*` lists all modules. `(watch facts)` records each
 assertion and retraction, including facts created and removed within one run.
 `(watch rules)` includes each firing's fact basis. Watch settings are transient
 host state and are disabled when restoring a snapshot.

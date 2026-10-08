@@ -11,23 +11,14 @@ pub(crate) fn print_output(engine: &mut Engine) {
 }
 
 pub(crate) fn print_facts(engine: &Engine) {
-    let facts = match engine.facts() {
-        Ok(facts) => facts,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return;
-        }
-    };
-    let mut facts: Vec<_> = facts
-        .filter_map(|(handle, fact)| engine.public_fact_index(handle).map(|index| (index, fact)))
-        .collect();
-    facts.sort_unstable_by_key(|(index, _)| *index);
+    let facts = engine.fact_listing();
     for (index, fact) in &facts {
         match engine.format_fact(fact) {
             Ok(text) => println!("f-{index:<5} {text}"),
             Err(error) => eprintln!("Error: {error}"),
         }
     }
+    // Like CLIPS, an empty listing prints no tally.
     if !facts.is_empty() {
         println!(
             "For a total of {} fact{}.",
