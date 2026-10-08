@@ -1731,6 +1731,10 @@ impl Engine {
         self.active_templates.clear();
         self.active_ordered_relations.clear();
         self.active_expressions.clear();
+        // A contained panic can skip the scoped truncation of these markers;
+        // clear recreates template keys, so stale entries would alias new ones.
+        self.active_query_targets.clear();
+        self.active_callables.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the
@@ -2227,6 +2231,28 @@ mod tests {
     fn new_engine_has_utf8_encoding_by_default() {
         let engine = Engine::new(EngineConfig::default());
         assert_eq!(engine.config.string_encoding, StringEncoding::Utf8);
+    }
+
+    #[test]
+    fn clear_releases_stale_query_target_markers() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str("(deftemplate a (slot x))").unwrap();
+        let id = engine
+            .resolve_template_id("a", engine.module_registry.current_module())
+            .unwrap();
+        // As if a panic unwound past the scoped release of a query target.
+        engine
+            .active_query_targets
+            .push(crate::query_targets::QueryTarget::Template(id));
+        engine
+            .active_callables
+            .push((engine.module_registry.current_module(), "f".to_owned()));
+        engine.clear();
+        // The new template reuses the cleared key; redefinition stays legal.
+        engine.load_str("(deftemplate b (slot x))").unwrap();
+        engine.load_str("(deftemplate b (slot y))").unwrap();
+        assert!(engine.active_query_targets.is_empty());
+        assert!(engine.active_callables.is_empty());
     }
 
     #[test]
