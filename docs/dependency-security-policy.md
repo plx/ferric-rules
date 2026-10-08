@@ -25,8 +25,7 @@ The native pylock reader audits every exported name/version, including versions
 selected only on another Python/OS marker. It does not install or execute these
 packages. Build tools locked in dependency groups (including maturin) are covered;
 unlocked PEP 517 isolated build environments are not represented as locked scans.
-The Python wheel's existing artifact-owned SBOM checks remain independent. The Go
-module and optional integrations retain their existing build/lint/lifecycle checks;
+The Go module and optional integrations retain their existing build/lint/lifecycle checks;
 this command does not audit their third-party dependencies. Add new Rust, npm,
 or Python dependency surfaces to the short loop
 in [`scripts/dependency-check.sh`](../scripts/dependency-check.sh) when introducing

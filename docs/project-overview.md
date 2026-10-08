@@ -42,13 +42,25 @@ teardown tests.
 | Binding | Location | Notes |
 | --- | --- | --- |
 | TypeScript / Node | `crates/ferric-rules-napi` + `packages/ferric` (`@ferric-rules/node`) | Synchronous `Engine`, worker-backed `EngineHandle`, and `EnginePool`. See [`packages/ferric/README.md`](../packages/ferric/README.md) and the [normative contract](typescript-binding-normative-contract.md). |
-| Python | `crates/ferric-rules-python` | abi3 wheels; see [`python-package-release.md`](python-package-release.md). |
+| Python | `crates/ferric-rules-python` | Local source builds and host abi3 wheels; see [the binding README](../crates/ferric-rules-python/README.md#building-from-source). |
 | Swift | `bindings/swift` | Local Swift 6 package over the C ABI (macOS 15 / iOS 18); built with `scripts/build-swift.sh`. |
 | Go | `bindings/go` | cgo over the C ABI; kept building and tested, without broader distribution. |
 | C | `crates/ferric-rules-ffi` | Static/dynamic library plus `ferric.h`. |
 
 `tests/bindings-conformance/` holds a language-neutral corpus that `just
 bindings-conformance` runs through the Rust, C, Go, Node, and Python adapters.
+
+CI checks local packages through consumers outside the checkout:
+[`scripts/python-consumer-smoke.sh`](../scripts/python-consumer-smoke.sh)
+builds a host wheel and installs it into a fresh virtual environment;
+[`scripts/test-node-package-artifact.mjs`](../scripts/test-node-package-artifact.mjs)
+packs the Node package and host addon, then installs and exercises them offline.
+The Swift binding keeps its native build and external consumer checks.
+
+Registry publication is not currently planned. The full multi-target release
+tooling can be restored from git at `3c3c8c7d` if publication work resumes.
+Before any PyPI release, the Python distribution must be renamed, for example
+to `ferric-rules`; its import name can remain `ferric`.
 
 ## 3. Tests and compatibility corpora
 
@@ -93,7 +105,7 @@ that touch Rust crates or Cargo manifests (`scaling.yml`).
 - `justfile` — the command surface. `just preflight-pr` must pass before a PR
   is opened or updated; `just check` is the non-fixing equivalent.
 - `scripts/` — shell/Python helpers behind the `just` recipes (FFI header and
-  sanitizer harnesses, package/artifact validation, dependency checks, CLIPS
+  sanitizer harnesses, host package consumer checks, dependency checks, CLIPS
   reference driver, Swift build, issue-triage helpers).
 - `tools/ferric-tools/` — `uv`-managed Python package: `compat/`
   (scan/run/report/diff and CI gates against the CLIPS reference container),
@@ -114,8 +126,7 @@ that touch Rust crates or Cargo manifests (`scaling.yml`).
   - path-filtered: `scaling.yml` (Rust crates or manifests), `swift.yml`
     (the Swift binding and the crates beneath it), and `site-check.yml` /
     `site-publish.yml` (`site/`);
-  - weekly or manual: `benchmarks.yml` and the Rust native, Node, and Python
-    package-artifact workflows; `perf-compare.yml` is manual only.
+  - weekly or manual: `benchmarks.yml`; `perf-compare.yml` is manual only.
 - `site/` — the Astro/Starlight documentation site.
 - `examples/embedding/` — shared example program used by consumer smokes.
 
@@ -148,9 +159,6 @@ Maintainers:
 - [`benchmark-policy.md`](benchmark-policy.md) — performance regression policy.
 - [`dependency-security-policy.md`](dependency-security-policy.md) —
   dependency scanning.
-- [`rust-package-release.md`](rust-package-release.md),
-  [`node-package-release.md`](node-package-release.md),
-  [`python-package-release.md`](python-package-release.md) — package builds.
 - [`history.md`](history.md) — short project history.
 
 Repository root: `README.md` (introduction), `AGENTS.md` (contributor and

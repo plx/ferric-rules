@@ -1,148 +1,136 @@
 #!/usr/bin/env node
 
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+// Exercise the current host's packed facade and addon from an external install.
+// Build the native addon first; this script builds TypeScript explicitly.
+import { copyFile, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import {
-  mainPackageDirectory,
-  repositoryRoot,
-  nativeBinaryName,
-  nativeCrateDirectory,
-  packPackage,
-  runCommand,
-  runNpmCommand,
-  stagePlatformPackage,
-  validateNodePackage,
-} from "./node-package-lib.mjs";
+import { npmInvocation } from "./npm-command.mjs";
 
-const requireFromMainPackage = createRequire(
-  join(mainPackageDirectory, "package.json"),
-);
-const {
-  detectRuntimeTarget,
-  formatRuntimeTarget,
-  selectDeclaredTarget,
-  targetMatchesRuntime,
-} = requireFromMainPackage("./native/runtime-target.js");
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const mainPackageDirectory = join(repositoryRoot, "packages", "ferric");
+const nativeCrateDirectory = join(repositoryRoot, "crates", "ferric-rules-napi");
+const nativeBinaryName = "ferric-rules-napi.node";
+const requireFromMainPackage = createRequire(join(mainPackageDirectory, "package.json"));
+const { detectRuntimeTarget, selectDeclaredTarget } =
+  requireFromMainPackage("./native/runtime-target.js");
 
-function parseArguments(argv) {
-  const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === "--target") options.target = argv[++index];
-    else if (argument === "--binary") options.binary = argv[++index];
-    else if (argument === "--artifacts-dir") {
-      options.artifactsDirectory = argv[++index];
-    } else {
-      throw new Error(`Unknown argument: ${argument}`);
-    }
-  }
-  return options;
+if (process.argv.length !== 2) {
+  throw new Error("usage: node scripts/test-node-package-artifact.mjs");
 }
-
-const options = parseArguments(process.argv.slice(2));
-const { mainPackage, targets } = await validateNodePackage();
-const runtime = detectRuntimeTarget();
-const detectedTarget = selectDeclaredTarget(targets, runtime);
-const targetId = options.target ?? detectedTarget.id;
-const target = targets.find((candidate) => candidate.id === targetId);
-if (!target) throw new Error(`Unknown target ${targetId}`);
-if (!targetMatchesRuntime(target, runtime)) {
+const [mainPackage, nativePackage, targets] = await Promise.all([
+  readFile(join(mainPackageDirectory, "package.json"), "utf8").then(JSON.parse),
+  readFile(join(nativeCrateDirectory, "package.json"), "utf8").then(JSON.parse),
+  readFile(join(mainPackageDirectory, "native", "targets.json"), "utf8").then(JSON.parse),
+]);
+if (nativePackage.version !== mainPackage.version) {
+  throw new Error(`Native package version ${nativePackage.version} differs from facade ${mainPackage.version}`);
+}
+// The consumer below installs the host addon directly, so registry installs
+// rely on these pins alone: one exact-version entry per declared target.
+const optionalDependencies = mainPackage.optionalDependencies ?? {};
+const declaredPackages = targets.map((declared) => declared.packageName).sort();
+const pinnedPackages = Object.keys(optionalDependencies).sort();
+const missingPins = declaredPackages.filter((name) => !pinnedPackages.includes(name));
+const extraPins = pinnedPackages.filter((name) => !declaredPackages.includes(name));
+if (missingPins.length > 0 || extraPins.length > 0) {
   throw new Error(
-    `Cannot smoke-test ${targetId} on ${formatRuntimeTarget(runtime)}`,
+    "Facade optionalDependencies must list exactly the native/targets.json packages; " +
+      `missing: ${missingPins.join(", ") || "none"}; extra: ${extraPins.join(", ") || "none"}`,
   );
 }
+for (const [name, pin] of Object.entries(optionalDependencies)) {
+  if (pin !== mainPackage.version) {
+    throw new Error(`Facade optionalDependencies pins ${name} to ${pin}, not the facade version ${mainPackage.version}`);
+  }
+}
+const target = selectDeclaredTarget(targets, detectRuntimeTarget());
 
-const workDirectory = await mkdtemp(join(tmpdir(), "ferric-node-package-"));
-const artifactsDirectory = options.artifactsDirectory
-  ? resolve(options.artifactsDirectory)
-  : join(workDirectory, "artifacts");
-const dependencyArtifactsDirectory = join(
-  workDirectory,
-  "dependency-artifacts",
-);
+function runCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    ...options,
+    env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "", ...options.env },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `Command failed (${result.status}): ${command} ${args.join(" ")}\n` +
+      `${result.stdout ?? ""}${result.stderr ?? ""}`,
+    );
+  }
+  return result;
+}
+
+function runNpmCommand(args, options = {}) {
+  const { command, shell } = npmInvocation();
+  return runCommand(command, args, { ...options, shell });
+}
+
+async function packPackage(packageDirectory, artifactsDirectory) {
+  await mkdir(artifactsDirectory, { recursive: true });
+  const result = runNpmCommand(
+    ["pack", "--json", "--ignore-scripts", "--pack-destination", artifactsDirectory],
+    { cwd: packageDirectory, env: { npm_config_loglevel: "silent" } },
+  );
+  const records = JSON.parse(result.stdout);
+  if (!Array.isArray(records) || records.length !== 1 || typeof records[0].filename !== "string") {
+    throw new Error("Expected one local npm pack result");
+  }
+  return { archivePath: join(artifactsDirectory, records[0].filename), record: records[0] };
+}
+
+const workDirectory = await mkdtemp(join(tmpdir(), "ferric-node-consumer-"));
+const artifactsDirectory = join(workDirectory, "artifacts");
+const dependencyArtifactsDirectory = join(workDirectory, "dependency-artifacts");
 const platformStage = join(workDirectory, "platform-package");
 const consumerDirectory = join(workDirectory, "consumer");
-const binaryPath = resolve(
-  options.binary ?? join(nativeCrateDirectory, nativeBinaryName),
-);
 
 try {
-  await mkdir(consumerDirectory, { recursive: true });
-  await stagePlatformPackage({
-    targetId,
-    binaryPath,
-    outputDirectory: platformStage,
-  });
-
-  const platformPack = await packPackage({
-    packageDirectory: platformStage,
-    artifactsDirectory,
-    runScripts: false,
-  });
-  const detectLibcDirectory = dirname(
-    requireFromMainPackage.resolve("detect-libc/package.json"),
-  );
-  const detectLibcPack = await packPackage({
-    packageDirectory: detectLibcDirectory,
-    artifactsDirectory: dependencyArtifactsDirectory,
-    runScripts: false,
-  });
-  if (
-    detectLibcPack.record.name !== "detect-libc" ||
-    detectLibcPack.record.version !== mainPackage.dependencies?.["detect-libc"]
-  ) {
-    throw new Error(
-      `Packed detect-libc ${String(detectLibcPack.record.version)}, expected ` +
-        String(mainPackage.dependencies?.["detect-libc"]),
-    );
+  const location = relative(await realpath(repositoryRoot), await realpath(workDirectory));
+  if (location === "" || (!isAbsolute(location) && location !== ".." && !location.startsWith(`..${sep}`))) {
+    throw new Error("Temporary consumer must be outside the checkout; choose an external TMPDIR");
   }
-  // Pack the installed locked compiler/type dependencies as testing tools;
-  // the external consumer has no type-resolution path back into the checkout.
+  runNpmCommand(["run", "build"], { cwd: mainPackageDirectory });
+  await mkdir(platformStage);
+  await mkdir(consumerDirectory);
+  await copyFile(
+    join(nativeCrateDirectory, nativeBinaryName),
+    join(platformStage, nativeBinaryName),
+  );
+  await writeFile(join(platformStage, "package.json"), JSON.stringify({
+    name: target.packageName,
+    version: mainPackage.version,
+    main: nativeBinaryName,
+    files: [nativeBinaryName],
+    os: target.os,
+    cpu: target.cpu,
+    ...(target.libc ? { libc: target.libc } : {}),
+    engines: mainPackage.engines,
+    license: mainPackage.license,
+  }, null, 2) + "\n");
+  const platformPack = await packPackage(platformStage, artifactsDirectory);
+  const detectLibcPack = await packPackage(
+    dirname(requireFromMainPackage.resolve("detect-libc/package.json")),
+    dependencyArtifactsDirectory,
+  );
+  if (detectLibcPack.record.version !== mainPackage.dependencies?.["detect-libc"]) {
+    throw new Error(`Installed detect-libc ${detectLibcPack.record.version} does not match the facade dependency`);
+  }
+  // Pack local compiler/type dependencies so the consumer's type resolution
+  // has no path back into checkout node_modules and needs no registry/cache.
   const typeTools = [];
   for (const name of ["typescript", "@types/node", "undici-types"]) {
-    const directory = dirname(requireFromMainPackage.resolve(`${name}/package.json`));
-    typeTools.push(await packPackage({ packageDirectory: directory, artifactsDirectory: dependencyArtifactsDirectory, runScripts: false }));
+    typeTools.push(await packPackage(
+      dirname(requireFromMainPackage.resolve(`${name}/package.json`)),
+      dependencyArtifactsDirectory,
+    ));
   }
-  const mainPack = await packPackage({
-    packageDirectory: mainPackageDirectory,
-    artifactsDirectory,
-    runScripts: true,
-  });
-
-  const mainNativeFiles = mainPack.files
-    .filter((path) => path.startsWith("native/"))
-    .sort();
-  const expectedMainNativeFiles = [
-    "native/index.js",
-    "native/runtime-target.js",
-    "native/targets.json",
-  ];
-  if (
-    JSON.stringify(mainNativeFiles) !== JSON.stringify(expectedMainNativeFiles)
-  ) {
-    throw new Error(
-      `Main npm tarball native payload is ${mainNativeFiles.join(", ")}, ` +
-        `expected ${expectedMainNativeFiles.join(", ")}`,
-    );
-  }
-  if (mainPack.files.some((path) => path.endsWith(".node"))) {
-    throw new Error("Main npm tarball contains a host-specific .node file");
-  }
-  const platformFiles = [...platformPack.files].sort();
-  const expectedPlatformFiles = [
-    "README.md",
-    nativeBinaryName,
-    "package.json",
-  ].sort();
-  if (JSON.stringify(platformFiles) !== JSON.stringify(expectedPlatformFiles)) {
-    throw new Error(
-      `Platform npm tarball contains ${platformFiles.join(", ")}, expected ` +
-        expectedPlatformFiles.join(", "),
-    );
-  }
+  const mainPack = await packPackage(mainPackageDirectory, artifactsDirectory);
 
   await writeFile(
     join(consumerDirectory, "package.json"),
@@ -297,7 +285,7 @@ try {
   });
 
   console.log(
-    `clean npm artifact smoke passed for ${targetId}: ` +
+    `clean npm host consumer passed for ${target.id}: ` +
       `${mainPack.record.filename} + ${platformPack.record.filename}`,
   );
 } finally {
