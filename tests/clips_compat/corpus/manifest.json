@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "d86b96ed446153abf272aca6e011a33e1421c2af",
+    "ferric_revision": "880d6bc0155089bfb9c2ee19d6d30dca9e3e444c",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -11556,6 +11556,478 @@
         "test",
         "activation-order"
       ]
+    },
+    {
+      "path": "agenda/412_canonical_recency_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "salience",
+        "join"
+      ]
+    },
+    {
+      "path": "agenda/412_canonical_recency_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "breadth",
+        "salience",
+        "join"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "agenda/412_canonical_recency_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "salience",
+        "join"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_canonical_recency_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "salience",
+        "join"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_late_specificity_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "build",
+        "predicate-constraints",
+        "test",
+        "specificity"
+      ]
+    },
+    {
+      "path": "agenda/412_late_specificity_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "breadth",
+        "build",
+        "predicate-constraints",
+        "test",
+        "specificity"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "agenda/412_late_specificity_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "build",
+        "predicate-constraints",
+        "test",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_late_specificity_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "build",
+        "predicate-constraints",
+        "test",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_late_older_tie_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "build"
+      ]
+    },
+    {
+      "path": "agenda/412_late_older_tie_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "breadth",
+        "build"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "agenda/412_late_older_tie_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "build"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_late_older_tie_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "build"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_multifield_partition_tie_depth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "depth",
+        "multifield"
+      ]
+    },
+    {
+      "path": "agenda/412_multifield_partition_tie_breadth.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "breadth",
+        "multifield"
+      ],
+      "strategy": "breadth"
+    },
+    {
+      "path": "agenda/412_multifield_partition_tie_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "multifield"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_multifield_partition_tie_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "multifield"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_zero_suffix_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "not"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_zero_suffix_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "not"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_first_absence_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "not"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_first_absence_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "not"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_literal_and_repeated_variable_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "literal-constraints",
+        "field-disjunction",
+        "variable-constraints",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_literal_and_repeated_variable_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "literal-constraints",
+        "field-disjunction",
+        "variable-constraints",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_predicate_call_complexity_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "predicate-constraints",
+        "and",
+        "build",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_predicate_call_complexity_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "predicate-constraints",
+        "and",
+        "build",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_tests_after_negative_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "not",
+        "exists",
+        "ncc",
+        "test",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_tests_after_negative_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "not",
+        "exists",
+        "ncc",
+        "test",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_leading_and_attached_test_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "test",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_leading_and_attached_test_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "test",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_or_variant_specificity_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "or",
+        "predicate-constraints",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_or_variant_specificity_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "or",
+        "predicate-constraints",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_multifield_cardinality_tie_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "multifield",
+        "build",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_multifield_cardinality_tie_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "multifield",
+        "build",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_return_value_and_negated_literal_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "return-value-constraints",
+        "not",
+        "build",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_return_value_and_negated_literal_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "return-value-constraints",
+        "not",
+        "build",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_template_slot_specificity_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "deftemplate",
+        "not",
+        "forall",
+        "exists",
+        "build",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_template_slot_specificity_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "deftemplate",
+        "not",
+        "forall",
+        "exists",
+        "build",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_leading_quantified_specificity_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "not",
+        "forall",
+        "exists",
+        "build",
+        "specificity"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_leading_quantified_specificity_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "not",
+        "forall",
+        "exists",
+        "build",
+        "specificity"
+      ],
+      "strategy": "mea"
+    },
+    {
+      "path": "agenda/412_absence_kinds_lex.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "lex",
+        "exists",
+        "forall",
+        "not",
+        "test"
+      ],
+      "strategy": "lex"
+    },
+    {
+      "path": "agenda/412_absence_kinds_mea.clp",
+      "level": "interaction",
+      "covers": [
+        "activation-order",
+        "mea",
+        "exists",
+        "forall",
+        "not",
+        "test"
+      ],
+      "strategy": "mea"
     },
     {
       "path": "patterns/405_nested_group_or_or.clp",

@@ -12,10 +12,10 @@ pub enum Strategy {
     /// Breadth-first.
     #[pyo3(name = "BREADTH")]
     Breadth = 1,
-    /// LEX (lexicographic recency).
+    /// CLIPS LEX: sorted fact recencies, specificity, then older activations.
     #[pyo3(name = "LEX")]
     Lex = 2,
-    /// MEA (means-ends analysis).
+    /// CLIPS MEA: first-pattern recency, then the LEX comparison.
     #[pyo3(name = "MEA")]
     Mea = 3,
 }

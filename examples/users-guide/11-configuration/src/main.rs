@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     // and a 1,000,000-iteration action-loop budget.
     let _engine = Engine::new(EngineConfig::default());
 
-    // CLIPS-strict ASCII mode with LEX strategy.
+    // ASCII mode with the CLIPS LEX strategy.
     let _engine = Engine::new(EngineConfig::ascii().with_strategy(ConflictResolutionStrategy::Lex));
 
     // Increase recursion depth and reduce the per-activation budget shared by

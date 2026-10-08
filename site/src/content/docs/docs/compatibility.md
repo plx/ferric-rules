@@ -23,26 +23,20 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for
 
 ## Conflict Resolution
 
-Depth and breadth use activation creation order and match the pinned reference cases. The retained LEX and MEA host options are experimental Ferric strategies with the ordering gaps below.
+Depth and breadth use activation creation order. LEX and MEA compare fact recencies and specificity before breaking remaining ties in favor of older activations. Salience takes precedence for all four strategies.
 
-| Strategy | Description                               |
-| -------- | ----------------------------------------- |
-| Depth    | Most recent activation fires first.       |
-| Breadth  | Oldest activation fires first.            |
-| LEX      | Lexicographic recency comparison.         |
-| MEA      | First-pattern recency, then LEX tiebreak. |
+| Strategy | Description                                                 |
+| -------- | ----------------------------------------------------------- |
+| Depth    | Most recent activation fires first.                         |
+| Breadth  | Oldest activation fires first.                              |
+| LEX      | Sorted fact recencies, specificity, then older activations. |
+| MEA      | First-pattern recency, then the LEX comparison.             |
 
-Not implemented: Simplicity, Complexity, Random.
+Choose a strategy through the host configuration API. Source `set-strategy` and `get-strategy` commands are unsupported. Simplicity, Complexity, and Random are not implemented.
 
-## Known Differential Gaps
+## Reviewed Compatibility Evidence
 
-The blocking pinned-CLIPS policy retains these differences as exact known deviations rather than reporting them as equivalent. Any unexplained or changed divergence fails the gate.
-
-| Area        | Known gap                                             | Policy cases                                                                             | Tracking                                               |
-| ----------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| LEX and MEA | Selected recency vectors and the MEA tiebreak differ. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
-
-The reviewed gate covers 57 scenarios: 55 equivalences and the two known LEX/MEA differences. All 35 scenarios added beyond the 22-case baseline match pinned CLIPS 6.30. Other corpus fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
+The blocking pinned-CLIPS policy requires equivalent observations in all 57 reviewed scenarios, including the LEX/MEA cases repaired in [#412](https://github.com/plx/ferric-rules/issues/412). Any unexplained divergence fails the gate. The granular corpus separately characterizes known differences, including activation chronology at negative/NCC sharing and late-install boundaries; see the [full compatibility contract](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md). Other fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
 
 ## Known Exclusions
 

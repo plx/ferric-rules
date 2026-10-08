@@ -170,9 +170,13 @@ an owned fact. C, Python, and Node value conversion also rejects them. Use host
 fact handles for embedding operations; do not persist or decode runtime addresses
 as host handles. Snapshots retain internal addresses as described below.
 
-## Pre-1.0 snapshot schema 11
+## Pre-1.0 snapshot schema 12
 
-Snapshots are written with schema 11. Schema 10 snapshots are rejected with
+Snapshots are written with schema 12. Schema 11 snapshots are rejected with
+`UnsupportedVersion(11)` because LEX/MEA activations now retain absent-CE recency
+positions and rule complexity, with CLIPS-compatible ordering keys. Rule
+complexity is computed at definition and restored without reevaluating rules.
+Schema 10 snapshots are rejected with
 `UnsupportedVersion(10)` because rule auto-focus metadata now persists.
 Definition-time salience is stored as its resolved integer; neither it nor
 pending activations cause new focus changes during restore. Schema 9 snapshots
@@ -450,8 +454,9 @@ Ferric uses byte-equality comparison with no Unicode normalization:
 1. Start with `ferric check` to validate syntax.
 2. Run with `ferric run` and compare output to CLIPS.
 3. Compare working-memory state, firing counts and observable output. Supported
-   depth/breadth ordering follows activation creation chronology; LEX/MEA remain
-   experimental and have documented CLIPS differences.
+   depth/breadth ordering follows activation creation chronology; LEX uses
+   sorted fact recencies, specificity, and older-activation ties, while MEA
+   compares the first pattern's recency before LEX.
 4. Use `(declare (salience ...))` and `(focus ...)` to enforce ordering
    where side-effect order matters.
 
@@ -519,7 +524,7 @@ was never populated.
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
 | Source `reset`/`clear` continue execution | Reset immediately restores working state; clear removes facts and retains active constructs |
 | LHS guards belong in patterns/tests | Use RHS `if/then/else` for action control; use `(test ...)` CEs for match-time guards |
-| Activation order | Depth/breadth follow activation creation chronology; LEX/MEA are experimental |
+| Activation order | Depth/breadth compare activation chronology; LEX/MEA compare fact recencies and specificity before older-activation ties |
 
 ---
 
@@ -540,7 +545,7 @@ was never populated.
 | Salience | Supported |
 | Focus stack | Supported |
 | Depth / Breadth | Supported |
-| LEX / MEA | Experimental; documented CLIPS ordering differences |
+| LEX / MEA | Supported through host configuration; source strategy commands remain unsupported |
 | `defclass` / COOL | Not supported |
 | `if` / `then` / `else` | Supported in rule RHS actions and callable bodies; direct use in `test` CEs is unsupported |
 | Certainty factors | Not supported |
@@ -596,12 +601,12 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
   `()` for empty fields. Raw core symbols cannot be used as portable input.
   Re-query fact handles after reset or restore; persist application IDs in facts.
   See [host-api.md](host-api.md).
-- Snapshots use a bounded, versioned envelope (schema 11); CBOR is recommended
+- Snapshots use a bounded, versioned envelope (schema 12); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6,
-  schema-7, schema-8, schema-9 and schema-10 snapshots are rejected explicitly. Export durable application data through the
-  producing version before upgrading; see
-  [snapshots.md](snapshots.md).
+  schema-7, schema-8, schema-9, schema-10 and schema-11 snapshots are rejected
+  explicitly. Export durable application data through the producing version
+  before upgrading; see [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
   Python `None`, Node `null`, and Swift `.void` cannot be stored in facts.

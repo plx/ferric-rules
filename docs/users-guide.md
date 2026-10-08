@@ -733,7 +733,7 @@ budget. The factory helpers cover the common cases:
 // and a 1,000,000-iteration action-loop budget.
 let _engine = Engine::new(EngineConfig::default());
 
-// CLIPS-strict ASCII mode with LEX strategy.
+// ASCII mode with the CLIPS LEX strategy.
 let _engine = Engine::new(EngineConfig::ascii().with_strategy(ConflictResolutionStrategy::Lex));
 
 // Increase recursion depth and reduce the per-activation budget shared by
@@ -751,10 +751,13 @@ generic functions draw from the same budget. A false initial `while` condition
 or an empty/descending count range costs nothing. Exhaustion stops the
 activation with `EvalError::ActionIterationLimit`; the default is 1,000,000.
 
-Available strategies: `Depth` (default), `Breadth`, `Lex`, `Mea`.
-`Simplicity`, `Complexity`, and `Random` are not implemented — they are
-rarely needed in practice and their behavior is under-specified in the
-CLIPS literature.
+Available strategies are `Depth` (default), `Breadth`, `Lex`, and `Mea`.
+Salience takes priority in each strategy. Depth selects the newest activation;
+breadth selects the oldest. LEX compares sorted fact recencies, rule specificity,
+and finally older activations. MEA compares the first pattern's recency before
+using the LEX comparison. Configure these through the host API; source
+`set-strategy` and `get-strategy` commands are unsupported. `Simplicity`,
+`Complexity`, and `Random` are not implemented.
 
 If you pass source via `Engine::with_rules_config(source, config)`,
 configuration and rule loading happen in one call.

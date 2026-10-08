@@ -11,21 +11,17 @@ Exact CLIPS compatibility claims are limited to the reviewed differential
 policy cases and the granular corpus programs, and are qualified by the known
 gaps below.
 
-## Known Differential Gaps
+## Reviewed Compatibility Evidence
 
-The blocking pinned-CLIPS lane currently retains the following known
-differences as exact, issue-linked deviations. They are not accepted as
-equivalent: the gate fails if their observed fields or semantic fingerprints
-change, and it rejects every unexplained divergence.
-
-| Area | Current difference from pinned CLIPS | Policy cases | Tracking |
-|------|--------------------------------------|--------------|----------|
-| LEX and MEA agenda order | Recency vectors and the MEA tiebreak differ for selected multi-pattern activations. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
+The blocking pinned-CLIPS lane requires equivalent observations for every
+reviewed policy case and rejects unexplained divergences. The LEX and MEA
+`FR-RETE-009` cases now match the canonical recency ordering verified in
+[#412](https://github.com/plx/ferric-rules/issues/412).
 
 The reviewed differential policy covers 57 scenarios: the existing 22 cases
 and 35 distinct rehabilitation scenarios, plus a generated-harness control.
-55 cases are equivalent; the two LEX/MEA cases retain exact known divergences. It does not turn undeclared corpus
-fixtures into compatibility claims; those remain pending or incompatible
+All 57 cases are equivalent. This does not turn undeclared corpus fixtures
+into compatibility claims; those remain pending or incompatible
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
 evidence boundary.
@@ -33,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1147
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1187
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -58,7 +54,7 @@ installation and one from a queued test CE:
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
 | Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
-| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
+| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected equal-salience ties (under LEX/MEA, only when recency and specificity are also equal). | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
 | Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
@@ -281,21 +277,30 @@ alternatives must already be bound.
 
 ### Conflict Resolution Strategies
 
-Depth and breadth are the supported CLIPS ordering strategies. The host API
-also retains two experimental Ferric orderings for existing consumers:
+The host API supports CLIPS depth, breadth, LEX, and MEA ordering. Salience
+takes precedence in every strategy:
 
 | Strategy | Description |
 |----------|-------------|
 | **Depth** | Most recent activation fires first (default) |
 | **Breadth** | Oldest activation fires first |
-| **LEX** (experimental) | Ferric's pattern-order recency comparison; not CLIPS LEX |
-| **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
+| **LEX** | Sorted fact recencies, then specificity, then older activations |
+| **MEA** | First-pattern recency, then the LEX comparison |
 
-CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
-Their tie order can also differ between the partitions of one ordered fact
-that a multifield pattern matches in several ways.
-Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
-are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
+LEX sorts each activation's fact recencies from newest to oldest. Negated and
+existential conditions contribute absence entries, which are older than every
+real fact. If one recency vector is a prefix of another, the longer vector
+wins. Equal vectors compare rule specificity, then prefer the older activation.
+Specificity counts source patterns and comparisons separately for each expanded
+OR branch. Each predicate or return-value call counts once and its ordinary
+arguments add nothing, but each call nested in `and`, `or`, or `not` counts
+separately (`agenda/412_predicate_call_complexity_*`). MEA first compares the
+first outer pattern's recency, including a leading absence, then uses the same
+LEX comparison. These rules also order multiple partitions of one multifield
+fact.
+
+`Simplicity`, `Complexity`, and `Random` are not implemented.
+CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared
 strategy through the host API. Bindings reject unknown enum/name values.
 
@@ -443,8 +448,14 @@ transiently retracts and refires the enclosing rule, as CLIPS can when another
 successor was linked to the same parent in between. Nested NCC chains, such as
 `(exists (exists ...))`, settle depth first as in CLIPS: when several rules'
 chains share one subnetwork, each chain finishes before the next one starts,
-so deeper and shallower nestings tie as the reference does. Other strategy combinations are
-not a promise of replay-identical order across engines or versions.
+so deeper and shallower nestings tie as the reference does. Equal-salience ties
+in network topologies the corpus does not cover are not a promise of
+replay-identical order across engines or versions.
+
+LEX and MEA first compare sorted fact recency and rule specificity, as described
+under [Conflict Resolution Strategies](#conflict-resolution-strategies).
+Activations equal in both fall back to creation order, oldest first, so they
+inherit the creation-order boundaries described above.
 
 For application semantics that require precedence independently of network
 construction, use salience, `focus`, or phase facts. Within an engine, the
@@ -1275,7 +1286,7 @@ its fields have been expanded.
 
 `min` and `max` return the selected operand with its own type, the first on a
 tie: `(max 1 1.0)` is `1`. For a FLOAT, `round` computes `ceil(x - 0.5)` as
-CLIPS does, so `(round -0.49999999999999995)` is `-1`.
+CLIPS does, so `(round -0.49999999999999994)` is `-1`.
 
 Domain errors in `sqrt`, `asin`, `acos`, `acosh`, `atanh`, `log`, `log10`,
 and `**` stop the current run with an `EMATHFUN1` diagnostic. Zero logarithm
@@ -1631,7 +1642,7 @@ The following features are explicitly out of scope.
 | `Simplicity` strategy | Deferred | Until fully specified |
 | `Complexity` strategy | Deferred | Until fully specified |
 | `Random` strategy | Deferred | Until fully specified |
-| General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary |
+| General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary, shared by LEX/MEA ties whose recency and specificity are also equal |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |

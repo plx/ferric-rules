@@ -91,11 +91,20 @@ pub struct CompileResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionCompilationPlan {
     salience: Salience,
+    complexity: u16,
     conditions: Vec<CompilableCondition>,
     var_map: VarMap,
 }
 
 impl ConditionCompilationPlan {
+    /// Set CLIPS rule specificity, retaining its unsigned 11-bit representation.
+    /// Direct core compilation defaults to zero when source syntax is unavailable.
+    #[must_use]
+    pub const fn with_complexity(mut self, complexity: u16) -> Self {
+        self.complexity = complexity & 0x07ff;
+        self
+    }
+
     /// Return the variable mapping prepared for this rule.
     #[must_use]
     pub fn var_map(&self) -> &VarMap {
@@ -297,7 +306,7 @@ impl ReteCompiler {
             rete,
             fact_base,
             rule.rule_id,
-            rule.salience,
+            (rule.salience, 0),
             &conditions,
             var_map,
         ))
@@ -317,8 +326,14 @@ impl ReteCompiler {
         let var_map = Self::prepare_var_map(conditions)?;
         rete.beta
             .ensure_node_capacity(maximum_new_beta_nodes(conditions))?;
-        Ok(self
-            .compile_conditions_unchecked(rete, fact_base, rule_id, salience, conditions, var_map))
+        Ok(self.compile_conditions_unchecked(
+            rete,
+            fact_base,
+            rule_id,
+            (salience, 0),
+            conditions,
+            var_map,
+        ))
     }
 
     /// Validate and prepare conditional elements without mutating compiler or
@@ -332,6 +347,7 @@ impl ReteCompiler {
         let var_map = Self::prepare_var_map(&conditions)?;
         Ok(ConditionCompilationPlan {
             salience,
+            complexity: 0,
             conditions,
             var_map,
         })
@@ -354,7 +370,7 @@ impl ReteCompiler {
             rete,
             fact_base,
             rule_id,
-            plan.salience,
+            (plan.salience, plan.complexity),
             &plan.conditions,
             plan.var_map,
         )
@@ -420,7 +436,7 @@ impl ReteCompiler {
         rete: &mut ReteNetwork,
         fact_base: &FactBase,
         rule_id: RuleId,
-        salience: Salience,
+        (salience, complexity): (Salience, u16),
         conditions: &[CompilableCondition],
         mut var_map: VarMap,
     ) -> CompileResult {
@@ -473,9 +489,12 @@ impl ReteCompiler {
             }
         }
 
-        let terminal = rete
-            .beta
-            .create_terminal_node(current_parent, rule_id, salience);
+        let terminal = rete.beta.create_terminal_node_with_complexity(
+            current_parent,
+            rule_id,
+            salience,
+            complexity,
+        );
 
         // Cold-start compilation has no existing partial matches beyond the
         // root token, so retain the direct root-child path. Online installation

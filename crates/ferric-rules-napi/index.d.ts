@@ -9,9 +9,9 @@ export const enum Strategy {
   Depth = 0,
   /** Breadth-first. */
   Breadth = 1,
-  /** LEX (lexicographic recency). */
+  /** CLIPS LEX: sorted fact recencies, specificity, then older activations. */
   Lex = 2,
-  /** MEA (means-ends analysis). */
+  /** CLIPS MEA: first-pattern recency, then the LEX comparison. */
   Mea = 3
 }
 /** String encoding constraint for symbols and strings. */

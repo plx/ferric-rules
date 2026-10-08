@@ -1077,6 +1077,7 @@ fn bench_agenda_token_index_cycle(c: &mut Criterion) {
                         rule: RuleId((idx + 1) as u32),
                         token: token_pool[idx % token_pool.len()],
                         salience: Salience::new((idx % 8) as i32),
+                        complexity: 0,
                         timestamp: Timestamp::new(idx as u64),
                         activation_seq: ActivationSeq::ZERO,
                         recency: SmallVec::new(),

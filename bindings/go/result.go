@@ -8,9 +8,9 @@ const (
 	StrategyDepth Strategy = iota
 	// StrategyBreadth prioritizes breadth in conflict resolution.
 	StrategyBreadth
-	// StrategyLEX uses CLIPS LEX ordering.
+	// StrategyLEX compares sorted fact recencies, specificity, then older activations.
 	StrategyLEX
-	// StrategyMEA uses CLIPS MEA ordering.
+	// StrategyMEA compares first-pattern recency, then the CLIPS LEX ordering.
 	StrategyMEA
 )
 

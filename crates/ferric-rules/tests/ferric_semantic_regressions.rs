@@ -984,11 +984,11 @@ fn fr_rete_008_depth_and_breadth_expose_recreated_activation_chronology() {
 }
 
 #[test]
-fn fr_rete_009_lex_and_mea_expose_canonical_recency_vector_gap() {
+fn fr_rete_009_lex_and_mea_match_canonical_recency_vectors() {
     // CLIPS LEX sorts each recency vector descending and yields
     // LX,LY,MX,MY. CLIPS MEA compares the first CE before that canonical LEX
-    // fallback and yields LY,LX,MX,MY. Ferric currently compares remaining
-    // timetags in pattern order, so MY precedes MX under both strategies.
+    // fallback and yields LY,LX,MX,MY. Both strategies compare sorted
+    // remaining recencies when the first-pattern key ties.
     let source = r#"
 (deffacts startup
   (t1)
@@ -1044,9 +1044,9 @@ fn fr_rete_009_lex_and_mea_expose_canonical_recency_vector_gap() {
     );
 
     assert_eq!(lex.rules_fired, 4);
-    assert_eq!(lex.output, "LY\nLX\nMY\nMX\n");
+    assert_eq!(lex.output, "LX\nLY\nMX\nMY\n");
     assert_eq!(mea.rules_fired, 4);
-    assert_eq!(mea.output, "LY\nLX\nMY\nMX\n");
+    assert_eq!(mea.output, "LY\nLX\nMX\nMY\n");
 }
 
 /// Multi-pattern join: a rule with two patterns joined by a shared variable.

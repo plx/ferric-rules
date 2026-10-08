@@ -59,6 +59,8 @@ struct Case {
 #[serde(rename_all = "lowercase")]
 enum Strategy {
     Breadth,
+    Lex,
+    Mea,
 }
 
 const fn one() -> usize {
@@ -572,6 +574,8 @@ fn observe(case: &Case, source: &str, input: Option<&str>, mode: Mode) -> Option
     let strategy = match case.strategy {
         None => ConflictResolutionStrategy::Depth,
         Some(Strategy::Breadth) => ConflictResolutionStrategy::Breadth,
+        Some(Strategy::Lex) => ConflictResolutionStrategy::Lex,
+        Some(Strategy::Mea) => ConflictResolutionStrategy::Mea,
     };
     let mut engine = Engine::new(EngineConfig::utf8().with_strategy(strategy));
     let mut observation = Observation {

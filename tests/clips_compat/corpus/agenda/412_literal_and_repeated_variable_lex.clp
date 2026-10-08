@@ -1,0 +1,6 @@
+(deffacts seed (u 3) (v 1 1 1))
+(defrule u-any (declare (salience 20)) (u ?) => (printout t WILDCARD crlf))
+(defrule u-literal (declare (salience 20)) (u 3) => (printout t LITERAL crlf))
+(defrule u-duplicate (declare (salience 20)) (u 3|3) => (printout t DUPLICATE crlf))
+(defrule v-any (declare (salience 10)) (v ? ? ?) => (printout t DISTINCT crlf))
+(defrule v-repeat (declare (salience 10)) (v ?x ?x ?) => (printout t REPEATED crlf))

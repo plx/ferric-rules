@@ -3519,6 +3519,11 @@ impl Engine {
             .translate_rule_construct(rule)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
+        // Each normalized OR variant has its own specificity. Count the source
+        // AST rather than the translated tests, which may already be optimized.
+        // Translation first rejects unsupported CEs before this helper runs.
+        let complexity = crate::rule_complexity::rule_complexity(rule);
+
         let mut runtime_actions = Vec::with_capacity(rule.actions.len());
         for action in &rule.actions {
             let expr = ActionExpr::FunctionCall(action.call.clone());
@@ -3536,7 +3541,8 @@ impl Engine {
         let plan = self
             .compiler
             .plan_conditions(translated.salience, translated.conditions)
-            .map_err(|error| Self::located_rule_compile_error(rule, error))?;
+            .map_err(|error| Self::located_rule_compile_error(rule, error))?
+            .with_complexity(complexity);
 
         let source_definition = source
             .get(rule.span.start.offset..rule.span.end.offset)
@@ -3567,6 +3573,7 @@ impl Engine {
             var_map,
             fact_address_vars: translated.fact_address_vars,
             salience: Salience::new(rule.salience),
+            complexity,
             auto_focus: rule.auto_focus,
             test_conditions: translated.test_conditions,
             runtime_actions,

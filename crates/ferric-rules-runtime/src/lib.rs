@@ -61,6 +61,7 @@ mod query_cursor;
 mod query_validation;
 mod random;
 pub mod router;
+mod rule_complexity;
 #[cfg(feature = "serde")]
 pub mod serialization;
 pub(crate) mod slot_constraints;
