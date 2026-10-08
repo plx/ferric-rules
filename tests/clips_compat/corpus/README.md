@@ -1,14 +1,15 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 1095 small programs progress from individual features to
+CLIPS subset. Its 1256 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 1075 clean conformance cases, 205 of which
-reproduce a CLIPS error, and 20 active characterizations of documented
+CLIPS-verified output oracle. There are 1234 clean conformance cases, 232 of which
+reproduce a CLIPS error, and 22 active characterizations of documented
 differences: CLIPS output that is not UTF-8, malformed `format` directives,
-and equal-salience ties involving identical negative/NCC joins or multi-pattern
-`exists`, late-installed auto-focus NCC rules, and ten explicit conditional-element
-nesting/operand limits.
+equal-salience ties involving identical negative/NCC joins or multi-pattern
+`exists`, a transient nested NCC refire, three late-installed auto-focus NCC
+rules, an auto-focus test CE cancelled by NCC completion, and nine explicit
+conditional-element nesting/operand limits.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs
@@ -83,15 +84,19 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
 - A program where CLIPS reports an error declares where. With `error: "load"`
   CLIPS rejects the program, the golden is its load diagnostic, and Ferric must
   reject the program at load. With `error: "run"` CLIPS halts on a run-time
-  error; Ferric must report an error and print the golden without its
-  `[CODE123]` diagnostics. If a diagnostic follows partially printed output on
-  the same line, the program prefix is preserved without the diagnostic
-  newline. Ferric's own diagnostic text is never compared.
+  error; Ferric must report an error and print the golden without its CLIPS
+  diagnostics. The runner strips only the run-time diagnostics listed in
+  `diagnostic_offset` in
+  [`compat_corpus/main.rs`](../../../crates/ferric-rules/tests/compat_corpus/main.rs),
+  from the diagnostic to the end of its line; if it follows partially printed
+  output, that program prefix is kept. Other bracketed text stays output, so a
+  run-error golden with a new code needs that list extended after CLIPS
+  verification. Ferric's own diagnostic text is never compared.
 - Cases marked `recoverable_fact_notices: true` require successful execution
-  despite CLIPS notices for missing or negative fact designators. The full
-  oracle retains the exact `[PRNTUTIL1]` missing-fact and `[ARGACCES5]`
-  fact-designator notices; output comparison removes only those precise
-  messages. Fatal slot/operand diagnostics are still errors. Ferric may omit
+  despite CLIPS notices for missing, negative, or wrong-type fact designators.
+  The full oracle retains the exact `[PRNTUTIL1]` missing-fact and
+  `[ARGACCES5]` fact-designator notices; output comparison removes only those
+  precise messages. Fatal slot/operand diagnostics are still errors. Ferric may omit
   the recoverable notices.
 - Cases marked `recoverable_control_notices: true` allow only the exact
   recoverable clear-refusal and missing-module notices captured from CLIPS.
@@ -102,6 +107,22 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   `MISCFUN2` wrong-count and `MISCFUN3` reversed-bounds notices. The oracle
   retains them; comparison removes them from ordinary output and from Ferric's
   notice router while requiring successful execution and the correct draws.
+- Cases marked `recoverable_build_notices: true` allow only CLIPS's exact
+  rejection of a `build` that would redefine a deftemplate in use: the
+  `[CSTRCPSR4] Cannot redefine deftemplate NAME while it is in use.` message
+  with its leading newline, and the `ERROR:` echo of the construct up to its
+  module-qualified name. The oracle retains them. Comparison moves each one to
+  the expected notices as its message line, and Ferric's own rejection text
+  for the same deftemplate or ordered relation is compared as that line, so
+  the number and order of rejected builds and their names must still agree.
+  Such a case must otherwise succeed.
+- Cases marked `recoverable_introspection_notices: true` allow only CLIPS's
+  exact recoverable introspection notices: `[PRNTUTIL1] Unable to find
+  deftemplate NAME.` and the `[ARGACCES5]` notice for a first argument of a
+  `deftemplate-slot-*` function or a construct list that is not a deftemplate
+  or defmodule name. The oracle retains them; comparison moves them to the
+  expected notices, so Ferric must print the same notices, in order, on
+  `werror`. Such a case must otherwise succeed.
 - A separate exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error
   routers, interleaved with `t` in the oracle; the runner removes them from the
@@ -148,8 +169,8 @@ Every program gets a separate Docker container, a read-only source mount, a
 removed explicitly. Load success, complete output/statistics frames, diagnostics,
 and the firing bound are all checked before accepting output. During source
 loading, the specific warnings for redefining the built-in MAIN module or a
-deffunction, defgeneric, deftemplate, or defrule, and the exact integer-overflow
-scanner notice are allowed.
+deffunction, deftemplate, or defrule (with the defrule warning's `+j`/`=j`-style
+suffixes), and the exact integer-overflow scanner notice are allowed.
 Other diagnostic codes fail reference verification unless the case
 declares an `error`. A load-error case is loaded with `load*`, which must fail
 with a diagnostic; a run-error case must print at least one run-time diagnostic.

@@ -64,6 +64,48 @@ fn names(
         .map(fields)
 }
 
+/// Evaluate argument #1, which names a deftemplate or defmodule. As in CLIPS,
+/// a value that is not a SYMBOL prints a recoverable `ARGACCES5` notice and
+/// yields `None`; the caller then returns its fallback value.
+fn construct_argument(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    expression: &RuntimeExpr,
+    kind: &str,
+) -> Result<Option<String>, EvalError> {
+    let Value::Symbol(value) = eval_inner(ctx, expression)? else {
+        argument_notice(ctx, name, kind);
+        return Ok(None);
+    };
+    Ok(Some(
+        ctx.engine
+            .symbol_table
+            .resolve_symbol_str(value)
+            .unwrap_or("")
+            .to_owned(),
+    ))
+}
+
+fn argument_notice(ctx: &mut EvalContext<'_>, name: &str, kind: &str) {
+    ctx.engine.globals.push_printout_event(
+        "werror".to_owned(),
+        format!("[ARGACCES5] Function {name} expected argument #1 to be of type {kind}\n"),
+    );
+}
+
+/// What a template query returns for a missing deftemplate or an invalid
+/// template argument: CLIPS answers the multifield queries with an empty
+/// multifield and every other query with FALSE.
+fn missing_fallback(ctx: &mut EvalContext<'_>, name: &str) -> Value {
+    match name {
+        "deftemplate-slot-types"
+        | "deftemplate-slot-allowed-values"
+        | "deftemplate-slot-range"
+        | "deftemplate-slot-cardinality" => fields([]),
+        _ => boolean(ctx, false),
+    }
+}
+
 fn argument_symbol(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -115,7 +157,9 @@ pub(crate) fn eval(
     }
     let slot_names = name == "deftemplate-slot-names";
     check_arity(name, args, if slot_names { 1 } else { 2 }, span)?;
-    let raw = argument_symbol(ctx, name, &args[0], span)?;
+    let Some(raw) = construct_argument(ctx, name, &args[0], "deftemplate name")? else {
+        return Ok(missing_fallback(ctx, name));
+    };
     // Construct introspection accepts an explicit owner even without imports;
     // ordinary calls and unqualified names retain their visibility rules.
     let template = if let Ok(crate::qualified_name::QualifiedName::Qualified { module, name }) =
@@ -141,19 +185,29 @@ pub(crate) fn eval(
             .and_then(|id| ctx.engine.template_defs.get(id))
             .cloned()
     };
-    let implied = template.is_none() && ctx.engine.has_implicit_template(&raw, ctx.current_module);
-    if template.is_none() && !implied {
+    if template.is_none() && !ctx.engine.has_implicit_template(&raw, ctx.current_module) {
         ctx.engine.globals.push_printout_event(
             "werror".to_owned(),
             format!("[PRNTUTIL1] Unable to find deftemplate {raw}.\n"),
         );
-        return Ok(boolean(ctx, false));
+        return Ok(missing_fallback(ctx, name));
     }
+    // The built-in initial-fact is a deftemplate without slots in CLIPS, not
+    // an implied relation with the single `implied` multislot.
+    let implied = template.is_none()
+        && !crate::qualified_name::parse_qualified_name(&raw)
+            .is_ok_and(|parsed| parsed.local_name() == "initial-fact");
     if slot_names {
         return names(
             ctx,
             template.as_ref().map_or_else(
-                || vec!["implied".to_owned()],
+                || {
+                    if implied {
+                        vec!["implied".to_owned()]
+                    } else {
+                        Vec::new()
+                    }
+                },
                 |template| template.slot_names.clone(),
             ),
         );
@@ -249,20 +303,13 @@ fn slot_metadata(
             if template.requires_value(index) {
                 symbol(ctx, "?NONE")
             } else if let Some(default) = &template.dynamic_defaults[index] {
-                let value = crate::template_defaults::evaluate_dynamic(
+                // As in CLIPS, the query reports the evaluated expression:
+                // slot shape and constraints are checked only on assertion.
+                crate::template_defaults::evaluate_dynamic_raw(
                     ctx,
                     default,
                     template.slot_types[index],
-                    &template.slot_names[index],
-                )?;
-                template.validate_slot(index, &value).map_err(|reason| {
-                    EvalError::UnsupportedOperation {
-                        operation: name.to_owned(),
-                        reason,
-                        span: None,
-                    }
-                })?;
-                value
+                )?
             } else {
                 template.defaults[index].clone()
             }
@@ -348,17 +395,22 @@ fn construct_list(
             span: span.cloned(),
         });
     }
-    let requested = args
-        .first()
-        .map(|expr| argument_symbol(ctx, name, expr, span))
-        .transpose()?;
+    let requested = match args.first() {
+        Some(expression) => {
+            let Some(requested) = construct_argument(ctx, name, expression, "defmodule name")?
+            else {
+                return Ok(fields([]));
+            };
+            Some(requested)
+        }
+        None => None,
+    };
     let all = requested.as_deref() == Some("*");
     let module = if all {
         None
     } else if let Some(requested) = &requested {
         let Some(module) = ctx.engine.module_registry.get_by_name(requested) else {
-            ctx.engine.globals.push_printout_event("werror".to_owned(),
-                format!("[ARGACCES5] Function {name} expected argument #1 to be of type defmodule name\n"));
+            argument_notice(ctx, name, "defmodule name");
             return Ok(fields([]));
         };
         Some(module)

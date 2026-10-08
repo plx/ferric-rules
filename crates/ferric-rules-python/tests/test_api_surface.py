@@ -26,6 +26,16 @@ class TestFocusMutation:
         assert engine.focus == "B"
         assert "A" in engine.focus_stack
 
+    def test_push_focus_skips_module_already_on_top(self):
+        engine = ferric.Engine()
+        engine.load('(defmodule A)')
+        engine.reset()
+        engine.push_focus("A")
+        engine.push_focus("A")
+        assert engine.focus == "A"
+        assert list(engine.focus_stack).count("A") == 1
+        assert len(engine.focus_stack) == 2
+
     def test_push_focus_nonexistent_raises(self):
         engine = ferric.Engine()
         with pytest.raises(ferric.FerricModuleNotFoundError):

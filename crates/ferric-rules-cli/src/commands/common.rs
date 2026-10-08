@@ -8,6 +8,18 @@ pub(crate) fn emit_warning(json_mode: bool, command: &str, kind: &str, message: 
     emit_message(json_mode, command, "warning", kind, message);
 }
 
+/// Report the engine's buffered match-time and action errors as warnings.
+/// Load, reset and run each start a new buffer, so callers emit after each.
+pub(crate) fn emit_action_diagnostics(
+    json_mode: bool,
+    command: &str,
+    engine: &ferric_rules_runtime::Engine,
+) {
+    for diagnostic in engine.action_diagnostics() {
+        emit_warning(json_mode, command, "action_warning", diagnostic);
+    }
+}
+
 fn emit_message(json_mode: bool, command: &str, level: &str, kind: &str, message: impl Display) {
     let message = message.to_string();
     if json_mode {

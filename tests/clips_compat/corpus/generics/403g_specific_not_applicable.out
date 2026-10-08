@@ -1,0 +1,4 @@
+before
+qa
+[GENRCEXE4] Generic function g method #1 is not applicable to the given arguments.
+[PRCCODE4] Execution halted during the actions of defrule r1.

@@ -25,6 +25,7 @@ REQUIRED_SEMANTICS = (
     "value.string",
     "value.multifield",
     "value.external_address",
+    "value.fact_address",
     "configuration.default",
     "configuration.custom",
     "configuration.isolation",

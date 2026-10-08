@@ -349,3 +349,94 @@ fn late_shared_partner_preserves_restorable_support_order() {
         }
     }
 }
+
+/// `(exists (exists ...))` nests NCCs whose subnetwork entries are themselves
+/// postponed nested NCCs; every level must wait for its entry, transitively.
+const NESTED_EXISTS: [&str; 2] = [
+    "(exists (exists (a) (b)))",
+    "(exists (exists (exists (a) (b))))",
+];
+
+fn nested_exists_engine(condition: &str) -> Engine {
+    Engine::with_rules(&format!(
+        "(defrule r (seed) {condition} => (printout t fired crlf))"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn nested_exists_waits_for_every_postponed_entry() {
+    for condition in NESTED_EXISTS {
+        let mut engine = nested_exists_engine(condition);
+        engine.assert_ordered("seed", ()).unwrap();
+        assert_eq!(engine.agenda_len(), 0, "{condition}: no (a) or (b)");
+        engine.rete().debug_assert_consistency();
+
+        let a = engine.assert_ordered("a", ()).unwrap();
+        assert_eq!(engine.agenda_len(), 0, "{condition}: (b) is missing");
+        engine.assert_ordered("b", ()).unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+
+        engine.retract(a).unwrap();
+        assert_eq!(engine.agenda_len(), 0, "{condition}: (a) was retracted");
+        engine.assert_ordered("a", ()).unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(
+            engine.get_output("t"),
+            Some("fired\nfired\n"),
+            "{condition}"
+        );
+        engine.rete().debug_assert_consistency();
+    }
+}
+
+#[test]
+fn nested_exists_chains_settle_depth_first_across_rules() {
+    // Expected outputs were produced by CLIPS 6.30. A deeper chain completes
+    // before a shallower sibling sharing its subnetwork, so the rules fire in
+    // definition order under depth and in reverse under breadth.
+    let source = "(deffacts seed (seed) (phase 0))
+        (defrule r1 (seed) (exists (a) (b)) => (printout t r1 crlf))
+        (defrule r2 (seed) (exists (exists (a) (b))) => (printout t r2 crlf))
+        (defrule r3 (seed) (exists (exists (exists (a) (b)))) => (printout t r3 crlf))
+        (defrule n3 (seed) (not (not (not (a)))) => (printout t n3 crlf))
+        (defrule add-ab (declare (salience -10)) ?p <- (phase 0)
+          => (retract ?p) (printout t add-ab crlf) (assert (a)) (assert (b)) (assert (phase 1)))
+        (defrule drop-a (declare (salience -20)) ?p <- (phase 1) ?f <- (a)
+          => (retract ?p) (printout t drop-a crlf) (retract ?f) (assert (phase 2)))
+        (defrule readd-a (declare (salience -20)) ?p <- (phase 2)
+          => (retract ?p) (printout t readd-a crlf) (assert (a)))";
+    for (strategy, rules) in [
+        (ConflictResolutionStrategy::Depth, "r1\nr2\nr3\n"),
+        (ConflictResolutionStrategy::Breadth, "r3\nr2\nr1\n"),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default().with_strategy(strategy));
+        engine.load_str(source).unwrap();
+        engine.reset().unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            format!("n3\nadd-ab\n{rules}drop-a\nn3\nreadd-a\n{rules}"),
+            "{strategy:?}"
+        );
+        engine.rete().debug_assert_consistency();
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn nested_exists_snapshot_keeps_postponed_levels_blocked() {
+    use ferric_rules_runtime::SerializationFormat;
+    // Deeper nesting exceeds the current snapshot NCC depth bound.
+    for &format in SerializationFormat::ALL {
+        let mut engine = nested_exists_engine(NESTED_EXISTS[0]);
+        engine.assert_ordered("seed", ()).unwrap();
+        let bytes = engine.serialize(format).unwrap();
+        engine = Engine::deserialize(&bytes, format).unwrap();
+        assert_eq!(engine.agenda_len(), 0, "{format:?}");
+        engine.assert_ordered("a", ()).unwrap();
+        engine.assert_ordered("b", ()).unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        engine.rete().debug_assert_consistency();
+    }
+}

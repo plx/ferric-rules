@@ -67,7 +67,7 @@ fn duplicate_suppression_and_missing_mutation_targets_return_false() {
         (bind ?b (assert (p (v 2))))
         (printout t (assert (p (v 1))) " " (duplicate ?a) " ")
         (printout t (modify ?b (v 1)) " " (fact-existp ?b) crlf)
-        (printout t (modify 99 (v 3)) " " (duplicate -1 (v 4)) " continued" crlf)
+        (printout t (modify 99 (v 3)) " " (duplicate 98 (v 4)) " continued" crlf)
         (bind ?c (modify ?a (v 1)))
         (printout t (fact-index ?a) " " (fact-index ?c) crlf))
     "#);
@@ -76,6 +76,37 @@ fn duplicate_suppression_and_missing_mutation_targets_return_false() {
         Some("FALSE FALSE FALSE FALSE\nFALSE FALSE continued\n-1 3\n")
     );
     assert_eq!(engine.fact_count(), 1);
+}
+
+#[test]
+fn negative_and_stale_mutation_targets_stop_expression_evaluation() {
+    // CLIPS 6.30 halts the rule for a negative index after earlier operands
+    // have printed. Ferric also stops for a stale source address, where CLIPS
+    // copies the retracted fact's data (a documented boundary).
+    for (target, expected) in [
+        ("(bind ?t -1)", "FALSE "),
+        ("(bind ?t (assert (p (v 9)))) (retract ?t)", "FALSE "),
+    ] {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(&format!(
+                "(deftemplate p (slot v))
+                 (defrule probe =>
+                   {target}
+                   (bind ?m 99)
+                   (printout t (modify ?m (v 3)) \" \" (duplicate ?t (v 4)) \" continued\" crlf)
+                   (printout t unexpected crlf))"
+            ))
+            .unwrap();
+        engine.reset().unwrap();
+        assert_eq!(
+            engine.run(RunLimit::Count(10)).unwrap().halt_reason,
+            HaltReason::ActionError,
+            "{target}"
+        );
+        assert_eq!(engine.get_output("t"), Some(expected), "{target}");
+        assert_eq!(engine.fact_count(), 0, "{target}");
+    }
 }
 
 #[test]
@@ -107,6 +138,38 @@ fn nested_reset_preserves_callable_locals_output_and_remaining_rhs() {
         engine.get_output("t"),
         Some("before|callable-before|callable-after:7:8|8|40|10\nafter-halt\n")
     );
+}
+
+#[test]
+fn halt_before_a_source_reset_still_stops_the_run() {
+    // CLIPS 6.30 keeps a pending halt across a later RHS or callable reset:
+    // the RHS finishes and the run stops with the fresh activations pending.
+    for (prelude, actions) in [
+        ("", "(halt) (reset)"),
+        ("(deffunction stop () (halt) TRUE)", "(stop) (reset)"),
+        ("(deffunction stop () (halt) (reset) TRUE)", "(stop)"),
+    ] {
+        let mut engine = Engine::with_rules(&format!(
+            r#"{prelude}
+            (defrule r =>
+              (printout t "fire" crlf)
+              {actions}
+              (printout t "after" crlf))
+            (defrule s (declare (salience -10)) =>
+              (printout t "unexpected-s" crlf))"#
+        ))
+        .unwrap();
+        let result = engine.run(RunLimit::Count(5)).unwrap();
+        assert_eq!(result.halt_reason, HaltReason::HaltRequested, "{actions}");
+        assert_eq!(result.rules_fired, 1, "{actions}");
+        assert!(engine.action_diagnostics().is_empty(), "{actions}");
+        assert_eq!(engine.get_output("t"), Some("fire\nafter\n"), "{actions}");
+        assert!(engine.is_halted(), "{actions}");
+        assert_eq!(engine.agenda_len(), 2, "{actions}");
+        // Public reset still clears the halt.
+        engine.reset().unwrap();
+        assert!(!engine.is_halted(), "{actions}");
+    }
 }
 
 #[test]
@@ -444,5 +507,56 @@ fn syntax_slots_do_not_declare_phantom_callable_query_variables() {
                 "{definition}: {errors:?}"
             );
         }
+    }
+}
+
+#[test]
+fn effect_action_literals_are_encoded_at_load() {
+    // A literal the encoding rejects fails the replacement at load time and
+    // leaves the original rule in place.
+    let mut engine = Engine::new(EngineConfig::ascii());
+    engine
+        .load_str("(defrule r => (printout t ok crlf))")
+        .unwrap();
+    for source in [
+        r#"(defrule r => (assert (new "é")))"#,
+        r#"(defrule r ?f <- (x) => (modify ?f (v "é")))"#,
+        r#"(defrule r ?f <- (x) => (duplicate ?f (v "é")))"#,
+    ] {
+        assert!(engine.load_str(source).is_err(), "{source}");
+    }
+    engine.reset().unwrap();
+    assert_eq!(engine.run(RunLimit::Count(5)).unwrap().rules_fired, 1);
+    assert_eq!(engine.get_output("t"), Some("ok\n"));
+}
+
+#[test]
+fn delayed_query_bodies_consume_the_action_loop_budget_in_callables() {
+    let body = "(delayed-do-for-all-facts ((?f item)) TRUE (printout t body \"|\"))";
+    for probe in [
+        format!("(defrule driver => {body})"),
+        format!("(deffunction probe () {body}) (defrule driver => (probe))"),
+    ] {
+        let mut config = EngineConfig::utf8();
+        config.max_action_loop_iterations = 2;
+        let mut engine = Engine::new(config);
+        engine
+            .load_str(&format!(
+                "(deftemplate item (slot value))
+                 (deffacts seed (item (value 1)) (item (value 2)))
+                 {probe}"
+            ))
+            .unwrap();
+        engine.reset().unwrap();
+        let result = engine.run(RunLimit::Count(5)).unwrap();
+        assert_eq!(result.halt_reason, HaltReason::ActionError, "{probe}");
+        assert!(
+            engine.action_diagnostics().iter().any(|error| error
+                .to_string()
+                .contains("action iteration limit exceeded")),
+            "{probe}: {:?}",
+            engine.action_diagnostics()
+        );
+        assert_eq!(engine.get_output("t"), None, "{probe}");
     }
 }
