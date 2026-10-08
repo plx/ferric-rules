@@ -57,7 +57,7 @@ installation and one from a queued test CE:
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
-| Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
+| Malformed `format` directives | CLIPS adds its `ll` length modifier and passes a directive such as `%5-3d` to `printf`, which on glibc prints it back as `%5-3lld`; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
 | Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected equal-salience ties (under LEX/MEA, only when recency and specificity are also equal). | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
@@ -1740,9 +1740,10 @@ is an error), `%c`, and `%n %r %t %v %%`, with `-` and `0` flags, width and
 precision. The argument count must match the directives. Width and precision
 count bytes, as in C, so `%.Ns` that cuts a multibyte character, and `%c` of a
 byte of 128 or more, produce U+FFFD where C emits bytes that are not UTF-8.
-CLIPS hands a malformed directive such as `%5-3d` to `printf`, which echoes it;
-Ferric reports a format error. Ferric also rejects a width or precision above
-4096 (CLIPS 6.30 crashes on `%5000d`).
+CLIPS adds its `ll` length modifier and passes a malformed directive such as
+`%5-3d` to `printf`, which on glibc prints it back as `%5-3lld`; Ferric reports
+a format error. Ferric also rejects a width or precision above 4096 (CLIPS 6.30
+crashes on `%5000d`).
 
 ### Command-line evaluation and inspection
 

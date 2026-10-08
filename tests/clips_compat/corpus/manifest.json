@@ -7282,7 +7282,7 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/394"
         ],
-        "summary": "Accepted permanent divergence ([decision](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)): CLIPS hands malformed directives such as %5-3d to printf, which echoes them; Ferric reports a format error",
+        "summary": "Accepted permanent divergence ([decision](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)): CLIPS adds ll and hands malformed directives such as %5-3d to printf, which on glibc prints %5-3lld; Ferric reports a format error",
         "observed": {
           "phase": "complete",
           "output": "a:[7    ]\nb:[7    ]\nc:[",
