@@ -8537,6 +8537,52 @@ mod tests {
     }
 
     #[test]
+    fn global_initializer_queries_keep_duplicate_targets_and_release_them() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (deftemplate item (slot value))
+            (deffacts seed (item (value 30)) (marker 1))
+        ",
+        );
+        engine.reset().unwrap();
+        let count = |engine: &Engine, name: &str| match engine.get_global(name) {
+            Some(Value::Multifield(fields)) => fields.len(),
+            other => panic!("?*{name}* = {other:?}"),
+        };
+        // Duplicate alternatives are kept, whether dynamic or literal.
+        load_ok(
+            &mut engine,
+            "(defglobal ?*items* = (find-all-facts ((?f (sym-cat item) item)) TRUE))",
+        );
+        assert_eq!(count(&engine, "items"), 2);
+        load_ok(
+            &mut engine,
+            "(defglobal ?*markers* = (find-all-facts ((?f (sym-cat marker) marker)) TRUE))",
+        );
+        assert_eq!(count(&engine, "markers"), 2);
+        assert!(engine.active_query_targets.is_empty());
+
+        // A resolved target is released once the initializer completes.
+        load_ok(&mut engine, "(deftemplate spare (slot x))");
+        load_ok(
+            &mut engine,
+            "(defglobal ?*spares* = (find-all-facts ((?f (sym-cat spare))) TRUE))",
+        );
+        assert_eq!(count(&engine, "spares"), 0);
+        assert!(engine.active_query_targets.is_empty());
+        load_ok(&mut engine, "(deftemplate spare (slot y))");
+
+        // ...and when a later alternative fails to resolve.
+        let bad = "(defglobal ?*bad* =
+            (find-all-facts ((?f (sym-cat spare) (sym-cat missing))) TRUE))";
+        assert!(engine.load_str(bad).is_err());
+        assert!(engine.active_query_targets.is_empty());
+        load_ok(&mut engine, "(deftemplate spare (slot z))");
+    }
+
+    #[test]
     fn invalid_expression_query_does_not_replace_callable_or_create_generic() {
         let mut engine = new_utf8_engine();
         load_ok(&mut engine, "(deffunction keep () 7)");
