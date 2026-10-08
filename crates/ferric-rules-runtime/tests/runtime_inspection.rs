@@ -289,9 +289,8 @@ fn fact_listing_includes_initial_fact_and_rule_names_follow_the_current_module()
     assert_eq!(engine.fact_listing().len(), 1);
 }
 
-#[test]
-fn watch_accepts_every_clips_item_and_validates_construct_names() {
-    let mut engine = Engine::with_rules(
+fn watch_engine() -> Engine {
+    Engine::with_rules(
         "(deftemplate item (slot x))
          (deffunction f () 1)
          (defglobal ?*g* = 1)
@@ -299,7 +298,12 @@ fn watch_accepts_every_clips_item_and_validates_construct_names() {
          (defmethod gg ((?x INTEGER)) ?x)
          (defrule r =>)",
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn watch_accepts_every_clips_item_and_construct_name_forms() {
+    let mut engine = watch_engine();
     for item in [
         "facts",
         "instances",
@@ -355,7 +359,11 @@ fn watch_accepts_every_clips_item_and_validates_construct_names() {
     assert_eq!(engine.get_output("wtrace"), Some("==> f-1     (other 1)\n"));
     engine.eval_str("(unwatch facts item)").unwrap();
     assert!(!engine.watch_facts());
+}
 
+#[test]
+fn watch_rejects_unknown_items_and_names_without_changing_state() {
+    let mut engine = watch_engine();
     for (source, expected) in [
         (
             "(watch bogus)",
