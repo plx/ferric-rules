@@ -12044,6 +12044,27 @@
       ]
     },
     {
+      "path": "patterns/407_lhs_query_fact_address.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "fact-address",
+        "predicate-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_query_quantified.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "not",
+        "exists",
+        "forall"
+      ]
+    },
+    {
       "path": "patterns/407_ordered_lhs_declaration_before_query.clp",
       "level": "interaction",
       "covers": [
