@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1115
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1134
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -691,10 +691,18 @@ All of the following are supported:
 - **Fact-address binding**: `?f <- (pattern)`, including positive `and`/`or` operands
 - **test CE**: `(test (> ?x 10))`
 - **not CE**: `(not (pattern))`
-- **exists CE**: `(exists (pattern))`
+- **exists CE**: `(exists (pattern) ...)`, including negated operands such as
+  `(exists (not (P)))`. A body containing `or` is one condition, as in CLIPS:
+  `(exists (or (P) (Q)))` fires once however many branches hold.
 - **forall CE**: `(forall (P) (Q))` or `(forall (P) (test expression))`
-- **Negated conjunction**: `(not (and (P) (Q)))`
+- **Negated conjunction**: `(not (and (P) (Q)))`, and its double negation
+  `(not (not (and (P) (Q))))`
 - **Negated disjunction**: `(not (or (P) (Q)))`
+- **Nested groups**: `and` and `or` nest to any depth, inside each other and
+  inside `not` and `exists`, e.g. `(or (and (or (P) (Q)) (R)) (S))` or
+  `(not (exists (P) (or (Q) (R))))`. Like CLIPS, Ferric flattens `and` groups
+  and turns every positive `or` into rule-level alternatives, so each true
+  branch of a positive `or` is its own activation.
 - **Constraint connectives**: `&`, `|`, `~`
 
 ### Source and compiled network limits
@@ -742,25 +750,19 @@ normalization. The following forms are **not** supported:
 | Unsupported Pattern | Rationale |
 |---------------------|-----------|
 | Five or more nested quantifiers | Reduce combined `not`/`exists`/`forall` depth to four |
-| Single-operand `(exists (not fact-pattern))` | Use separate rules; mixed multi-pattern exists groups have separate support |
 | Nested `(forall ...)` | Decompose into multiple rules with phase facts |
 | `forall` under `not` or `exists`, including through `and`/`or` wrappers | Universal quantification is supported only in positive rule conditions |
 | `forall` with more than two operands, a non-fact first operand, or a second operand other than a fact pattern or test-only expression | Use one fact condition and one fact/test requirement |
 
 Fact-address bindings must target fact patterns. They may occur inside positive
 `and`/`or` groups, but not inside `not`, `exists`, or `forall`, or around an
-entire conditional element. Pure-test `not`/`exists` wrappers are boolean
+entire conditional element. CLIPS 6.30 rejects the same placements
+(`[RULELHS2]` inside `not`/`exists`/`forall`, `[PRNTUTIL2]` around a group), so
+these are not Ferric restrictions; see the `patterns/405_assigned_*_rejected`
+corpus cases. An address bound in only some branches of an `or` may be used
+only where every alternative binds it: like CLIPS, Ferric rejects a RHS that
+uses it (`[PRCCODE3]`). Pure-test `not`/`exists` wrappers are boolean
 conditions and do not introduce fact bindings.
-
-**Refactoring example** -- replace `(exists (not (done ?x)))` with:
-
-```clp
-(defrule has-undone
-    (item ?x)
-    (not (done ?x))
-    =>
-    (assert (has-undone-item)))
-```
 
 ### Logical support
 
@@ -1618,7 +1620,6 @@ The following features are explicitly out of scope.
 | General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
-| Single-operand `(exists (not fact-pattern))` | Not supported | Use separate rules |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
 | `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |
 | File routers (`open` and file-backed logical-name I/O) | Not supported | `close` is a compatibility stub; use host I/O, captured output, `load-facts`, or `save-facts` |

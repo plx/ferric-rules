@@ -320,11 +320,13 @@ Review your CLIPS codebase for features that Ferric does not support:
 **Partially supported:**
 - Pattern nesting: up to four combined `not`/`exists`/`forall` levels are
   supported, subject to compiled-condition limits. Triple and four-deep
-  negation work. Single-operand `(exists (not fact-pattern))`, nested `forall`,
-  and `forall` under `not` or `exists` remain unsupported. `forall` takes exactly one fact
+  negation work, and `and`/`or` groups nest freely inside each other, `not`,
+  and `exists`. Nested `forall` and `forall` under `not` or `exists` remain
+  unsupported. `forall` takes exactly one fact
   condition and one fact or test-only requirement; other operands are rejected
   with a source location. Positive `and`/`or` groups accept fact-address
-  bindings, and `(not (or ...))` is supported.
+  bindings, and `(not (or ...))`, `(exists (not ...))` and `(exists (or ...))`
+  are supported.
   Snapshot validation has a separate four-level NCC dependency limit; nested
   multi-pattern `exists` can load successfully yet exceed that persistence
   limit. See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
@@ -385,21 +387,6 @@ To select matching rules with the condition instead, use a `test` CE:
     (value ?x) (test (> ?x 10)) => (printout t "big" crlf))
 (defrule classify-small
     (value ?x) (test (<= ?x 10)) => (printout t "small" crlf))
-```
-
-### Replace (exists (not ...))
-
-```clp
-;; CLIPS (unsupported nesting)
-(exists (not (done ?x)))
-
-;; Ferric: use a helper rule
-(defrule find-undone
-    (item ?x) (not (done ?x))
-    => (assert (has-undone-item)))
-
-(defrule process-undone
-    (has-undone-item) => ...)
 ```
 
 ## Step 4: Review format Usage
