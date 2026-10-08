@@ -13075,6 +13075,17 @@
       "recoverable_control_notices": true
     },
     {
+      "path": "procedural/413_funcall_unknown_name_notice.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "funcall",
+        "modules",
+        "deffunction"
+      ],
+      "recoverable_introspection_notices": true
+    },
+    {
       "path": "procedural/413_reset_keeps_bound_module_calls.clp",
       "level": "interaction",
       "covers": [

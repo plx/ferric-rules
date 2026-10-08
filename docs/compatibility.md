@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1264
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1265
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1493,6 +1493,8 @@ sequence expansion directly in its body.
 `funcall` evaluates all its operands before invoking the selected function,
 including operands of short-circuit targets such as `and` and `eq`. Argument
 effects can install a new callable definition before that invocation begins.
+An unqualified name that reaches no visible function prints CLIPS's
+`[ARGACCES5]` notice and returns FALSE without evaluating the operands.
 
 ### Construct Introspection
 

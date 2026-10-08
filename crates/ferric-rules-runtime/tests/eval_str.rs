@@ -321,7 +321,9 @@ fn root_reset_keeps_the_expression_bound_to_its_module() {
 /// `(progn (reset) (funcall gt 2 1))`, 8 for
 /// `(progn (reset) (call-specific-method g 1 4))` and accepts
 /// `(progn (reset) (watch deffunctions gt))`. With A's own `f` and A current,
-/// `(progn (reset) (funcall f))` does not find `f`.
+/// `(progn (reset) (funcall f))` prints `[ARGACCES5] Function funcall expected
+/// argument #1 to be of type function, deffunction, or generic function name`
+/// and returns FALSE.
 #[test]
 fn root_reset_moves_runtime_name_lookups_to_main() {
     let engine_in_a = || {
@@ -365,7 +367,14 @@ fn root_reset_moves_runtime_name_lookups_to_main() {
         .eval_str("(progn (reset) (watch deffunctions gt))")
         .unwrap();
     let mut engine = engine_in_a();
-    assert!(engine.eval_str("(progn (reset) (funcall f))").is_err());
+    let value = engine.eval_str("(progn (reset) (funcall f))").unwrap();
+    assert!(
+        matches!(value, Value::Symbol(symbol) if engine.resolve_core_symbol(symbol) == Some("FALSE"))
+    );
+    assert_eq!(
+        engine.get_output("werror"),
+        Some("[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, or generic function name\n")
+    );
 }
 
 /// A root clear deletes the expression's module, so later lookups resolve in

@@ -345,8 +345,9 @@ fn normalize_ferric_build_notices(notices: &str) -> String {
 }
 
 /// CLIPS's recoverable template and construct introspection notices: a
-/// missing deftemplate, or a first argument that does not name a deftemplate
-/// or defmodule. Return the notice's length.
+/// missing deftemplate, a first argument that does not name a deftemplate or
+/// defmodule, or a `funcall` name that reaches no visible function. Return the
+/// notice's length.
 fn introspection_notice_length(bytes: &[u8]) -> Option<usize> {
     const TEMPLATE: &[u8] = b"[PRNTUTIL1] Unable to find deftemplate ";
     const ARGUMENT: &[u8] = b"[ARGACCES5] Function ";
@@ -387,8 +388,10 @@ fn introspection_notice_length(bytes: &[u8]) -> Option<usize> {
                 == Some(kind)
         })
     };
-    (expected(&TEMPLATE_QUERIES, b"deftemplate") || expected(&CONSTRUCT_LISTS, b"defmodule"))
-        .then_some(length)
+    (expected(&TEMPLATE_QUERIES, b"deftemplate")
+        || expected(&CONSTRUCT_LISTS, b"defmodule")
+        || expected(&["funcall"], b"function, deffunction, or generic function"))
+    .then_some(length)
 }
 
 /// Move CLIPS's recoverable introspection notices out of a golden: return the
@@ -1236,10 +1239,22 @@ fn golden_introspection_notices_become_exact_notices() {
     let module =
         b"[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name\n"
             .as_slice();
-    let source = [missing, b"()\n", template, b"()\n", module, b"()\nafter\n"].concat();
+    let funcall = b"[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, or generic function name\n"
+        .as_slice();
+    let source = [
+        missing,
+        b"()\n",
+        template,
+        b"()\n",
+        module,
+        b"()\n",
+        funcall,
+        b"FALSE\nafter\n",
+    ]
+    .concat();
     let (output, notices) = split_introspection_notices(&source);
-    assert_eq!(output, b"()\n()\n()\nafter\n");
-    assert_eq!(notices, [missing, template, module].concat());
+    assert_eq!(output, b"()\n()\n()\nFALSE\nafter\n");
+    assert_eq!(notices, [missing, template, module, funcall].concat());
     for near_match in [
         b"[PRNTUTIL1] Unable to find deftemplate missing. extra\n".as_slice(),
         b"[PRNTUTIL1] Unable to find fact f-9.\n",
@@ -1247,6 +1262,8 @@ fn golden_introspection_notices_become_exact_notices() {
         b"[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type defmodule name\n",
         b"[ARGACCES5] Function get-defrule-list expected argument #1 to be of type deftemplate name\n",
         b"[ARGACCES5] Function focus expected argument #1 to be of type defmodule name\n",
+        b"[ARGACCES5] Function funcall expected argument #1 to be of type symbol or string\n",
+        b"[ARGACCES5] Function sort expected argument #1 to be of type function, deffunction, or generic function name\n",
     ] {
         assert_eq!(
             split_introspection_notices(near_match),
