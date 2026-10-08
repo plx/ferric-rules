@@ -261,6 +261,46 @@ fn reset_inside_eval_moves_the_enclosing_expression_to_main() {
     assert_eq!(rule_list(&mut engine), "MAIN::r");
 }
 
+/// CLIPS binds a top-level command's callable and template references when it
+/// parses the command, so a root `reset` that selects MAIN does not move
+/// them: with module A current and `f` and `t` defined in A,
+/// `(progn (reset) (f))`, `(eval "(progn (reset) (f))")` and
+/// `(progn (reset) (assert (t (x 1))))` succeed. Dynamic source evaluated
+/// after the reset resolves in MAIN, so `(progn (reset) (eval "(f)"))` fails.
+#[test]
+fn root_reset_keeps_the_expression_bound_to_its_module() {
+    let engine_in_a = || {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                "(defmodule MAIN (export ?ALL)) (defmodule A (import MAIN ?ALL))
+                 (deffunction f () 7) (deftemplate t (slot x))",
+            )
+            .unwrap();
+        assert_eq!(engine.current_module(), "A");
+        engine
+    };
+    for source in ["(progn (reset) (f))", r#"(eval "(progn (reset) (f))")"#] {
+        let mut engine = engine_in_a();
+        assert!(
+            matches!(engine.eval_str(source).unwrap(), Value::Integer(7)),
+            "{source}"
+        );
+        assert_eq!(engine.current_module(), "MAIN");
+    }
+    let mut engine = engine_in_a();
+    assert!(matches!(
+        engine
+            .eval_str("(progn (reset) (assert (t (x 1))))")
+            .unwrap(),
+        Value::FactAddress(_)
+    ));
+    let mut engine = engine_in_a();
+    assert!(engine.eval_str(r#"(progn (reset) (eval "(f)"))"#).is_err());
+    // The selection ends with the expression: the next root resolves in MAIN.
+    assert!(engine.eval_str("(f)").is_err());
+}
+
 #[test]
 fn clear_during_fact_initialization_keeps_old_facts_and_releases_guard_on_errors() {
     let mut engine = Engine::with_rules(

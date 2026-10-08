@@ -89,6 +89,7 @@ pub(crate) fn eval_call(
             format!("[ARGACCES2] Function save-facts was unable to open file {filename}.\n"),
         ));
     };
+    let module = crate::effects::dynamic_module(ctx);
     let mut selectors = Vec::new();
     for (index, argument) in args.iter().enumerate().skip(2) {
         let value = evaluator::eval_inner(ctx, argument)?;
@@ -113,14 +114,14 @@ pub(crate) fn eval_call(
             .iter()
             .any(|(owner, local)| {
                 selector_matches(ctx.engine, &name, *owner, local)
-                    && in_scope(ctx.engine, ctx.current_module, *owner, local, visible)
+                    && in_scope(ctx.engine, module, *owner, local, visible)
             });
         if !found {
             return Ok(notice(ctx, format!("[ARGACCES5] Function save-facts expected argument #{} to be of type {} deftemplate name\n", index + 1, if visible { "visible" } else { "local" })));
         }
         selectors.push(name);
     }
-    match save(ctx.engine, ctx.current_module, file, visible, &selectors) {
+    match save(ctx.engine, module, file, visible, &selectors) {
         Ok(()) => Ok(boolean(ctx, true)),
         Err(_) => Ok(notice(
             ctx,
@@ -153,9 +154,8 @@ fn load(
         Err(error) => return Err(failure(&error)),
     };
     let module = ctx.engine.module_registry.current_module();
-    ctx.engine
-        .module_registry
-        .set_current_module(ctx.current_module);
+    let target = crate::effects::dynamic_module(ctx);
+    ctx.engine.module_registry.set_current_module(target);
     let result = ctx.engine.load_facts_str(&source);
     ctx.engine.module_registry.set_current_module(module);
     match result {

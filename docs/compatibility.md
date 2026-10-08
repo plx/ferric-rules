@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1263
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1264
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -557,9 +557,13 @@ query) or calls a deffunction or generic function, or while a callable runs
 outside any rule, it refuses before removing facts. Later actions and eligible
 activations continue. At an ordinary expression root with no constructs in
 use, clear removes constructs, restores `initial-fact` as f-0, and selects
-MAIN; the next user assertion is f-1. A root clear or reset inside `eval`
-source also selects MAIN for the rest of the enclosing expression, so a later
-`build` defines into MAIN as in CLIPS. Source clear preserves queued input,
+MAIN; the next user assertion is f-1. A root clear or reset, including one
+inside `eval` source, also selects MAIN for dynamic source that the enclosing
+expression evaluates afterwards (`build`, `eval`, `assert-string` and fact
+files), so a later `build` defines into MAIN as in CLIPS. As in CLIPS, the
+expression's own function and template references stay bound to the module
+it was parsed in. Inside a rule, later dynamic source still resolves in the
+rule's module, where CLIPS uses MAIN after the reset. Source clear preserves queued input,
 printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
 the same expression through `assert-string` does not keep its relation in use.
 

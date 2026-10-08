@@ -143,6 +143,26 @@ pub(crate) fn with_depth_floor<T>(
     result
 }
 
+/// Whether `ctx` evaluates a top-level expression (or `eval` source it runs)
+/// rather than a rule, callable body or fact initializer.
+fn is_root_context(ctx: &EvalContext<'_>) -> bool {
+    ctx.call_depth == 0
+        && ctx.engine.active_rules.is_empty()
+        && ctx.engine.active_fact_initializers == 0
+        && ctx.engine.active_expression_scopes != 0
+}
+
+/// The module that dynamic source (`eval`, `assert-string`, `build`, fact
+/// files) resolves in. As in CLIPS, a root `reset` or `clear` selects MAIN for
+/// later dynamic source, while the expression's own references stay bound to
+/// the module it was parsed in.
+pub(crate) fn dynamic_module(ctx: &EvalContext<'_>) -> ModuleId {
+    ctx.engine
+        .root_dynamic_module
+        .filter(|_| is_root_context(ctx))
+        .unwrap_or(ctx.current_module)
+}
+
 pub(crate) fn eval_call(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -169,9 +189,9 @@ fn eval_call_inner(
                     ctx.engine
                         .reset_for_evaluation()
                         .map_err(|error| failure(name, error.to_string(), span))?;
-                    if ctx.call_depth == 0 && ctx.engine.active_rules.is_empty() {
-                        ctx.current_module = ctx.engine.module_registry.current_module();
-                        ctx.global_module = None;
+                    if is_root_context(ctx) {
+                        ctx.engine.root_dynamic_module =
+                            Some(ctx.engine.module_registry.current_module());
                     }
                 }
                 "clear" => {
@@ -180,8 +200,8 @@ fn eval_call_inner(
                         .clear_for_evaluation()
                         .map_err(|error| failure(name, error.to_string(), span))?
                     {
-                        ctx.current_module = ctx.engine.module_registry.current_module();
-                        ctx.global_module = None;
+                        ctx.engine.root_dynamic_module =
+                            Some(ctx.engine.module_registry.current_module());
                     }
                 }
                 _ => unreachable!(),

@@ -3,6 +3,7 @@
 use ferric_rules_core::Value;
 
 use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
+use crate::modules::ModuleId;
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     matches!(
@@ -268,17 +269,19 @@ fn dynamic_source(
         interpret_action_expr(&wrapped)
     }
     .map_err(|error| failure(name, &error, span))?;
+    let module = crate::effects::dynamic_module(ctx);
     let expression = std::sync::Arc::new(
         ctx.engine
-            .prepare_eval_expression(&expression, ctx.current_module)
+            .prepare_eval_expression(&expression, module)
             .map_err(|error| failure(name, &error, span))?,
     );
-    eval_detached(ctx, &expression)
+    eval_detached(ctx, module, &expression)
 }
 
 /// Evaluate prepared `eval`/`assert-string` source in a fresh local scope.
 fn eval_detached(
     ctx: &mut EvalContext<'_>,
+    current_module: ModuleId,
     expression: &std::sync::Arc<RuntimeExpr>,
 ) -> Result<Value, EvalError> {
     // Dynamic source cannot see the surrounding rule/callable's local variables.
@@ -286,12 +289,12 @@ fn eval_detached(
     let variables = ferric_rules_core::binding::VarMap::new();
     let mut locals = evaluator::CallableLocals::default();
     let (call_depth, expression_depth) = (ctx.call_depth, ctx.expression_depth);
-    let (current_module, global_module) = (ctx.current_module, ctx.global_module);
+    let global_module = ctx.global_module;
     let allow_engine_effects = ctx.allow_engine_effects;
     // As in CLIPS, the parsed expression keeps the templates and ordered
     // relations it names in use while it runs, so its own `build` cannot
     // redefine them underneath a later assertion (CSTRCPSR4).
-    let (result, final_module, final_global_module) = ctx.engine.with_active_expressions(
+    ctx.engine.with_active_expressions(
         current_module,
         [std::sync::Arc::clone(expression)],
         |engine| {
@@ -308,16 +311,9 @@ fn eval_detached(
                 compact_fact_bindings: None,
                 allow_engine_effects,
             };
-            let result = evaluator::eval_inner(&mut child, expression);
-            (result, child.current_module, child.global_module)
+            evaluator::eval_inner(&mut child, expression)
         },
-    );
-    // A root `clear`/`reset` inside the source moves its context to the new
-    // current module. The enclosing expression's remaining operands must see
-    // that too, even when a later error ends the source: its effects persist.
-    ctx.current_module = final_module;
-    ctx.global_module = final_global_module;
-    result
+    )
 }
 
 fn build(
@@ -377,7 +373,7 @@ fn build(
     }
     ctx.engine
         .module_registry
-        .set_current_module(ctx.current_module);
+        .set_current_module(crate::effects::dynamic_module(ctx));
     // Defglobal initializers, rule-priming conditions, template defaults and
     // fact initializers evaluated by this load continue the caller's depth.
     let result = crate::effects::with_depth_floor(ctx, |ctx| {
@@ -414,7 +410,7 @@ fn active_definition_error(
     let parsed = crate::qualified_name::parse_qualified_name(items.get(1)?.as_symbol()?).ok()?;
     let module = match parsed.module_name() {
         Some(name) => ctx.engine.module_registry.get_by_name(name)?,
-        None => ctx.current_module,
+        None => crate::effects::dynamic_module(ctx),
     };
     let name = parsed.local_name();
     let active = if kind == "defrule" {
