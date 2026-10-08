@@ -1,4 +1,4 @@
-use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
+use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, RunLimit};
 
 const SOURCE: &str = "
     (deffacts seed (p 1) (p 2) (p 3))
@@ -39,10 +39,32 @@ fn nested_strategy_changes_return_the_value_before_argument_evaluation() {
         "depth"
     );
     assert_eq!(strategy_value(&mut engine, "(get-strategy)"), "lex");
-    assert!(engine.eval_str("(set-strategy unsupported)").is_err());
-    assert!(engine
-        .eval_str("(set-strategy (sym-cat unsupported))")
-        .is_err());
+    assert!(engine.eval_str("(set-strategy complexity)").is_err());
+    assert!(engine.eval_str("(set-strategy (sym-cat random))").is_err());
+    assert_eq!(strategy_value(&mut engine, "(get-strategy)"), "lex");
+}
+
+#[test]
+fn unknown_strategy_names_report_argacces5_and_keep_the_strategy() {
+    // CLIPS 6.30 loads this rule; set-strategy prints ARGACCES5, returns the
+    // unchanged strategy, and the RHS continues.
+    let mut engine = Engine::with_rules(
+        "(defrule r => (printout t \"before\" crlf) (printout t (set-strategy bogus) crlf)
+             (printout t \"after \" (get-strategy) crlf))",
+    )
+    .unwrap();
+    let result = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+    assert_eq!(engine.get_output("t"), Some("before\ndepth\nafter depth\n"));
+    assert_eq!(
+        engine.get_output("werror"),
+        Some("[ARGACCES5] Function set-strategy expected argument #1 to be of type symbol with value depth, breadth, lex, mea, complexity, simplicity, or random\n")
+    );
+    engine.eval_str("(set-strategy lex)").unwrap();
+    assert_eq!(
+        strategy_value(&mut engine, "(set-strategy (sym-cat unknown))"),
+        "lex"
+    );
     assert_eq!(strategy_value(&mut engine, "(get-strategy)"), "lex");
 }
 

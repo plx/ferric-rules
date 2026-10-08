@@ -749,23 +749,14 @@ mod tests {
     }
 
     #[test]
-    fn exists_containing_not_fails_validation() {
+    fn exists_containing_not_compiles() {
         let mut engine = new_utf8_engine();
         let result = engine.load_str("(defrule r (a) (exists (not (b))) => )");
 
         assert!(
-            result.is_err(),
-            "exists containing not should fail validation"
+            result.is_ok(),
+            "single-operand exists over not should compile: {result:?}"
         );
-        let errs = result.unwrap_err();
-        assert_eq!(errs.len(), 1);
-
-        if let crate::loader::LoadError::Validation(validation_errors) = &errs[0] {
-            assert_eq!(validation_errors.len(), 1);
-            assert_eq!(validation_errors[0].code, "E0005");
-        } else {
-            panic!("Expected LoadError::Validation, got {:?}", errs[0]);
-        }
     }
 
     #[test]

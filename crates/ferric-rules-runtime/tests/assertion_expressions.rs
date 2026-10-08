@@ -121,6 +121,30 @@ fn one_assert_evaluates_every_fact_and_field_in_source_order() {
     assert_eq!(engine.get_output("t"), Some("ordered\n"));
 }
 
+/// Template slots are evaluated in declaration order, whatever order the
+/// source writes them in. CLIPS 6.30 asserts `(item (a 1) (b 2) (c))` and
+/// `(item (a 3) (b 4) (c 5 6))` at the top level, and the same seeds after
+/// `(reset)`.
+#[test]
+fn template_slots_are_evaluated_in_declaration_order() {
+    const CONSTRUCTS: &str = "(defglobal ?*n* = 0)
+        (deffunction next () (bind ?*n* (+ ?*n* 1)) ?*n*)
+        (deftemplate item (slot a) (slot b) (multislot c))
+        (defrule show (item (a ?a) (b ?b) (c $?c))
+          => (printout t ?a \" \" ?b \" \" (implode$ ?c) crlf))";
+    const FACTS: &str = "(item (b (next)) (a (next)))
+        (item (c (next) (next)) (b (next)) (a (next)))";
+    const EXPECTED: &str = "3 4 5 6\n1 2 \n";
+    let mut asserted = Engine::with_rules(CONSTRUCTS).unwrap();
+    asserted.load_str(&format!("(assert {FACTS})")).unwrap();
+    let mut seeded = Engine::with_rules(&format!("{CONSTRUCTS} (deffacts seed {FACTS})")).unwrap();
+    seeded.reset().unwrap();
+    for engine in [&mut asserted, &mut seeded] {
+        run(engine, 2);
+        assert_eq!(engine.get_output("t"), Some(EXPECTED));
+    }
+}
+
 #[test]
 fn invalid_source_fields_report_errors_without_asserting_truncated_facts() {
     for expression in ["?missing", "?*missing*", "(unknown 1)", "(+ 1 ?missing)"] {
@@ -347,13 +371,14 @@ fn load_facts_stays_literal_only_and_preserves_earlier_facts_on_failure() {
         ))
         .unwrap();
         let result = engine.run(RunLimit::Unlimited).unwrap();
-        assert_eq!(result.halt_reason, HaltReason::AgendaEmpty, "{invalid}");
-        assert!(engine.action_diagnostics().is_empty());
-        assert_eq!(engine.get_output("t"), Some("continued"));
-        assert!(engine
-            .get_output("werror")
-            .unwrap()
-            .contains("Function load-facts encountered an error"));
+        // As in CLIPS, a content error halts the rule after the prefix loads.
+        assert_eq!(result.halt_reason, HaltReason::ActionError, "{invalid}");
+        let diagnostics = format!("{:?}", engine.action_diagnostics());
+        assert!(
+            diagnostics.contains("Function load-facts encountered an error"),
+            "{diagnostics}"
+        );
+        assert_eq!(engine.get_output("t"), None, "{invalid}");
         assert_eq!(integers(&engine, "before"), [7]);
         assert!(engine.find_facts("after").unwrap().is_empty());
         assert!(engine.find_facts("bad").unwrap().is_empty());
@@ -363,4 +388,193 @@ fn load_facts_stays_literal_only_and_preserves_earlier_facts_on_failure() {
             Some(Value::Integer(0))
         ));
     }
+}
+
+fn load_both_ways(source: &str, check: impl Fn(&Engine)) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.clp");
+    std::fs::write(&path, source).unwrap();
+    for from_file in [false, true] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let loaded = if from_file {
+            engine.load_file(&path)
+        } else {
+            engine.load_str(source)
+        };
+        assert!(loaded.is_ok(), "from_file={from_file}: {loaded:?}");
+        assert_eq!(engine.current_module(), "B", "from_file={from_file}");
+        check(&engine);
+    }
+}
+
+fn template_slot(engine: &Engine, slot: &str) -> Vec<Value> {
+    engine
+        .facts()
+        .unwrap()
+        .filter(|(_, fact)| matches!(fact, Fact::Template(_)))
+        .map(|(handle, _)| engine.get_fact_slot_by_name(handle, slot).unwrap().clone())
+        .collect()
+}
+
+/// A top-level assertion runs in the module current at its source position.
+/// CLIPS 6.30 batches this source and prints `f-1 (p 1)` for `(facts A)`,
+/// with B left current.
+#[test]
+fn source_assertions_call_functions_of_the_module_current_at_their_position() {
+    load_both_ways(
+        "(defmodule A (export ?ALL))
+         (deffunction value () 1)
+         (assert (p (value)))
+         (defmodule B)
+         (deffunction value () 2)",
+        |engine| assert_eq!(integers(engine, "p"), [1]),
+    );
+}
+
+/// CLIPS 6.30 prints `f-1 (item (n 3))` and `f-2 (item (n 1))` for `(facts A)`.
+#[test]
+fn source_assertions_resolve_templates_of_the_module_current_at_their_position() {
+    load_both_ways(
+        "(defmodule A (export ?ALL))
+         (deftemplate A::item (slot n))
+         (assert (item (n (+ 1 2))))
+         (assert (item (n 1)))
+         (defmodule B)",
+        |engine| {
+            let mut values = template_slot(engine, "n");
+            values.sort_by_key(|value| match value {
+                Value::Integer(n) => *n,
+                _ => panic!("expected an integer slot, got {value:?}"),
+            });
+            assert!(matches!(
+                values.as_slice(),
+                [Value::Integer(1), Value::Integer(3)]
+            ));
+        },
+    );
+}
+
+/// CLIPS 6.30 prints `f-1 (q 5)` for `(facts A)`.
+#[test]
+fn source_assertions_read_globals_of_the_module_current_at_their_position() {
+    load_both_ways(
+        "(defmodule A (export ?ALL))
+         (defglobal A ?*x* = 5)
+         (assert (q ?*x*))
+         (defmodule B)
+         (defglobal B ?*x* = 7)",
+        |engine| assert_eq!(integers(engine, "q"), [5]),
+    );
+}
+
+/// CLIPS 6.30 parses a whole `(assert ...)` before executing it. Static errors
+/// assert nothing: `[TMPLTDEF2] The single field slot n can only contain a
+/// single field value.`, `[EXPRNPSR3] Missing function declaration for
+/// missing-function.` and `[TMPLTDEF1] Invalid slot zz not defined in
+/// corresponding deftemplate item.` each leave only `(initial-fact)`.
+#[test]
+fn a_static_error_in_any_fact_rejects_the_whole_assert() {
+    for source in [
+        "(assert (a) (item (n (create$ 3))) (b))",
+        "(assert (before (+ 1 2)) (bad (missing-function)) (after))",
+        "(assert (g) (item (zz 1)) (h))",
+    ] {
+        let mut engine = Engine::with_rules("(deftemplate item (slot n))").unwrap();
+        assert!(engine.load_str(source).is_err(), "{source}");
+        assert_eq!(engine.fact_count(), 0, "{source}");
+    }
+}
+
+/// Evaluation errors stop the command and keep earlier facts. CLIPS 6.30
+/// reports `[PRNTUTIL7] Attempt to divide by zero in / function.`,
+/// `[EVALUATN1] Variable missing is unbound` and `[GLOBLDEF1] Global variable
+/// ?*undefined* is unbound.` and keeps `(e)`, `(before 3)` and `(i)`. It also
+/// inserts the failing fact with no fields (`(bad)`); Ferric does not.
+#[test]
+fn an_evaluation_error_keeps_the_facts_already_asserted() {
+    for (source, kept) in [
+        ("(assert (e) (bad (/ 1 0)) (f))", "e"),
+        (
+            "(assert (before (+ 1 2)) (bad prefix ?missing suffix) (after))",
+            "before",
+        ),
+        ("(assert (i) (bad ?*undefined*) (j))", "i"),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        assert!(engine.load_str(source).is_err(), "{source}");
+        assert_eq!(engine.fact_count(), 1, "{source}");
+        assert_eq!(engine.find_facts(kept).unwrap().len(), 1, "{source}");
+        assert!(engine.find_facts("bad").unwrap().is_empty(), "{source}");
+    }
+}
+
+/// A local named with a colon is one operand, as in rule actions. CLIPS 6.30
+/// asserts `(row 7 7)` and `(item (n 3) (tags 3))`.
+#[test]
+fn colon_named_locals_are_single_assertion_operands() {
+    let mut engine = Engine::with_rules("(deftemplate item (slot n) (multislot tags))").unwrap();
+    engine
+        .load_str("(assert (row (bind ?x:y 7) ?x:y))")
+        .unwrap();
+    engine
+        .load_str("(assert (item (n (bind ?a:b 3)) (tags ?a:b)))")
+        .unwrap();
+    assert_eq!(integers(&engine, "row"), [7, 7]);
+    assert!(matches!(
+        template_slot(&engine, "n").as_slice(),
+        [Value::Integer(3)]
+    ));
+    let tags = template_slot(&engine, "tags");
+    let [Value::Multifield(tags)] = tags.as_slice() else {
+        panic!("expected one multislot value");
+    };
+    assert!(matches!(tags.as_slice(), [Value::Integer(3)]));
+}
+
+/// CLIPS 6.30 rejects the slot-style fact with `[PRNTUTIL2] Syntax Error` and
+/// keeps only `(ok 1)`.
+#[test]
+fn load_facts_reports_an_unknown_template_for_slot_style_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unknown.fct");
+    std::fs::write(&path, "(ok 1)\n(person (name bob))\n(after 2)\n").unwrap();
+    let escaped = path
+        .to_str()
+        .unwrap()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let mut engine = Engine::with_rules(&format!(
+        "(defrule read => (load-facts \"{escaped}\") (printout t continued))"
+    ))
+    .unwrap();
+    let result = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(result.halt_reason, HaltReason::ActionError);
+    let diagnostics = format!("{:?}", engine.action_diagnostics());
+    assert!(
+        diagnostics.contains("unknown template `person`"),
+        "{diagnostics}"
+    );
+    assert_eq!(engine.get_output("t"), None);
+    assert_eq!(integers(&engine, "ok"), [1]);
+    assert_eq!(engine.fact_count(), 1);
+}
+
+/// Void results are omitted from ordered facts. CLIPS 6.30 asserts
+/// `(row before after)`.
+#[test]
+fn void_results_are_omitted_from_asserted_ordered_fields() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str("(assert (row before (printout nil x) after))")
+        .unwrap();
+    let fields: Vec<_> = ordered(&engine, "row")
+        .iter()
+        .map(|value| {
+            let Value::Symbol(symbol) = value else {
+                panic!("expected a symbol, got {value:?}");
+            };
+            engine.resolve_core_symbol(*symbol).unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(fields, ["before", "after"]);
 }

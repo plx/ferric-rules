@@ -90,7 +90,7 @@ to `ferric-rules`; its import name can remain `ferric`.
   own plans. Schema-v3 execution manifests remain supported.
 - `tests/generated/` — tool-generated segments/expectations for `.bat` inputs;
   their presence does not establish executed compatibility.
-- `crates/ferric-rules/tests/scaling_tests.rs` — thirteen `#[ignore]`
+- `crates/ferric-rules/tests/scaling_tests.rs` — fourteen `#[ignore]`
   complexity-class checks run by `just scaling-check`.
 
 ## 4. Benchmarks

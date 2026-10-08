@@ -260,3 +260,190 @@ fn firing_watch_ordinals_continue_a_run_and_restart_for_a_new_run() {
         Some("FIRE    1 show: f-3\nFIRE    2 show: f-2\nFIRE    1 show: f-1\n")
     );
 }
+
+#[test]
+fn fact_listing_includes_initial_fact_and_rule_names_follow_the_current_module() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str(
+            "(defrule b =>) (defrule a =>) (defmodule EXTRA) (defrule c =>)
+             (deffacts seed (item 1))",
+        )
+        .unwrap();
+    assert_eq!(engine.current_module_rule_names(), ["c"]);
+    engine.reset().unwrap();
+    assert_eq!(engine.current_module_rule_names(), ["b", "a"]);
+    let listing: Vec<_> = engine
+        .fact_listing()
+        .into_iter()
+        .map(|(index, fact)| (index, engine.format_fact(fact).unwrap()))
+        .collect();
+    assert_eq!(
+        listing,
+        [(0, "(initial-fact)".to_owned()), (1, "(item 1)".to_owned())]
+    );
+    // Host fact queries keep hiding the protected fact.
+    assert_eq!(engine.facts().unwrap().count(), 1);
+    engine.eval_str("(clear)").unwrap();
+    assert!(engine.current_module_rule_names().is_empty());
+    assert_eq!(engine.fact_listing().len(), 1);
+}
+
+fn watch_engine() -> Engine {
+    Engine::with_rules(
+        "(deftemplate item (slot x))
+         (deffunction f () 1)
+         (defglobal ?*g* = 1)
+         (defgeneric gg)
+         (defmethod gg ((?x INTEGER)) ?x)
+         (defrule r =>)",
+    )
+    .unwrap()
+}
+
+#[test]
+fn watch_accepts_every_clips_item_and_construct_name_forms() {
+    let mut engine = watch_engine();
+    for item in [
+        "facts",
+        "instances",
+        "slots",
+        "rules",
+        "activations",
+        "messages",
+        "message-handlers",
+        "generic-functions",
+        "methods",
+        "deffunctions",
+        "compilations",
+        "statistics",
+        "globals",
+        "focus",
+        "all",
+    ] {
+        for function in ["watch", "unwatch"] {
+            assert!(
+                matches!(
+                    engine.eval_str(&format!("({function} {item})")).unwrap(),
+                    Value::Void
+                ),
+                "({function} {item})"
+            );
+        }
+    }
+    // Names are checked against the construct type CLIPS uses for the item.
+    for (item, names) in [
+        ("facts", "item initial-fact"),
+        ("rules", "r"),
+        ("activations", "MAIN::r"),
+        ("deffunctions", "f"),
+        ("globals", "g"),
+        ("generic-functions", "gg"),
+        ("methods", "gg"),
+        ("instances", "USER"),
+        ("slots", "USER"),
+        ("message-handlers", "USER"),
+    ] {
+        for function in ["watch", "unwatch"] {
+            let source = format!("({function} {item} {names})");
+            assert!(
+                matches!(engine.eval_str(&source).unwrap(), Value::Void),
+                "{source}"
+            );
+        }
+    }
+    // Tracing stays global: naming one template traces every fact.
+    engine.eval_str("(watch facts item)").unwrap();
+    assert!(engine.watch_facts());
+    engine.eval_str("(assert (other 1))").unwrap();
+    assert_eq!(engine.get_output("wtrace"), Some("==> f-1     (other 1)\n"));
+    engine.eval_str("(unwatch facts item)").unwrap();
+    assert!(!engine.watch_facts());
+}
+
+#[test]
+fn watch_rejects_unknown_items_and_names_without_changing_state() {
+    let mut engine = watch_engine();
+    for (source, expected) in [
+        (
+            "(watch bogus)",
+            "argument #1 to be of type watchable symbol",
+        ),
+        (
+            "(unwatch bogus)",
+            "argument #1 to be of type watchable symbol",
+        ),
+        (
+            "(watch (str-cat facts))",
+            "argument #1 to be of type symbol",
+        ),
+        (
+            "(watch facts nope)",
+            "argument #2 to be of type deftemplate",
+        ),
+        (
+            "(watch facts item nope)",
+            "argument #3 to be of type deftemplate",
+        ),
+        (
+            "(watch facts \"item\")",
+            "argument #2 to be of type deftemplate",
+        ),
+        ("(watch rules nope)", "argument #2 to be of type defrule"),
+        (
+            "(watch activations nope)",
+            "argument #2 to be of type defrule",
+        ),
+        (
+            "(watch deffunctions nope)",
+            "argument #2 to be of type deffunction",
+        ),
+        (
+            "(unwatch deffunctions nope)",
+            "argument #2 to be of type deffunction",
+        ),
+        (
+            "(watch globals nope)",
+            "argument #2 to be of type defglobal",
+        ),
+        (
+            "(watch generic-functions nope)",
+            "argument #2 to be of type defgeneric",
+        ),
+        (
+            "(watch methods nope)",
+            "argument #2 to be of type generic function name",
+        ),
+        ("(watch focus MAIN)", "expected 1, got 2"),
+        ("(watch all r)", "expected 1, got 2"),
+    ] {
+        let error = engine.eval_str(source).unwrap_err().to_string();
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+    // A rejected name leaves the watch state unchanged.
+    assert!(!engine.watch_facts());
+}
+
+#[test]
+fn source_clear_refused_during_execution_removes_facts_without_retraction_traces() {
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (item 1) (item 2))
+         (defrule clrr (item 1) => (clear) (assert (z)))",
+    )
+    .unwrap();
+    engine.reset().unwrap();
+    engine.enable_output_events();
+    engine.set_watch_facts(true);
+    engine.run(RunLimit::Unlimited).unwrap();
+    let events = engine.drain_output_events();
+    assert_eq!(
+        events,
+        vec![
+            (
+                "werror".into(),
+                "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n".into()
+            ),
+            ("wtrace".into(), "==> f-0     (z)\n".into()),
+        ]
+    );
+}

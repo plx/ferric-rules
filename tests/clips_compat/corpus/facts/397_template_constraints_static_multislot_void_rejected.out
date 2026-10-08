@@ -1,0 +1,8 @@
+x
+
+[CSTRNCHK1] An expression found in the default attribute
+does not match the allowed types for slot m.
+
+ERROR:
+(deftemplate MAIN::a
+   (multislot m (default 1 (printout t x crlf) 2))
