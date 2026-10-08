@@ -12,7 +12,7 @@ use std::path::Path;
 use ferric_rules_runtime::serialization::SerializationFormat;
 use ferric_rules_runtime::{Engine, EngineConfig};
 
-use super::common::{emit_error, emit_warning};
+use super::common::{emit_action_diagnostics, emit_error};
 
 /// Execute the `snapshot` subcommand.
 ///
@@ -38,6 +38,9 @@ pub fn execute(json_mode: bool, file: &Path, output: &Path, format: Serializatio
         }
         return 1;
     }
+    // Loading can raise match-time errors (for example from a top-level
+    // assert); report them before reset clears the diagnostic buffer.
+    emit_action_diagnostics(json_mode, "snapshot", &engine);
 
     if let Err(err) = engine.reset() {
         emit_error(
@@ -49,12 +52,8 @@ pub fn execute(json_mode: bool, file: &Path, output: &Path, format: Serializatio
         return 1;
     }
 
-    // Emit any load warnings.
-    // (load_file only returns warnings via the Ok branch; we check action_diagnostics
-    // here since reset can also produce diagnostics in some configurations.)
-    for diag in engine.action_diagnostics() {
-        emit_warning(json_mode, "snapshot", "action_warning", diag);
-    }
+    // Reset evaluates LHS expressions while asserting deffacts seeds.
+    emit_action_diagnostics(json_mode, "snapshot", &engine);
 
     let bytes = match engine.serialize(format) {
         Ok(b) => b,

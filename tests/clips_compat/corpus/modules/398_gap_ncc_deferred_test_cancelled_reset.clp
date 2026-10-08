@@ -1,0 +1,8 @@
+(defmodule MAIN (export ?ALL))
+(deftemplate MAIN::a)
+(deftemplate MAIN::b)
+(deftemplate MAIN::p)
+(deffacts MAIN::init (b) (p) (a))
+(defmodule WATCH (import MAIN ?ALL))
+(defrule WATCH::af (declare (auto-focus TRUE)) (p) (not (and (a) (b))) (a) (test (eq 1 1)) => (printout t af crlf))
+(defrule WATCH::plain (p) => (printout t plain crlf))

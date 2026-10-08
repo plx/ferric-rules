@@ -83,7 +83,7 @@ to `ferric-rules`; its import name can remain `ferric`.
   `just assess-compatibility`).
 - `tests/harnesses/`, `tests/generated/` — run harnesses and tool-generated
   segments/expectations for the `.bat`-derived examples.
-- `crates/ferric-rules/tests/scaling_tests.rs` — thirteen `#[ignore]`
+- `crates/ferric-rules/tests/scaling_tests.rs` — fourteen `#[ignore]`
   complexity-class checks run by `just scaling-check`.
 
 ## 4. Benchmarks

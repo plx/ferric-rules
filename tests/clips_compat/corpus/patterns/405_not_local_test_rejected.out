@@ -1,0 +1,10 @@
+
+[ANALYSIS4] Variable ?x found in the expression (> ?x 0)
+was referenced in CE #2 before being defined.
+
+ERROR:
+(defrule MAIN::r
+   (not (a ?x))
+   (test (> ?x 0))
+   =>
+   (printout t "fired" crlf))

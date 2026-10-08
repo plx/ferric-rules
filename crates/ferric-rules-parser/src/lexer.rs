@@ -77,6 +77,20 @@ pub(crate) fn lex_first(source: &str, file_id: FileId) -> Result<Vec<SpannedToke
     Lexer::new(source, file_id).lex_until(true)
 }
 
+/// Tokenize text whose first character sits at `line`/`column` of a larger source.
+/// Offsets remain relative to `source`, so spans still slice it directly.
+pub(crate) fn lex_at(
+    source: &str,
+    file_id: FileId,
+    line: u32,
+    column: u32,
+) -> Result<Vec<SpannedToken>, Vec<LexError>> {
+    let mut lexer = Lexer::new(source, file_id);
+    lexer.position.line = line.max(1);
+    lexer.position.column = column.max(1);
+    lexer.lex_all()
+}
+
 struct Lexer<'a> {
     source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,

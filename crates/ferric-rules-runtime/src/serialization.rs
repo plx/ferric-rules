@@ -270,6 +270,9 @@ impl EngineSnapshotOwned {
             active_rules: Vec::new(),
             active_callables: Vec::new(),
             active_query_targets: Vec::new(),
+            active_templates: Vec::new(),
+            active_ordered_relations: Vec::new(),
+            active_expressions: Vec::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,
@@ -302,8 +305,13 @@ impl EngineSnapshotOwned {
             fact_index_starts_at_zero: self.fact_index_starts_at_zero,
             action_diagnostics: self.action_diagnostics,
             processing_predicates: false,
+            eval_depth_floor: (0, 0),
             halted: self.halted,
             input_buffer: self.input_buffer,
+            input_source: None,
+            before_input: None,
+            root_cleared: false,
+            active_expression_scopes: 0,
         };
         // The registry is derived; restoring existing activations must not
         // synthesize focus notices or alter the saved focus stack.
@@ -878,7 +886,7 @@ mod tests {
             }
         }
         let engine = Engine::with_rules("(defmethod choose ((?x INTEGER (eq ?x 1))) ?x)").unwrap();
-        for corruption in 0..6 {
+        for corruption in 0..7 {
             let result = alter_state(&engine, |state| {
                 let method = method(state).unwrap();
                 match corruption {
@@ -893,6 +901,11 @@ mod tests {
                         method["parameter_queries"][0]["FunctionCall"]["args"][0]["Variable"][0] =
                             serde_json::json!("missing");
                     }
+                    6 => {
+                        let call = &mut method["parameter_queries"][0]["FunctionCall"];
+                        call["name"] = serde_json::json!("return");
+                        call["args"] = serde_json::json!([]);
+                    }
                     _ => {
                         let call = &mut method["parameter_queries"][0]["FunctionCall"];
                         call["name"] = serde_json::json!("break");
@@ -905,6 +918,7 @@ mod tests {
                 1 | 2 => "wildcard restrictions without a wildcard parameter",
                 4 => "GENRCPSR12",
                 5 => "PRCCODE3",
+                6 => "[PRCDRPSR2] The return function",
                 _ => "PRCDRPSR2",
             };
             assert!(
@@ -1487,6 +1501,38 @@ mod tests {
                 .unwrap();
             assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
             assert_eq!(resumed.find_facts("observed").unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn nested_exists_serialize_through_the_source_nesting_limit() {
+        // Each `exists` is a double negation: four source levels compile to
+        // eight NCC layers, the snapshot validator's compiled bound.
+        for (name, condition) in [
+            ("two", "(exists (exists (a)))"),
+            ("three", "(exists (exists (exists (a))))"),
+            ("four", "(exists (exists (exists (exists (a)))))"),
+            (
+                "four-or",
+                "(exists (exists (exists (exists (or (a) (b))))))",
+            ),
+        ] {
+            let mut engine = Engine::with_rules(&format!(
+                "(deffacts seed (a))
+                 (defrule {name} {condition} => (printout t {name} crlf))"
+            ))
+            .unwrap();
+            engine.reset().unwrap();
+            for format in [SerializationFormat::Cbor, SerializationFormat::Json] {
+                let snapshot = engine.serialize(format).unwrap();
+                let mut restored = Engine::deserialize(&snapshot, format).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                assert_eq!(
+                    restored.get_output("t"),
+                    Some(format!("{name}\n").as_str()),
+                    "{format:?}"
+                );
+            }
         }
     }
 

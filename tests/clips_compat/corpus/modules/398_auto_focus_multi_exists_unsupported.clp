@@ -1,0 +1,8 @@
+(defmodule MAIN (export ?ALL))
+(deftemplate MAIN::item)
+(deftemplate MAIN::blocker)
+(deftemplate MAIN::other)
+(defmodule WATCH (import MAIN ?ALL))
+(defrule WATCH::af (declare (auto-focus TRUE)) (item) (exists (and (blocker) (other))) => (printout t af crlf))
+(defrule WATCH::plain (item) => (printout t plain crlf))
+(defrule MAIN::start => (assert (item)) (printout t "stack:" (get-focus-stack) crlf))

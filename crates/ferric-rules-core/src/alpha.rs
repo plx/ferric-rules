@@ -96,7 +96,8 @@ pub enum ConstantTestType {
 
 /// Number of test nodes, including nested disjunctions and empty branches.
 /// Count iteratively so validation can reject deeply nested input safely.
-pub(crate) fn constant_test_count(tests: &[ConstantTest]) -> usize {
+#[must_use]
+pub fn constant_test_count(tests: &[ConstantTest]) -> usize {
     let mut pending: Vec<_> = tests.iter().collect();
     let mut count = 0_usize;
     while let Some(test) = pending.pop() {

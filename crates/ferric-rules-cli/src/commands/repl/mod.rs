@@ -9,7 +9,7 @@
 //! - `(reset)` — Reset the engine
 //! - `(run)` / `(run N)` — Run rules (optionally with a step limit)
 //! - `(facts)` — List all facts in working memory
-//! - `(rules)` — List all defined rules
+//! - `(rules)` — List the current module's rules
 //! - `(agenda [module])` — Show ordered activations and their fact basis
 //! - `(clear)` — Clear the engine completely
 //! - `(load "file")` — Load a CLIPS file
@@ -25,7 +25,7 @@
 //! - 0: Normal exit
 
 pub(super) mod commands;
-mod display;
+pub(super) mod display;
 mod history;
 mod input;
 pub(super) mod session;
