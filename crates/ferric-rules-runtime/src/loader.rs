@@ -265,6 +265,9 @@ struct RuleRhsScope<'a> {
     exported: &'a HashSet<String>,
     existential: &'a HashSet<String>,
     allow_local_reads: bool,
+    /// Set when validating an LHS `test` CE, whose unbound reads are reported
+    /// at the test expression instead of as RHS variables.
+    lhs_test: Option<ferric_rules_parser::Span>,
 }
 
 /// Definitions are provisionally visible during loading to support forward
@@ -1025,6 +1028,7 @@ impl Engine {
             exported: parameters,
             existential: &HashSet::new(),
             allow_local_reads: true,
+            lhs_test: None,
         };
         let context = format!("defmethod `{name}`");
         for query in queries {
@@ -2313,6 +2317,7 @@ impl Engine {
         if !validation_errors.is_empty() {
             return Err(LoadError::Validation(validation_errors));
         }
+        self.validate_rule_test_scopes(rule)?;
 
         // Pre-process: distribute or CEs inside NCC/exists contexts.
         // This transforms patterns like (not (and A (or B C))) into
@@ -3862,77 +3867,94 @@ impl Engine {
         }
     }
 
-    /// A universal test can read the outer tuple and its own antecedent's
-    /// bindings. Checking this before compilation avoids a dormant unbound
-    /// variable becoming a silent match failure when the first tuple arrives.
-    fn validate_forall_test_scope(
+    /// CLIPS rejects a `test` CE that reads a variable no earlier CE in its
+    /// scope binds ([ANALYSIS4]), wherever the test is nested. Walk the source
+    /// conditions in order, before normalization rewrites their scopes, so a
+    /// dormant unbound read never becomes a silent match failure.
+    fn validate_rule_test_scopes(&self, rule: &RuleConstruct) -> Result<(), LoadError> {
+        let mut available = HashSet::new();
+        let mut local = HashSet::new();
+        for pattern in &rule.patterns {
+            self.validate_test_scope_in(&rule.name, pattern, &mut available, &mut local)?;
+        }
+        Ok(())
+    }
+
+    /// `available` holds the names bound so far in this scope; `local`
+    /// accumulates names bound beneath any negation or quantifier, which never
+    /// escape it, so their reads get the not-exported diagnostic.
+    fn validate_test_scope_in(
         &self,
         rule_name: &str,
         pattern: &Pattern,
-        exported_variables: &HashSet<String>,
+        available: &mut HashSet<String>,
+        local: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
-        let Pattern::Forall(children, _) = pattern else {
-            return Ok(());
-        };
-        let [antecedent, consequent] = children.as_slice() else {
-            return Ok(());
-        };
-        let Some(expression) = Self::test_only_pattern_expression(consequent) else {
-            return Ok(());
-        };
-        let expression = ferric_rules_parser::interpret_action_expr(&expression)
-            .map_err(LoadError::Interpret)?;
-        let mut available = exported_variables.clone();
-        Self::collect_pattern_binding_variables(antecedent, &mut available);
-        let scope = RuleRhsScope {
-            engine: self,
-            module: self.module_registry.current_module(),
-            exported: &available,
-            existential: &HashSet::new(),
-            allow_local_reads: false,
-        };
-        Self::validate_rule_rhs_expr(rule_name, &expression, &scope, &mut HashSet::new()).map_err(
-            |error| match error {
-                LoadError::Compile(message) => LoadError::Compile(
-                    message.replace("unbound RHS variable", "unbound variable in forall test"),
-                ),
-                error => error,
-            },
-        )
-    }
-
-    fn first_restricted_sexpr_variable(
-        expr: &SExpr,
-        restricted: &HashSet<String>,
-    ) -> Option<String> {
-        match expr {
-            SExpr::Atom(Atom::SingleVar(name) | Atom::MultiVar(name), _) => {
-                restricted.contains(name).then(|| name.clone())
+        match pattern {
+            Pattern::Ordered(_) | Pattern::Template(_) => {
+                Self::collect_pattern_binding_variables(pattern, available);
             }
-            SExpr::Atom(_, _) => None,
-            SExpr::List(items, _) => items
-                .iter()
-                .find_map(|item| Self::first_restricted_sexpr_variable(item, restricted)),
-        }
-    }
-
-    fn validate_existential_test_scope(
-        rule_name: &str,
-        expr: &SExpr,
-        existential_locals: &HashSet<String>,
-        exported_variables: &HashSet<String>,
-    ) -> Result<(), LoadError> {
-        let restricted: HashSet<String> = existential_locals
-            .difference(exported_variables)
-            .cloned()
-            .collect();
-        if let Some(variable) = Self::first_restricted_sexpr_variable(expr, &restricted) {
-            return Err(Self::compile_error_at(
-                &expr.span(),
-                &format!(
-                    "rule `{rule_name}` variable ?{variable} is not exported by existential or negated conditional element"
-                ),
-            ));
+            Pattern::Assigned {
+                variable, pattern, ..
+            } => {
+                self.validate_test_scope_in(rule_name, pattern, available, local)?;
+                available.insert(variable.clone());
+            }
+            Pattern::And(children, _) | Pattern::Logical(children, _) => {
+                for child in children {
+                    self.validate_test_scope_in(rule_name, child, available, local)?;
+                }
+            }
+            // A later CE sees only the names every alternative binds.
+            Pattern::Or(children, _) => {
+                let mut common: Option<HashSet<String>> = None;
+                for child in children {
+                    let mut branch = available.clone();
+                    self.validate_test_scope_in(rule_name, child, &mut branch, local)?;
+                    common = Some(match common {
+                        Some(common) => common.intersection(&branch).cloned().collect(),
+                        None => branch,
+                    });
+                }
+                if let Some(common) = common {
+                    *available = common;
+                }
+            }
+            Pattern::Not(inner, _) => {
+                let mut scope = available.clone();
+                self.validate_test_scope_in(rule_name, inner, &mut scope, local)?;
+                local.extend(scope.difference(available).cloned());
+            }
+            // A forall consequent sees the antecedent, so its children share
+            // one scope, as `exists` children do.
+            Pattern::Exists(children, _) | Pattern::Forall(children, _) => {
+                let mut scope = available.clone();
+                for child in children {
+                    self.validate_test_scope_in(rule_name, child, &mut scope, local)?;
+                }
+                local.extend(scope.difference(available).cloned());
+            }
+            Pattern::Test(expression, _) => {
+                // Expressions the action interpreter cannot read keep their
+                // existing translation diagnostics.
+                let Ok(action) = ferric_rules_parser::interpret_action_expr(expression) else {
+                    return Ok(());
+                };
+                let scope = RuleRhsScope {
+                    engine: self,
+                    module: self.module_registry.current_module(),
+                    exported: available,
+                    existential: local,
+                    allow_local_reads: false,
+                    lhs_test: Some(expression.span()),
+                };
+                Self::validate_rule_rhs_expr(
+                    &format!("rule `{rule_name}`"),
+                    &action,
+                    &scope,
+                    &mut HashSet::new(),
+                )?;
+            }
         }
         Ok(())
     }
@@ -3949,6 +3971,7 @@ impl Engine {
             exported: exported_variables,
             existential: existential_locals,
             allow_local_reads: true,
+            lhs_test: None,
         };
 
         let context = format!("rule `{}`", rule.name);
@@ -3973,6 +3996,7 @@ impl Engine {
             exported: &empty,
             existential: &empty,
             allow_local_reads: false,
+            lhs_test: None,
         };
         Self::validate_rule_rhs_expr("fact initializer", expression, &scope, &mut HashSet::new())
     }
@@ -4037,9 +4061,17 @@ impl Engine {
                     };
                     let reason = if scope.existential.contains(scope_name) {
                         "is not exported by existential or negated conditional element"
+                    } else if scope.lhs_test.is_some() {
+                        "is unbound in test"
                     } else {
                         "is an unbound RHS variable"
                     };
+                    if let Some(test_span) = &scope.lhs_test {
+                        return Err(Self::compile_error_at(
+                            test_span,
+                            &format!("{context} variable {display_name} {reason}"),
+                        ));
+                    }
                     return Err(LoadError::Compile(format!(
                         "[PRCCODE3] {context} variable {display_name} at line {} {reason}",
                         span.start.line
@@ -4643,12 +4675,6 @@ impl Engine {
             // retained in rule metadata and referenced by predicate nodes at
             // their source position in the beta network.
             if let Pattern::Test(sexpr, _span) = pattern {
-                Self::validate_existential_test_scope(
-                    &rule.name,
-                    sexpr,
-                    &existential_locals,
-                    &exported_variables,
-                )?;
                 let runtime_expr =
                     crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
                         .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
@@ -4661,7 +4687,6 @@ impl Engine {
             }
 
             Self::collect_existential_local_variables(pattern, &mut existential_locals);
-            self.validate_forall_test_scope(&rule.name, pattern, &exported_variables)?;
 
             // Fallback path for complex negated ordered constraints that cannot
             // be lowered to join/alpha tests cannot remain a firing-time check:

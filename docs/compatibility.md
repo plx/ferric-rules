@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1138
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1147
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -735,14 +735,14 @@ host's memory. The recommended snapshot envelope applies its own input and
 restored-graph validation limits.
 
 The current snapshot validator also limits NCC dependency nesting to four.
-Each `exists` compiles to a double negation, so nested quantifiers can expand
-beyond that bound even within the four-level source nesting limit. Nested
-`exists`, including single-pattern forms such as `(exists (exists (exists (a))))`,
-`exists` over `or` inside further nesting, multi-pattern forms such as
-`(exists (a) (exists (b) (exists (c) (d))))`, and an `exists` at the bottom of
-a deep `not (and ...)` chain all load and run, but `Engine::serialize` rejects
-them with `snapshot NCC nesting exceeds 4`. This persistence boundary is
-tracked with the snapshot-limit work in #410.
+Each `exists` compiles to a double negation, so nested quantifiers can exceed
+that bound within the four-level source nesting limit: for example
+`(exists (exists (exists (a))))`, `(exists (a) (exists (b) (exists (c) (d))))`,
+`exists` over `or` inside further nesting, or an `exists` at the bottom of a
+deep `not (and ...)` chain. Such rules load and run, but `Engine::serialize`
+rejects them with `snapshot NCC nesting exceeds 4`; two nested `exists` levels
+still serialize. This persistence boundary is tracked with the snapshot-limit
+work in #410.
 
 ### Pattern Nesting Restrictions
 
@@ -769,10 +769,14 @@ uses it (`[PRCCODE3]`). Pure-test `not`/`exists` wrappers are boolean
 conditions and do not introduce fact bindings.
 
 A variable first bound inside `not`, `exists`, or `forall`, including inside
-an `or` or `and` beneath them, is local to that conditional element. Like
-CLIPS (`[ANALYSIS4]`), Ferric rejects a later `test` that reads it unless an
-earlier positive pattern binds the same name, and rejects a RHS reference
-unless a positive pattern binds it (`[PRCCODE3]`).
+an `or` or `and` beneath them, is local to that conditional element. A `test`,
+at rule level or nested inside `not`, `exists`, or `forall`, may read only
+variables bound before it in its own scope: by an earlier positive pattern at
+its level or in an enclosing group, by its `forall` antecedent, or by every
+branch of an earlier `or`. Like CLIPS (`[ANALYSIS4]`), Ferric rejects at load a
+`test` that reads a variable local to an earlier negation or quantifier, a
+variable bound nowhere before it, or one bound in only some `or` branches. It
+also rejects a RHS reference unless a positive pattern binds it (`[PRCCODE3]`).
 
 ### Logical support
 

@@ -11791,6 +11791,103 @@
         "variable-scope",
         "join"
       ]
+    },
+    {
+      "path": "patterns/405_nested_test_not_inner_binding.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "or",
+        "test",
+        "variable-scope"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_test_not_local_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "not",
+        "and",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_exists_or_local_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "not",
+        "exists",
+        "or",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_exists_not_local_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "not",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_not_unbound_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "not",
+        "and",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_exists_unbound_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_rule_unbound_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_or_partial_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "or",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_nested_test_not_or_partial_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "not",
+        "and",
+        "or",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
     }
   ]
 }

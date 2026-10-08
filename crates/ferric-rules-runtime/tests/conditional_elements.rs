@@ -380,3 +380,70 @@ fn negated_and_existential_locals_cannot_reach_a_later_test() {
     lines.sort_unstable();
     assert_eq!(lines, ["exists1", "not2"]);
 }
+
+#[test]
+fn nested_tests_read_only_variables_bound_earlier_in_their_scope() {
+    // CLIPS rejects each of these with [ANALYSIS4], wherever the test is
+    // nested: the variable is local to an earlier negation, bound nowhere, or
+    // bound in only some branches of an `or`.
+    const NOT_EXPORTED: &str = "is not exported by existential or negated conditional element";
+    const UNBOUND: &str = "is unbound in test";
+    for (lhs, variable, reason) in [
+        (
+            "(not (and (c ?) (not (a ?x)) (test (> ?x 0))))",
+            "?x",
+            NOT_EXPORTED,
+        ),
+        (
+            "(not (and (c ?) (exists (or (a ?x) (b ?x))) (test (> ?x 0))))",
+            "?x",
+            NOT_EXPORTED,
+        ),
+        (
+            "(exists (c ?) (not (a ?x)) (test (> ?x 0)))",
+            "?x",
+            NOT_EXPORTED,
+        ),
+        ("(not (and (c ?) (test (> ?zz 0))))", "?zz", UNBOUND),
+        ("(exists (c ?) (test (> ?zz 0)))", "?zz", UNBOUND),
+        ("(test (> ?zz 0))", "?zz", UNBOUND),
+        ("(or (a ?x) (b ?y)) (test (> ?x 0))", "?x", UNBOUND),
+        (
+            "(not (and (c ?) (or (a ?x) (b ?y)) (test (> ?x 0))))",
+            "?x",
+            UNBOUND,
+        ),
+        ("(forall (a ?x) (test (> ?q 0)))", "?q", UNBOUND),
+    ] {
+        let source = format!("(defrule r (seed) {lhs} => (printout t fired crlf))");
+        let column = source.find("(test ").unwrap() + "(test ".len() + 1;
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine.load_str(&source).expect_err(&source);
+        let message = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            message.contains(&format!("rule `r` variable {variable} {reason}"))
+                && message.contains(&format!("at line 1, column {column}")),
+            "{source}: {message}"
+        );
+        assert!(engine.rules().is_empty(), "{source}");
+    }
+
+    // A name bound earlier in the same negation, or in every `or` branch,
+    // stays visible to the test.
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (seed) (a 1) (a -1) (b 1) (b 2) (c 1))
+         (defrule inner (seed) (not (and (c ?) (not (a ?x)) (b ?y) (test (> ?y 0))))
+           => (printout t inner crlf))
+         (defrule both (or (a ?x) (b ?x)) (test (> ?x 0))
+           => (printout t both ?x crlf))",
+    )
+    .unwrap();
+    fire(&mut engine, 4);
+    let mut lines: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["both1", "both1", "both2", "inner"]);
+}
