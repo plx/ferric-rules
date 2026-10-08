@@ -65,13 +65,22 @@ installation and one from a queued test CE:
 | Late-installed `(exists (and ...))` holding a negation | Building an auto-focus rule whose `(exists (and ...))` conjunction contains a `not` and does not hold when it is installed can make a transient focus push that CLIPS does not make. | `modules/398_gap_late_exists_conjunction_negation` |
 | Test CE after an NCC cancelled before it runs | During reset or assertion, a test CE after an NCC is only queued; when the NCC's subnetwork completes first and retracts the token, Ferric never creates the transient activation, so an auto-focus rule misses the focus push CLIPS keeps. | `modules/398_gap_ncc_deferred_test_cancelled_reset` |
 
+Some CLIPS-valid programs are rejected at load instead of running
+differently. The main case is a complex non-linear predicate or return-value
+constraint inside a negated ordered pattern, tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300) (see
+[Template Facts](#template-facts)). Ten further `gap` cases from
+[#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
+located load error for the explicit conditional-element nesting and operand
+limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
+
 ### Accepted UTF-8 and format divergences
 
 The decision for [#394](https://github.com/plx/ferric-rules/issues/394) is to
 retain UTF-8 strings, symbols, and output, and to reject malformed `format`
-directives. The four output/format cases above are **accepted permanent
-compatibility differences**. They remain active characterizations so changes
-to these behaviors still require review.
+directives. The four output/format cases in the table above are **accepted
+permanent compatibility differences**. They remain active characterizations so
+changes to these behaviors still require review.
 
 The three byte-output cases preserve valid UTF-8 by producing U+FFFD when
 CLIPS stores or emits invalid byte sequences. Reproducing those bytes would
@@ -85,15 +94,6 @@ behavior depends on the libc implementation. Ferric keeps its checked format
 grammar and reports a format error. Valid supported directives retain their
 existing differential coverage. This decision changes no engine behavior or
 CLIPS goldens and does not reclassify the four cases as conformance.
-
-Some CLIPS-valid programs are rejected at load instead of running
-differently. The main case is a complex non-linear predicate or return-value
-constraint inside a negated ordered pattern, tracked in
-[#300](https://github.com/plx/ferric-rules/issues/300) (see
-[Template Facts](#template-facts)). Ten further `gap` cases from
-[#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
-located load error for the explicit conditional-element nesting and operand
-limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
 
 ---
 
