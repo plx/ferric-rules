@@ -663,11 +663,16 @@ def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
         if b is not None and h is not None and _diagnostic_snapshot(b) != _diagnostic_snapshot(h):
             b_reason = _reason_with_diagnostics(b_reason, b)
             h_reason = _reason_with_diagnostics(h_reason, h)
+        executed_before = b_cls in ("equivalent", "divergent")
+        if executed_before and h is None:
+            # Deleting an executed fixture loses at least as much as leaving it
+            # unassessed; only inventory without oracle results may disappear.
+            h_reason = "not present; oracle-backed fixture removed"
         entry = (path, b_cls, b_reason, h_cls, h_reason)
         if (
             h_cls == "evidence-failure"
             or (b_cls == "equivalent" and h_cls == "divergent")
-            or (b_cls in ("equivalent", "divergent") and h_cls == "unassessed")
+            or (executed_before and h_cls in ("unassessed", "absent"))
         ):
             regressions.append(entry)
         elif b_cls == "divergent" and h_cls == "equivalent":

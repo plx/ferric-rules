@@ -596,8 +596,32 @@ def test_additions_and_removals_are_separate_from_improvements():
     base = _manifest({"old.clp": _executed("divergent")})
     head = _manifest({"new.clp": _executed()})
     _, _, regressions, improvements, changes = compute_diff(base, head)
+    assert improvements == []
+    assert [row[0] for row in regressions] == ["old.clp"]
+    assert [row[0] for row in changes] == ["new.clp"]
+
+
+@pytest.mark.parametrize("classification", ["equivalent", "divergent"])
+def test_removed_executed_oracle_fixture_is_a_regression(classification):
+    base = _manifest({"removed.clp": _executed(classification)})
+    _, _, regressions, improvements, changes = compute_diff(base, _manifest({}))
+    assert improvements == changes == []
+    assert regressions == [
+        (
+            "removed.clp",
+            classification,
+            "oracle-match",
+            "absent",
+            "not present; oracle-backed fixture removed",
+        )
+    ]
+
+
+def test_removed_unassessed_alias_is_a_neutral_change():
+    base = _manifest({"alias.clp": _file_entry("unassessed", "no-oracle")})
+    _, _, regressions, improvements, changes = compute_diff(base, _manifest({}))
     assert regressions == improvements == []
-    assert {row[0] for row in changes} == {"old.clp", "new.clp"}
+    assert [row[0] for row in changes] == ["alias.clp"]
 
 
 @pytest.mark.parametrize(
