@@ -290,6 +290,16 @@ compat-corpus *args:
 compat-corpus-reference *args:
     just _uv python -m ferric_tools.compat.corpus {{args}}
 
+# Capture one revision and verify the full Ferric and pinned-reference corpus
+compat-corpus-evidence output:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    corpus_output={{quote(output)}}
+    corpus_revision="$(git rev-parse HEAD)"
+    corpus_run_id="local-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+    scripts/corpus-evidence.sh capture "$corpus_output" "$corpus_revision" "$corpus_run_id"
+    scripts/corpus-evidence.sh verify "$corpus_output" "$corpus_revision" "$corpus_run_id"
+
 # Enforce the exact pinned-CLIPS result policy for the semantic matrix
 compat-semantic-gate *args:
     just _uv ferric-compat-semantic-gate {{args}}
@@ -315,13 +325,14 @@ compat-semantic-lane:
 assess-compatibility:
     just build-cli-release
     docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+    just compat-corpus-evidence "$PWD/.ferric-compat/corpus-evidence"
     just compat-observer-test
     just compat-scan
     just harness-gen --output-dir "$PWD/.ferric-compat/assessment-harnesses"
     just harness-gen --output-dir "$PWD/.ferric-compat/assessment-harnesses" --check
     assessment_sha="$(git rev-parse HEAD)"; just compat-run --all --require-selected --candidate-sha "$assessment_sha"
     assessment_sha="$(git rev-parse HEAD)"; just compat-ci-gate --expected-commit-sha "$assessment_sha"
-    just compat-report
+    just compat-report --corpus-summary "$PWD/.ferric-compat/corpus-evidence/summary.json"
 
 # ── Bat processing ───────────────────────────────────────────────────────────
 

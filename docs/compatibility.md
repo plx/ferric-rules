@@ -21,7 +21,7 @@ reviewed policy case and rejects unexplained divergences. The LEX and MEA
 The reviewed differential policy covers 57 scenarios: the existing 22 cases
 and 35 distinct rehabilitation scenarios, plus a generated-harness control.
 All 57 cases are equivalent. This does not turn undeclared corpus fixtures
-into compatibility claims; those remain pending or incompatible
+into compatibility claims; those remain unassessed
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
 evidence boundary.
@@ -37,8 +37,12 @@ JSON one, unless it holds a non-finite float). When its deffacts precede its
 rules, it must also print the same lines with the rules loaded after `reset`,
 in any order, since CLIPS orders those activations differently. A program that
 CLIPS rejects must fail in Ferric at the same stage (load or run).
-`just compat-corpus-reference` rechecks every golden against a CLIPS 6.30
-Docker image.
+`just compat-corpus-reference` rechecks every golden against the pinned CLIPS
+6.30 Docker image. The standalone and PR comparison reports lead with the
+manifest's declared case, conformance (including expected-error), and known-gap
+counts. They separately show whether matching Ferric and reference runs
+verified that revision; a manifest declaration or historical verification
+stamp alone is not a passed run. Main CI verifies the goldens automatically.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
@@ -1563,11 +1567,15 @@ expression, and the actions of a rule that has removed itself with
 `undefrule`. CLIPS instead refuses to remove an executing rule.
 
 Each engine owns its random state, and snapshots preserve that state. Seeded
-explicit draws match the pinned glibc-based CLIPS 6.30 reference. CLIPS 6.30
-also draws one value for every new activation, whatever the strategy; Ferric
-consumes the stream only for explicit `random` calls. A seeded sequence
-therefore matches only while no activation is created between `seed` and a
-draw (see §16.11). This does not add support for the Random conflict strategy.
+explicit draws match the pinned glibc-based CLIPS 6.30 reference where its
+signed range arithmetic is defined. Ferric supports the full inclusive i64
+range using widened arithmetic. CLIPS 6.30 overflows when the inclusive width
+exceeds `i64::MAX`, and can crash; those ranges are not a conformance claim.
+CLIPS 6.30 also draws one value for every new activation, whatever the
+strategy; Ferric consumes the stream only for explicit `random` calls. A seeded
+sequence therefore matches only while no activation is created between `seed`
+and a draw (see §16.11). This does not add support for the Random conflict
+strategy.
 `time` is inherently nondeterministic. Reversed `random` bounds produce a
 recoverable `MISCFUN3` notice and return the unbounded draw. A wrong argument
 count that reaches execution likewise consumes and returns a draw, emits
@@ -1685,6 +1693,17 @@ symbols.
 FLOATs print with up to 15 significant digits (CLIPS's `%.15g`), with `.0` on
 integral values: `1.0`, `1e-05`, `1e+15`. Non-finite values print as `nan.0`,
 `inf.0` and `-inf.0`. `str-cat` and `sym-cat` spell FLOATs the same way.
+
+NaN generation and C printing vary across platforms: CLIPS may render
+`(sin 1e309)` as `nan.0` or `-nan.0`. Ferric renders both NaN signs as `nan.0`
+(or `nan` for numeric `format` conversions). The portable corpus checks exact
+`format` padding and `implode$` consistency with the displayed scalar spelling.
+Its direct `printout` non-finite fixture covers positive and negative infinity,
+and the math NaN-propagation fixture prints each result's NaN kind rather than
+its sign;
+Rust host-value tests separately check scalar and multifield output for both
+explicit NaN bit signs. Corpus output comparison remains byte-exact, with no
+NaN normalization.
 
 `format` writes its completed string to the named channel and returns the
 same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;

@@ -24,6 +24,7 @@ ferric-rules-runtime = { workspace = true, features = ["serde"] }
 criterion = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [[bench]]
 name = "engine_bench"

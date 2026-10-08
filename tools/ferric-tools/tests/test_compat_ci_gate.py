@@ -803,3 +803,40 @@ def test_gate_requires_registry_membership_exactly_equal_to_claimed_set(tmp_path
     )
 
     assert any("oracle registry membership mismatch" in failure for failure in report.failures)
+
+
+def test_schema_four_inventory_summary_preserves_strict_oracle_gate(tmp_path):
+    from ferric_tools.compat.scan import build_summary
+
+    root, examples, candidate, manifest = _gate_evidence(tmp_path)
+    manifest["version"] = 4
+    manifest["files"]["unexecuted.clp"] = {
+        "classification": "unassessed",
+        "reason": "scanner-feature",
+        "source_sha256": "d" * 64,
+        "aliases": [
+            {"path": "unexecuted.clp", "source": "fixtures"},
+            {"path": "copy.clp", "source": "fixtures"},
+        ],
+    }
+    manifest["summary"] = build_summary(manifest["files"])
+
+    def evaluate():
+        return evaluate_manifest(
+            load_policy(COMMITTED_POLICY),
+            _semantic_policy(),
+            manifest,
+            examples_dir=examples,
+            root=root,
+            ferric_bin=candidate,
+            expected_commit_sha=COMMIT_SHA,
+            semantic_evaluator=_semantic_pass,
+        )
+
+    assert evaluate().failures == ()
+    assert manifest["summary"]["physical_paths"] == 4
+    manifest["summary"]["physical_paths"] = 3
+    assert any("summary is stale" in failure for failure in evaluate().failures)
+    manifest["summary"] = build_summary(manifest["files"])
+    manifest["files"]["unexecuted.clp"]["oracle"] = {}
+    assert any("unclaimed entries contain" in failure for failure in evaluate().failures)

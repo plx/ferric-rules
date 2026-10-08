@@ -37,6 +37,9 @@ jobs:
   compat-compare:
     name: Compat Comparison Report
     runs-on: ubuntu-latest
+    env:
+      COMPAT_BASE_SHA: ${{ inputs.base_sha }}
+      COMPAT_HEAD_SHA: ${{ inputs.head_sha }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,7 +59,11 @@ jobs:
       - uses: astral-sh/setup-uv@v7
 
       - name: Prepare compatibility evidence
-        run: mkdir -p /tmp/compat-evidence
+        run: |
+          [[ "$COMPAT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$COMPAT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          scripts/corpus-evidence.sh capture /tmp/compat-evidence/head-corpus \
+            "$COMPAT_HEAD_SHA" "${{ github.run_id }}-${{ github.run_attempt }}-head"
 
       - name: Build head candidate for provenance
         run: |
@@ -65,7 +72,7 @@ jobs:
           printf '{"schema":"ferric.compat-candidate-provenance","version":1,' \
             > /tmp/compat-evidence/head-candidate-provenance.json
           printf '"commit_sha":"%s","binary_sha256":"%s"}\n' \
-            "${{ inputs.head_sha }}" "$candidate_digest" \
+            "$COMPAT_HEAD_SHA" "$candidate_digest" \
             >> /tmp/compat-evidence/head-candidate-provenance.json
 
       - name: Build CLIPS reference image
@@ -93,8 +100,9 @@ jobs:
 
       # ── Base branch assessment ─────────────────────────────────────────
       - name: Assess base branch
+        timeout-minutes: 40
         run: |
-          git checkout ${{ inputs.base_sha }}
+          git checkout "$COMPAT_BASE_SHA"
           # Retain the base scanner's own pre-run result before installing any
           # head tooling. The run comparison below intentionally uses the head
           # observer protocol, but scanner changes must compare each revision's
@@ -105,16 +113,29 @@ jobs:
           # the Ferric candidate itself entirely at the requested base revision.
           # A wire-incompatible base must fail visibly rather than being turned
           # into a hybrid binary by overlaying head Rust runtime sources.
-          git checkout ${{ inputs.head_sha }} -- \
+          git checkout "$COMPAT_HEAD_SHA" -- \
             tools/ferric-tools/ \
-            scripts/clips-reference.sh
+            scripts/clips-reference.sh scripts/corpus-evidence.sh
+          # Capture this revision's own corpus before switching back to head.
+          # The summary records that only the assessment tooling is overlaid.
+          scripts/corpus-evidence.sh capture /tmp/compat-evidence/base-corpus \
+            "$COMPAT_BASE_SHA" "${{ github.run_id }}-${{ github.run_attempt }}-base"
+          # Older Rust tests may not produce a verdict sidecar. Keep their
+          # results explicitly unverified rather than borrowing head evidence.
+          # A base corpus failure is retained for comparison; it cannot prevent
+          # a corrected head from proving itself against the strict gate below.
+          if ! scripts/corpus-evidence.sh verify /tmp/compat-evidence/base-corpus \
+            "$COMPAT_BASE_SHA" "${{ github.run_id }}-${{ github.run_attempt }}-base" \
+            --allow-unverified; then
+            echo "::warning::Base corpus verification failed; retained evidence records the failure. Head verification remains required."
+          fi
           cargo build --release -p ferric-rules-cli
           target/release/ferric compat-observe --help | grep -F -- '--scenario'
           candidate_digest="$(sha256sum target/release/ferric | cut -d ' ' -f 1)"
           printf '{"schema":"ferric.compat-candidate-provenance","version":1,' \
             > /tmp/compat-evidence/base-candidate-provenance.json
           printf '"commit_sha":"%s","binary_sha256":"%s"}\n' \
-            "${{ inputs.base_sha }}" "$candidate_digest" \
+            "$COMPAT_BASE_SHA" "$candidate_digest" \
             >> /tmp/compat-evidence/base-candidate-provenance.json
           uv run --project tools/ferric-tools ferric-compat-scan
           # Materialize head-format harnesses for base sources without modifying
@@ -124,14 +145,20 @@ jobs:
           uv run --project tools/ferric-tools ferric-harness-gen \
             --output-dir .ferric-compat/base-harnesses --check
           uv run --project tools/ferric-tools ferric-compat-run \
-            --all --require-selected --candidate-sha "${{ inputs.base_sha }}" \
-            --workers 4 --timeout 30
+            --all --require-selected --candidate-sha "$COMPAT_BASE_SHA" \
+            --workers 4 --timeout 120
           cp tests/examples/compat-manifest.json /tmp/base-compat-manifest.json
           rm -f tests/examples/compat-manifest.json
-          git checkout ${{ inputs.head_sha }}
+          git checkout "$COMPAT_HEAD_SHA"
           touch /tmp/head-assessment-checkout
 
       # ── Head assessment ────────────────────────────────────────────────
+      - name: Verify head corpus and pinned CLIPS goldens
+        timeout-minutes: 30
+        run: |
+          scripts/corpus-evidence.sh verify /tmp/compat-evidence/head-corpus \
+            "$COMPAT_HEAD_SHA" "${{ github.run_id }}-${{ github.run_attempt }}-head"
+
       - name: Build ferric
         run: |
           cargo build --release -p ferric-rules-cli
@@ -139,7 +166,7 @@ jobs:
           printf '{"schema":"ferric.compat-candidate-provenance","version":1,' \
             > /tmp/compat-evidence/head-candidate-provenance.json
           printf '"commit_sha":"%s","binary_sha256":"%s"}\n' \
-            "${{ inputs.head_sha }}" "$candidate_digest" \
+            "$COMPAT_HEAD_SHA" "$candidate_digest" \
             >> /tmp/compat-evidence/head-candidate-provenance.json
 
       - name: Test pinned CLIPS observation boundaries
@@ -160,8 +187,8 @@ jobs:
             --json /tmp/compat-scanner-diff.json \
             --report /tmp/compat-scanner-diff-report.md \
             --repo "${{ github.repository }}" \
-            --base-sha "${{ inputs.base_sha }}" \
-            --head-sha "${{ inputs.head_sha }}"
+            --base-sha "$COMPAT_BASE_SHA" \
+            --head-sha "$COMPAT_HEAD_SHA"
           cat /tmp/compat-scanner-diff-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate head compatibility harnesses
@@ -177,30 +204,50 @@ jobs:
       - name: Run compat assessment
         run: |
           uv run --project tools/ferric-tools ferric-compat-run \
-            --all --require-selected --candidate-sha "${{ inputs.head_sha }}" \
-            --workers 4 --timeout 30
+            --all --require-selected --candidate-sha "$COMPAT_HEAD_SHA" \
+            --workers 4 --timeout 120
 
       - name: Enforce head compatibility policy
         run: |
           uv run --project tools/ferric-tools ferric-compat-ci-gate \
-            --expected-commit-sha "${{ inputs.head_sha }}"
+            --expected-commit-sha "$COMPAT_HEAD_SHA"
 
       # ── Comparison report ──────────────────────────────────────────────
       - name: Generate comparison report
         run: |
           uv run --project tools/ferric-tools ferric-compat-diff \
             /tmp/base-compat-manifest.json tests/examples/compat-manifest.json \
+            --base-corpus-summary /tmp/compat-evidence/base-corpus/summary.json \
+            --head-corpus-summary /tmp/compat-evidence/head-corpus/summary.json \
             --tsv /tmp/compat-diff.tsv \
             --report /tmp/compat-diff-report.md \
             --repo "${{ github.repository }}" \
-            --base-sha "${{ inputs.base_sha }}" \
-            --head-sha "${{ inputs.head_sha }}" \
+            --base-sha "$COMPAT_BASE_SHA" \
+            --head-sha "$COMPAT_HEAD_SHA" \
             >> "$GITHUB_STEP_SUMMARY"
 
       - name: Finalize compatibility evidence
         if: always()
         run: |
           mkdir -p /tmp/compat-evidence
+          corpus_finalize_failed=0
+          current_revision="$(git rev-parse HEAD)"
+          # Hydrate interrupted runs only while their own sources are checked
+          # out. A missing exit marker remains incomplete, never successful.
+          for side in base head; do
+            if [[ "$side" == base ]]; then
+              expected_revision="$COMPAT_BASE_SHA"
+            else
+              expected_revision="$COMPAT_HEAD_SHA"
+            fi
+            if [[ "$current_revision" == "$expected_revision" && \
+                  -f "/tmp/compat-evidence/$side-corpus/summary.json" ]]; then
+              if ! scripts/corpus-evidence.sh finalize "/tmp/compat-evidence/$side-corpus" \
+                "$expected_revision" "${{ github.run_id }}-${{ github.run_attempt }}-$side"; then
+                corpus_finalize_failed=1
+              fi
+            fi
+          done
           if [[ -f tests/examples/compat-manifest.json ]]; then
             if [[ -f /tmp/head-assessment-checkout ]]; then
               cp tests/examples/compat-manifest.json /tmp/head-compat-manifest.json
@@ -210,10 +257,19 @@ jobs:
             fi
           fi
           if [[ ! -f /tmp/compat-diff-report.md ]]; then
-            printf '## CLIPS Compatibility Comparison\n\n' \
+            uv run --project tools/ferric-tools ferric-compat-diff \
+              /tmp/base-compat-manifest.json /tmp/head-compat-manifest.json \
+              --base-corpus-summary /tmp/compat-evidence/base-corpus/summary.json \
+              --head-corpus-summary /tmp/compat-evidence/head-corpus/summary.json \
+              --tsv /tmp/compat-diff.tsv \
+              --report /tmp/compat-diff-report.md \
+              --repo "${{ github.repository }}" \
+              --base-sha "$COMPAT_BASE_SHA" \
+              --head-sha "$COMPAT_HEAD_SHA" || true
+          fi
+          if [[ ! -f /tmp/compat-diff-report.md ]]; then
+            printf '## CLIPS Compatibility Comparison\n\nThe assessment did not produce a report.\n' \
               > /tmp/compat-diff-report.md
-            printf 'The blocking assessment did not reach the comparison-report phase.\n' \
-              >> /tmp/compat-diff-report.md
           fi
           if [[ -f /tmp/compat-scanner-diff-report.md ]]; then
             if [[ -s /tmp/compat-diff-report.md ]]; then
@@ -231,8 +287,9 @@ jobs:
             fi
           done
           printf '{"base_sha":"%s","head_sha":"%s","job_status":"%s"}\n' \
-            "${{ inputs.base_sha }}" "${{ inputs.head_sha }}" "${{ job.status }}" \
+            "$COMPAT_BASE_SHA" "$COMPAT_HEAD_SHA" "${{ job.status }}" \
             > /tmp/compat-evidence/workflow-status.json
+          [[ "$corpus_finalize_failed" -eq 0 ]]
 
       - name: Upload artifacts
         if: always()

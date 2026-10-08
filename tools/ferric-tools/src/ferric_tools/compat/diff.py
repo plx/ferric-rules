@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -17,21 +18,25 @@ from ferric_tools._clips_parser import (
     UNSUPPORTED_CONTROL,
     UNSUPPORTED_IO,
 )
-from ferric_tools._manifest import load_manifest
+from ferric_tools.compat.assessment import (
+    ASSESSMENT_CATEGORIES,
+    load_legacy_manifest,
+    project_manifest,
+)
+from ferric_tools.compat.corpus_render import corpus_diff_lines
+from ferric_tools.compat.corpus_summary import corpus_delta, load_summary
 from ferric_tools.compat.diagnostics import result_diagnostic_view
 from ferric_tools.compat.report import compute_oracle_coverage, oracle_evidence_view
 
 app = typer.Typer(help="Compare two compat manifests.")
 console = Console(stderr=True)
 
-DISPLAY_ORDER = ["equivalent", "divergent", "incompatible", "pending"]
+DISPLAY_ORDER = list(ASSESSMENT_CATEGORIES)
 
-# Ordered from best to worst for determining regressions vs improvements.
-RANK = {"equivalent": 0, "divergent": 1, "pending": 2, "incompatible": 3}
-ORACLE_STATUS_RANK = {"invalid": 0, "missing": 1, "valid": 2}
-ORACLE_BOOLEAN_COVERAGE = ("selected", "declaration", "reached", "completed", "effect")
-STRUCTURED_ORACLE_MANIFEST_VERSION = 3
 SCANNER_DIFF_VERSION = 1
+# Per-file detail tables are capped so the PR comment fits GitHub's limit; the
+# TSV/JSON artifacts keep every row. Regressions and improvements are never cut.
+MARKDOWN_DETAIL_ROWS = 100
 FEATURE_SCAN_VERSION = 1
 SCANNER_FIELDS = (
     "features",
@@ -66,20 +71,6 @@ FEATURE_SCAN_SPECS = {
 }
 ABSENT_CLASSIFICATION = "absent"
 ABSENT_REASON = "not present"
-LEGACY_RUNNER_CLASSIFICATIONS = {
-    "timeout-both": frozenset({"incompatible"}),
-    "timeout-ferric": frozenset({"divergent", "incompatible"}),
-    "ferric-only-clean": frozenset({"pending"}),
-    "timeout-clips": frozenset({"divergent"}),
-    "clips-load-error": frozenset({"incompatible"}),
-    "both-error": frozenset({"incompatible"}),
-    "ferric-error": frozenset({"divergent", "incompatible"}),
-    "clips-error": frozenset({"divergent"}),
-    "empty-match": frozenset({"equivalent"}),
-    "exact-match": frozenset({"equivalent"}),
-    "float-normalized-match": frozenset({"equivalent"}),
-    "output-mismatch": frozenset({"divergent"}),
-}
 
 
 def _termination_snapshot(result: object) -> tuple[object, object, object, object]:
@@ -283,14 +274,14 @@ def _validate_scanner_snapshot(snapshot: dict, *, label: str) -> None:
         )
 
     malformed_disposition = (
-        snapshot["classification"] == "incompatible"
+        snapshot["classification"] in ("incompatible", "unassessed")
         and snapshot["reason"] == "malformed-source"
         and snapshot["runability"] == "unknown"
     )
     if scan["status"] == "invalid" and not malformed_disposition:
         raise ValueError(
             f"{label}: invalid feature_scan requires "
-            "incompatible/malformed-source/unknown disposition"
+            "unassessed (legacy incompatible)/malformed-source/unknown disposition"
         )
     if scan["status"] == "valid" and (
         snapshot["reason"] == "malformed-source" or snapshot["runability"] == "unknown"
@@ -339,7 +330,7 @@ def _scanner_manifest_files(
         entry_label = f"{label} manifest files[{path!r}]"
         snapshot = _scanner_snapshot(value, label=entry_label)
         read_error = (
-            snapshot["classification"] == "incompatible"
+            snapshot["classification"] in ("incompatible", "unassessed")
             and snapshot["reason"] == "read-error"
             and snapshot["runability"] == "unknown"
         )
@@ -497,6 +488,13 @@ def _markdown_cell(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
+def _omitted_rows_line(total: int, files: str) -> list[str]:
+    omitted = total - MARKDOWN_DETAIL_ROWS
+    if omitted <= 0:
+        return []
+    return ["", f"\u2026 {omitted} more rows in {files} in the `compat-diff-report` artifact."]
+
+
 def format_scanner_markdown(
     scanner_diff: dict,
     *,
@@ -555,7 +553,7 @@ def format_scanner_markdown(
             "|---|---|---|---|---|---|",
         ]
     )
-    for change in changes:
+    for change in changes[:MARKDOWN_DETAIL_ROWS]:
         fields = ", ".join(change["changed_fields"]) or "structured evidence"
         lines.append(
             "| "
@@ -566,6 +564,9 @@ def format_scanner_markdown(
             f"{_markdown_cell(_scanner_disposition(change['head']))} | "
             f"{_markdown_cell(_scanner_evidence_label(change['head']))} |"
         )
+    lines.extend(
+        _omitted_rows_line(len(changes), "`compat-scanner-diff.tsv`/`compat-scanner-diff.json`")
+    )
     lines.extend(
         [
             "",
@@ -643,245 +644,69 @@ def write_scanner_json(scanner_diff: dict, json_path: str) -> None:
         stream.write("\n")
 
 
-def _oracle_loss_details(
-    base_info: dict | None,
-    head_info: dict | None,
-    *,
-    require_verified_head: bool,
-) -> list[str]:
-    """Describe oracle-evidence losses from one file entry to another."""
-    if base_info is None:
-        assert head_info is not None
-        head = oracle_evidence_view(head_info)
-        if head_info.get("classification") == "equivalent" and head["status"] != "valid":
-            return ["unverified equivalent claim"]
-        return []
-
-    if head_info is None:
-        base = oracle_evidence_view(base_info)
-        if base["selected"] and base["status"] == "valid":
-            return ["valid oracle-backed fixture removed"]
-        return []
-
-    base = oracle_evidence_view(base_info)
-    head = oracle_evidence_view(head_info)
-    losses: list[str] = []
-
-    for field in ORACLE_BOOLEAN_COVERAGE:
-        if base[field] and not head[field]:
-            losses.append(f"{field} true\u2192false")
-
-    if ORACLE_STATUS_RANK[head["status"]] < ORACLE_STATUS_RANK[base["status"]]:
-        losses.append(f"status {base['status']}\u2192{head['status']}")
-
-    if base["version"] is not None and head["version"] is None:
-        losses.append(f"version {base['version']}\u2192unspecified")
-
-    added_violations = sorted(set(head["violations"]) - set(base["violations"]))
-    if added_violations:
-        losses.append(f"violations added: {', '.join(added_violations)}")
-
-    unverified_equivalent = (
-        head_info.get("classification") == "equivalent"
-        and head["status"] != "valid"
-        and (
-            require_verified_head
-            or base_info.get("classification") != "equivalent"
-            or base["status"] == "valid"
-        )
-    )
-    if unverified_equivalent:
-        losses.append("unverified equivalent claim")
-
-    return losses
-
-
-def _reason_with_oracle_loss(reason: str, losses: list[str]) -> str:
-    detail = f"oracle regression: {', '.join(losses)}"
-    return f"{reason}; {detail}" if reason else detail
-
-
-def _is_v3_oracle_reset(
-    base_version: object,
-    head_version: object,
-    base_info: dict,
-    head_info: dict,
-) -> bool:
-    """Return whether a legacy result was reset for a missing v3 oracle."""
-    if (
-        type(base_version) is not int
-        or type(head_version) is not int
-        or base_version >= STRUCTURED_ORACLE_MANIFEST_VERSION
-        or head_version < STRUCTURED_ORACLE_MANIFEST_VERSION
-    ):
-        return False
-
-    if base_info.get("oracle") is not None or base_info.get("oracle_evidence") is not None:
-        return False
-
-    if (
-        head_info.get("classification") != "pending"
-        or head_info.get("reason") != "oracle-missing"
-        or head_info.get("oracle") is not None
-        or not isinstance(head_info.get("oracle_evidence"), dict)
-    ):
-        return False
-
-    head_evidence = oracle_evidence_view(head_info)
-    return (
-        head_evidence["selected"]
-        and head_evidence["status"] == "missing"
-        and not any(
-            head_evidence[field] for field in ("declaration", "reached", "completed", "effect")
-        )
-    )
-
-
-def _is_legacy_runner_migration(
-    base_version: object,
-    head_version: object,
-    base_info: dict,
-    head_info: dict,
-) -> bool:
-    """Recognize approved resets of classifications produced by the legacy runner."""
-    if not _is_v3_oracle_reset(base_version, head_version, base_info, head_info):
-        return False
-
-    allowed_classifications = LEGACY_RUNNER_CLASSIFICATIONS.get(base_info.get("reason"))
-    return (
-        allowed_classifications is not None
-        and base_info.get("classification") in allowed_classifications
+def _oracle_identity(info: dict) -> str | None:
+    """Bind legacy comparisons to the same source, harness and oracle contract."""
+    declaration = info.get("oracle")
+    if not isinstance(declaration, dict):
+        return None
+    digests = [declaration.get(key) for key in ("source_sha256", "composed_sha256")]
+    if not all(isinstance(value, str) and len(value) == 64 for value in digests):
+        return None
+    contract = {key: value for key, value in declaration.items() if key not in ("nonce", "feature")}
+    return json.dumps(
+        {"source_sha256": info.get("source_sha256", digests[0]), "oracle": contract},
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
 def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
-    """Compute counts and per-file changes between two manifests.
-
-    Returns (base_counts, head_counts, regressions, real_improvements, reason_changes).
-    """
-    base_files = base.get("files", {})
-    head_files = head.get("files", {})
-
-    base_counts = {cls: 0 for cls in DISPLAY_ORDER}
-    head_counts = {cls: 0 for cls in DISPLAY_ORDER}
-
-    for info in base_files.values():
-        cls = info["classification"]
-        if cls in base_counts:
-            base_counts[cls] += 1
-
-    for info in head_files.values():
-        cls = info["classification"]
-        if cls in head_counts:
-            head_counts[cls] += 1
-
-    real_improvements: list[tuple] = []
-    regressions: list[tuple] = []
-    reason_changes: list[tuple] = []
-    require_verified_head = (
-        type(head.get("version")) is int and head["version"] >= STRUCTURED_ORACLE_MANIFEST_VERSION
-    )
-
-    all_keys = sorted(set(base_files) | set(head_files))
-    for key in all_keys:
-        b = base_files.get(key)
-        h = head_files.get(key)
-
-        if b is None or h is None:
-            oracle_losses = _oracle_loss_details(
-                b,
-                h,
-                require_verified_head=require_verified_head,
-            )
-            if oracle_losses:
-                b_cls = ABSENT_CLASSIFICATION if b is None else b["classification"]
-                b_reason = ABSENT_REASON if b is None else b.get("reason", "")
-                h_cls = ABSENT_CLASSIFICATION if h is None else h["classification"]
-                h_reason = ABSENT_REASON if h is None else h.get("reason", "")
-                regressions.append(
-                    (
-                        key,
-                        b_cls,
-                        b_reason,
-                        h_cls,
-                        _reason_with_oracle_loss(h_reason, oracle_losses),
-                    )
-                )
-            continue
-
-        b_cls = b["classification"]
-        h_cls = h["classification"]
-        b_reason = b.get("reason", "")
-        h_reason = h.get("reason", "")
-
-        if _is_legacy_runner_migration(
-            base.get("version"),
-            head.get("version"),
-            b,
-            h,
-        ):
-            continue
-
-        diagnostics_changed = _diagnostic_snapshot(b) != _diagnostic_snapshot(h)
-        entry = (
-            key,
-            b_cls,
-            _reason_with_diagnostics(b_reason, b) if diagnostics_changed else b_reason,
-            h_cls,
-            _reason_with_diagnostics(h_reason, h) if diagnostics_changed else h_reason,
-        )
-        oracle_losses = _oracle_loss_details(
-            b,
-            h,
-            require_verified_head=require_verified_head,
-        )
-
-        if oracle_losses:
-            regressions.append(
-                (
-                    key,
-                    b_cls,
-                    entry[2],
-                    h_cls,
-                    _reason_with_oracle_loss(entry[4], oracle_losses),
-                )
-            )
-            continue
-
-        if b_cls == h_cls:
-            if b_reason != h_reason or diagnostics_changed:
-                # A reason change within the same semantic classification is
-                # neutral. This is especially important during manifest and
-                # oracle schema migrations, where legacy reasons are replaced.
-                reason_changes.append(
-                    (
-                        key,
-                        b_cls,
-                        entry[2],
-                        h_cls,
-                        entry[4],
-                    )
-                )
-            continue
-
-        if _is_v3_oracle_reset(
-            base.get("version"),
-            head.get("version"),
-            b,
-            h,
+    """Compare executed oracle outcomes; inventory changes are never improvements."""
+    base_projection, head_projection = project_manifest(base), project_manifest(head)
+    base_counts = {key: base_projection["summary"][key] for key in DISPLAY_ORDER}
+    head_counts = {key: head_projection["summary"][key] for key in DISPLAY_ORDER}
+    regressions, improvements, changes = [], [], []
+    base_files, head_files = base_projection["files"], head_projection["files"]
+    for path in sorted(base_files.keys() | head_files.keys()):
+        b, h = base_files.get(path), head_files.get(path)
+        b_cls = b["classification"] if b else "absent"
+        h_cls = h["classification"] if h else "absent"
+        b_reason = b.get("reason", "") if b else "not present"
+        h_reason = h.get("reason", "") if h else "not present"
+        if b is not None and h is not None and _diagnostic_snapshot(b) != _diagnostic_snapshot(h):
+            b_reason = _reason_with_diagnostics(b_reason, b)
+            h_reason = _reason_with_diagnostics(h_reason, h)
+        executed_before = b_cls in ("equivalent", "divergent")
+        if executed_before and h is None:
+            # Deleting an executed fixture loses at least as much as leaving it
+            # unassessed; only inventory without oracle results may disappear.
+            h_reason = "not present; oracle-backed fixture removed"
+        entry = (path, b_cls, b_reason, h_cls, h_reason)
+        if (
+            h_cls == "evidence-failure"
+            or (b_cls == "equivalent" and h_cls == "divergent")
+            or (executed_before and h_cls in ("unassessed", "absent"))
         ):
             regressions.append(entry)
-            continue
-
-        b_rank = RANK.get(b_cls, 99)
-        h_rank = RANK.get(h_cls, 99)
-
-        if h_rank < b_rank:
-            real_improvements.append(entry)
-        else:
-            regressions.append(entry)
-
-    return base_counts, head_counts, regressions, real_improvements, reason_changes
+        elif b_cls == "divergent" and h_cls == "equivalent":
+            identity = _oracle_identity(b)
+            if identity is not None and identity == _oracle_identity(h):
+                improvements.append(entry)
+            else:
+                changes.append(
+                    (*entry[:4], entry[4] + "; source/oracle identity changed or unavailable")
+                )
+        elif (
+            b_cls != h_cls
+            or b_reason != h_reason
+            or (
+                b is not None
+                and h is not None
+                and _diagnostic_snapshot(b) != _diagnostic_snapshot(h)
+            )
+        ):
+            changes.append(entry)
+    return base_counts, head_counts, regressions, improvements, changes
 
 
 def format_markdown(
@@ -896,17 +721,29 @@ def format_markdown(
     head_sha: str | None = None,
     base_oracle: dict | None = None,
     head_oracle: dict | None = None,
+    base_corpus: dict | None = None,
+    head_corpus: dict | None = None,
+    legacy_available: bool = True,
 ) -> list[str]:
     """Build the full Markdown report as a list of lines."""
     lines: list[str] = []
     lines.append("## CLIPS Compatibility Report")
     lines.append("")
-    lines.append("Compares ferric's compatibility with CLIPS across a corpus of")
-    lines.append("example `.clp` files. Each file is classified as **equivalent**")
-    lines.append("(a valid structured oracle matches CLIPS), **divergent** (semantic")
-    lines.append("observations differ),")
-    lines.append("**incompatible** (cannot run), or **pending** (not yet tested).")
-    lines.append("")
+    lines.extend(corpus_diff_lines(base_corpus, head_corpus))
+    if not legacy_available:
+        lines.extend(
+            ["### Legacy assessment", "", "Legacy assessment not produced for both revisions.", ""]
+        )
+        return lines
+    lines.extend(
+        [
+            "### Legacy executed oracles and inventory",
+            "",
+            "Equivalent/divergent rows require completed oracle evidence. "
+            "Unassessed inventory and coverage changes are not engine improvements.",
+            "",
+        ]
+    )
 
     if repo and base_sha and head_sha:
         base_link = f"[`{base_sha[:10]}`](https://github.com/{repo}/commit/{base_sha})"
@@ -914,20 +751,29 @@ def format_markdown(
         lines.append(f"Base: {base_link} | Head: {head_link}")
         lines.append("")
 
-    base_total = sum(base_counts.values())
-    head_total = sum(head_counts.values())
+    assessed = [category for category in DISPLAY_ORDER if category != "unassessed"]
+    base_total = sum(base_counts.get(category, 0) for category in assessed)
+    head_total = sum(head_counts.get(category, 0) for category in assessed)
 
     lines.append("| Classification | Base | Head | Delta |")
     lines.append("|---|---:|---:|---|")
-    for cls in DISPLAY_ORDER:
-        b = base_counts[cls]
-        h = head_counts[cls]
+    for cls in assessed:
+        b = base_counts.get(cls, 0)
+        h = head_counts.get(cls, 0)
         d = h - b
         delta_str = f"**{fmt_delta(d)}**" if d != 0 else "\u2014"
         lines.append(f"| {cls} | {b} | {h} | {delta_str} |")
     d_total = head_total - base_total
     delta_total = f"**{fmt_delta(d_total)}**" if d_total != 0 else "\u2014"
-    lines.append(f"| **total** | **{base_total}** | **{head_total}** | {delta_total} |")
+    lines.append(f"| **oracle rows** | **{base_total}** | **{head_total}** | {delta_total} |")
+    lines.extend(
+        [
+            "",
+            f"Unassessed inventory: base **{base_counts.get('unassessed', 0)}**, "
+            f"head **{head_counts.get('unassessed', 0)}** canonical rows; excluded "
+            "from oracle assessment totals.",
+        ]
+    )
 
     if base_oracle is not None and head_oracle is not None:
         lines.append("")
@@ -990,14 +836,15 @@ def format_markdown(
     if reason_changes:
         lines.append("")
         lines.append(
-            "<details><summary>Reason changes within same classification"
+            "<details><summary>Coverage, removals and inventory changes"
             f" ({len(reason_changes)})</summary>"
         )
         lines.append("")
         lines.append("| File | Classification | Before | After |")
         lines.append("|---|---|---|---|")
-        for path, b_cls, b_reason, _h_cls, h_reason in reason_changes:
+        for path, b_cls, b_reason, _h_cls, h_reason in reason_changes[:MARKDOWN_DETAIL_ROWS]:
             lines.append(f"| `{path}` | {b_cls} | {b_reason} | {h_reason} |")
+        lines.extend(_omitted_rows_line(len(reason_changes), "`compat-diff.tsv`"))
         lines.append("")
         lines.append("</details>")
 
@@ -1017,66 +864,18 @@ def _change_kind(
     base_version: object = None,
     head_version: object = None,
 ) -> tuple[str, list[str]]:
-    """Return the TSV change label and any oracle regression details."""
-    require_verified_head = (
-        type(head_version) is int and head_version >= STRUCTURED_ORACLE_MANIFEST_VERSION
-    )
+    base = {"files": {"case": base_info} if base_info is not None else {}}
+    head = {"files": {"case": head_info} if head_info is not None else {}}
+    _, _, regressions, improvements, changes = compute_diff(base, head)
+    if regressions:
+        return "regression", [regressions[0][4]]
+    if improvements:
+        return "improvement", []
     if base_info is None:
-        oracle_losses = _oracle_loss_details(
-            None,
-            head_info,
-            require_verified_head=require_verified_head,
-        )
-        if oracle_losses:
-            return "regression", oracle_losses
         return "added", []
     if head_info is None:
-        oracle_losses = _oracle_loss_details(
-            base_info,
-            None,
-            require_verified_head=require_verified_head,
-        )
-        if oracle_losses:
-            return "regression", oracle_losses
         return "removed", []
-
-    if _is_legacy_runner_migration(
-        base_version,
-        head_version,
-        base_info,
-        head_info,
-    ):
-        return "schema-migration", []
-
-    oracle_losses = _oracle_loss_details(
-        base_info,
-        head_info,
-        require_verified_head=require_verified_head,
-    )
-    if oracle_losses:
-        return "regression", oracle_losses
-
-    base_classification = base_info["classification"]
-    head_classification = head_info["classification"]
-    if base_classification == head_classification:
-        if base_info.get("reason", "") != head_info.get("reason", "") or _diagnostic_snapshot(
-            base_info
-        ) != _diagnostic_snapshot(head_info):
-            return "reason-changed", []
-        return "unchanged", []
-
-    if _is_v3_oracle_reset(
-        base_version,
-        head_version,
-        base_info,
-        head_info,
-    ):
-        return "regression", []
-
-    base_rank = RANK.get(base_classification, 99)
-    head_rank = RANK.get(head_classification, 99)
-    change = "improvement" if head_rank < base_rank else "regression"
-    return change, []
+    return ("inventory-or-coverage-change" if changes else "unchanged"), []
 
 
 def _tsv_diagnostic_fields(prefix: str, info: dict | None) -> dict[str, object]:
@@ -1102,7 +901,8 @@ def _tsv_diagnostic_fields(prefix: str, info: dict | None) -> dict[str, object]:
 
 
 def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
-    """Write per-file raw data as TSV."""
+    """Write per-file evidence-based classifications as TSV."""
+    base, head = project_manifest(base), project_manifest(head)
     base_files = base.get("files", {})
     head_files = head.get("files", {})
     all_keys = sorted(set(base_files) | set(head_files))
@@ -1216,6 +1016,12 @@ def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
 def main(
     base_manifest: Annotated[str, typer.Argument(help="Base manifest JSON")],
     head_manifest: Annotated[str, typer.Argument(help="Head manifest JSON")],
+    base_corpus_summary: Annotated[
+        Path | None, typer.Option(help="Base granular corpus summary")
+    ] = None,
+    head_corpus_summary: Annotated[
+        Path | None, typer.Option(help="Head granular corpus summary")
+    ] = None,
     tsv: Annotated[str | None, typer.Option(help="Write per-file data as TSV")] = None,
     report: Annotated[str | None, typer.Option(help="Write self-contained Markdown report")] = None,
     scanner_only: Annotated[
@@ -1231,8 +1037,27 @@ def main(
     head_sha: Annotated[str | None, typer.Option(help="Head commit SHA")] = None,
 ) -> None:
     """Compare two compat manifests."""
-    base = load_manifest(base_manifest)
-    head = load_manifest(head_manifest)
+    try:
+        base_corpus = (
+            load_summary(base_corpus_summary)
+            if base_corpus_summary and base_corpus_summary.exists()
+            else None
+        )
+        head_corpus = (
+            load_summary(head_corpus_summary)
+            if head_corpus_summary and head_corpus_summary.exists()
+            else None
+        )
+        base = load_legacy_manifest(base_manifest) if Path(base_manifest).exists() else None
+        head = load_legacy_manifest(head_manifest) if Path(head_manifest).exists() else None
+    except (OSError, ValueError) as error:
+        console.print(f"[red]error:[/] {error}")
+        raise typer.Exit(1) from error
+    if (base is None or head is None) and (
+        scanner_only or (base_corpus is None and head_corpus is None)
+    ):
+        console.print("[red]error:[/] legacy manifest missing and no corpus summaries supplied")
+        raise typer.Exit(1)
 
     if scanner_only:
         try:
@@ -1262,7 +1087,7 @@ def main(
         raise typer.Exit(2)
 
     base_counts, head_counts, regressions, real_improvements, reason_changes = compute_diff(
-        base, head
+        base or {"files": {}}, head or {"files": {}}
     )
 
     md_lines = format_markdown(
@@ -1274,8 +1099,11 @@ def main(
         repo=repo,
         base_sha=base_sha,
         head_sha=head_sha,
-        base_oracle=compute_oracle_coverage(base),
-        head_oracle=compute_oracle_coverage(head),
+        base_oracle=compute_oracle_coverage(base) if base is not None else None,
+        head_oracle=compute_oracle_coverage(head) if head is not None else None,
+        base_corpus=base_corpus,
+        head_corpus=head_corpus,
+        legacy_available=base is not None and head is not None,
     )
     print("\n".join(md_lines))
 
@@ -1284,10 +1112,15 @@ def main(
             f.write("\n".join(md_lines))
             f.write("\n")
 
-    if tsv:
+    if tsv and base is not None and head is not None:
         write_tsv(base, head, tsv)
 
-    if regressions:
+    corpus_regressions = (
+        corpus_delta(base_corpus, head_corpus)["regressions"]
+        if base_corpus is not None and head_corpus is not None
+        else []
+    )
+    if regressions or corpus_regressions:
         raise typer.Exit(1)
 
 

@@ -50,6 +50,9 @@ def _entry(classification: str, reason: str, oracle: dict | None = None) -> dict
     }
     if oracle is not None:
         entry["oracle_evidence"] = oracle
+        if oracle["status"] == "valid" and oracle["completed"]:
+            entry["ferric"] = {"canonical_observation": {"run": {"halt_reason": "agenda-empty"}}}
+            entry["clips"] = {"canonical_observation": {"run": {"halt_reason": "agenda-empty"}}}
     return entry
 
 
@@ -163,12 +166,12 @@ def test_print_summary_exposes_oracle_coverage_versions_and_normalizations(capsy
     print_summary(_manifest())
 
     output = capsys.readouterr().out
-    assert "Oracle evidence:" in output
-    assert "selected            :      3 ( 60.0%)" in output
-    assert "refused equivalent  :      1 ( 20.0%)" in output
-    assert "versions            : 1: 2, 2: 1" in output
-    assert "normalizations      : fact-ids: 1, float-format: 1" in output
-    assert "legacy-equivalent.clp (empty-match) [REFUSED: invalid oracle evidence]" in output
+    assert "Oracle evidence coverage" in output
+    assert "| selected | 3 |" in output
+    assert "| refused equivalent | 1 |" in output
+    assert "Versions: 1: 2, 2: 1" in output
+    assert "Normalizations: fact-ids: 1, float-format: 1" in output
+    assert "`legacy-equivalent.clp` (oracle-missing; scanner: empty-match)" in output
 
 
 def test_markdown_report_exposes_oracle_coverage_and_refused_claim(tmp_path):
@@ -178,15 +181,12 @@ def test_markdown_report_exposes_oracle_coverage_and_refused_claim(tmp_path):
 
     output = report.read_text(encoding="utf-8")
     assert "### Oracle evidence coverage" in output
-    assert "| valid | 1 | 20.0% |" in output
-    assert "| missing | 2 | 40.0% |" in output
-    assert "| invalid | 2 | 40.0% |" in output
+    assert "| valid | 1 |" in output
+    assert "| missing | 2 |" in output
+    assert "| invalid | 2 |" in output
     assert "Versions: 1: 2, 2: 1" in output
     assert "Normalizations: fact-ids: 1, float-format: 1" in output
-    assert (
-        "`legacy-equivalent.clp` (empty-match) \u2014 **REFUSED: invalid oracle evidence**"
-        in output
-    )
+    assert "`legacy-equivalent.clp` (oracle-missing; scanner: empty-match)" in output
 
 
 def test_reports_retain_candidate_and_reference_digests(tmp_path, capsys):
@@ -210,12 +210,12 @@ def test_reports_retain_candidate_and_reference_digests(tmp_path, capsys):
     write_report(manifest, str(report))
 
     summary = capsys.readouterr().out
-    assert f"Candidate commit:       {'a' * 40}" in summary
-    assert f"Reference binary SHA:   {'c' * 64}" in summary
+    assert f"candidate commit: `{'a' * 40}`" in summary
+    assert f"reference binary: `{'c' * 64}`" in summary
     markdown = report.read_text(encoding="utf-8")
     assert "### Candidate and reference provenance" in markdown
-    assert f"| Ferric candidate binary SHA-256 | `{'b' * 64}` |" in markdown
-    assert f"| CLIPS image ID | `sha256:{'e' * 64}` |" in markdown
+    assert f"candidate binary: `{'b' * 64}`" in markdown
+    assert f"reference image: `sha256:{'e' * 64}`" in markdown
 
 
 @pytest.mark.parametrize(("delimiter", "suffix"), [(",", "csv"), ("\t", "tsv")])
@@ -269,7 +269,7 @@ def test_reports_expose_phase_diagnostic_and_independent_termination(tmp_path, c
     _write_delimited(manifest, str(table), ",")
 
     summary = capsys.readouterr().out
-    assert "Diagnostic evidence (1):" in summary
+    assert "Diagnostic evidence (1)" in summary
     assert "ferric: diagnostic v1 load/construct-error" in summary
     assert "clips: diagnostic v1 run/evaluation-error" in summary
     assert "termination=signal signal=9 active-phase=run" in summary
@@ -358,8 +358,8 @@ def test_v1_oracle_evidence_rejects_unsupported_normalizer_names():
     assert view["normalizations"] == ["string-whitespace"]
 
 
-@pytest.mark.parametrize("field", ["declaration", "reached", "completed", "effect"])
-def test_missing_oracle_evidence_requires_all_coverage_flags_false(field):
+@pytest.mark.parametrize("field", ["reached", "completed", "effect"])
+def test_missing_oracle_evidence_cannot_claim_execution(field):
     evidence = _oracle(
         "missing",
         version=1,
@@ -437,3 +437,25 @@ def test_equivalent_claim_with_semantic_mismatch_is_refused():
 
     assert view["status"] == "invalid"
     assert view["refused_equivalent"] is True
+
+
+def test_valid_declaration_without_execution_is_unassessed():
+    from ferric_tools.compat.assessment import assessment_view
+
+    entry = _entry(
+        "unassessed",
+        "testable",
+        _oracle(
+            "missing",
+            version=1,
+            declaration=True,
+            reached=False,
+            completed=False,
+            effect=False,
+        ),
+    )
+    assert oracle_evidence_view(entry)["status"] == "missing"
+    assert assessment_view(entry) == {
+        "classification": "unassessed",
+        "reason": "oracle-not-executed",
+    }
