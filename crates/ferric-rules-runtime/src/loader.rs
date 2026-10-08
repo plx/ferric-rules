@@ -1513,19 +1513,6 @@ impl Engine {
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
-                        if let Err(error) = self.declare_expression_query_order(
-                            global.globals.iter().map(|definition| &definition.value),
-                            self.module_registry.current_module(),
-                        ) {
-                            errors.push(error);
-                            continue;
-                        }
-                        for definition in &global.globals {
-                            self.declare_expression_templates(
-                                &definition.value,
-                                self.module_registry.current_module(),
-                            );
-                        }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
                             errors.push(e);
@@ -2214,6 +2201,11 @@ impl Engine {
                 ));
             }
 
+            // Declare query targets one initializer at a time, as CLIPS
+            // parses each definition just before installing it: a bad
+            // target in a later initializer must not discard earlier globals.
+            self.declare_expression_query_order(std::iter::once(&def.value), current_module)?;
+            self.declare_expression_templates(&def.value, current_module);
             crate::callable_validation::validate_breaks_with_templates(
                 std::slice::from_ref(&def.value),
                 &|name| self.resolve_template_id(name, current_module).is_ok(),
@@ -8580,6 +8572,33 @@ mod tests {
         assert!(engine.load_str(bad).is_err());
         assert!(engine.active_query_targets.is_empty());
         load_ok(&mut engine, "(deftemplate spare (slot z))");
+    }
+
+    #[test]
+    fn global_query_error_keeps_earlier_globals_in_group() {
+        // CLIPS installs each global of a group before parsing the next, so
+        // an unknown query target in a later initializer keeps earlier ones.
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defglobal ?*a* = 42
+                           ?*b* = (any-factp ((?f missing)) TRUE)
+                           ?*c* = 7)
+                (defrule r => (printout t ?*a* crlf))
+            ",
+            )
+            .unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().contains("unknown template `missing`")));
+        assert!(matches!(engine.get_global("a"), Some(Value::Integer(42))));
+        assert!(engine.get_global("b").is_none());
+        assert!(engine.get_global("c").is_none());
+        engine.reset().unwrap();
+        engine.run(crate::RunLimit::Unlimited).unwrap();
+        assert!(engine.action_diagnostics().is_empty());
+        assert!(matches!(engine.get_global("a"), Some(Value::Integer(42))));
     }
 
     #[test]
