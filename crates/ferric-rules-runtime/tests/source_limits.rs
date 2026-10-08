@@ -296,3 +296,39 @@ fn per_load_expansion_budget_preserves_already_installed_constructs() {
     engine.assert_ordered("left", ()).unwrap();
     assert_eq!(engine.agenda_len(), 2);
 }
+
+#[test]
+fn compiled_condition_limit_names_the_rule_and_its_location() {
+    let patterns = (0..65).fold(String::new(), |mut source, n| {
+        write!(source, "(p{n}) ").unwrap();
+        source
+    });
+    let branches = (0..64).fold(String::new(), |mut source, n| {
+        write!(source, "(b{n}) ").unwrap();
+        source
+    });
+    for (name, lhs) in [
+        ("wide", patterns),
+        // One NCC whose negated branches exceed the compiled condition budget.
+        ("any-branch", format!("(exists (or {branches}))")),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let source = format!("(defrule ok (seed) =>)\n  (defrule {name} {lhs} =>)");
+        let errors = engine.load_str(&source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, LoadError::ResourceLimit {
+                rule, resource: "rule conditions", required, limit: 64, line: 2, column: 3,
+            } if rule == name && *required > 64)),
+            "{errors:?}"
+        );
+        assert!(
+            errors[0]
+                .to_string()
+                .starts_with(&format!("rule `{name}` at line 2, column 3:")),
+            "{errors:?}"
+        );
+        assert_eq!(engine.rules().len(), 1);
+    }
+}

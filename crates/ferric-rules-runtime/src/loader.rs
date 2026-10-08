@@ -3473,6 +3473,33 @@ impl Engine {
         )
     }
 
+    /// Name the rule and its location when the compiled condition plan is
+    /// rejected, since a multi-rule source otherwise cannot identify it.
+    fn located_rule_compile_error(
+        rule: &RuleConstruct,
+        error: ferric_rules_core::CompileError,
+    ) -> LoadError {
+        let (line, column) = (rule.span.start.line, rule.span.start.column);
+        match error {
+            ferric_rules_core::CompileError::ResourceLimit {
+                resource,
+                required,
+                limit,
+            } => LoadError::ResourceLimit {
+                rule: rule.name.clone(),
+                resource,
+                required,
+                limit,
+                line,
+                column,
+            },
+            error => LoadError::Compile(format!(
+                "rule `{}` at line {line}, column {column}: {error}",
+                rule.name
+            )),
+        }
+    }
+
     fn prepare_single_rule(
         &mut self,
         rule: &RuleConstruct,
@@ -3504,7 +3531,7 @@ impl Engine {
         let plan = self
             .compiler
             .plan_conditions(translated.salience, translated.conditions)
-            .map_err(|e| LoadError::Compile(format!("{e}")))?;
+            .map_err(|error| Self::located_rule_compile_error(rule, error))?;
 
         let source_definition = source
             .get(rule.span.start.offset..rule.span.end.offset)
