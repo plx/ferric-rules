@@ -51,16 +51,14 @@ impl Engine {
     }
 
     fn expr_names_callables(&self, expr: &ActionExpr, module: ModuleId) -> bool {
-        match expr {
-            ActionExpr::FunctionCall(call) => self.effect_names_callables(call, module),
-            _ => {
-                let mut children = Vec::new();
-                expr.push_children(&mut children);
-                children
-                    .into_iter()
-                    .any(|child| self.expr_names_callables(child, module))
-            }
+        if let ActionExpr::FunctionCall(call) = expr {
+            return self.effect_names_callables(call, module);
         }
+        let mut children = Vec::new();
+        expr.push_children(&mut children);
+        children
+            .into_iter()
+            .any(|child| self.expr_names_callables(child, module))
     }
 
     /// Whether `name`, called from `module`, names a registered deffunction or
