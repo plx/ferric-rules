@@ -273,7 +273,7 @@ fn dynamic_source(
     // As in CLIPS, the parsed expression keeps the templates and ordered
     // relations it names in use while it runs, so its own `build` cannot
     // redefine them underneath a later assertion (CSTRCPSR4).
-    ctx.engine.with_active_expressions(
+    let (result, final_module, final_global_module) = ctx.engine.with_active_expressions(
         current_module,
         [std::sync::Arc::clone(&expression)],
         |engine| {
@@ -290,9 +290,16 @@ fn dynamic_source(
                 compact_fact_bindings: None,
                 allow_engine_effects,
             };
-            evaluator::eval_inner(&mut child, &expression)
+            let result = evaluator::eval_inner(&mut child, &expression);
+            (result, child.current_module, child.global_module)
         },
-    )
+    );
+    // A root `clear`/`reset` inside the source moves its context to the new
+    // current module. The enclosing expression's remaining operands must see
+    // that too, even when a later error ends the source: its effects persist.
+    ctx.current_module = final_module;
+    ctx.global_module = final_global_module;
+    result
 }
 
 fn build(

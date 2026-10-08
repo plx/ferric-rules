@@ -553,7 +553,9 @@ source names a template or ordered relation (in a fact assertion or fact
 query), it refuses before removing facts. Later actions and eligible
 activations continue. At an ordinary expression root with no constructs in
 use, clear removes constructs, restores `initial-fact` as f-0, and selects
-MAIN; the next user assertion is f-1. Source clear preserves queued input,
+MAIN; the next user assertion is f-1. A root clear or reset inside `eval`
+source also selects MAIN for the rest of the enclosing expression, so a later
+`build` defines into MAIN as in CLIPS. Source clear preserves queued input,
 printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
 the same expression through `assert-string` does not keep its relation in use.
 

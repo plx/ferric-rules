@@ -157,6 +157,60 @@ fn root_clear_resets_the_current_module_for_remaining_operands() {
     assert!(matches!(value, Value::Integer(7)));
 }
 
+/// An engine whose current module is `A` (`with_rules` would reset to MAIN).
+fn engine_in_module_a() -> Engine {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine.load_str("(defmodule A)").unwrap();
+    assert_eq!(engine.current_module(), "A");
+    engine
+}
+
+fn rule_list(engine: &mut Engine) -> String {
+    let value = engine.eval_str("(get-defrule-list *)").unwrap();
+    let Value::Multifield(items) = value else {
+        panic!("expected a multifield, got {value:?}");
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Symbol(symbol) => engine.resolve_core_symbol(*symbol).unwrap().to_owned(),
+            other => panic!("expected a symbol, got {other:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn clear_inside_eval_moves_the_enclosing_expression_to_main() {
+    // CLIPS 6.30 lists (MAIN::r) and prints `fired` after reset/run.
+    let mut engine = engine_in_module_a();
+    engine
+        .eval_str(r#"(progn (eval "(clear)") (build "(defrule r => (printout t fired crlf))"))"#)
+        .unwrap();
+    assert_eq!(rule_list(&mut engine), "MAIN::r");
+    engine.reset().unwrap();
+    engine
+        .run(ferric_rules_runtime::RunLimit::Unlimited)
+        .unwrap();
+    assert_eq!(engine.get_output("t"), Some("fired\n"));
+    // Nested sources carry the change out one level per return.
+    let mut engine = engine_in_module_a();
+    engine
+        .eval_str(r#"(progn (eval "(eval \"(clear)\")") (build "(defrule r =>)"))"#)
+        .unwrap();
+    assert_eq!(rule_list(&mut engine), "MAIN::r");
+}
+
+#[test]
+fn reset_inside_eval_moves_the_enclosing_expression_to_main() {
+    // CLIPS 6.30 lists (MAIN::r).
+    let mut engine = engine_in_module_a();
+    engine
+        .eval_str(r#"(progn (eval "(reset)") (build "(defrule r => (printout t fired crlf))"))"#)
+        .unwrap();
+    assert_eq!(rule_list(&mut engine), "MAIN::r");
+}
+
 #[test]
 fn clear_during_fact_initialization_keeps_old_facts_and_releases_guard_on_errors() {
     let mut engine = Engine::with_rules(
