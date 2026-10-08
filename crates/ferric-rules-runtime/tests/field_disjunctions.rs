@@ -167,3 +167,162 @@ fn disjunctions_keep_the_explicit_complex_negative_constraint_boundary() {
         .contains("complex constraints inside negated patterns")));
     assert!(engine.rules().is_empty());
 }
+
+#[test]
+fn negated_exists_over_a_disjunction_compiles_to_one_rule() {
+    let mut engine = Engine::with_rules(
+        "(defrule select (key ?k) (not (exists (item ?k|99)))
+           => (printout t ?k crlf))",
+    )
+    .unwrap();
+    assert_eq!(engine.rules(), [("select", 0)]);
+    engine.assert_ordered("key", [Value::Integer(1)]).unwrap();
+    engine.assert_ordered("key", [Value::Integer(2)]).unwrap();
+    let support = engine.assert_ordered("item", [Value::Integer(2)]).unwrap();
+    fire(&mut engine, 1);
+    assert_eq!(engine.get_output("t"), Some("1\n"));
+
+    // The literal alternative supports every key; removing the variable
+    // witness alone must not unblock its key.
+    let shared = engine.assert_ordered("item", [Value::Integer(99)]).unwrap();
+    engine.retract(support).unwrap();
+    fire(&mut engine, 0);
+    engine.retract(shared).unwrap();
+    fire(&mut engine, 2);
+    let mut keys: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["1", "1", "2"]);
+}
+
+fn assert_load_error(source: &str, message: &str) {
+    let mut engine = Engine::new(EngineConfig::default());
+    let errors = engine.load_str(source).expect_err(source);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.to_string().contains(message)),
+        "{source}: {errors:?}"
+    );
+    assert!(engine.rules().is_empty(), "{source}");
+}
+
+#[test]
+fn every_alternative_keeps_the_restrictions_of_its_position() {
+    // A correlated alternative must not hide a later one from the negated
+    // pattern restrictions (#300): the boundary is independent of order.
+    for field in ["?x&?k|:(> (* ?x ?x) ?k)", "?x&:(> (* ?x ?x) ?k)|?k"] {
+        for condition in [
+            format!("(not (cell (v {field})))"),
+            format!("(forall (go) (cell (v {field})))"),
+        ] {
+            assert_load_error(
+                &format!(
+                    "(deftemplate cell (slot v))
+                     (defrule unsupported (key ?k) {condition} =>)"
+                ),
+                "predicate constraints inside negated patterns",
+            );
+        }
+        assert_load_error(
+            &format!("(defrule unsupported (key ?k) (not (item {field})) =>)"),
+            "complex constraints inside negated patterns",
+        );
+    }
+    // A negated predicate is rejected in an alternative as it is on its own.
+    for field in ["?x&?k|~:(> ?x 1)", "?x&~:(> ?x 1)|?k"] {
+        assert_load_error(
+            &format!("(defrule unsupported (key ?k) (item {field}) =>)"),
+            "only negated literals",
+        );
+    }
+}
+
+#[test]
+fn a_field_wider_than_the_alpha_budget_still_loads_as_one_rule() {
+    // `~0` plus 64 literals needs 66 alpha test nodes as one compound test.
+    let alternatives = std::iter::once("~0".to_owned())
+        .chain((1..=64).map(|index| index.to_string()))
+        .collect::<Vec<_>>()
+        .join("|");
+    for (condition, fires) in [
+        (format!("(sym {alternatives})"), 1),
+        (format!("(go) (not (sym {alternatives}))"), 0),
+    ] {
+        let mut engine = Engine::with_rules(&format!("(defrule select {condition} =>)")).unwrap();
+        assert_eq!(engine.rules(), [("select", 0)]);
+        engine.assert_ordered("go", Vec::<Value>::new()).unwrap();
+        engine.assert_ordered("sym", [Value::Integer(99)]).unwrap();
+        fire(&mut engine, fires);
+    }
+}
+
+#[test]
+fn a_later_field_cannot_push_an_alpha_disjunction_over_budget() {
+    // `~0` plus 62 literals fills the 64-test alpha budget on its own, so the
+    // later field's test must move the disjunction to a match-time predicate.
+    let alternatives = std::iter::once("~0".to_owned())
+        .chain((1..=62).map(|index| index.to_string()))
+        .collect::<Vec<_>>()
+        .join("|");
+    for (rules, fact) in [
+        (
+            format!("(defrule select (sym {alternatives} x) =>)"),
+            "(sym 99 x)",
+        ),
+        (
+            format!(
+                "(deftemplate t (slot a) (slot b))
+                 (defrule select (t (a {alternatives}) (b x)) =>)"
+            ),
+            "(t (a 99) (b x))",
+        ),
+        (
+            format!("(defrule select (sym ?v&{alternatives} ?w&~z) =>)"),
+            "(sym 99 x)",
+        ),
+        (
+            format!("(defrule select (go) (not (sym {alternatives} x)) =>)"),
+            "(sym 0 x)",
+        ),
+    ] {
+        let mut engine = Engine::with_rules(&rules).unwrap();
+        assert_eq!(engine.rules(), [("select", 0)], "{rules}");
+        engine
+            .load_str(&format!("(deffacts seed (go) {fact})"))
+            .unwrap();
+        engine.reset().unwrap();
+        fire(&mut engine, 1);
+    }
+}
+
+#[test]
+fn single_pattern_existentials_accept_only_disjunction_predicates() {
+    // Other match-time predicates stay unsupported in a single-pattern
+    // existential, whether or not an unrelated field has alternatives.
+    for pattern in [
+        "(foo ?x&:(> (* ?x ?x) 4))",
+        "(foo ?x&:(> (* ?x ?x) 4) a|b)",
+        "(foo ?x&:(> (* ?x ?x) 4) ?k|99)",
+    ] {
+        for condition in [
+            format!("(exists {pattern})"),
+            format!("(not (not {pattern}))"),
+        ] {
+            assert_load_error(
+                &format!("(defrule unsupported (key ?k) {condition} =>)"),
+                "complex constraints inside existential patterns",
+            );
+        }
+    }
+
+    let mut engine = Engine::with_rules(
+        "(defrule select (key ?k) (exists (item ?k|99)) => (printout t ?k crlf))",
+    )
+    .unwrap();
+    assert_eq!(engine.rules(), [("select", 0)]);
+    engine.assert_ordered("key", [Value::Integer(1)]).unwrap();
+    engine.assert_ordered("key", [Value::Integer(2)]).unwrap();
+    engine.assert_ordered("item", [Value::Integer(2)]).unwrap();
+    fire(&mut engine, 1);
+    assert_eq!(engine.get_output("t"), Some("2\n"));
+}

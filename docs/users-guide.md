@@ -159,7 +159,7 @@ lengths, for example `(slot age (type INTEGER) (range 0 150))` or
 constraints; a multislot repeats its derived value to its minimum length.
 `(default ?NONE)` requires callers to supply the slot. Known invalid literals
 fail at load time; computed values are checked before the fact is published.
-See [template constraint compatibility](compatibility.md) for details and
+See [template constraint compatibility](compatibility.md#163-deftemplates) for details and
 allocation limits on automatically expanded defaults.
 
 Fact duplication is disabled by default, matching CLIPS. Reasserting the same
@@ -391,7 +391,8 @@ overrides. A suppressed duplicate insertion returns `FALSE`.
 
 For control flow inside the RHS, ferric supports the action-level forms:
 `if/then/else`, `while/do`, `loop-for-count`, `progn$`/`foreach`, and
-`switch/case/default`. Fact mutation and focus control also work in ordinary
+`switch/case/default`. `(break)` exits the nearest enclosing loop or action
+fact query. Fact mutation and focus control also work in ordinary
 expressions, user functions, and methods.
 
 ---
@@ -453,7 +454,12 @@ those constructs intact. Use the host `engine.clear()` API to remove everything
 between runs. `halt` finishes the current RHS before stopping the run.
 
 Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
-`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`.
+`SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `(?x)`. A
+parameter can add a final query after its types, as in
+`((?x SYMBOL (eq ?x special)))`, and a wildcard `$?name` parameter accepts
+optional types and a query, as in `(($?r SYMBOL))`. See
+[Generic Functions and Methods](compatibility.md#168-generic-functions-and-methods)
+for dispatch order and specificity.
 
 `next-methodp` checks for another applicable method without advancing the
 chain. `override-next-method` supplies replacement arguments to the remaining
@@ -938,9 +944,12 @@ A non-exhaustive list worth internalizing:
   resets can activate again; use a run limit or an explicit halt when needed.
 - **Source `clear` preserves active constructs.** It removes facts, refuses
   construct removal, and continues the current execution.
-- **Activation order is total per run, not reproducible across runs.**
-  Don't rely on two independent runs producing the same interleaving;
-  encode precedence with salience or focus if order matters.
+- **Equal-salience order follows network construction.** Under depth and
+  breadth, ties follow activation creation order, which depends on how the
+  rules' network is built. It is deterministic, the same on every run, and
+  survives snapshots. Some ties still differ from CLIPS (see the
+  [activation ordering contract](compatibility.md#activation-ordering-contract)),
+  so encode precedence with salience, focus, or phase facts if order matters.
 - **Prefer `find_facts` and `facts()` to `printout` for machine output.**
   Printouts are strings; facts have types.
 - **`run`, `step`, and `reset` clear action diagnostics.** Inspect them

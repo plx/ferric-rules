@@ -26,7 +26,7 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
         | "instance-namep"
         | "multifieldp"
         | "set-fact-duplication" => b"11",
-        "symbol-to-instance-name" | "undefrule" | "ppdefrule" | "deftemplate-slot-names" => b"11w",
+        "symbol-to-instance-name" | "undefrule" | "ppdefrule" => b"11w",
         "instance-name-to-symbol" => b"11p",
         "evenp" | "oddp" | "setgen" | "seed" => b"11i",
         "str-cat" | "sym-cat" | "printout" => b"1*",
@@ -88,7 +88,8 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
         | "deftemplate-slot-cardinality" => b"22w",
         "retract" => b"1*z",
         "focus" => b"1*w",
-        "fact-existp" | "fact-relation" | "fact-slot-names" => b"11z",
+        // CLIPS 6.30 registers deftemplate-slot-names with the designator code.
+        "fact-existp" | "fact-relation" | "fact-slot-names" | "deftemplate-slot-names" => b"11z",
         "fact-index" => b"11y",
         "fact-slot-value" => b"22*zw",
         "save-facts" => b"1*wk",
@@ -100,10 +101,12 @@ fn restrictions(name: &str) -> Option<&'static [u8]> {
 fn literal_matches(value: &LiteralKind, restriction: u8) -> bool {
     match restriction {
         b'n' => matches!(value, LiteralKind::Integer(_) | LiteralKind::Float(_)),
-        b'i' | b'z' => matches!(value, LiteralKind::Integer(_)),
+        b'i' => matches!(value, LiteralKind::Integer(_)),
+        // A symbol may name `*` or be checked once the designator is evaluated.
+        b'z' => matches!(value, LiteralKind::Integer(_) | LiteralKind::Symbol(_)),
         b'w' => matches!(value, LiteralKind::Symbol(_)),
         b's' => matches!(value, LiteralKind::String(_)),
-        b'p' => matches!(value, LiteralKind::InstanceName(_)),
+        b'p' => matches!(value, LiteralKind::InstanceName(_) | LiteralKind::Symbol(_)),
         b'j' => matches!(
             value,
             LiteralKind::Symbol(_) | LiteralKind::String(_) | LiteralKind::InstanceName(_)
@@ -120,13 +123,13 @@ fn type_description(restriction: u8) -> &'static str {
         b'i' => "integer",
         b'w' => "symbol",
         b's' => "string",
-        b'p' => "instance name",
+        b'p' => "instance name or symbol",
         b'j' => "symbol, string, or instance name",
         b'k' => "symbol or string",
         b'q' => "multifield, symbol, or string",
         b'm' => "multifield",
-        b'y' => "fact address",
-        b'z' => "fact address or integer",
+        b'y' => "fact-address",
+        b'z' => "fact-address, integer, or symbol",
         _ => "value",
     }
 }

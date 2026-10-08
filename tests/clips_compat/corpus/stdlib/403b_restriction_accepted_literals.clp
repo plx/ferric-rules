@@ -1,0 +1,21 @@
+; Every literal kind a restricted argument position accepts loads the rule.
+(defrule check =>
+  (if FALSE then
+    (instance-name-to-symbol foo) (instance-name-to-symbol [bar])
+    (deftemplate-slot-names 3) (deftemplate-slot-names t)
+    (retract x 1) (fact-existp x) (fact-existp 2)
+    (fact-relation y) (fact-relation 2)
+    (fact-slot-names 3) (fact-slot-names z)
+    (fact-slot-value z x) (fact-slot-value 1 x)
+    (str-length abc) (str-length "abc") (str-length [abc])
+    (upcase abc) (upcase "abc") (upcase [abc])
+    (str-index a "abc") (str-index "a" abc) (str-index [a] [abc])
+    (sub-string 1 2 "abc") (sub-string 1 2 abc) (sub-string 1 2 [abc])
+    (eval "(+ 1 2)") (eval abc) (build "(deftemplate q)") (build abc)
+    (length "abc") (length abc) (length$ "abc") (length$ abc)
+    (assert-string "(a)") (str-explode "a b")
+    (symbol-to-instance-name x) (undefrule other) (ppdefrule other)
+    (deftemplate-slot-existp t x) (focus MAIN)
+    (abs 1) (abs 1.5) (mod 7 2.5) (evenp 2) (seed 3) (random 1 2)
+    (nth$ 1 (create$ a)) (subseq$ (create$ a) 1 1))
+  (printout t (instance-name-to-symbol foo) "|" (instance-name-to-symbol [bar]) crlf))

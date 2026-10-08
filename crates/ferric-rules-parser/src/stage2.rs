@@ -1601,7 +1601,8 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
 }
 
 /// Unrestricted method parameters are bare variables; parentheses introduce
-/// type restrictions and/or a final query rather than another spelling of a bare variable.
+/// type restrictions and/or a final query (a function call or a global
+/// variable) rather than another spelling of a bare variable.
 fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, InterpretError> {
     if let Some(Atom::SingleVar(name) | Atom::MultiVar(name)) = param_expr.as_atom() {
         return Ok(MethodParameter {
@@ -1643,7 +1644,12 @@ fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, Int
     for (index, restriction) in restriction_list[1..].iter().enumerate() {
         if let Some(name) = restriction.as_symbol() {
             type_restrictions.push(name.to_owned());
-        } else if restriction.as_list().is_some() && index + 2 == restriction_list.len() {
+        } else if (restriction.as_list().is_some()
+            || matches!(restriction.as_atom(), Some(Atom::GlobalVar(_))))
+            && index + 2 == restriction_list.len()
+        {
+            // CLIPS also accepts a global variable as the query, re-read at
+            // each dispatch.
             query = Some(interpret_action_expr_inner(restriction)?);
         } else {
             return Err(InterpretError::expected(
@@ -2850,6 +2856,23 @@ pub fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError>
         return Err(InterpretError::nesting_depth_exceeded(depth, span));
     }
     interpret_action_expr_inner(expr)
+}
+
+/// Interpret a sequence of operands, such as the fields of an asserted fact,
+/// using the same syntax as rule action arguments.
+///
+/// Compact `?fact:slot` references span three lexer atoms and are consumed as
+/// one expression. Every element passes the shared nesting check first.
+///
+/// # Errors
+/// Returns an error for malformed expression syntax or excessive nesting.
+pub fn interpret_action_exprs(exprs: &[SExpr]) -> Result<Vec<ActionExpr>, InterpretError> {
+    for expr in exprs {
+        if let Some((depth, span)) = expr.nesting_depth_violation() {
+            return Err(InterpretError::nesting_depth_exceeded(depth, span));
+        }
+    }
+    interpret_action_expr_sequence(exprs)
 }
 
 /// Interpret an expression after the containing source has passed depth checks.
@@ -4162,6 +4185,16 @@ mod tests {
         } else {
             panic!("expected Rule construct");
         }
+    }
+
+    #[test]
+    fn interpret_action_exprs_consumes_compact_references_as_one_operand() {
+        let parsed = parse_sexprs("(bind ?x:y 7) ?x:y tail", file());
+        let expressions = interpret_action_exprs(&parsed.exprs).unwrap();
+        assert_eq!(expressions.len(), 3);
+        assert!(
+            matches!(&expressions[1], ActionExpr::FunctionCall(call) if call.name == "__fact_slot_ref")
+        );
     }
 
     #[test]
@@ -6174,6 +6207,35 @@ mod tests {
             "(defmethod select (($?rest (> (length$ ?rest) 0))))",
         ] {
             assert!(interpret_source_inner(source).errors.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn method_queries_accept_a_final_global_variable() {
+        let result = interpret_source_inner(
+            "(defmethod select ((?x INTEGER ?*enabled*) ($?rest ?*MAIN::rest-ok*)) ?x)",
+        );
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Construct::Method(method) = &result.constructs[0] else {
+            panic!("expected method")
+        };
+        assert_eq!(method.parameters[0].type_restrictions, ["INTEGER"]);
+        assert!(
+            matches!(&method.parameters[0].query, Some(ActionExpr::GlobalVariable(name, _)) if name == "enabled")
+        );
+        assert!(method.wildcard_type_restrictions.is_empty());
+        assert!(
+            matches!(&method.wildcard_query, Some(ActionExpr::GlobalVariable(name, _)) if name == "MAIN::rest-ok")
+        );
+        for source in [
+            "(defmethod bad ((?x ?*enabled* INTEGER)) ?x)",
+            "(defmethod bad ((?x ?*enabled* (> ?x 0))) ?x)",
+            "(defmethod bad ((?x ?y)) ?x)",
+        ] {
+            assert!(
+                !interpret_source_inner(source).errors.is_empty(),
+                "{source}"
+            );
         }
     }
 
