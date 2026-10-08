@@ -90,6 +90,22 @@ struct WrapperTests {
   }
 
   @Test
+  func stepFiresThroughAPendingHaltWithoutClearingIt() async throws {
+    let engine = try await Engine.create()
+    try await engine.load("(defrule a (declare (salience 10)) => (halt)) (defrule b =>)")
+    try await engine.reset()
+    #expect(try await engine.step() == .fired(diagnostics: []))
+    #expect(try await engine.isHalted)
+    #expect(try await engine.step() == .fired(diagnostics: []))
+    #expect(try await engine.isHalted)
+    #expect(try await engine.step() == .halted)
+    #expect(try await engine.run(limit: 0).rulesFired == 0)
+    #expect(try await !engine.isHalted)
+    #expect(try await engine.step() == .agendaEmpty)
+    try await engine.close()
+  }
+
+  @Test
   func globalsAndSlotValuesRemainOwnedAfterClose() async throws {
     let engine = try await Engine.create()
     try await engine.load(
@@ -173,6 +189,19 @@ struct WrapperTests {
     await #expect(throws: EngineError.invalidArgument("C string input contains an embedded NUL")) {
       try await engine.clearOutput(channel: "a\0b")
     }
+    try await engine.load("(defrule noisy => (printout t pending crlf) (printout audit pending))")
+    try await engine.reset()
+    #expect(try await engine.run().rulesFired == 2)
+    #expect(try await engine.output() != nil)
+    #expect(try await engine.output(channel: "audit") != nil)
+    try await engine.pushInput("discarded")
+    try await engine.clear()
+    #expect(try await engine.output() == nil)
+    #expect(try await engine.output(channel: "audit") == nil)
+    try await engine.load("(defrule echo => (printout t (read) crlf))")
+    try await engine.reset()
+    #expect(try await engine.run().rulesFired == 1)
+    #expect(try await engine.output() == "EOF\n")
     try await engine.close()
     #expect(output == "42\nrésumé text")
   }

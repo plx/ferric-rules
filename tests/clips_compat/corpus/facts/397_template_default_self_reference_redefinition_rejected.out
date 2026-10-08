@@ -1,0 +1,6 @@
+
+[EXPRNPSR3] Missing function declaration for original.
+
+ERROR:
+(deftemplate MAIN::item
+   (slot replacement (default-dynamic (assert (item (original

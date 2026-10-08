@@ -102,7 +102,7 @@ pub enum PatternViolation {
         /// Name of the unbound variable
         var_name: String,
     },
-    /// E0005: Unsupported nesting combination (e.g., `(exists (not ...))`)
+    /// E0005: Unsupported nesting combination (e.g., `(not (forall ...))`)
     UnsupportedNestingCombination {
         /// Human-readable description of the violation
         description: String,

@@ -159,6 +159,28 @@ mod tests {
     }
 
     #[test]
+    fn empty_exists_reports_the_missing_operand_at_its_keyword() {
+        for lhs in ["(exists)", "(not (exists))"] {
+            let source = format!("(defrule r\n  {lhs}\n =>)");
+            let result = parse(&source);
+            assert!(result.constructs.is_empty(), "{lhs}");
+            assert_eq!(result.errors.len(), 1, "{lhs}");
+            let error = &result.errors[0];
+            assert!(
+                error.message.contains("pattern after 'exists'"),
+                "{lhs}: {}",
+                error.message
+            );
+            assert_eq!(error.span.start.line, 2, "{lhs}");
+            assert_eq!(
+                error.span.start.offset,
+                source.find("exists").unwrap(),
+                "{lhs}"
+            );
+        }
+    }
+
+    #[test]
     fn negative_quantifiers_reject_address_bindings_at_any_nested_depth() {
         for lhs in [
             "(not ?f <- (a))",

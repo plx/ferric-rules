@@ -199,10 +199,11 @@ struct RunControlTests {
     await #expect(throws: EngineError.closed) { try await engine.facts() }
   }
 
-  @Test(.timeLimit(.minutes(1)), arguments: [63, 64, 65])
-  func sourceHaltAtInternalBoundariesIsNotCleared(haltAt: Int) async throws {
+  @Test(.timeLimit(.minutes(1)), arguments: [63, 64, 65], [false, true])
+  func sourceHaltAtInternalBoundariesIsNotCleared(haltAt: Int, bounded: Bool) async throws {
     let engine = try await loopingEngine(stopAt: haltAt + 2, haltAt: haltAt)
-    let result = try await engine.run(limit: haltAt + 10)
+    let limit: Int? = bounded ? haltAt + 10 : nil
+    let result = try await engine.run(limit: limit)
     #expect(result.rulesFired == UInt64(haltAt))
     #expect(result.haltReason == .haltRequested)
     #expect(try await engine.isHalted)

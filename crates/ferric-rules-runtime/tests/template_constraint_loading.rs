@@ -173,7 +173,7 @@ fn literal_pattern_types_ranges_and_multislot_members_are_checked() {
 fn fixed_multislot_cardinality_counts_variable_and_connected_fields() {
     let mut engine =
         Engine::with_rules("(deftemplate item (multislot values (cardinality 2 3)))").unwrap();
-    for fields in ["", "?x", "red|blue", "?a ?b ?c ?d"] {
+    for fields in ["?x", "red|blue", "?a ?b ?c ?d"] {
         let errors = engine
             .load_str(&format!("(defrule invalid (item (values {fields})) =>)"))
             .unwrap_err();
@@ -184,7 +184,9 @@ fn fixed_multislot_cardinality_counts_variable_and_connected_fields() {
             "{fields}: {errors:?}"
         );
     }
+    // CLIPS 6.30 loads an empty restriction; it can never match a valid fact.
     for (index, fields) in [
+        "",
         "?a ?b",
         "red|blue ?a ?b",
         "$?all",
@@ -200,7 +202,7 @@ fn fixed_multislot_cardinality_counts_variable_and_connected_fields() {
             ))
             .unwrap();
     }
-    assert_eq!(engine.rules().len(), 5);
+    assert_eq!(engine.rules().len(), 6);
 }
 
 #[cfg(feature = "serde")]

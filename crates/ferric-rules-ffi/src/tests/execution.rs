@@ -251,7 +251,8 @@ fn assert_string_expression_errors_do_not_assert_partial_facts() {
 
 #[test]
 fn assert_string_error_retains_only_completed_facts() {
-    for expression in ["?missing", "(missing-function)"] {
+    // An evaluation error keeps earlier facts; a static error asserts nothing.
+    for (expression, retained, firings) in [("?missing", 1, 1), ("(missing-function)", 0, 0)] {
         unsafe {
             let engine = ferric_engine_new();
             let setup = std::ffi::CString::new(
@@ -275,10 +276,10 @@ fn assert_string_error_retains_only_completed_facts() {
                 ferric_engine_fact_count(engine, &mut count),
                 FerricError::Ok
             );
-            assert_eq!(count, 1, "expression: {expression}");
+            assert_eq!(count, retained, "expression: {expression}");
             let mut fired = 0;
             assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
-            assert_eq!(fired, 1, "expression: {expression}");
+            assert_eq!(fired, firings, "expression: {expression}");
             ferric_engine_free(engine);
         }
     }

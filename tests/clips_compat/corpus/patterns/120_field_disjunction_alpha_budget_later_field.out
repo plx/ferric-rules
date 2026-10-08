@@ -1,0 +1,8 @@
+sequence q1 (m n)
+template c1
+bound s4 7 y
+ordered s1
+bound s1 99 x
+removed s1
+none 2
+done

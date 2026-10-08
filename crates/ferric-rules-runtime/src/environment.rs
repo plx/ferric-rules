@@ -3,6 +3,7 @@
 use ferric_rules_core::Value;
 
 use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
+use crate::modules::ModuleId;
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     matches!(
@@ -158,20 +159,30 @@ fn strategy(
             });
         };
         let strategy = match ctx.engine.symbol_table.resolve_symbol_str(symbol) {
-            Some("depth") => ConflictResolutionStrategy::Depth,
-            Some("breadth") => ConflictResolutionStrategy::Breadth,
-            Some("lex") => ConflictResolutionStrategy::Lex,
-            Some("mea") => ConflictResolutionStrategy::Mea,
-            _ => {
+            Some("depth") => Some(ConflictResolutionStrategy::Depth),
+            Some("breadth") => Some(ConflictResolutionStrategy::Breadth),
+            Some("lex") => Some(ConflictResolutionStrategy::Lex),
+            Some("mea") => Some(ConflictResolutionStrategy::Mea),
+            Some("complexity" | "simplicity" | "random") => {
                 return Err(failure(
                     name,
                     &"supported strategies are depth, breadth, lex, and mea",
                     span,
                 ))
             }
+            // CLIPS reports any other name, keeps the strategy, and continues.
+            _ => {
+                ctx.engine.globals.push_printout_event(
+                    "werror".to_owned(),
+                    "[ARGACCES5] Function set-strategy expected argument #1 to be of type symbol with value depth, breadth, lex, mea, complexity, simplicity, or random\n".to_owned(),
+                );
+                None
+            }
         };
-        ctx.engine.rete.agenda.set_strategy(strategy);
-        ctx.engine.config.strategy = strategy;
+        if let Some(strategy) = strategy {
+            ctx.engine.rete.agenda.set_strategy(strategy);
+            ctx.engine.config.strategy = strategy;
+        }
     }
     let name = match previous {
         ConflictResolutionStrategy::Depth => "depth",
@@ -258,28 +269,51 @@ fn dynamic_source(
         interpret_action_expr(&wrapped)
     }
     .map_err(|error| failure(name, &error, span))?;
-    let expression = ctx
-        .engine
-        .prepare_eval_expression(&expression, ctx.current_module)
-        .map_err(|error| failure(name, &error, span))?;
+    let module = crate::effects::dynamic_module(ctx);
+    let expression = std::sync::Arc::new(
+        ctx.engine
+            .prepare_eval_expression(&expression, module)
+            .map_err(|error| failure(name, &error, span))?,
+    );
+    eval_detached(ctx, module, &expression)
+}
+
+/// Evaluate prepared `eval`/`assert-string` source in a fresh local scope.
+fn eval_detached(
+    ctx: &mut EvalContext<'_>,
+    current_module: ModuleId,
+    expression: &std::sync::Arc<RuntimeExpr>,
+) -> Result<Value, EvalError> {
     // Dynamic source cannot see the surrounding rule/callable's local variables.
     let bindings = ferric_rules_core::binding::BindingSet::new();
     let variables = ferric_rules_core::binding::VarMap::new();
     let mut locals = evaluator::CallableLocals::default();
-    let mut child = EvalContext {
-        engine: ctx.engine,
-        bindings: &bindings,
-        var_map: &variables,
-        callable_locals: Some(&mut locals),
-        call_depth: ctx.call_depth,
-        expression_depth: ctx.expression_depth,
-        current_module: ctx.current_module,
-        global_module: ctx.global_module,
-        method_chain: None,
-        compact_fact_bindings: None,
-        allow_engine_effects: ctx.allow_engine_effects,
-    };
-    evaluator::eval_inner(&mut child, &expression)
+    let (call_depth, expression_depth) = (ctx.call_depth, ctx.expression_depth);
+    let global_module = ctx.global_module;
+    let allow_engine_effects = ctx.allow_engine_effects;
+    // As in CLIPS, the parsed expression keeps the templates and ordered
+    // relations it names in use while it runs, so its own `build` cannot
+    // redefine them underneath a later assertion (CSTRCPSR4).
+    ctx.engine.with_active_expressions(
+        current_module,
+        [std::sync::Arc::clone(expression)],
+        |engine| {
+            let mut child = EvalContext {
+                engine,
+                bindings: &bindings,
+                var_map: &variables,
+                callable_locals: Some(&mut locals),
+                call_depth,
+                expression_depth,
+                current_module,
+                global_module,
+                method_chain: None,
+                compact_fact_bindings: None,
+                allow_engine_effects,
+            };
+            evaluator::eval_inner(&mut child, expression)
+        },
+    )
 }
 
 fn build(
@@ -339,8 +373,12 @@ fn build(
     }
     ctx.engine
         .module_registry
-        .set_current_module(ctx.current_module);
-    let result = ctx.engine.load_str(&source[..first.span().end.offset]);
+        .set_current_module(crate::effects::dynamic_module(ctx));
+    // Defglobal initializers, rule-priming conditions, template defaults and
+    // fact initializers evaluated by this load continue the caller's depth.
+    let result = crate::effects::with_depth_floor(ctx, |ctx| {
+        ctx.engine.load_str(&source[..first.span().end.offset])
+    });
     match result {
         Ok(_) => Ok(evaluator::clips_true(
             &mut ctx.engine.symbol_table,
@@ -372,7 +410,7 @@ fn active_definition_error(
     let parsed = crate::qualified_name::parse_qualified_name(items.get(1)?.as_symbol()?).ok()?;
     let module = match parsed.module_name() {
         Some(name) => ctx.engine.module_registry.get_by_name(name)?,
-        None => ctx.current_module,
+        None => crate::effects::dynamic_module(ctx),
     };
     let name = parsed.local_name();
     let active = if kind == "defrule" {

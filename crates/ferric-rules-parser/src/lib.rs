@@ -47,18 +47,19 @@ pub use error::{LexError, ParseError, ParseErrorKind};
 pub use lexer::{lex, SpannedToken, Token};
 pub use qualified_name::{parse_qualified_name, QualifiedName};
 pub use sexpr::{
-    parse_first_sexpr, parse_sexprs, Atom, Connective, ParseResult, SExpr, MAX_SEXPR_NESTING_DEPTH,
+    parse_first_sexpr, parse_sexprs, parse_sexprs_at, Atom, Connective, ParseResult, SExpr,
+    MAX_SEXPR_NESTING_DEPTH,
 };
 pub use span::{FileId, Position, Span};
 pub use stage2::{
-    interpret_action_expr, interpret_constructs, Action, ActionExpr, AllowedValueSet, Cardinality,
-    Constraint, Construct, DefaultValue, FactBody, FactSlotValue, FactValue, FactsConstruct,
-    FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct, GlobalDefinition,
-    ImportSpec, InterpretError, InterpretErrorKind, InterpretResult, InterpreterConfig,
-    LiteralKind, LiteralValue, MethodConstruct, MethodParameter, ModuleConstruct, ModuleSpec,
-    NumericBound, NumericRange, OrderedFactBody, OrderedPattern, Pattern, QueryBinding,
-    RuleConstruct, SlotConstraint, SlotConstraints, SlotDefinition, SlotType, SlotValueType,
-    TemplateConstruct, TemplateFactBody, TemplatePattern,
+    interpret_action_expr, interpret_action_exprs, interpret_constructs, Action, ActionExpr,
+    AllowedValueSet, Cardinality, Constraint, Construct, DefaultValue, FactBody, FactSlotValue,
+    FactValue, FactsConstruct, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
+    GlobalDefinition, ImportSpec, InterpretError, InterpretErrorKind, InterpretResult,
+    InterpreterConfig, LiteralKind, LiteralValue, MethodConstruct, MethodParameter,
+    ModuleConstruct, ModuleSpec, NumericBound, NumericRange, OrderedFactBody, OrderedPattern,
+    Pattern, QueryBinding, RuleConstruct, SlotConstraint, SlotConstraints, SlotDefinition,
+    SlotType, SlotValueType, TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
 #[cfg(test)]

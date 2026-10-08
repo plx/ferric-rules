@@ -1,0 +1,7 @@
+(deffacts seed (seed) (phase 0))
+(defrule r1 (seed) (exists (a) (b)) => (printout t "r1 fired" crlf))
+(defrule r2 (seed) (exists (exists (a) (b))) => (printout t "r2 fired" crlf))
+(defrule n3 (seed) (not (not (not (a)))) => (printout t "n3 fired" crlf))
+(defrule add-ab (declare (salience -10)) ?p <- (phase 0) => (retract ?p) (printout t "add-ab" crlf) (assert (a)) (assert (b)) (assert (phase 1)))
+(defrule drop-a (declare (salience -20)) ?p <- (phase 1) ?f <- (a) => (retract ?p) (printout t "drop-a" crlf) (retract ?f) (assert (phase 2)))
+(defrule readd-a (declare (salience -20)) ?p <- (phase 2) => (retract ?p) (printout t "readd-a" crlf) (assert (a)))
