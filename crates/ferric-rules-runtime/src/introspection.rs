@@ -180,12 +180,16 @@ pub(crate) fn eval(
             })
     } else {
         ctx.engine
-            .resolve_template_id(&raw, ctx.current_module)
+            .resolve_template_id(&raw, crate::effects::dynamic_module(ctx))
             .ok()
             .and_then(|id| ctx.engine.template_defs.get(id))
             .cloned()
     };
-    if template.is_none() && !ctx.engine.has_implicit_template(&raw, ctx.current_module) {
+    if template.is_none()
+        && !ctx
+            .engine
+            .has_implicit_template(&raw, crate::effects::dynamic_module(ctx))
+    {
         ctx.engine.globals.push_printout_event(
             "werror".to_owned(),
             format!("[PRNTUTIL1] Unable to find deftemplate {raw}.\n"),
@@ -415,7 +419,7 @@ fn construct_list(
         };
         Some(module)
     } else {
-        Some(ctx.current_module)
+        Some(crate::effects::dynamic_module(ctx))
     };
     let mut entries = list_entries(ctx, name);
     if all {

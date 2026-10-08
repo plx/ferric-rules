@@ -299,6 +299,22 @@ fn root_reset_keeps_the_expression_bound_to_its_module() {
     assert!(engine.eval_str(r#"(progn (reset) (eval "(f)"))"#).is_err());
     // The selection ends with the expression: the next root resolves in MAIN.
     assert!(engine.eval_str("(f)").is_err());
+    // Runtime construct lookups follow the new current module, as in CLIPS,
+    // which lists (m) here.
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str("(defrule MAIN::m =>) (defmodule A) (defrule A::r =>)")
+        .unwrap();
+    let Value::Multifield(rules) = engine
+        .eval_str("(progn (reset) (get-defrule-list))")
+        .unwrap()
+    else {
+        panic!("expected a multifield");
+    };
+    assert!(
+        matches!(rules.as_slice(), [Value::Symbol(name)] if engine.resolve_core_symbol(*name) == Some("m")),
+        "{rules:?}"
+    );
 }
 
 #[test]
