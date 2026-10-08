@@ -17,12 +17,22 @@ use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern
 impl Engine {
     /// Whether compiled source running outside any construct (see
     /// `active_expressions`) names a template or ordered relation: a fact
-    /// assertion or a fact query. Like CLIPS's installed top-level command,
-    /// such an expression keeps those constructs in use, so `clear` refuses.
+    /// assertion or a fact query with a literal restriction. Like CLIPS's
+    /// installed top-level command, such an expression keeps those constructs
+    /// in use, so `clear` refuses. A computed restriction names nothing until
+    /// it runs.
     pub(crate) fn active_expressions_name_facts(&self) -> bool {
         self.active_expressions.iter().any(|(module, expression)| {
             RuntimeExpressions::new(expression).any(|expression| match expression {
-                RuntimeExpr::QueryAction { .. } => true,
+                RuntimeExpr::QueryAction { bindings, .. } => bindings
+                    .iter()
+                    .flat_map(|binding| &binding.restrictions)
+                    .any(|restriction| {
+                        matches!(
+                            restriction,
+                            RuntimeExpr::Literal(ferric_rules_core::Value::Symbol(_))
+                        )
+                    }),
                 RuntimeExpr::EffectCall { call } => self.call_names_facts(call, *module),
                 _ => false,
             })
@@ -103,7 +113,17 @@ impl Engine {
     fn expr_names_facts(&self, expr: &ActionExpr, module: ModuleId) -> bool {
         match expr {
             ActionExpr::FunctionCall(call) => self.call_names_facts(call, module),
-            ActionExpr::QueryAction { .. } => true,
+            ActionExpr::QueryAction { bindings, .. }
+                if bindings
+                    .iter()
+                    .flat_map(|binding| &binding.restrictions)
+                    .any(|restriction| {
+                        matches!(restriction, ActionExpr::Literal(literal)
+                            if matches!(literal.value, ferric_rules_parser::LiteralKind::Symbol(_)))
+                    }) =>
+            {
+                true
+            }
             _ => {
                 let mut children = Vec::new();
                 expr.push_children(&mut children);

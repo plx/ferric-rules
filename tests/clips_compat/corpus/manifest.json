@@ -13075,6 +13075,18 @@
       "recoverable_control_notices": true
     },
     {
+      "path": "procedural/413_clear_computed_query_restriction.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "eval",
+        "fact-query"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
       "path": "procedural/413_funcall_unknown_name_notice.clp",
       "level": "interaction",
       "covers": [

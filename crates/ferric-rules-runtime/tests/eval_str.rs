@@ -420,6 +420,60 @@ fn save_facts_selectors_follow_a_root_reset_to_main() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "(p (x main))\n");
 }
 
+/// A fact query binds its template only through a literal restriction. CLIPS
+/// 6.30 clears for `(progn (clear) (find-all-facts ((?f (sym-cat p))) TRUE))`
+/// and then reports `[PRNTUTIL1] Unable to find deftemplate p`, while
+/// `(progn (clear) (find-all-facts ((?f p)) TRUE))` prints CONSTRCT1 and
+/// returns both facts.
+#[test]
+fn root_clear_ignores_a_computed_query_restriction() {
+    let engine_with_facts = || {
+        let mut engine =
+            Engine::with_rules("(deftemplate p (slot x)) (deffacts d (p (x 1)) (p (x 2)))")
+                .unwrap();
+        engine.reset().unwrap();
+        assert_eq!(engine.facts().unwrap().count(), 2);
+        engine
+    };
+    let mut engine = engine_with_facts();
+    assert!(engine
+        .eval_str("(progn (clear) (find-all-facts ((?f (sym-cat p))) TRUE))")
+        .is_err());
+    assert_eq!(engine.facts().unwrap().count(), 0);
+    assert!(engine.eval_str("(assert (p (x 3)))").is_err());
+    let mut engine = engine_with_facts();
+    let Value::Multifield(found) = engine
+        .eval_str("(progn (clear) (find-all-facts ((?f p)) TRUE))")
+        .unwrap()
+    else {
+        panic!("expected a multifield");
+    };
+    assert_eq!(found.len(), 2);
+    assert_eq!(engine.facts().unwrap().count(), 2);
+    assert!(engine.get_output("werror").unwrap().contains("CONSTRCT1"));
+}
+
+/// Inside a rule, CLIPS 6.30 refuses the clear in
+/// `(eval "(progn (clear) (find-all-facts ((?f (sym-cat p))) TRUE))")` but
+/// still removes the facts, so the query returns `()`.
+#[test]
+fn rule_eval_clear_with_a_computed_query_restriction_removes_facts() {
+    let mut engine = Engine::with_rules(
+        r#"(deftemplate p (slot x)) (deffacts d (p (x 1)) (p (x 2)))
+           (defrule go =>
+             (bind ?found (eval "(progn (clear) (find-all-facts ((?f (sym-cat p))) TRUE))"))
+             (printout t (length$ ?found) " " (length$ (find-all-facts ((?f p)) TRUE)) crlf))"#,
+    )
+    .unwrap();
+    engine.reset().unwrap();
+    engine
+        .run(ferric_rules_runtime::RunLimit::Unlimited)
+        .unwrap();
+    assert_eq!(engine.get_output("t"), Some("0 0\n"));
+    assert_eq!(engine.facts().unwrap().count(), 0);
+    assert!(engine.get_output("werror").unwrap().contains("CONSTRCT1"));
+}
+
 #[test]
 fn clear_during_fact_initialization_keeps_old_facts_and_releases_guard_on_errors() {
     let mut engine = Engine::with_rules(
