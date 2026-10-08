@@ -11436,20 +11436,7 @@
       "covers": [
         "conditional-elements",
         "not"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/405"
-        ],
-        "summary": "Ferric explicitly rejects exists with one negated fact condition.",
-        "observed": {
-          "diagnostics": [
-            "pattern validation failed: [E0005] unsupported nesting: exists with a single negated fact condition is not supported; use a supported positive fact or multi-condition exists body at 2:12-30 (Rete compilation) \u2014 suggestion: try restructuring with supported nesting patterns"
-          ],
-          "output": "",
-          "phase": "load"
-        }
-      }
+      ]
     },
     {
       "path": "patterns/405_five_negations.clp",
@@ -11569,6 +11556,178 @@
         "test",
         "activation-order"
       ]
+    },
+    {
+      "path": "patterns/405_nested_group_or_or.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_or_and_or.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "and",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_and_and_or.clp",
+      "level": "interaction",
+      "covers": [
+        "and",
+        "or",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_exists_and_or.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "and",
+        "or",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_not_exists_or.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "exists",
+        "or",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_not_exists_join_or.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "exists",
+        "or",
+        "ncc",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_not_and_and.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "ncc",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_exists_and_and.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "and",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_not_not_and.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "and",
+        "ncc",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_nested_group_not_and_exists.clp",
+      "level": "interaction",
+      "covers": [
+        "not",
+        "exists",
+        "ncc",
+        "join",
+        "conditional-elements"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_or_facts.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "or",
+        "retract",
+        "assert"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_or_test.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "or",
+        "test",
+        "retract",
+        "assert"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_or_join.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "or",
+        "join",
+        "retract",
+        "assert"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_or_negated_branch.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "or",
+        "not",
+        "retract",
+        "assert"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_or_not.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "or",
+        "not",
+        "retract",
+        "assert"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_and_not.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "and",
+        "not",
+        "join",
+        "retract",
+        "assert"
+      ]
+    },
+    {
+      "path": "patterns/405_exists_empty_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "conditional-elements"
+      ],
+      "error": "load"
     },
     {
       "path": "patterns/405_nested_group_or_or.clp",

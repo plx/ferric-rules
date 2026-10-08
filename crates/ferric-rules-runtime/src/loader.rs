@@ -6699,19 +6699,7 @@ fn validate_pattern_recursive(
         Pattern::Not(inner, _) => {
             validate_pattern_recursive(inner, child_depth, max_depth, inside_forall, true, errors);
         }
-        Pattern::Exists(children, span) => {
-            // Normalization flattens conjunctions and distributes disjunctions.
-            // Enforce the single-negative operand limit through those wrappers,
-            // while allowing a negative member of a genuine multi-CE tuple.
-            if children.len() == 1 && single_exists_negative_operand(&children[0]) {
-                push_pattern_restriction(
-                    errors,
-                    span,
-                    ferric_rules_core::PatternViolation::UnsupportedNestingCombination {
-                        description: "exists with a single negated fact condition is not supported; use a supported positive fact or multi-condition exists body".to_owned(),
-                    },
-                );
-            }
+        Pattern::Exists(children, _) => {
             for child in children {
                 validate_pattern_recursive(
                     child,
@@ -6823,17 +6811,6 @@ fn validate_forall_operands(
 /// Derived from the lowering itself so validation and normalization agree.
 fn is_pure_test_condition(pattern: &Pattern) -> bool {
     Engine::test_only_pattern_expression(pattern).is_some()
-}
-
-fn single_exists_negative_operand(pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Not(..) => !is_pure_test_condition(pattern),
-        Pattern::And(children, _) if children.len() == 1 => {
-            single_exists_negative_operand(&children[0])
-        }
-        Pattern::Or(children, _) => children.iter().any(single_exists_negative_operand),
-        _ => false,
-    }
 }
 
 fn push_pattern_restriction(
@@ -8954,13 +8931,6 @@ mod pattern_restriction_tests {
     #[test]
     fn retained_conditional_element_limits_are_located_through_grouping_wrappers() {
         for (lhs, code, detail) in [
-            ("(exists (not (a)))", "E0005", "single negated fact"),
-            ("(exists (and (not (a))))", "E0005", "single negated fact"),
-            (
-                "(exists (or (not (a)) (b)))",
-                "E0005",
-                "single negated fact",
-            ),
             ("(forall (a) (forall (b) (c)))", "E0003", "cannot be nested"),
             (
                 "(forall (a) (and (forall (b) (c))))",
@@ -9033,12 +9003,15 @@ mod pattern_restriction_tests {
     }
 
     #[test]
-    fn supported_test_wrappers_and_multi_condition_exists_pass_validation() {
+    fn supported_test_wrappers_and_negated_exists_operands_pass_validation() {
         for lhs in [
             "(forall (a ?x) (test (> ?x 0)))",
             "(forall (a ?x) (not (test (< ?x 0))))",
             "(forall (a ?x) (exists (and (test (> ?x 0)) (test (< ?x 5)))))",
             "(exists (not (test (< 1 0))))",
+            "(exists (not (a)))",
+            "(exists (and (not (a))))",
+            "(exists (or (not (a)) (b)))",
             "(exists (a) (not (b)))",
             "(exists (and (a) (not (b))))",
             "(forall (a) (b)) (forall (c) (d))",
