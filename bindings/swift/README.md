@@ -71,7 +71,7 @@ The wrapper also exposes these native operations:
 
 | API | Result or behavior |
 | --- | --- |
-| `step()` | `.fired(diagnostics:)`, `.agendaEmpty`, or `.halted`; action errors accompany a fired step |
+| `step()` | `.fired(diagnostics:)`, `.agendaEmpty`, or `.halted` (no eligible activation while the native halt flag is set); action errors accompany a fired step. Step does not honour or clear a pending halt |
 | `clear()` | Remove constructs and facts, invalidating old fact IDs |
 | `isHalted`, `agendaCount` | Async throwing properties for the native halt flag and pending activation count |
 | `global(_:)` | An owned `Value`, or `nil` for the ABI's missing/ambiguous lookup result |

@@ -1,7 +1,11 @@
 import CFerric
 
 extension Engine {
-  /// Fire one eligible activation, or report an empty agenda or native halt.
+  /// Fire one eligible activation. Returns `.agendaEmpty` when none is eligible,
+  /// or `.halted` when none is eligible and the native halt flag is set. Step
+  /// neither honours nor clears a pending native halt: after a rule calls
+  /// `(halt)`, later steps still fire eligible activations, and `isHalted` stays
+  /// true until `run()`/`run(limit:)` (including limit 0), `reset()`, or `clear()`.
   /// Action failures accompany `.fired`; the C ABI does not provide a rule name.
   public func step() async throws -> StepResult {
     try await storage.perform { state in

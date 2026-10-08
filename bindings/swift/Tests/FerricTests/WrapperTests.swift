@@ -90,6 +90,22 @@ struct WrapperTests {
   }
 
   @Test
+  func stepFiresThroughAPendingHaltWithoutClearingIt() async throws {
+    let engine = try await Engine.create()
+    try await engine.load("(defrule a (declare (salience 10)) => (halt)) (defrule b =>)")
+    try await engine.reset()
+    #expect(try await engine.step() == .fired(diagnostics: []))
+    #expect(try await engine.isHalted)
+    #expect(try await engine.step() == .fired(diagnostics: []))
+    #expect(try await engine.isHalted)
+    #expect(try await engine.step() == .halted)
+    #expect(try await engine.run(limit: 0).rulesFired == 0)
+    #expect(try await !engine.isHalted)
+    #expect(try await engine.step() == .agendaEmpty)
+    try await engine.close()
+  }
+
+  @Test
   func globalsAndSlotValuesRemainOwnedAfterClose() async throws {
     let engine = try await Engine.create()
     try await engine.load(
