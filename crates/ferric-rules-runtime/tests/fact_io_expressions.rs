@@ -219,6 +219,37 @@ fn load_content_errors_stop_the_evaluation_and_retain_only_the_prefix() {
 }
 
 #[test]
+fn load_stops_quietly_at_the_first_token_that_does_not_open_a_fact() {
+    let directory = tempfile::tempdir().unwrap();
+    // Each file loads in CLIPS 6.30 with TRUE and leaves only (p 1): the
+    // first non-list token ends the file, including a later syntax error.
+    for (name, source) in [
+        ("string", "(p 1) \"bad\" (q 2)\n"),
+        ("symbol", "(p 1) bad (q 2)\n"),
+        ("number", "(p 1) 7 (q 2)\n"),
+        ("later-syntax-error", "(p 1) bad (q 2\n"),
+        ("variable", "(p 1) ?x (q 2)\n"),
+        ("closing-parenthesis", "(p 1) ) (q 2)\n"),
+    ] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, source).unwrap();
+        let mut engine = Engine::new(EngineConfig::default());
+        assert_eq!(
+            boolean(&mut engine, &format!("(load-facts {})", quoted(&path))),
+            "TRUE",
+            "{name}"
+        );
+        let facts: Vec<_> = engine
+            .facts()
+            .unwrap()
+            .map(|(_, fact)| engine.format_fact(fact).unwrap())
+            .collect();
+        assert_eq!(facts, ["(p 1)"], "{name}");
+        assert!(engine.get_output("werror").is_none(), "{name}");
+    }
+}
+
+#[test]
 fn load_evaluates_defaults_and_io_failures_are_recoverable() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("defaults.fct");

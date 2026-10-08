@@ -1826,6 +1826,12 @@ impl Engine {
             {
                 break;
             }
+            // As in CLIPS, the first token that does not open a fact ends the
+            // file quietly: earlier facts stay and everything after it,
+            // including a later syntax error, is ignored.
+            if expression.as_list().is_none() {
+                return Ok(count);
+            }
             let span = expression.span();
             // Interpret each complete fact independently, keeping its original
             // locations and retaining prior assertions if a later form fails.
@@ -1857,10 +1863,17 @@ impl Engine {
                 }
             }
         }
-        if let Some(error) = first_error {
-            return Err(LoadError::Parse(error));
+        match first_error {
+            // A stray closing parenthesis is another token that ends the file.
+            Some(error)
+                if !contents
+                    .get(error.span.start.offset..)
+                    .is_some_and(|rest| rest.starts_with(')')) =>
+            {
+                Err(LoadError::Parse(error))
+            }
+            _ => Ok(count),
         }
-        Ok(count)
     }
 
     pub(crate) fn template_ref_parts(raw: &str) -> (Option<&str>, &str) {

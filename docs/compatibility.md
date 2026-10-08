@@ -1650,8 +1650,10 @@ template selector that is not a symbol or names no matching template return
 `FALSE` and write a diagnostic, and evaluation continues. As in CLIPS, a syntax,
 template, or value error in a fact file and a `save-facts` mode that is not a
 symbol stop the enclosing evaluation (an RHS halts the run); facts loaded before
-the bad one stay asserted. Saving escapes strings for reloading; fact addresses
-remain the lossy quoted representation described above.
+the bad one stay asserted. The first standalone token that does not open a fact,
+such as a word, number, string, or stray `)`, quietly ends the file: `load-facts`
+returns `TRUE` and ignores the rest. Saving escapes strings for reloading; fact
+addresses remain the lossy quoted representation described above.
 
 `printout` writes a top-level STRING without quotes, and a multifield in
 parentheses with its STRING fields quoted but not escaped:
