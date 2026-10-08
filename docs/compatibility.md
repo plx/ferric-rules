@@ -54,7 +54,7 @@ installation and one from a queued test CE:
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
 | Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
-| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
+| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected equal-salience ties (under LEX/MEA, only when recency and specificity are also equal). | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
 | Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
@@ -448,8 +448,14 @@ transiently retracts and refires the enclosing rule, as CLIPS can when another
 successor was linked to the same parent in between. Nested NCC chains, such as
 `(exists (exists ...))`, settle depth first as in CLIPS: when several rules'
 chains share one subnetwork, each chain finishes before the next one starts,
-so deeper and shallower nestings tie as the reference does. Other strategy combinations are
-not a promise of replay-identical order across engines or versions.
+so deeper and shallower nestings tie as the reference does. Equal-salience ties
+in network topologies the corpus does not cover are not a promise of
+replay-identical order across engines or versions.
+
+LEX and MEA first compare sorted fact recency and rule specificity, as described
+under [Conflict Resolution Strategies](#conflict-resolution-strategies).
+Activations equal in both fall back to creation order, oldest first, so they
+inherit the creation-order boundaries described above.
 
 For application semantics that require precedence independently of network
 construction, use salience, `focus`, or phase facts. Within an engine, the
@@ -1636,7 +1642,7 @@ The following features are explicitly out of scope.
 | `Simplicity` strategy | Deferred | Until fully specified |
 | `Complexity` strategy | Deferred | Until fully specified |
 | `Random` strategy | Deferred | Until fully specified |
-| General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary |
+| General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary, shared by LEX/MEA ties whose recency and specificity are also equal |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
