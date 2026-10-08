@@ -13060,6 +13060,14 @@
         "fact-query"
       ],
       "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/413_watch_items_accepted.clp",
+      "level": "basic",
+      "covers": [
+        "procedural",
+        "watch"
+      ]
     }
   ]
 }

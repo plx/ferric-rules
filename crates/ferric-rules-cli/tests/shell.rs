@@ -191,6 +191,18 @@ fn all_standard_channels_keep_source_order_and_json_stderr_stays_clean() {
 }
 
 #[test]
+fn run_accepts_batch_preamble_watch_items_that_produce_no_trace() {
+    // Manners-style batch files open with these CLIPS watch items.
+    let output = run(
+        "(unwatch compilations) (watch statistics) (defrule r => (printout t ok crlf)) (reset) (run)",
+        "",
+        false,
+    );
+    successful(&output);
+    assert_eq!(stdout(&output), "ok\n");
+}
+
+#[test]
 fn procedural_files_execute_once_and_assertions_survive_without_implicit_reset() {
     let output = run(
         r"(defrule r (p ?x) => (printout t ?x crlf))

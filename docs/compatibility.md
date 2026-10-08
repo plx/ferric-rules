@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1257
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1258
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -1709,6 +1709,22 @@ an empty `(facts)`, `(rules)`, or `(agenda)` listing prints nothing.
 assertion and retraction, including facts created and removed within one run.
 `(watch rules)` includes each firing's fact basis. Watch settings are transient
 host state and are disabled when restoring a snapshot.
+
+`watch` and `unwatch` accept every CLIPS 6.30 watch item: `facts`, `instances`,
+`slots`, `rules`, `activations`, `messages`, `message-handlers`,
+`generic-functions`, `methods`, `deffunctions`, `compilations`, `statistics`,
+`globals`, `focus`, and `all`. They return no value. Only `facts` and `rules`
+(and `all`) produce trace output; the other items are accepted without effect,
+so batch files that begin with `(unwatch compilations)` or `(watch statistics)`
+run normally. Trailing construct names, as in `(watch facts item)` or
+`(watch rules r)`, must name an existing deftemplate, defrule, deffunction,
+defglobal, or defgeneric, as CLIPS requires; Ferric has no COOL classes, so names
+after `instances`, `slots`, and `message-handlers` are not checked, and `methods`
+takes generic function names but not method indices. Tracing stays global:
+`(watch facts item)` traces every fact, not only `item` facts. An unknown item or
+construct name, a non-symbol item, or a name after `messages`, `focus`,
+`compilations`, `statistics`, or `all` is an error that stops the enclosing
+evaluation, as in CLIPS.
 
 `Engine::eval_str` evaluates exactly one expression with fresh local bindings.
 Globals, engine changes, and output persist, including changes before a runtime

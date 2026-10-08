@@ -1,0 +1,18 @@
+(deftemplate item (slot x))
+(defrule watch-items
+   =>
+   (watch activations) (unwatch activations)
+   (watch focus) (unwatch focus)
+   (watch globals) (unwatch globals)
+   (watch deffunctions) (unwatch deffunctions)
+   (watch generic-functions) (unwatch generic-functions)
+   (watch methods) (unwatch methods)
+   (watch instances) (unwatch instances)
+   (watch slots) (unwatch slots)
+   (watch messages) (unwatch messages)
+   (watch message-handlers) (unwatch message-handlers)
+   (watch rules watch-items) (unwatch rules watch-items)
+   (watch activations watch-items) (unwatch activations watch-items)
+   (watch facts item) (unwatch facts item)
+   (unwatch compilations)
+   (printout t "ok" crlf))

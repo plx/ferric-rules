@@ -288,3 +288,130 @@ fn fact_listing_includes_initial_fact_and_rule_names_follow_the_current_module()
     assert!(engine.current_module_rule_names().is_empty());
     assert_eq!(engine.fact_listing().len(), 1);
 }
+
+#[test]
+fn watch_accepts_every_clips_item_and_validates_construct_names() {
+    let mut engine = Engine::with_rules(
+        "(deftemplate item (slot x))
+         (deffunction f () 1)
+         (defglobal ?*g* = 1)
+         (defgeneric gg)
+         (defmethod gg ((?x INTEGER)) ?x)
+         (defrule r =>)",
+    )
+    .unwrap();
+    for item in [
+        "facts",
+        "instances",
+        "slots",
+        "rules",
+        "activations",
+        "messages",
+        "message-handlers",
+        "generic-functions",
+        "methods",
+        "deffunctions",
+        "compilations",
+        "statistics",
+        "globals",
+        "focus",
+        "all",
+    ] {
+        for function in ["watch", "unwatch"] {
+            assert!(
+                matches!(
+                    engine.eval_str(&format!("({function} {item})")).unwrap(),
+                    Value::Void
+                ),
+                "({function} {item})"
+            );
+        }
+    }
+    // Names are checked against the construct type CLIPS uses for the item.
+    for (item, names) in [
+        ("facts", "item initial-fact"),
+        ("rules", "r"),
+        ("activations", "MAIN::r"),
+        ("deffunctions", "f"),
+        ("globals", "g"),
+        ("generic-functions", "gg"),
+        ("methods", "gg"),
+        ("instances", "USER"),
+        ("slots", "USER"),
+        ("message-handlers", "USER"),
+    ] {
+        for function in ["watch", "unwatch"] {
+            let source = format!("({function} {item} {names})");
+            assert!(
+                matches!(engine.eval_str(&source).unwrap(), Value::Void),
+                "{source}"
+            );
+        }
+    }
+    // Tracing stays global: naming one template traces every fact.
+    engine.eval_str("(watch facts item)").unwrap();
+    assert!(engine.watch_facts());
+    engine.eval_str("(assert (other 1))").unwrap();
+    assert_eq!(engine.get_output("wtrace"), Some("==> f-1     (other 1)\n"));
+    engine.eval_str("(unwatch facts item)").unwrap();
+    assert!(!engine.watch_facts());
+
+    for (source, expected) in [
+        (
+            "(watch bogus)",
+            "argument #1 to be of type watchable symbol",
+        ),
+        (
+            "(unwatch bogus)",
+            "argument #1 to be of type watchable symbol",
+        ),
+        (
+            "(watch (str-cat facts))",
+            "argument #1 to be of type symbol",
+        ),
+        (
+            "(watch facts nope)",
+            "argument #2 to be of type deftemplate",
+        ),
+        (
+            "(watch facts item nope)",
+            "argument #3 to be of type deftemplate",
+        ),
+        (
+            "(watch facts \"item\")",
+            "argument #2 to be of type deftemplate",
+        ),
+        ("(watch rules nope)", "argument #2 to be of type defrule"),
+        (
+            "(watch activations nope)",
+            "argument #2 to be of type defrule",
+        ),
+        (
+            "(watch deffunctions nope)",
+            "argument #2 to be of type deffunction",
+        ),
+        (
+            "(unwatch deffunctions nope)",
+            "argument #2 to be of type deffunction",
+        ),
+        (
+            "(watch globals nope)",
+            "argument #2 to be of type defglobal",
+        ),
+        (
+            "(watch generic-functions nope)",
+            "argument #2 to be of type defgeneric",
+        ),
+        (
+            "(watch methods nope)",
+            "argument #2 to be of type generic function name",
+        ),
+        ("(watch focus MAIN)", "expected 1, got 2"),
+        ("(watch all r)", "expected 1, got 2"),
+    ] {
+        let error = engine.eval_str(source).unwrap_err().to_string();
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+    // A rejected name leaves the watch state unchanged.
+    assert!(!engine.watch_facts());
+}

@@ -5167,6 +5167,10 @@ fn builtin_unwatch(
     configure_watch(ctx, args, "unwatch", false, span)
 }
 
+/// Configure a CLIPS 6.30 watch item. Every item `list-watch-items` reports is
+/// accepted, but only `facts` and `rules` (and `all`) produce trace output; the
+/// others are no-ops. Trailing construct names are validated where Ferric has a
+/// registry for the construct type, then ignored: tracing stays global.
 fn configure_watch(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -5174,39 +5178,140 @@ fn configure_watch(
     enabled: bool,
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact(name, args, 1, span)?;
+    check_arity_min(name, args, 1, span)?;
     let value = eval_inner(ctx, &args[0])?;
     let Value::Symbol(symbol) = value else {
-        return Err(EvalError::TypeError {
-            function: name.to_owned(),
-            expected: "SYMBOL watch target".to_owned(),
-            actual: value.type_name().to_owned(),
-            span: span.cloned(),
-        });
+        return Err(watch_argument_error(name, 1, "symbol", &value, span));
     };
-    match ctx.engine.symbol_table.resolve_symbol_str(symbol) {
-        Some("facts") => {
-            ctx.engine.set_watch_facts(enabled);
+    let item = ctx
+        .engine
+        .symbol_table
+        .resolve_symbol_str(symbol)
+        .unwrap_or("")
+        .to_owned();
+    // The construct type CLIPS checks each trailing name against, or `None`
+    // for items that take no names.
+    let construct = match item.as_str() {
+        "facts" => Some("deftemplate"),
+        "rules" | "activations" => Some("defrule"),
+        "deffunctions" => Some("deffunction"),
+        "globals" => Some("defglobal"),
+        "generic-functions" => Some("defgeneric"),
+        "methods" => Some("generic function name"),
+        "instances" | "slots" => Some("defclass"),
+        "message-handlers" => Some("class name"),
+        "messages" | "focus" | "compilations" | "statistics" | "all" => None,
+        _ => {
+            return Err(watch_argument_error(
+                name,
+                1,
+                "watchable symbol",
+                &value,
+                span,
+            ))
         }
-        Some("rules") => {
-            ctx.engine.set_watch_rules(enabled);
-        }
-        Some("all") => {
-            ctx.engine.set_watch_facts(enabled);
-            ctx.engine.set_watch_rules(enabled);
-        }
-        target => {
-            return Err(EvalError::UnsupportedOperation {
-                operation: name.to_owned(),
-                reason: format!(
-                    "unsupported watch target `{}`; expected facts, rules, or all",
-                    target.unwrap_or("<invalid>")
-                ),
-                span: span.cloned(),
-            })
+    };
+    match construct {
+        None => check_arity_exact(name, args, 1, span)?,
+        Some(construct) => {
+            // CLIPS validates every name before changing any watch state.
+            for (index, argument) in args.iter().enumerate().skip(1) {
+                let value = eval_inner(ctx, argument)?;
+                let found = match &value {
+                    Value::Symbol(symbol) => {
+                        let raw = ctx
+                            .engine
+                            .symbol_table
+                            .resolve_symbol_str(*symbol)
+                            .unwrap_or("")
+                            .to_owned();
+                        watch_construct_exists(ctx, construct, &raw)
+                    }
+                    _ => false,
+                };
+                if !found {
+                    return Err(watch_argument_error(
+                        name,
+                        index + 1,
+                        construct,
+                        &value,
+                        span,
+                    ));
+                }
+            }
         }
     }
+    match item.as_str() {
+        "facts" => {
+            ctx.engine.set_watch_facts(enabled);
+        }
+        "rules" => {
+            ctx.engine.set_watch_rules(enabled);
+        }
+        "all" => {
+            ctx.engine.set_watch_facts(enabled);
+            ctx.engine.set_watch_rules(enabled);
+        }
+        _ => {}
+    }
     Ok(Value::Void)
+}
+
+fn watch_argument_error(
+    name: &str,
+    position: usize,
+    kind: &str,
+    value: &Value,
+    span: Option<&SourceSpan>,
+) -> EvalError {
+    EvalError::TypeError {
+        function: name.to_owned(),
+        expected: format!("argument #{position} to be of type {kind}"),
+        actual: value.type_name().to_owned(),
+        span: span.cloned(),
+    }
+}
+
+/// Whether `raw` names a construct of the given watch construct type from the
+/// current module. COOL classes have no registry, so class names are accepted.
+fn watch_construct_exists(ctx: &EvalContext<'_>, construct: &str, raw: &str) -> bool {
+    let engine = &*ctx.engine;
+    if construct == "deftemplate" {
+        return engine.resolve_template_id(raw, ctx.current_module).is_ok()
+            || engine.has_implicit_template(raw, ctx.current_module);
+    }
+    let Ok(parsed) = parse_qualified_name(raw) else {
+        return false;
+    };
+    let (module, local) = match &parsed {
+        QualifiedName::Qualified { module, name } => {
+            let Some(module) = engine.module_registry.get_by_name(module) else {
+                return false;
+            };
+            (Some(module), name.as_str())
+        }
+        QualifiedName::Unqualified(name) => (None, name.as_str()),
+    };
+    let (modules, construct_type) = match construct {
+        "defrule" => {
+            // Rules are never imported: an unqualified name is local.
+            let module = module.unwrap_or(ctx.current_module);
+            return engine
+                .rule_declarations
+                .iter()
+                .any(|(owner, name)| *owner == module && name == local);
+        }
+        "deffunction" => (engine.functions.modules_for_name(local), "deffunction"),
+        "defglobal" => (engine.globals.modules_for_name(local), "defglobal"),
+        "defgeneric" | "generic function name" => {
+            (engine.generics.modules_for_name(local), "defgeneric")
+        }
+        _ => return true,
+    };
+    match module {
+        Some(module) => modules.contains(&module),
+        None => !visible_modules_for_construct(ctx, &modules, construct_type, local).is_empty(),
+    }
 }
 
 /// `str-length` — the character length of a STRING, SYMBOL or INSTANCE-NAME.
