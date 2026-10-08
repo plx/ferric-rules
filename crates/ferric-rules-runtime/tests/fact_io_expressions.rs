@@ -189,6 +189,9 @@ fn load_content_errors_stop_the_evaluation_and_retain_only_the_prefix() {
     let directory = tempfile::tempdir().unwrap();
     for (name, source) in [
         ("syntax", "(p (x 1))\n(p (x 2)"),
+        // CLIPS 6.30 reports [SCANNER1] for the unterminated string and keeps
+        // the fact before it.
+        ("lexical", "(p (x 1))\n(q \"unterminated"),
         ("constraint", "(p (x 1))\n(p (x wrong))\n(p (x 3))"),
         ("expression", "(p (x 1))\n(p (x (+ 1 1)))\n(p (x 3))"),
     ] {
@@ -228,6 +231,7 @@ fn load_stops_quietly_at_the_first_token_that_does_not_open_a_fact() {
         ("symbol", "(p 1) bad (q 2)\n"),
         ("number", "(p 1) 7 (q 2)\n"),
         ("later-syntax-error", "(p 1) bad (q 2\n"),
+        ("later-lexical-error", "(p 1) bad \"unterminated"),
         ("variable", "(p 1) ?x (q 2)\n"),
         ("closing-parenthesis", "(p 1) ) (q 2)\n"),
     ] {

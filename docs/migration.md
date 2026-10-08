@@ -359,9 +359,10 @@ The fixes for issue #413 change these command-line and inspection behaviors:
   accepted without effect. An unknown item, or a construct name that does not
   name an existing construct of the right kind, stops the evaluation.
 - `load-facts` returns `FALSE` with a notice when the file cannot be opened. A
-  syntax, template, value, or source-limit error in the file stops the
-  enclosing evaluation (an RHS halts the run); facts loaded before it stay
-  asserted. `save-facts` returns `FALSE` for an unknown symbol mode or a bad
+  lexical, syntax, template, value, or source-limit error in the file stops
+  the enclosing evaluation (an RHS halts the run); facts loaded before it stay
+  asserted. The first token that does not open a fact ends the file quietly,
+  even before a later error. `save-facts` returns `FALSE` for an unknown symbol mode or a bad
   template selector, and stops the evaluation when its mode is not a symbol.
 - Source `set-strategy` and `get-strategy` now work for `depth`, `breadth`,
   `lex`, and `mea`; `set-strategy` returns the previous strategy and reorders

@@ -1656,12 +1656,13 @@ slot names, without an `assert` wrapper. Saving defaults to `local`; use
 The templates must already exist when loading their facts. A file that cannot
 be opened, a symbol `save-facts` mode other than `local` or `visible`, and a
 template selector that is not a symbol or names no matching template return
-`FALSE` and write a diagnostic, and evaluation continues. As in CLIPS, a syntax,
-template, or value error in a fact file and a `save-facts` mode that is not a
-symbol stop the enclosing evaluation (an RHS halts the run); facts loaded before
-the bad one stay asserted. The first standalone token that does not open a fact,
-such as a word, number, string, or stray `)`, quietly ends the file: `load-facts`
-returns `TRUE` and ignores the rest. Saving escapes strings for reloading; fact
+`FALSE` and write a diagnostic, and evaluation continues. As in CLIPS, a lexical
+(such as an unterminated string), syntax, template, or value error in a fact
+file and a `save-facts` mode that is not a symbol stop the enclosing evaluation
+(an RHS halts the run); facts loaded before the bad one stay asserted. The first
+standalone token that does not open a fact, such as a word, number, string, or
+stray `)`, quietly ends the file, even before a later lexical error:
+`load-facts` returns `TRUE` and ignores the rest. Saving escapes strings for reloading; fact
 addresses remain the lossy quoted representation described above.
 
 `printout` writes a top-level STRING without quotes, and a multifield in

@@ -1818,12 +1818,25 @@ impl Engine {
             .errors
             .into_iter()
             .min_by_key(|error| error.span.start.offset);
+        // A lexical error discards every expression, so recover the complete
+        // facts before the first error from the source that precedes it. Its
+        // own errors (an unclosed fact cut short) only bound the prefix.
+        let (expressions, cutoff) = match &first_error {
+            None => (parsed.exprs, usize::MAX),
+            Some(error) => {
+                let offset = error.span.start.offset;
+                let prefix = parse_sexprs(contents.get(..offset).unwrap_or(""), FileId(0));
+                let cutoff = prefix
+                    .errors
+                    .iter()
+                    .map(|error| error.span.start.offset)
+                    .fold(offset, usize::min);
+                (prefix.exprs, cutoff)
+            }
+        };
         let mut count = 0;
-        for expression in parsed.exprs {
-            if first_error
-                .as_ref()
-                .is_some_and(|error| expression.span().end.offset > error.span.start.offset)
-            {
+        for expression in expressions {
+            if expression.span().end.offset > cutoff {
                 break;
             }
             // As in CLIPS, the first token that does not open a fact ends the
