@@ -116,11 +116,13 @@ enum NumberPhase {
     ExponentValue,
 }
 
-fn is_utf8_start(byte: u8) -> bool {
+/// Whether `byte` starts a UTF-8 sequence, which CLIPS 6.30 `scanner.c` accepts as a symbol start.
+pub fn is_utf8_start(byte: u8) -> bool {
     (0xc0..=0xf7).contains(&byte)
 }
 
-fn is_symbol_continuation(byte: u8) -> bool {
+/// Per CLIPS 6.30 `scanner.c`, a symbol continues through printable ASCII except the delimiters `<"()&|~ ;` and through UTF-8 bytes.
+pub fn is_symbol_continuation(byte: u8) -> bool {
     !matches!(
         byte,
         b'<' | b'"' | b'(' | b')' | b'&' | b'|' | b'~' | b' ' | b';'

@@ -7,30 +7,41 @@ gaps and exact Ferric observations; `.out` always records CLIPS 6.30 behavior.
 A future fix must remove/update its manifest characterization.
 
 The fixes for #320 to #346 resolved the gaps listed below. The manifest still
-characterizes four output/format divergences and four equal-salience tie
+characterizes four output/format divergences and five equal-salience tie
 cases. Three involving identical negative/NCC joins record the explicit
 node-sharing boundary left out of [#400](https://github.com/plx/ferric-rules/issues/400);
 the supported shared-positive and blocker-history ordering cases conform. One
 further pre-existing multi-pattern `exists` case records a different network
-topology for independent supports. Historical issue descriptions below are not a
+topology for independent supports, and one nested NCC case records a transient
+refire that CLIPS performs and Ferric avoids. Historical issue descriptions below are not a
 substitute for its exact observations.
 
-Two auto-focus cases added with [#398](https://github.com/plx/ferric-rules/issues/398)
-record related late-installation boundaries:
+Three auto-focus cases added with [#398](https://github.com/plx/ferric-rules/issues/398)
+record a related late-installation boundary, now tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480):
 [fresh NCC history](modules/398_gap_late_ncc_fresh_parent_first.clp) misses a
-transient focus push from earlier fact order, while
-[deferred NCC sharing](modules/398_gap_late_ncc_shared_deferred.clp) pushes focus
-where CLIPS reuses an already blocked predicate subnetwork. Ordinary activation
-hooks and deferred-predicate admission have separate conforming coverage.
+transient focus push from earlier fact order, a
+[shared-prefix NCC followed by a test CE](modules/398_gap_late_ncc_shared_prefix_trailing_test.clp)
+misses the push CLIPS performs during installation, and a blocked
+[`exists (and ...)` holding a `not`](modules/398_gap_late_exists_conjunction_negation.clp)
+makes a push CLIPS does not. A fourth,
+[test CE cancelled by NCC completion during reset](modules/398_gap_ncc_deferred_test_cancelled_reset.clp),
+shows the same queued-test mechanism in ordinary propagation: the NCC
+retracts the token before its queued test runs, so the transient push CLIPS
+keeps never happens. Shared-prefix (without a
+trailing test), shared-join, shared-entry, and deferred-predicate late
+installation, ordinary activation hooks, and deferred-predicate admission have
+separate conforming coverage.
 
-Ten [#405](https://github.com/plx/ferric-rules/issues/405) cases preserve the
+Nine [#405](https://github.com/plx/ferric-rules/issues/405) cases preserve the
 remaining explicit conditional-element limits, with successful CLIPS goldens
 and exact, located Ferric load errors. They cover excessive source nesting,
-single-operand `exists (not fact-pattern)`, `forall` nested or beneath `not`/`exists`,
-and unsupported universal-quantifier operands. Each executes successfully in
+`forall` nested or beneath `not`/`exists`, and unsupported universal-quantifier
+operands. Each executes successfully in
 CLIPS and records an explicit Ferric support limit. The conforming #405 cases separately
-exercise positive nested fact bindings, negated disjunctions, and quantified
-tests with local variables and vacuous truth.
+exercise positive nested fact bindings, negated disjunctions, nested `and`/`or`
+groups, `exists` over `or` and `not`, and quantified tests with local variables
+and vacuous truth.
 
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.

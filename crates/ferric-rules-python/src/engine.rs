@@ -768,6 +768,9 @@ impl PyEngine {
     }
 
     /// Push a module onto the focus stack.
+    ///
+    /// Pushing the module already at the top leaves the stack unchanged; a
+    /// module deeper in the stack may be pushed again.
     fn push_focus(&self, module_name: &str) -> PyResult<()> {
         self.with_engine(|engine| {
             engine

@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1029
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1181
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -43,22 +43,32 @@ Docker image.
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
 direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and four track remaining
-network-topology tie differences described with
-[#400](https://github.com/plx/ferric-rules/issues/400):
+[#394](https://github.com/plx/ferric-rules/issues/394), and nine track network
+topology and installation-history differences: five equal-salience ties
+described with [#400](https://github.com/plx/ferric-rules/issues/400) and four
+auto-focus histories tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480), three from late
+installation and one from a queued test CE:
 
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
 | Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
-| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | Three `patterns/400` sharing characterizations |
+| Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected depth/breadth ties. | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
+| Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
+| Late-installed blocked NCC with auto-focus | Building an auto-focus rule whose NCC is blocked when it is installed can miss the transient focus push CLIPS performs during installation: a fresh subnetwork does not replay historical fact order, and a test CE after an NCC that shares the rule's left prefix is only queued before the subnetwork blocks the token. | `modules/398_gap_late_ncc_fresh_parent_first`, `modules/398_gap_late_ncc_shared_prefix_trailing_test` |
+| Late-installed `(exists (and ...))` holding a negation | Building an auto-focus rule whose `(exists (and ...))` conjunction contains a `not` and does not hold when it is installed can make a transient focus push that CLIPS does not make. | `modules/398_gap_late_exists_conjunction_negation` |
+| Test CE after an NCC cancelled before it runs | During reset or assertion, a test CE after an NCC is only queued; when the NCC's subnetwork completes first and retracts the token, Ferric never creates the transient activation, so an auto-focus rule misses the focus push CLIPS keeps. | `modules/398_gap_ncc_deferred_test_cancelled_reset` |
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
 constraint inside a negated ordered pattern, tracked in
 [#300](https://github.com/plx/ferric-rules/issues/300) (see
-[Template Facts](#template-facts)).
+[Template Facts](#template-facts)). Ten further `gap` cases from
+[#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
+located load error for the explicit conditional-element nesting and operand
+limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
 
 ---
 
@@ -104,6 +114,19 @@ multislots splice multifield results; single slots reject them even when the
 multifield contains exactly one value. `load-facts` accepts literal fact data
 only, and stops at an invalid fact while retaining earlier valid facts.
 
+As in CLIPS, every fact of an `assert` command is parsed before any is
+asserted. A statically invalid field (an unknown function, an unknown slot, or
+a static multifield in a single slot) rejects the whole command. An evaluation
+error, such as `(/ 1 0)`, an unbound local variable or an undefined global,
+stops the command and keeps the facts it completed earlier. CLIPS 6.30 still
+inserts the failing fact: an ordered fact loses all of its fields (`(bad)`),
+and a template fact keeps its other slots while the failing slot holds an
+unspecified value. Ferric inserts none of it. Each top-level assertion is evaluated in the module current
+at its position in the source, and the last `defmodule` stays current
+afterwards. Void results, such as those of `printout`, are omitted from
+ordered fields and multislots. Template slot expressions are evaluated in the
+template's slot declaration order, not the order the source writes them.
+
 Ordered patterns consume every field: `?` and `?name` match one field, while
 `$?` and `$?name` match zero or more fields at any position. For example,
 `(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
@@ -125,7 +148,10 @@ and multifield rules as ordered patterns. `(tags ?value)` requires exactly one
 value and binds a scalar; `(tags $?values)` binds the entire multifield, and
 `(tags head $?values tail)` captures the values between the fixed fields.
 An explicit `(tags)` requires an empty multislot; omitting `tags` leaves it
-unconstrained. Ambiguous splits in multiple multislots produce every valid
+unconstrained. A restriction with only fixed fields whose count violates the
+slot's `cardinality` rejects the rule (`[CSTRNCHK1]`). As in CLIPS 6.30, an
+empty `(tags)` still loads when the minimum cardinality is above zero; it can
+never match a valid fact, so its `(not ...)` form is always satisfied. Ambiguous splits in multiple multislots produce every valid
 combination, in written slot-constraint order. Single-valued slots require one
 field constraint and cannot bind a named multifield capture.
 
@@ -182,7 +208,8 @@ registered `deffacts`, the same order as CLIPS. The fact supports explicit
 `(initial-fact)` patterns; rules with no patterns or a leading negation match
 without it. Host fact queries do not return it, and it cannot be retracted,
 modified, or duplicated. Its fact index is 0 and, as for CLIPS's slotless
-`initial-fact` deftemplate, `fact-slot-names` of it is `()`. An `initial-fact`
+`initial-fact` deftemplate, `fact-slot-names` and `deftemplate-slot-names` of
+it are `()`. An `initial-fact`
 the host asserts through the engine API is an ordinary user fact with an
 ordinary index; CLIPS gives it index 0.
 
@@ -206,7 +233,8 @@ including all commonly used conditional elements and RHS actions.
 ```clp
 (defrule rule-name
     "optional comment"
-    (declare (salience <integer>))
+    ;; salience is evaluated once, when the rule is defined
+    (declare (salience <integer-expression>) (auto-focus TRUE|FALSE))
     ;; LHS patterns
     (pattern-1)
     ?var <- (pattern-2)
@@ -243,6 +271,10 @@ including all commonly used conditional elements and RHS actions.
 | `\|` | Disjunction | `(color red\|blue)` |
 | `&` | Conjunction | `(value ?x&~0)` |
 
+Precedence is `~` > `&` > `|`, except that a leading `?x&` binds over the
+rest of the field: `?x&a|b` means `?x&(a|b)`. Variables used inside
+alternatives must already be bound.
+
 ### Conflict Resolution Strategies
 
 The host API supports CLIPS depth, breadth, LEX, and MEA ordering. Salience
@@ -273,8 +305,11 @@ strategy through the host API. Bindings reject unknown enum/name values.
 For equal salience, activation creation order breaks ties: depth selects the
 newest activation and breadth the oldest. Shared beta successors and mixed
 positive/negative/exists subscriptions are visited newest first. Retraction
-unblocks simple negative and NCC matches in reverse primary-blocker attachment
-order; moving to another blocker updates that attachment order. See the
+handles the fact's pattern matches one alpha memory at a time, oldest memory
+first. Within a memory, the positive cascade unblocks NCC matches first, then
+that memory's blocked simple negative matches are released in reverse
+primary-blocker attachment order; moving to another blocker updates that
+attachment order. See the
 [activation ordering contract](#activation-ordering-contract) for the remaining
 node-sharing boundary.
 
@@ -308,18 +343,46 @@ activation is created, including during reset, assertion, retraction, or online
 rule installation. `FALSE` is the default; only these two literal symbols are
 accepted. Removing an activation does not undo its focus change. Both explicit
 `focus` and auto-focus skip a push when that module is already on top, while a
-module deeper in the stack may appear again. Deferred predicate matches retain
-network traversal order for these focus events. Snapshots preserve the focus
-stack without replaying notices for existing activations.
+module deeper in the stack may appear again. Predicate and NCC evaluation
+follow depth-first traversal order whether or not auto-focus is used, so
+declaring auto-focus on one rule does not reorder unrelated rules. A rule
+guarded by a pure double negation, `(exists (and ...))` or the equivalent
+`(not (and (not (and ...))))`, pushes its module during reset and assertion
+only once the conjunction holds, even when the conjunction's first join is
+shared with an older rule. Online installation of such a rule does the same
+when the conjunction holds no negation; one with a `not` inside can still
+push transiently when it is installed blocked (see below). An outer `(not (and ...))` with more conditions
+after its nested one, such as `(not (and (not (and (a) (b))) (c)))`, keeps
+CLIPS's transient admission and focus push before those conditions block it.
+A `(not (and ...))` whose first join is shared with an older rule also makes
+CLIPS's transient admission, and focus push, before that join blocks it.
+Snapshots preserve the focus stack without replaying notices for existing
+activations.
 
-Late installation of NCC rules has two characterized focus differences:
-fresh subnetworks do not reconstruct every transient activation from the
-historical fact assertion order, and rule-specific deferred predicates do not
-share CLIPS's existing NCC subnetwork. A fresh blocked rule can therefore miss
-a historical focus push, while a blocked rule with a deferred predicate can
-push focus during installation where CLIPS does not. The corpus records both
-observations under #398/#400. Ordinary assertion, reset, and blocker-retraction
-focus behavior is covered separately.
+Late installation of a blocked NCC rule follows CLIPS's transient focus push
+in two situations: when its fresh subnetwork shares the rule's left prefix with
+an older rule, unless a test CE follows the NCC; and when a fresh join inside
+the NCC follows a shared, already populated subnetwork entry join. There is no
+push when the only thing after that populated shared join is a test CE inside
+the NCC, whether or not the older rule also defers that test. Three
+characterized late-installation differences remain, tracked in
+[#480](https://github.com/plx/ferric-rules/issues/480): with a shared prefix and
+a trailing test CE, the test is only queued before the fresh subnetwork blocks
+the token, so the transient activation and its focus push never happen; a
+fresh subnetwork with no shared prefix does not reconstruct every transient
+activation from the historical fact assertion order, so such a rule can miss a
+historical focus push; and a rule guarded by `(exists (and ...))` whose
+conjunction contains a `not` and does not hold at installation can admit its
+token before the conjunction is primed, making a transient focus push that
+CLIPS does not make.
+
+A queued test CE loses CLIPS's transient focus push during ordinary reset and
+assertion too. When a test CE follows an NCC and the NCC's subnetwork
+completes and retracts the token before the queued test is evaluated, as for
+`(p) (not (and (a) (b))) (a) (test ...)` with `(a)` asserted after `(b)` and
+`(p)`, no activation is created, so the push CLIPS keeps never happens (also
+tracked in #480). Other assertion, reset, and blocker-retraction focus
+behavior has conforming coverage.
 
 `when-activated` and `every-cycle` salience evaluation, `set-salience-evaluation`,
 and `refresh-agenda` remain unsupported. Invalid or duplicate declarations
@@ -348,7 +411,11 @@ visits the tuples it captured before reset. A query returns its last body
 value, `FALSE` if no body ran, or no value after `break`.
 
 Each query member names one visible, unqualified deftemplate. Multiple-template
-restrictions and direct queries in global initializers remain unsupported.
+restrictions remain unsupported. Queries and engine effects in defglobal
+initializers run once at load; on reset Ferric restores the stored value
+instead of re-evaluating the initializer (CLIPS 6.30 re-evaluates;
+[#451](https://github.com/plx/ferric-rules/issues/451)), so captured fact
+addresses become stale and effects are not repeated.
 Binding a query member or a local in a query predicate is a load error.
 
 ### Activation Ordering Contract
@@ -357,9 +424,11 @@ Depth and breadth follow CLIPS 6.30 for the reference-verified shared-positive,
 mixed-subscription, empty-LHS, OR-variant, and blocker-retraction cases in the
 corpus. Creation order follows network traversal, rather than rule name or
 source order alone. Each blocked match initially attaches to its oldest
-support. Deleting that support processes its blocked matches newest first;
-matches with another support attach to the oldest survivor. This history
-survives snapshots and is cleared on reset.
+support. Retracting a fact processes its pattern matches as CLIPS does: alpha
+memories in creation order, and within each memory the positive cascade (NCC
+unblocks) before that memory's block list, newest attachment first. Matches
+with another support attach to the oldest survivor. This history survives
+snapshots and is cleared on reset.
 
 CLIPS also shares identical negative and NCC joins between rules; Ferric
 currently shares positive joins only. Equal-salience ties involving those
@@ -368,7 +437,16 @@ node-sharing boundary of [#400](https://github.com/plx/ferric-rules/issues/400),
 recorded by exact corpus characterizations. A further pre-existing difference
 occurs for selected multi-pattern `exists` ties: Ferric lowers the conjunction
 through nested NCC nodes, while CLIPS uses a distinct existential join topology.
-Its independent-support example remains characterized. Other strategy combinations are
+Its independent-support example remains characterized. Ties among subscribers
+of different patterns, for example a later rule reusing an earlier rule's
+pattern behind a different first pattern, are ordered by node age rather than
+pattern by pattern as in CLIPS, and may differ. A nested NCC whose subnetwork
+entry is shared with an older rule settles after that entry, so Ferric never
+transiently retracts and refires the enclosing rule, as CLIPS can when another
+successor was linked to the same parent in between. Nested NCC chains, such as
+`(exists (exists ...))`, settle depth first as in CLIPS: when several rules'
+chains share one subnetwork, each chain finishes before the next one starts,
+so deeper and shallower nestings tie as the reference does. Other strategy combinations are
 not a promise of replay-identical order across engines or versions.
 
 For application semantics that require precedence independently of network
@@ -386,7 +464,7 @@ activation order and the blocker history used for future activations.
 | `duplicate` | Assert a template copy with slot overrides; return its address or `FALSE` for a duplicate |
 | `printout` | Write to a named channel (`t` for stdout) |
 | `halt` | Stop the run once the current RHS finishes (loops and queries in it run to completion) |
-| `focus` | Push one or more modules onto the focus stack; return `TRUE`, or `FALSE` for a missing module |
+| `focus` | Push one or more modules onto the focus stack, skipping a module already on top; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
 | `agenda` | Print the current agenda |
@@ -417,16 +495,20 @@ remain when its last assertion returns `FALSE`.
 
 Reset preserves active parameters, local bindings, loop iterators, and output
 already written. It can repopulate the agenda, so a rule that resets must
-arrange to terminate. A nested reset during reset-time initialization is
-ignored. Clear during active execution emits a recoverable refusal, retains
-constructs and refraction, removes facts, and restarts public fact indices at
-zero. Later actions and eligible activations continue.
+arrange to terminate. A halt requested earlier in the same RHS, directly or in
+a callable, survives the reset: the RHS finishes and the run stops. A nested
+reset during reset-time initialization is ignored. Clear during active
+execution refuses construct removal without output (CLIPS prints
+`[CONSTRCT1]`; Ferric omits it), retains constructs and refraction, removes
+facts, and restarts public fact indices at zero. Later actions and eligible
+activations continue.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
 multifield collection expressions, and query predicates cannot contain
 `break`, even when the construct is nested inside another loop. Invalid
-placement is rejected at load. `while` and `loop-for-count` return `FALSE`
+placement is rejected at load, including a `break` outside a loop in a rule's
+`test` CE or `:`/`=` pattern constraint (`[PRCDRPSR2]`). `while` and `loop-for-count` return `FALSE`
 after `break` as well as after normal completion.
 
 ### RHS evaluation errors
@@ -503,7 +585,21 @@ assertion's current module. A global read inside a called function follows that
 function's module. Ordinary local variable reads are invalid in defaults;
 lexical loop and fact-query bindings are supported. Direct `return` expressions
 in defaults are rejected; a called function may return normally. A static void
-default is invalid, while a dynamic scalar void result fills the slot with `nil`.
+default is invalid, including a void element of a static multislot default
+(CLIPS 6.30 reports `[CSTRNCHK1]` after evaluating every element). A dynamic
+scalar void result fills the slot with `nil`, and dynamic multislot defaults
+omit void elements.
+CLIPS 6.30 removes a template's old definition before it parses a redefinition's
+body, so a default there that asserts the replaced template with slot syntax
+(`[EXPRNPSR3]`) or queries it (`[PRNTUTIL1]`) is rejected at load in both
+engines. An ordered-form `(assert (item))` is different: CLIPS creates a second,
+implied `item` deftemplate, a state Ferric does not model, so Ferric rejects any
+assertion or query of the template being redefined. For the same reason, Ferric
+rejects a new template whose `default-dynamic` asserts its own name in ordered
+form, which CLIPS accepts by adding the shadowing implied template. Ferric
+checks each slot's default before evaluating it; static defaults of earlier
+slots have already run, as in CLIPS. Ferric keeps the previous definition installed and redefinable,
+where CLIPS has already removed it.
 
 Without an explicit default, or with `(default ?DERIVE)`, Ferric derives a value
 from the constraints. Allowed lists retain their order within a value kind;
@@ -569,8 +665,18 @@ introspection functions remain unsupported.
 - Field expressions and globals are evaluated on every reset, after globals
   are restored, in the definition's module. Loading a definition does not
   execute its expressions. A global may be defined after the deffacts, and
-  replacing a called function affects the next reset. Local variables and
-  unknown calls are rejected during loading.
+  replacing a called function affects the next reset. Template slot
+  expressions run in slot declaration order, as for `assert`. Local variables
+  and unknown calls are rejected during loading.
+- An evaluation error during reset stops the reset at that fact. Facts already
+  asserted, including those of earlier definitions, remain; later facts and
+  definitions are not asserted. CLIPS 6.30 behaves the same, except that it
+  still inserts the failing fact: an ordered fact loses all of its fields, and
+  a template fact keeps its other slots while the failing slot holds an
+  unspecified value. Ferric inserts none of it. Rust `reset()`
+  returns `EngineError::FactInitialization { definition, reason }`; Python and
+  Node raise `FerricRuntimeError`; C (and Go through it) returns
+  `FERRIC_ERROR_RUNTIME_ERROR`.
 
 ---
 
@@ -588,10 +694,18 @@ All of the following are supported:
 - **Fact-address binding**: `?f <- (pattern)`, including positive `and`/`or` operands
 - **test CE**: `(test (> ?x 10))`
 - **not CE**: `(not (pattern))`
-- **exists CE**: `(exists (pattern))`
+- **exists CE**: `(exists (pattern) ...)`, including negated operands such as
+  `(exists (not (P)))`. A body containing `or` is one condition, as in CLIPS:
+  `(exists (or (P) (Q)))` fires once however many branches hold.
 - **forall CE**: `(forall (P) (Q))` or `(forall (P) (test expression))`
-- **Negated conjunction**: `(not (and (P) (Q)))`
+- **Negated conjunction**: `(not (and (P) (Q)))`, and its double negation
+  `(not (not (and (P) (Q))))`
 - **Negated disjunction**: `(not (or (P) (Q)))`
+- **Nested groups**: `and` and `or` nest to any depth, inside each other and
+  inside `not` and `exists`, e.g. `(or (and (or (P) (Q)) (R)) (S))` or
+  `(not (exists (P) (or (Q) (R))))`. Like CLIPS, Ferric flattens `and` groups
+  and turns every positive `or` into rule-level alternatives, so each true
+  branch of a positive `or` is its own activation.
 - **Constraint connectives**: `&`, `|`, `~`
 
 ### Source and compiled network limits
@@ -601,16 +715,17 @@ and disjunction expansion use checked, conservative work estimates: at most
 256 CE alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
 expanded source per rule. Both normalization passes also share a per-load
 budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
-does not count field-level `|` constraints as rule alternatives: each field
-disjunction is evaluated once, including inside `not`, `exists`, and `forall`.
-A leading `?x&` binds over all alternatives (`?x&a|b` means `?x&(a|b)`).
-The estimate may reject an unusually redundant `or` CE expression that could
-be optimized to less work; Ferric does not perform that optimization implicitly.
+does not count field-level `|` constraints, which compile to one test on
+their field rather than to rule alternatives. The estimate may reject an
+unusually redundant `or` CE expression that could be optimized to less work;
+Ferric does not perform that optimization implicitly.
 
 Each compiled rule allows at most 64 condition nodes, counting predicates and
 nested NCC wrappers/children, and each alpha path allows at most 64 constant
-tests, including the children of compound field tests. These bounds keep
-recursive propagation practical without adding a resumable execution subsystem.
+tests, including the children of compound field tests. When a pattern's
+field disjunctions would take it past that alpha budget, the widest ones are
+evaluated as match-time predicates instead. These bounds keep recursive propagation practical without adding a
+resumable execution subsystem.
 Boundary regressions exercise combined alpha
 and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
 Over-limit constructs fail before installation; previously installed rules and
@@ -623,10 +738,14 @@ host's memory. The recommended snapshot envelope applies its own input and
 restored-graph validation limits.
 
 The current snapshot validator also limits NCC dependency nesting to four.
-Nested multi-pattern `exists` can expand beyond that bound even within the
-source nesting limit: for example, `(exists (a) (exists (b) (exists (c) (d))))`
-loads and runs, but cannot currently be serialized. This persistence boundary
-is tracked with the snapshot-limit work in #410.
+Each `exists` compiles to a double negation, so nested quantifiers can exceed
+that bound within the four-level source nesting limit: for example
+`(exists (exists (exists (a))))`, `(exists (a) (exists (b) (exists (c) (d))))`,
+`exists` over `or` inside further nesting, or an `exists` at the bottom of a
+deep `not (and ...)` chain. Such rules load and run, but `Engine::serialize`
+rejects them with `snapshot NCC nesting exceeds 4`; two nested `exists` levels
+still serialize. This persistence boundary is tracked with the snapshot-limit
+work in #410.
 
 ### Pattern Nesting Restrictions
 
@@ -638,25 +757,29 @@ normalization. The following forms are **not** supported:
 | Unsupported Pattern | Rationale |
 |---------------------|-----------|
 | Five or more nested quantifiers | Reduce combined `not`/`exists`/`forall` depth to four |
-| Single-operand `(exists (not fact-pattern))` | Use separate rules; mixed multi-pattern exists groups have separate support |
 | Nested `(forall ...)` | Decompose into multiple rules with phase facts |
 | `forall` under `not` or `exists`, including through `and`/`or` wrappers | Universal quantification is supported only in positive rule conditions |
 | `forall` with more than two operands, a non-fact first operand, or a second operand other than a fact pattern or test-only expression | Use one fact condition and one fact/test requirement |
 
 Fact-address bindings must target fact patterns. They may occur inside positive
 `and`/`or` groups, but not inside `not`, `exists`, or `forall`, or around an
-entire conditional element. Pure-test `not`/`exists` wrappers are boolean
+entire conditional element. CLIPS 6.30 rejects the same placements
+(`[RULELHS2]` inside `not`/`exists`/`forall`, `[PRNTUTIL2]` around a group), so
+these are not Ferric restrictions; see the `patterns/405_assigned_*_rejected`
+corpus cases. An address bound in only some branches of an `or` may be used
+only where every alternative binds it: like CLIPS, Ferric rejects a RHS that
+uses it (`[PRCCODE3]`). Pure-test `not`/`exists` wrappers are boolean
 conditions and do not introduce fact bindings.
 
-**Refactoring example** -- replace `(exists (not (done ?x)))` with:
-
-```clp
-(defrule has-undone
-    (item ?x)
-    (not (done ?x))
-    =>
-    (assert (has-undone-item)))
-```
+A variable first bound inside `not`, `exists`, or `forall`, including inside
+an `or` or `and` beneath them, is local to that conditional element. A `test`,
+at rule level or nested inside `not`, `exists`, or `forall`, may read only
+variables bound before it in its own scope: by an earlier positive pattern at
+its level or in an enclosing group, by its `forall` antecedent, or by every
+branch of an earlier `or`. Like CLIPS (`[ANALYSIS4]`), Ferric rejects at load a
+`test` that reads a variable local to an earlier negation or quantifier, a
+variable bound nowhere before it, or one bound in only some `or` branches. It
+also rejects a RHS reference unless a positive pattern binds it (`[PRCCODE3]`).
 
 ### Logical support
 
@@ -730,6 +853,15 @@ one `defglobal` group remain available to later initializers. If an initializer
 fails, its name and later names in that group are not installed; earlier globals
 and following top-level constructs retain their incremental load behavior.
 
+Known difference: callable bodies are validated after the whole source is
+read, but initializers run in source order. An initializer can therefore call
+a deffunction or method defined earlier in the same load before that
+callable's validation finishes. If the callable is then rejected (for
+example, for an unknown call in a branch that never ran), the global keeps
+the initializer's value and any side effects of the call remain. CLIPS 6.30
+rejects the callable first and then rejects the initializer, so the global is
+never defined.
+
 ```clp
 (defglobal ?*count* = 0)
 (defglobal ?*label* = "default")
@@ -762,7 +894,11 @@ and following top-level constructs retain their incremental load behavior.
 
 ### Reset Behavior
 
-On `(reset)`, globals are restored to their declared initial values.
+On `(reset)`, globals are restored to their declared initial values. Ferric
+restores the value each initializer produced at load instead of re-evaluating
+it (CLIPS 6.30 re-evaluates; [#451](https://github.com/plx/ferric-rules/issues/451)),
+so an initializer's queries and engine effects are not repeated and a fact
+address it captured becomes stale.
 
 ---
 
@@ -838,6 +974,30 @@ or load diagnostic before continuing recursive evaluation. Callable bodies
 are checked before registration; a failed function redefinition or implicit
 generic registration preserves the previous registry state.
 
+Known difference: match conditions and deffacts or defglobal initializers
+evaluated by an engine effect (`assert`, `retract`, `modify`, `duplicate`,
+`reset`), or by the source loading of `build`, continue that call's depth
+rather than starting from zero. An effect run from deep inside nested calls can therefore push such
+a condition or initializer past these limits. Ferric reports that as a
+diagnostic, and an affected match condition does not match; CLIPS 6.30 has no
+such limit and evaluates them normally.
+
+Known difference: when a deffunction redefinition fails, CLIPS 6.30 removes
+the deffunction, so later callers are rejected at load; Ferric keeps the
+previous body and its callers still load. Likewise, CLIPS 6.30 removes an
+existing defrule before parsing its redefinition, so a replacement that fails
+any load check leaves no rule of that name; Ferric keeps the previous rule
+installed and it still fires. Both keep the previous method when
+a `defmethod` redefinition fails. Until a rejected callable is removed at the
+end of the load, it still counts as using the templates it references, so a
+`deftemplate` replacement later in the same source is refused with
+`[CSTRCPSR4]` where CLIPS accepts it.
+
+Known difference: an undefined global variable in a deffunction body, a
+defmethod body, or a method restriction query does not stop the load. Ferric
+reports it only when the expression is evaluated; CLIPS 6.30 rejects the
+construct at load with `[GLOBLPSR1]`.
+
 Embedding note: release recursion regressions run on 512 KiB native stacks;
 unoptimized development regressions use 2 MiB. These are supported test
 baselines, not a promise for arbitrarily small host stacks. Larger requested
@@ -871,19 +1031,80 @@ Ferric supports generic function dispatch via `defgeneric` and `defmethod`.
 
 Methods are ranked by type specificity. More specific types win:
 `INTEGER` > `NUMBER`, `FLOAT` > `NUMBER`, etc. When multiple methods could
-match, the most specific applicable method is selected. Fixed parameters
-outrank wildcards, and a type restriction outranks an otherwise unrestricted
-parameter with a query. A query adds specificity when the other restrictions
-are the same.
+match, the most specific applicable method is selected. Restrictions are
+compared left to right, with a wildcard counting as its method's last
+restriction. A wildcard loses at once to a regular parameter in the same
+position when that parameter's method has no wildcard. Otherwise, as in
+CLIPS 6.30, the two type lists are compared in written order:
 
-A parameter query follows its optional type restrictions. It can reference
-any method parameter, including later ones: all arguments are bound before
-queries run. Queries use CLIPS truthiness and are evaluated only as dispatch
-searches for the next applicable method. Lower-priority method queries are
-not evaluated after a match is found. A query error stops dispatch instead
-of trying a fallback. Queries may bind globals, but cannot bind local variables
-or parameters. Undefined variables and templates unavailable when the method
-is defined are load errors.
+- Any type list outranks an unrestricted parameter, so a type restriction
+  outranks an otherwise unrestricted parameter with a query.
+- At the first position where one listed type is a subclass of the other in
+  the CLIPS class hierarchy, the subclass wins: `INTEGER` and `FLOAT` under
+  `NUMBER`, and `SYMBOL` and `STRING` under `LEXEME`. `INSTANCE-NAME` is not
+  a subclass of `SYMBOL`. So
+  `((?x INTEGER SYMBOL))` outranks `((?x NUMBER))`, although it covers more
+  types.
+- Otherwise the shorter list wins: `((?x INTEGER))` outranks
+  `((?x INTEGER SYMBOL))`.
+- Lists of the same length that differ anywhere, such as `(INTEGER SYMBOL)`
+  and `(INTEGER STRING)`, or `(INTEGER SYMBOL)` and `(SYMBOL INTEGER)`, leave
+  the two methods unranked: neither outranks the other, and their queries and
+  later restrictions are not compared.
+
+A query adds specificity only when the type lists are identical. When every
+shared position ties, a method without a wildcard wins, then the method with
+more restrictions. For example, `(($?xs INTEGER))` outranks `(?x $?xs)`, while
+`(?x ?y)` outranks `(($?xs INTEGER))` and `(?x)` outranks `(?x $?xs)`.
+
+This ranking can be cyclic: `(($?x INTEGER))` outranks `((?x NUMBER) $?y)`,
+which outranks `(?x)`, which outranks `(($?x INTEGER))`. As in CLIPS 6.30,
+methods are not sorted. Each method is inserted before the first existing
+method it outranks, or after all of them, so the final order can depend on
+definition order, both for cyclic rankings and for unranked methods. Ferric
+inserts methods in index order, which is definition order unless explicit
+indices are given out of order.
+
+Known differences:
+
+- When explicit indices are given out of definition order, CLIPS 6.30 still
+  inserts methods in definition order. Its dispatch order can then differ from
+  Ferric's whenever those methods do not strictly outrank each other, either
+  because the ranking is cyclic or because their restrictions differ without
+  one outranking the other. For example, after
+  `(defmethod g 2 ((?x INTEGER SYMBOL)) A)` and
+  `(defmethod g 1 ((?x INTEGER FLOAT)) B)`, CLIPS 6.30 returns `A` for
+  `(g 1)` and Ferric returns `B`.
+- A `defmethod` whose restrictions are identical to an existing method's adds
+  a second method after it, where CLIPS 6.30 replaces the existing method.
+- Only `INTEGER`, `FLOAT`, `NUMBER`, `SYMBOL`, `STRING`, `LEXEME`,
+  `INSTANCE-NAME`, `MULTIFIELD`, `EXTERNAL-ADDRESS` and `FACT-ADDRESS` match
+  as type restrictions. Other CLIPS class names, such as `PRIMITIVE`,
+  `OBJECT`, `ADDRESS`, `INSTANCE` and `INSTANCE-ADDRESS`, load as method
+  restrictions but never match, so a restriction that names only such classes
+  makes its method never applicable. In particular, an `ADDRESS`, `PRIMITIVE`
+  or `OBJECT` restriction does not match a fact address in Ferric, although
+  CLIPS 6.30 matches it.
+
+A parameter query follows its optional type restrictions. It is a function
+call or a global variable such as `((?x INTEGER ?*enabled*))`; a global is
+read again at each dispatch. A query can reference any method parameter,
+including later ones: all arguments are bound before queries run. Queries
+use CLIPS truthiness and are evaluated only as dispatch searches for the next
+applicable method. For each candidate, dispatch walks
+the arguments left to right: it checks the argument's type and then runs its
+restriction's query, stopping at the first failure. A query therefore runs,
+with its side effects, even when a later argument's type rules the method
+out. Excess arguments share the wildcard restriction, so a wildcard query
+runs once per excess argument and not at all when there are none.
+Lower-priority method queries are not evaluated after a match is found. A
+query error stops dispatch instead of trying a fallback. Queries may bind
+globals, but cannot bind local variables or parameters. `return` anywhere in
+a query is rejected at load (`[PRCDRPSR2]`). Undefined variables
+and templates unavailable when the method is defined are load errors. An
+undefined global in a query is reported only when the query runs, which stops
+dispatch; CLIPS 6.30 rejects the method at load (`[GLOBLPSR1]`), as it does
+for an undefined global in a deffunction or method body.
 
 ```clp
 (defgeneric classify)
@@ -980,7 +1201,9 @@ Constructs can be referenced with `MODULE::name` syntax:
 ### Focus Stack
 
 - `MAIN` is the default focus module after `(reset)`.
-- `(focus MODULE)` pushes a module onto the focus stack.
+- `(focus MODULE)` pushes a module onto the focus stack. Pushing the module
+  already at the top leaves the stack unchanged; a module deeper in the stack
+  may be pushed again. The host `push_focus`/`pushFocus` APIs behave the same.
 - Only rules in the current focus-stack module are eligible to fire.
 - When a module's agenda is empty, it is popped and the next module resumes.
 
@@ -1011,10 +1234,16 @@ this is not a claim that every built-in or argument combination is identical.
 
 Known arity and literal argument types are checked while loading constructs.
 For example, `(abs 1 2)`, `(eq a)`, and `(min 1 a)` reject the containing rule
-with an `ARGACCES4` or `ARGACCES5` diagnostic. An invalid replacement retains
-the previous rule or callable, and independent later definitions can still
-load. Computed values and dynamically selected `funcall` targets retain runtime
-checks. An explicit `expand$` defers the surrounding call's arity check until
+with an `ARGACCES4` or `ARGACCES5` diagnostic. An invalid replacement leaves
+Ferric's previous rule or callable installed; CLIPS 6.30 removes the old
+defrule or deffunction before parsing its redefinition, so its rule no longer
+fires (see the known difference in Recursive Calls). Independent later
+definitions can still load. Computed values and dynamically selected `funcall`
+targets retain runtime checks. Ferric does not check the declared result type
+of a nested built-in call at load: CLIPS rejects `(abs (str-cat a))`,
+`(str-length (+ 1 2))` or `(+ 1 (sym-cat a))` with the containing rule, and
+later rules still run, whereas Ferric loads the rule and stops the run when the
+call is evaluated. An explicit `expand$` defers the surrounding call's arity check until
 its fields have been expanded.
 
 ### Math Functions
@@ -1026,7 +1255,7 @@ its fields have been expanded.
 | `*` | Multiplication | `(* 4 5)` => `20` |
 | `/` | Division | `(/ 10 3)` => `3.333...` |
 | `div` | Integer division | `(div 10 3)` => `3` |
-| `mod` | Remainder; FLOAT if either operand is FLOAT | `(mod 7.5 2)` => `1.5` |
+| `mod` | Remainder; FLOAT `a - trunc(a / b) * b` if either operand is FLOAT, as in CLIPS (not C `fmod`) | `(mod 7.5 2)` => `1.5` |
 | `abs` | Absolute value | `(abs -5)` => `5` |
 | `min` | Minimum | `(min 3 7)` => `3` |
 | `max` | Maximum | `(max 3 7)` => `7` |
@@ -1054,8 +1283,9 @@ CLIPS does, so `(round -0.49999999999999994)` is `-1`.
 Domain errors in `sqrt`, `asin`, `acos`, `acosh`, `atanh`, `log`, `log10`,
 and `**` stop the current run with an `EMATHFUN1` diagnostic. Zero logarithm
 arguments report `EMATHFUN2`; a `tan` asymptote reports `EMATHFUN3`. Following
-CLIPS, overflow from functions such as `(exp 1000)` can still return `inf.0`.
-These errors preserve output already produced and stop later RHS actions.
+CLIPS, overflow from functions such as `(exp 1000)` can still return `inf.0`,
+and a NaN argument is not out of range, so these functions return `nan.0`
+for it (except `**` with a negative base). These errors preserve output already produced and stop later RHS actions.
 
 ### Type Conversion
 
@@ -1118,7 +1348,7 @@ each other.
 | `string-to-field` | First CLIPS field of a STRING, SYMBOL or INSTANCE-NAME | `(string-to-field "42 rest")` => `42` |
 | `explode$` | Every CLIPS field of a STRING, as a multifield | `(explode$ "a \"b c\" 3")` => `(a "b c" 3)` |
 | `symbol-to-instance-name` | SYMBOL to INSTANCE-NAME | `(symbol-to-instance-name x)` => `[x]` |
-| `instance-name-to-symbol` | INSTANCE-NAME to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
+| `instance-name-to-symbol` | INSTANCE-NAME or SYMBOL to SYMBOL | `(instance-name-to-symbol [x])` => `x` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
 
 `str-cat` and `sym-cat` require at least one argument. They accept STRING,
@@ -1147,8 +1377,10 @@ Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
 exponents such as `5e` are single symbols. Source integers outside the signed
 64-bit range saturate too, but the source lexer has no warning channel and
-does not emit the `[SCANNER1]` notice. Comments end at CR or LF, including
-files that use CR-only line endings.
+does not emit the `[SCANNER1]` notice. This includes `load-facts` at run
+time, where CLIPS prints that warning within the program's output for each
+overflowing integer and Ferric prints nothing. Comments end at CR or LF,
+including files that use CR-only line endings.
 
 ### Multifield Functions
 
@@ -1211,9 +1443,22 @@ effects can install a new callable definition before that invocation begins.
 | `deftemplate-slot-default-value` | Stored static value, evaluation of the dynamic default, or `?NONE` |
 
 Ordered relation declarations remain available to introspection after their
-last fact is retracted and across reset. Querying a dynamic default evaluates
-its expression, including side effects; merely listing slots or asking the
-default kind does not.
+last fact is retracted and across reset. Parsing an assertion in `eval` or
+`assert-string` source declares its relation even when the assertion does not
+run, as loading source does. The built-in `initial-fact` is a deftemplate
+without slots, not an ordered relation. Querying a dynamic default evaluates
+its expression, including side effects, and returns its value without checking
+the slot's constraints or shape: a void or multifield result of a single-field
+slot's default is returned as is, and a multislot default omits void elements.
+Merely listing slots or asking the default kind does not evaluate it.
+
+`deftemplate-slot-names` loads with an INTEGER or SYMBOL literal argument, as
+in CLIPS 6.30. As in CLIPS, a missing deftemplate prints a `PRNTUTIL1` notice,
+and a template or module argument that is not a SYMBOL when evaluated prints an
+`ARGACCES5` notice; the rule continues. The query then returns `()` for
+`deftemplate-slot-types`, `-allowed-values`, `-range`, `-cardinality` and the
+construct lists, and FALSE for the other template queries. A slot name that is
+not a SYMBOL stops the rule.
 
 ### Dynamic Source, Randomness, and Time
 
@@ -1234,13 +1479,20 @@ these reentrant initializer cases. Use a host load call or a later RHS action.
 A failed `build` returns FALSE and reports its load diagnostics; earlier effects
 of incremental loading are retained. A currently executing rule or callable
 cannot be replaced, including through a helper's `build` call; the original
-definition remains installed.
+definition remains installed. Likewise, while a fact is being asserted,
+modified, or duplicated, a `build` in its slot or field expressions cannot
+redefine its template or give its ordered relation an explicit template. As in
+CLIPS, code that is running keeps every template and ordered relation it names
+in use: all facts of one `assert` command, an `eval` or `assert-string`
+expression, and the actions of a rule that has removed itself with
+`undefrule`. CLIPS instead refuses to remove an executing rule.
 
 Each engine owns its random state, and snapshots preserve that state. Seeded
-explicit draws match the pinned glibc-based CLIPS 6.30 reference. Ferric does
-not consume this stream to assign random agenda activation ties: CLIPS code
-that interleaves random draws with activation creation can therefore observe a
-different sequence. This does not add support for the Random conflict strategy.
+explicit draws match the pinned glibc-based CLIPS 6.30 reference. CLIPS 6.30
+also draws one value for every new activation, whatever the strategy; Ferric
+consumes the stream only for explicit `random` calls. A seeded sequence
+therefore matches only while no activation is created between `seed` and a
+draw (see §16.11). This does not add support for the Random conflict strategy.
 `time` is inherently nondeterministic. Reversed `random` bounds produce a
 recoverable `MISCFUN3` notice and return the unbounded draw. A wrong argument
 count that reaches execution likewise consumes and returns a draw, emits
@@ -1274,17 +1526,49 @@ as an internal address. `(fact-relation (fact-index ?f))` therefore names
 Retraction preserves an address's printed `<Fact-N>` identity. `fact-index`
 then returns `-1`; `fact-existp`, `fact-relation`, `fact-slot-names`, and
 `fact-slot-value` return `FALSE`. An address does not become an address to a
-replacement fact. `modify` and `duplicate` require a live source address in
-Ferric; CLIPS can also copy the retained payload of a retracted address. This
-stale-source mutation remains a compatibility boundary. A runtime assertion
-using the derived default for a `FACT-ADDRESS` slot receives `<Dummy Fact>`, a distinct address value with no
+replacement fact. A runtime assertion using the derived default for a
+`FACT-ADDRESS` slot receives `<Dummy Fact>`, a distinct address value with no
 referenced fact; its introspection results are the same as a stale address.
 
-A missing or negative fact index also returns `FALSE` from `fact-existp`,
-`fact-relation`, `fact-slot-names`, and `fact-slot-value`; `retract` does
-nothing. Evaluation continues with later operands and actions. CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]`
-notices for some of these calls; Ferric omits those notices. Invalid slots
-and unsupported operand types keep their ordinary error behavior.
+The run-time rules below apply to computed designators and slot names. As in
+CLIPS 6.30, a literal STRING or FLOAT designator to `retract`, `fact-existp`,
+`fact-relation`, `fact-slot-names` or `fact-slot-value`, any literal argument
+to `fact-index`, and a literal STRING slot name to `fact-slot-value` reject the
+containing rule at load with `ARGACCES5`. A SYMBOL literal designator loads and
+is checked when evaluated.
+
+A missing or negative fact index, or a designator that is neither an address
+nor an INTEGER, also returns `FALSE` from `fact-existp`, `fact-relation`,
+`fact-slot-names`, and `fact-slot-value`, and the rule continues. `fact-index`
+returns `-1` for any argument that is not a fact address, including an INTEGER.
+`fact-slot-value` resolves its designator before evaluating the slot argument,
+so the slot argument is not evaluated when the designator names no live fact.
+As in CLIPS, a slot argument that resets or retracts the fact still reads the
+record the designator named, not a fact asserted afterwards. On a live fact, an invalid slot name or a slot argument that is not a symbol,
+string, or instance name stops the rule. CLIPS 6.30 accepts only a SYMBOL slot
+argument: it rejects a literal STRING at load, as Ferric does, and stops the
+rule for a computed one, whereas Ferric also accepts a computed STRING or
+INSTANCE-NAME slot name.
+
+`retract` skips a missing index or a stale address and goes on to its next
+target. A negative index ends that `retract` call: later targets are neither
+evaluated nor retracted, and the rule continues. A target of any other type
+stops the rule, after the remaining targets have been retracted. As in CLIPS,
+a later target that calls a deffunction or generic function is not called and
+retracts nothing, while variables, literals, and builtin calls are still
+evaluated and retracted. CLIPS 6.30 also fails some builtin targets in that
+state, such as `progn$`, `switch`, `funcall`, or `(nth$ 1 (create$ ?f))`, and
+keeps their facts, whereas Ferric still evaluates and retracts them. A
+deffunction or generic function reached through such a builtin, whether nested
+in it or called through `funcall`, still runs in Ferric; CLIPS 6.30 does not
+call it. `modify` and `duplicate` given a missing index do nothing, without
+evaluating their slot overrides, and the rule continues; a negative index or a
+target of another type stops the rule, as in CLIPS. Given a stale address,
+`modify` and `duplicate` also stop the rule, whereas CLIPS 6.30 asserts a new
+fact from the retracted fact's data.
+
+CLIPS emits recoverable `[PRNTUTIL1]` or `[ARGACCES5]` notices for these
+calls; Ferric omits those notices.
 
 `save-facts` renders addresses as quoted strings, such as `"<Fact-1>"` or
 `"<Dummy Fact>"`, matching CLIPS. These fact files do not preserve address
@@ -1316,7 +1600,8 @@ same string. `(format t "n=%d%n" 42)` writes `n=42` followed by a newline;
 `(format nil "n=%d" 42)` returns the string without writing it. `printout`
 writes each argument before evaluating the next, including inside callable
 bodies. Output from nested calls appears in evaluation order, and an error
-in a later argument preserves the output already written.
+in a later argument preserves the output already written. `printout` to `nil`
+writes nothing and evaluates none of its arguments.
 
 `format` follows CLIPS 6.30 and C `printf`: `%d %o %x %u` (FLOATs truncate),
 `%f %e %g` (INTEGERs convert), `%s` (STRING, SYMBOL or INSTANCE-NAME; a number
@@ -1352,7 +1637,6 @@ The following features are explicitly out of scope.
 | General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
-| Single-operand `(exists (not fact-pattern))` | Not supported | Use separate rules |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
 | `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |
 | File routers (`open` and file-backed logical-name I/O) | Not supported | `close` is a compatibility stub; use host I/O, captured output, `load-facts`, or `save-facts` |
@@ -1361,6 +1645,8 @@ The following features are explicitly out of scope.
 | Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
 | Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
 | `set-salience-evaluation` | Not supported | Only definition-time salience evaluation is supported; when-activated/every-cycle modes are unavailable |
+| Random draws consumed by activation creation | Not supported | CLIPS 6.30 draws once per new activation; Ferric's seeded stream matches only when no activation is created between `seed` and a draw |
+| Load-time result-type checks of nested built-in calls | Not supported | CLIPS rejects e.g. `(abs (str-cat a))` at load; Ferric checks the value when evaluated, so the run stops there |
 | Reentrant `build` during construct initialization | Explicitly rejected | Invoke it after loading; the pinned reference crashes on these initializer cases |
 | Generic and method redefinition through `build` or source loading | Partial support | Repeated `defgeneric` declarations and an occupied explicit method index are rejected. An implicit method with equivalent restrictions is added with a new index instead of replacing the prior method, unlike CLIPS. New methods with distinct restrictions are supported. |
 | Other absent non-COOL built-ins | Not supported | A name omitted from the supported surface is not implicitly provided; unknown calls report `EXPRNPSR3` |
@@ -1805,5 +2091,6 @@ literal pattern restrictions are validated before their construct is installed;
 runtime values and host template assertions are always validated.
 Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects
 runtime values that violate a declared slot constraint. See
-[the migration notes](migration.md#primitive-template-slot-types) for default
-priority, external token handling, and explicit unsupported optional attributes.
+[the migration notes](migration.md#template-constraints-and-computed-defaults)
+for default derivation, external-address handling, and the remaining
+unsupported class attributes (`allowed-classes`, `allowed-instance-names`).
