@@ -342,11 +342,10 @@ Review your CLIPS codebase for features that Ferric does not support:
   with a source location. Positive `and`/`or` groups accept fact-address
   bindings, and `(not (or ...))`, `(exists (not ...))` and `(exists (or ...))`
   are supported.
-  Snapshot validation has a separate four-level NCC dependency limit. Nested
-  `exists` (even single-pattern, such as `(exists (exists (exists (a))))`),
-  `exists` over `or` inside further nesting, and `exists` under a deep
-  `not (and ...)` chain can load and run yet exceed that persistence limit.
-  See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
+  Snapshot validation allows eight compiled NCC dependency levels, enough for
+  every rule within the four-level source limit (each `exists` compiles to a
+  double negation). See
+  [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
 
 If your rules use only `defrule`, `deftemplate`, `deffacts`, `deffunction`,
 `defglobal`, `defmodule`, `defgeneric`, and `defmethod` with standard
