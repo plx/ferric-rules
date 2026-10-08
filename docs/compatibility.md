@@ -39,9 +39,9 @@ in any order, since CLIPS orders those activations differently. A program that
 CLIPS rejects must fail in Ferric at the same stage (load or run).
 `just compat-corpus-reference` rechecks every golden against the pinned CLIPS
 6.30 Docker image. The standalone and PR comparison reports lead with the
-manifest's 1266 cases, 1244 conformance cases (including 232 expected errors),
-and 22 known gaps. They separately show whether matching Ferric and reference
-runs verified that revision; a manifest declaration or historical verification
+manifest's declared case, conformance (including expected-error), and known-gap
+counts. They separately show whether matching Ferric and reference runs
+verified that revision; a manifest declaration or historical verification
 stamp alone is not a passed run. Main CI verifies the goldens automatically.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
