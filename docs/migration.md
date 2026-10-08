@@ -604,9 +604,9 @@ Ferric chooses a valid default; see [compatibility.md](compatibility.md).
 - Snapshots use a bounded, versioned envelope (schema 12); CBOR is recommended
   and is the default for CLI, TypeScript, Python and Swift consumers. Legacy
   unversioned, schema-1, schema-2, schema-3, schema-4, schema-5, schema-6,
-  schema-7, schema-8, schema-9 and schema-10 snapshots are rejected explicitly. Export durable application data through the
-  producing version before upgrading; see
-  [snapshots.md](snapshots.md).
+  schema-7, schema-8, schema-9, schema-10 and schema-11 snapshots are rejected
+  explicitly. Export durable application data through the producing version
+  before upgrading; see [snapshots.md](snapshots.md).
 - Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
   Typed strings and symbols compare distinctly from each other and plain strings.
   Python `None`, Node `null`, and Swift `.void` cannot be stored in facts.
