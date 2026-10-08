@@ -1,5 +1,7 @@
 //! One-form host evaluation, separate from construct loading and dynamic `eval`.
 
+use std::sync::Arc;
+
 use ferric_rules_core::{BindingSet, Value, VarMap};
 use ferric_rules_parser::{interpret_action_expr, parse_sexprs, FileId};
 
@@ -50,26 +52,32 @@ impl Engine {
         let expression =
             interpret_action_expr(&parsed.exprs.remove(0)).map_err(LoadError::Interpret)?;
         let current_module = self.module_registry.current_module();
-        let expression = self.prepare_root_expression(&expression, current_module)?;
+        let expression = Arc::new(self.prepare_root_expression(&expression, current_module)?);
         let bindings = BindingSet::new();
         let var_map = VarMap::new();
         let mut locals = CallableLocals::default();
-        let result = evaluator::eval(
-            &mut EvalContext {
-                engine: self,
-                bindings: &bindings,
-                var_map: &var_map,
-                callable_locals: Some(&mut locals),
-                call_depth: 0,
-                expression_depth: 0,
-                current_module,
-                global_module: None,
-                method_chain: None,
-                compact_fact_bindings: None,
-                allow_engine_effects: true,
-            },
-            &expression,
-        );
+        // Like a CLIPS top-level command, the expression keeps the templates
+        // and ordered relations it names in use while it runs: its own `build`
+        // cannot redefine them (CSTRCPSR4) and `clear` refuses (CONSTRCT1).
+        let result =
+            self.with_active_expressions(current_module, [Arc::clone(&expression)], |engine| {
+                evaluator::eval(
+                    &mut EvalContext {
+                        engine,
+                        bindings: &bindings,
+                        var_map: &var_map,
+                        callable_locals: Some(&mut locals),
+                        call_depth: 0,
+                        expression_depth: 0,
+                        current_module,
+                        global_module: None,
+                        method_chain: None,
+                        compact_fact_bindings: None,
+                        allow_engine_effects: true,
+                    },
+                    &expression,
+                )
+            });
         self.flush_expression_output();
         self.host.prune(&self.fact_base);
         result.map_err(EvalStrError::Evaluation)

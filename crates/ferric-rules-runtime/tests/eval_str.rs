@@ -70,12 +70,14 @@ fn runtime_errors_preserve_prior_output_and_effects() {
 }
 
 #[test]
-fn root_clear_preserves_compiled_literals_output_input_and_stale_identity() {
+fn root_clear_preserves_compiled_literals_output_and_input() {
     let mut engine = Engine::with_rules("(deffunction old () 9)").unwrap();
+    engine.eval_str("(assert (p))").unwrap();
     engine.push_input("42");
+    // The expression names no template or relation, so nothing is in use.
     assert!(matches!(engine.eval_str(
-        "(progn (bind ?old (assert (p))) (printout t before) (clear) (printout t after) (assert (q)) (fact-index ?old))"
-    ).unwrap(), Value::Integer(-1)));
+        r#"(progn (printout t before) (clear) (printout t after) (assert-string "(q)") (str-length "kept"))"#
+    ).unwrap(), Value::Integer(4)));
     assert_eq!(engine.get_output("t"), Some("beforeafter"));
     assert!(matches!(
         engine.eval_str("(read)").unwrap(),
@@ -89,6 +91,46 @@ fn root_clear_preserves_compiled_literals_output_input_and_stale_identity() {
         engine.eval_str("(fact-index (assert (r)))").unwrap(),
         Value::Integer(2)
     ));
+}
+
+/// CLIPS 6.30 keeps the templates and relations a top-level command names in
+/// use while it runs: its `clear` refuses without removing facts, and its
+/// `build` cannot redefine them. Dynamic `eval` source is held the same way.
+#[test]
+fn root_clear_refuses_while_the_expression_names_a_template_or_relation() {
+    let mut engine = Engine::with_rules("(deftemplate foo (slot x))").unwrap();
+    engine
+        .eval_str("(progn (assert (foo (x 1))) (clear) (assert (foo (x 2))))")
+        .unwrap();
+    assert_eq!(engine.facts().unwrap().count(), 2);
+    assert!(engine.get_output("werror").unwrap().contains("CONSTRCT1"));
+    engine.clear_output_channel("werror");
+    engine.eval_str("(progn (clear) (assert (bar)))").unwrap();
+    engine
+        .eval_str("(progn (find-all-facts ((?f foo)) TRUE) (clear))")
+        .unwrap();
+    engine
+        .eval_str(r#"(eval "(progn (assert (foo (x 3))) (clear))")"#)
+        .unwrap();
+    assert_eq!(engine.facts().unwrap().count(), 4);
+    assert_eq!(
+        engine
+            .get_output("werror")
+            .unwrap()
+            .matches("CONSTRCT1")
+            .count(),
+        3
+    );
+    assert!(matches!(
+        engine
+            .eval_str(r#"(progn (build "(deftemplate foo (slot y))") (assert (foo (x 9))) 1)"#)
+            .unwrap(),
+        Value::Integer(1)
+    ));
+    assert_eq!(engine.facts().unwrap().count(), 5);
+    engine.eval_str(r#"(eval "(clear)")"#).unwrap();
+    assert_eq!(engine.facts().unwrap().count(), 0);
+    assert!(engine.eval_str("(assert (foo (x 1)))").is_err());
 }
 
 #[test]

@@ -548,11 +548,14 @@ a callable, survives the reset: the RHS finishes and the run stops. A nested
 reset during reset-time initialization is ignored. Clear during active
 execution emits a recoverable refusal (`[CONSTRCT1]`), retains constructs and
 refraction, removes facts, and restarts public fact indices at zero. During
-fact initialization, it refuses before removing facts. Later actions and
-eligible activations continue. At an ordinary expression root with no
-constructs in use, clear removes constructs, restores `initial-fact` as f-0,
-and selects MAIN; the next user assertion is f-1. Source clear preserves queued
-input, printed output, and watch settings.
+fact initialization, or while the running top-level expression or `eval`
+source names a template or ordered relation (in a fact assertion or fact
+query), it refuses before removing facts. Later actions and eligible
+activations continue. At an ordinary expression root with no constructs in
+use, clear removes constructs, restores `initial-fact` as f-0, and selects
+MAIN; the next user assertion is f-1. Source clear preserves queued input,
+printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
+the same expression through `assert-string` does not keep its relation in use.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,

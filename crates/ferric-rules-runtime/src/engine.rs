@@ -1797,7 +1797,11 @@ impl Engine {
     /// module context. In-use constructs retain their existing refraction state.
     pub(crate) fn clear_for_evaluation(&mut self) -> Result<bool, EngineError> {
         self.flush_expression_output();
-        if self.active_fact_initializers != 0 {
+        if self.active_fact_initializers != 0
+            || !self.active_templates.is_empty()
+            || !self.active_ordered_relations.is_empty()
+            || self.active_expressions_name_facts()
+        {
             self.router.write(
                 "werror",
                 "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n",
