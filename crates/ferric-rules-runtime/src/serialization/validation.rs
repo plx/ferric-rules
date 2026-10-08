@@ -3,14 +3,24 @@
 use super::{Engine, SerializationError};
 use crate::evaluator::RuntimeExpr;
 use crate::fact_initializer::PreparedFact;
-use ferric_rules_core::{Fact, SequenceSource, Value};
+use ferric_rules_core::{Fact, SequenceSource, SnapshotValidationError, Value};
 use ferric_rules_parser::{ActionExpr, SlotType};
 
-fn ensure(condition: bool, message: &str) -> Result<(), String> {
+fn ensure(condition: bool, message: &str) -> Result<(), SnapshotValidationError> {
     if condition {
         Ok(())
     } else {
-        Err(message.to_owned())
+        Err(message.into())
+    }
+}
+
+fn check_expression_depth(depth: usize) -> Result<(), SnapshotValidationError> {
+    if depth >= 16 {
+        Err(SnapshotValidationError::LimitExceeded(
+            "16-level expression-depth",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -18,7 +28,8 @@ impl Engine {
     fn validate_declaration_names(
         &self,
         declarations: &[(crate::modules::ModuleId, String)],
-    ) -> Result<rustc_hash::FxHashSet<(crate::modules::ModuleId, String)>, String> {
+    ) -> Result<rustc_hash::FxHashSet<(crate::modules::ModuleId, String)>, SnapshotValidationError>
+    {
         let mut names = rustc_hash::FxHashSet::default();
         for (module, name) in declarations {
             ensure(
@@ -40,20 +51,29 @@ impl Engine {
 
     pub(super) fn validate_restored_state(&self) -> Result<(), SerializationError> {
         self.validate_snapshot_metadata()
-            .map_err(SerializationError::InvalidState)
+            .map_err(|error| match error {
+                SnapshotValidationError::InvalidState(message) => {
+                    SerializationError::InvalidState(message)
+                }
+                SnapshotValidationError::LimitExceeded(limit) => {
+                    SerializationError::LimitExceeded(limit)
+                }
+            })
     }
 
-    fn validate_snapshot_value(&self, value: &Value) -> Result<(), String> {
-        self.symbol_table.validate_snapshot_value(value)?;
+    fn validate_snapshot_value(&self, value: &Value) -> Result<(), SnapshotValidationError> {
+        self.symbol_table.validate_snapshot_value_checked(value)?;
         let mut pending = vec![value];
         while let Some(value) = pending.pop() {
             match value {
-                Value::FactAddress(address) => self.fact_base.validate_snapshot_fact_address(
-                    address,
-                    self.fact_epoch,
-                    self.initial_fact_id,
-                    self.fact_index_starts_at_zero,
-                )?,
+                Value::FactAddress(address) => {
+                    self.fact_base.validate_snapshot_fact_address_checked(
+                        address,
+                        self.fact_epoch,
+                        self.initial_fact_id,
+                        self.fact_index_starts_at_zero,
+                    )?;
+                }
                 Value::Multifield(fields) => pending.extend(fields.iter()),
                 _ => {}
             }
@@ -62,23 +82,26 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn validate_snapshot_metadata(&self) -> Result<(), String> {
+    fn validate_snapshot_metadata(&self) -> Result<(), SnapshotValidationError> {
         ensure(
             !self.fact_index_starts_at_zero || self.initial_fact_id.is_none(),
             "zero-based cleared fact chronology has an initial fact",
         )?;
-        self.symbol_table.validate_snapshot()?;
+        self.symbol_table.validate_snapshot_checked()?;
         self.globals.random.validate_snapshot()?;
-        self.fact_base.validate_snapshot(&self.symbol_table)?;
+        self.fact_base
+            .validate_snapshot_checked(&self.symbol_table)?;
         self.rete
-            .validate_snapshot(&self.fact_base, &self.symbol_table)?;
+            .validate_snapshot_checked(&self.fact_base, &self.symbol_table)?;
         ensure(
             self.config.strategy == self.rete.agenda.strategy(),
             "configured strategy disagrees with restored agenda",
         )?;
         self.rete
-            .validate_snapshot_binding_values(|value| self.validate_snapshot_value(value))?;
-        self.compiler.validate_snapshot(&self.rete)?;
+            .validate_snapshot_binding_values_checked(|value| {
+                self.validate_snapshot_value(value)
+            })?;
+        self.compiler.validate_snapshot_checked(&self.rete)?;
         // Installation allocates sequential IDs and reuses removed slots. The
         // index retains its capacity after removal; only a new engine is empty.
         // A forged counter must not make the next load allocate a sparse Vec.
@@ -118,7 +141,8 @@ impl Engine {
             };
             live_rules += 1;
             let rule = ferric_rules_core::RuleId(
-                u32::try_from(index).map_err(|_| "oversized rule index")?,
+                u32::try_from(index)
+                    .map_err(|_| SnapshotValidationError::LimitExceeded("32-bit rule index"))?,
             );
             ensure(
                 terminal_rules.contains(&rule),
@@ -131,7 +155,7 @@ impl Engine {
             // One source rule with `or` conditions lowers to several executable
             // rules. Their public names may coincide; the unique slot/terminal
             // association above is their executable identity.
-            info.var_map.validate_snapshot(&self.symbol_table)?;
+            info.var_map.validate_snapshot_checked(&self.symbol_table)?;
             ensure(
                 info.actions.len() == info.runtime_actions.len(),
                 "inconsistent compiled action index",
@@ -154,7 +178,7 @@ impl Engine {
                 self.validate_expression(expr, module)?;
             }
         }
-        self.rete.validate_snapshot_rules(|id| {
+        self.rete.validate_snapshot_rules_checked(|id| {
             self.rule_info
                 .get(id.0 as usize)
                 .and_then(Option::as_ref)
@@ -249,7 +273,7 @@ impl Engine {
                 "alpha graph has dangling template",
             )?;
         }
-        for (template_id, plan) in self.rete.snapshot_template_sequence_patterns()? {
+        for (template_id, plan) in self.rete.snapshot_template_sequence_patterns_checked()? {
             let template = self
                 .template_defs
                 .get(template_id)
@@ -259,7 +283,7 @@ impl Engine {
                     SequenceSource::TemplateSlot(index) => (index, SlotType::Multi),
                     SequenceSource::TemplateScalar(index) => (index, SlotType::Single),
                     SequenceSource::Ordered => {
-                        return Err("template sequence plan contains an ordered source".to_owned())
+                        return Err("template sequence plan contains an ordered source".into())
                     }
                 };
                 let kind = template
@@ -465,7 +489,7 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_snapshot_fact(&self, fact: &Fact) -> Result<(), String> {
+    fn validate_snapshot_fact(&self, fact: &Fact) -> Result<(), SnapshotValidationError> {
         let values = match fact {
             Fact::Ordered(fact) => {
                 ensure(
@@ -505,7 +529,7 @@ impl Engine {
         &self,
         fact: &PreparedFact,
         module: crate::modules::ModuleId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         match fact {
             PreparedFact::Ordered { relation, .. } => {
                 self.validate_snapshot_value(&Value::Symbol(*relation))?;
@@ -542,7 +566,7 @@ impl Engine {
         template: &crate::templates::RegisteredTemplate,
         index: usize,
         expressions: &[RuntimeExpr],
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         if template.slot_types[index] == SlotType::Single {
             ensure(
                 expressions.len() == 1,
@@ -551,7 +575,7 @@ impl Engine {
             match &expressions[0] {
                 RuntimeExpr::Literal(value) => template.validate_slot(index, value)?,
                 RuntimeExpr::Call { name, .. } if name == "create$" => {
-                    return Err("single-field initializer requires one scalar value".to_owned());
+                    return Err("single-field initializer requires one scalar value".into());
                 }
                 _ => {}
             }
@@ -569,11 +593,13 @@ impl Engine {
                     }
                     length = length
                         .checked_add(values.len())
-                        .ok_or("initializer length overflow")?;
+                        .ok_or(SnapshotValidationError::LimitExceeded("initializer length"))?;
                 }
                 RuntimeExpr::Literal(value) => {
                     template.validate_field(index, value)?;
-                    length = length.checked_add(1).ok_or("initializer length overflow")?;
+                    length = length
+                        .checked_add(1)
+                        .ok_or(SnapshotValidationError::LimitExceeded("initializer length"))?;
                 }
                 RuntimeExpr::Call { name, args, .. } if name == "create$" => pending.extend(args),
                 _ => complete = false,
@@ -589,13 +615,13 @@ impl Engine {
         &self,
         root: &RuntimeExpr,
         module: crate::modules::ModuleId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         let mut actions = Vec::new();
         for expression in crate::fact_initializer::RuntimeExpressions::new(root) {
             let mut branches = Vec::new();
             match expression {
                 RuntimeExpr::Call { name, .. } if name == "return" => {
-                    return Err("return is not valid in a template default".to_owned())
+                    return Err("return is not valid in a template default".into())
                 }
                 RuntimeExpr::EffectCall { call } => {
                     actions.extend(crate::effects::evaluated_arguments(self, module, call));
@@ -638,7 +664,7 @@ impl Engine {
         &self,
         root: &ActionExpr,
         module: crate::modules::ModuleId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         validate_action(root)?;
         let mut pending = vec![root];
         while let Some(expression) = pending.pop() {
@@ -664,10 +690,10 @@ impl Engine {
         &self,
         root: &RuntimeExpr,
         module: crate::modules::ModuleId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SnapshotValidationError> {
         let mut pending = vec![(root, 0)];
         while let Some((expr, depth)) = pending.pop() {
-            ensure(depth < 16, "snapshot expression-depth limit is 16")?;
+            check_expression_depth(depth)?;
             let mut branches = Vec::new();
             match expr {
                 RuntimeExpr::EffectCall { call } => {
@@ -767,15 +793,18 @@ impl Engine {
     }
 }
 
-fn validate_action(root: &ActionExpr) -> Result<(), String> {
+fn validate_action(root: &ActionExpr) -> Result<(), SnapshotValidationError> {
     validate_action_at_depth(root, 0)
 }
 
-fn validate_action_at_depth(root: &ActionExpr, initial_depth: usize) -> Result<(), String> {
+fn validate_action_at_depth(
+    root: &ActionExpr,
+    initial_depth: usize,
+) -> Result<(), SnapshotValidationError> {
     let mut pending = vec![(root, initial_depth)];
     let mut children = Vec::new();
     while let Some((expression, depth)) = pending.pop() {
-        ensure(depth < 16, "snapshot expression-depth limit is 16")?;
+        check_expression_depth(depth)?;
         if let ActionExpr::QueryAction {
             name,
             bindings,
@@ -801,7 +830,7 @@ fn validate_query_shape<'a>(
     name: &str,
     bindings: impl Iterator<Item = (&'a str, usize)>,
     body_len: usize,
-) -> Result<(), String> {
+) -> Result<(), SnapshotValidationError> {
     ensure(
         matches!(
             name,

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -329,5 +330,28 @@ func TestSerializeToFileUnwritable(t *testing.T) {
 	err = e.SerializeToFile("/nonexistent/dir/snap.bin", FormatCBOR)
 	if err == nil {
 		t.Fatal("expected error for unwritable path")
+	}
+}
+
+func TestSnapshotWriteLimitPreservesErrorCategory(t *testing.T) {
+	for _, tc := range allFormats() {
+		t.Run(tc.name, func(t *testing.T) {
+			lockThread(t)
+			e, err := NewEngine()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mustClose(t, e)
+			if err := e.PushInputE(strings.Repeat("x", 16*1024*1024)); err != nil {
+				t.Fatal(err)
+			}
+			_, err = e.Serialize(tc.format)
+			if !errors.Is(err, ErrSerialization) {
+				t.Fatalf("expected serialization error, got %v", err)
+			}
+			if !strings.HasSuffix(err.Error(), "snapshot exceeds the 16 MiB byte limit") {
+				t.Fatalf("limit diagnostic was lost or wrapped: %v", err)
+			}
+		})
 	}
 }

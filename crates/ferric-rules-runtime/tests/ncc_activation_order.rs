@@ -427,13 +427,15 @@ fn nested_exists_chains_settle_depth_first_across_rules() {
 #[test]
 fn nested_exists_snapshot_keeps_postponed_levels_blocked() {
     use ferric_rules_runtime::SerializationFormat;
-    // Deeper nesting exceeds the current snapshot NCC depth bound.
-    for &format in SerializationFormat::ALL {
-        let mut engine = nested_exists_engine(NESTED_EXISTS[0]);
+    for (condition, &format) in NESTED_EXISTS
+        .iter()
+        .flat_map(|condition| SerializationFormat::ALL.iter().map(move |f| (condition, f)))
+    {
+        let mut engine = nested_exists_engine(condition);
         engine.assert_ordered("seed", ()).unwrap();
         let bytes = engine.serialize(format).unwrap();
         engine = Engine::deserialize(&bytes, format).unwrap();
-        assert_eq!(engine.agenda_len(), 0, "{format:?}");
+        assert_eq!(engine.agenda_len(), 0, "{condition}: {format:?}");
         engine.assert_ordered("a", ()).unwrap();
         engine.assert_ordered("b", ()).unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);

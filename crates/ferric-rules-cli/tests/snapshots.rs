@@ -92,6 +92,88 @@ fn explicit_json_codec_works_and_legacy_errors_are_useful() {
 }
 
 #[test]
+fn snapshot_limit_diagnostics_preserve_the_destination() {
+    let consumer = tempfile::tempdir().unwrap();
+    // Small, valid source can construct a fact that exceeds the snapshot cap.
+    std::fs::write(
+        consumer.path().join("rules.clp"),
+        "(deffunction large-string ()
+           (bind ?s \"x\")
+           (loop-for-count (?i 1 24) do (bind ?s (str-cat ?s ?s)))
+           (return ?s))
+         (deffacts seed (large (large-string)))",
+    )
+    .unwrap();
+    let destination = consumer.path().join("state.ferric");
+    std::fs::write(&destination, b"existing snapshot").unwrap();
+    for format in ["json", "cbor"] {
+        for json_mode in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_ferric"));
+            command.current_dir(consumer.path()).args([
+                "snapshot",
+                "rules.clp",
+                "-o",
+                "state.ferric",
+                "--format",
+                format,
+            ]);
+            if json_mode {
+                command.arg("--json");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            let message = if json_mode {
+                let diagnostic: serde_json::Value = serde_json::from_str(&stderr).unwrap();
+                assert_eq!(diagnostic["kind"], "serialize_error");
+                assert_eq!(diagnostic["command"], "snapshot");
+                assert_eq!(diagnostic["level"], "error");
+                diagnostic["message"].as_str().unwrap().to_owned()
+            } else {
+                stderr
+                    .strip_prefix("ferric snapshot: ")
+                    .unwrap()
+                    .trim()
+                    .to_owned()
+            };
+            assert!(message.starts_with("snapshot exceeds the "), "{message}");
+            assert!(message.ends_with(" limit"), "{message}");
+            assert_eq!(std::fs::read(&destination).unwrap(), b"existing snapshot");
+        }
+    }
+}
+
+#[test]
+fn repl_rejects_oversized_snapshot_files_before_decoding() {
+    let consumer = tempfile::tempdir().unwrap();
+    let path = consumer.path().join("large.ferric");
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    for format in ["json", "cbor"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_ferric"))
+            .current_dir(consumer.path())
+            .args([
+                "repl",
+                "--snapshot",
+                "large.ferric",
+                "--snapshot-format",
+                format,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("snapshot exceeds the 16 MiB byte limit"),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn snapshot_reports_match_time_errors_raised_while_loading() {
     let consumer = tempfile::tempdir().unwrap();
     std::fs::write(

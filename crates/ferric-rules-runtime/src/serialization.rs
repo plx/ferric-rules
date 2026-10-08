@@ -22,6 +22,8 @@
 //!   nested external identities in facts and globals, with
 //!   [`SerializationError::ExternalAddressPresent`].
 
+#[cfg(test)]
+mod acceptance_tests;
 mod limited;
 mod validation;
 
@@ -77,7 +79,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 11")]
+    #[error("unsupported snapshot schema version {0}; this build supports version {supported}", supported = SCHEMA_VERSION)]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -394,8 +396,10 @@ impl Engine {
         let payload = encode(&snapshot, format)?;
         // Apply the same wire limits to writes: never return bytes that this
         // build cannot read, including JSON's inability to represent NaN.
-        let _: EngineSnapshotOwned = decode(&payload, format)
-            .map_err(|error| SerializationError::Encode(error.to_string()))?;
+        let _: EngineSnapshotOwned = decode(&payload, format).map_err(|error| match error {
+            SerializationError::LimitExceeded(_) => error,
+            _ => SerializationError::Encode(error.to_string()),
+        })?;
         envelope(payload, format)
     }
 
@@ -515,16 +519,20 @@ impl Engine {
 }
 
 #[derive(Default)]
-struct BoundedWriter(Vec<u8>);
+struct BoundedWriter {
+    bytes: Vec<u8>,
+    limit_exceeded: bool,
+}
 
 impl std::io::Write for BoundedWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > (MAX_SNAPSHOT_BYTES - HEADER_LEN).saturating_sub(self.0.len()) {
+        if bytes.len() > (MAX_SNAPSHOT_BYTES - HEADER_LEN).saturating_sub(self.bytes.len()) {
+            self.limit_exceeded = true;
             return Err(std::io::Error::other(
                 "snapshot exceeds the 16 MiB byte limit",
             ));
         }
-        self.0.extend_from_slice(bytes);
+        self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -538,17 +546,17 @@ fn encode<T: serde::Serialize>(
     format: SerializationFormat,
 ) -> Result<Vec<u8>, SerializationError> {
     let mut writer = BoundedWriter::default();
-    match format {
-        SerializationFormat::Json => {
-            serde_json::to_writer(&mut writer, value)
-                .map_err(|e| SerializationError::Encode(e.to_string()))?;
-        }
-        SerializationFormat::Cbor => {
-            ciborium::ser::into_writer(value, &mut writer)
-                .map_err(|e| SerializationError::Encode(e.to_string()))?;
-        }
+    let result = match format {
+        SerializationFormat::Json => serde_json::to_writer(&mut writer, value)
+            .map_err(|error| SerializationError::Encode(error.to_string())),
+        SerializationFormat::Cbor => ciborium::ser::into_writer(value, &mut writer)
+            .map_err(|error| SerializationError::Encode(error.to_string())),
+    };
+    if writer.limit_exceeded {
+        return Err(SerializationError::LimitExceeded("16 MiB byte"));
     }
-    Ok(writer.0)
+    result?;
+    Ok(writer.bytes)
 }
 
 /// Decode a snapshot from bytes in the given format.
@@ -556,21 +564,48 @@ fn decode<T: serde::de::DeserializeOwned>(
     data: &[u8],
     format: SerializationFormat,
 ) -> Result<T, SerializationError> {
+    decode_with_limits::<T, { limited::MAX_STEPS }, { limited::MAX_DEPTH }>(data, format)
+}
+
+fn decode_with_limits<T: serde::de::DeserializeOwned, const STEPS: usize, const DEPTH: usize>(
+    data: &[u8],
+    format: SerializationFormat,
+) -> Result<T, SerializationError> {
+    use serde::Deserialize;
+
     match format {
-        SerializationFormat::Json => serde_json::from_slice::<limited::Limited<T>>(data)
-            .map(|value| value.0)
-            .map_err(|e| SerializationError::Decode(e.to_string())),
+        SerializationFormat::Json => {
+            let mut decoder = serde_json::Deserializer::from_slice(data);
+            // Every descent, including ignored fields, is guarded by Limited.
+            // JSON's opaque native recursion error cannot preserve a limit kind.
+            decoder.disable_recursion_limit();
+            let value = limited::Limited::<T, STEPS, DEPTH>::deserialize(&mut decoder)
+                .map_err(|error| SerializationError::Decode(error.to_string()))?
+                .0
+                .map_err(|kind| SerializationError::LimitExceeded(kind.description()))?;
+            decoder
+                .end()
+                .map_err(|error| SerializationError::Decode(error.to_string()))?;
+            Ok(value)
+        }
         SerializationFormat::Cbor => {
             let mut reader = data;
-            let value = ciborium::de::from_reader_with_recursion_limit::<limited::Limited<T>, _>(
-                &mut reader,
-                limited::MAX_DEPTH,
-            )
-            .map_err(|e| SerializationError::Decode(e.to_string()))?;
+            let value = ciborium::de::from_reader_with_recursion_limit::<
+                limited::Limited<T, STEPS, DEPTH>,
+                _,
+            >(&mut reader, DEPTH)
+            .map_err(|error| match error {
+                ciborium::de::Error::RecursionLimitExceeded => {
+                    SerializationError::LimitExceeded(limited::LimitKind::Depth.description())
+                }
+                _ => SerializationError::Decode(error.to_string()),
+            })?
+            .0
+            .map_err(|kind| SerializationError::LimitExceeded(kind.description()))?;
             if !reader.is_empty() {
                 return Err(SerializationError::Decode("trailing CBOR data".to_owned()));
             }
-            Ok(value.0)
+            Ok(value)
         }
     }
 }
@@ -743,9 +778,12 @@ mod tests {
             }
             *expression = nested;
         });
-        assert!(
-            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("expression-depth"))
-        );
+        assert!(matches!(
+            result,
+            Err(SerializationError::LimitExceeded(
+                "16-level expression-depth"
+            ))
+        ));
 
         let result = alter_state(&engine, |state| {
             template_metadata(state).unwrap()["dynamic_defaults"][0]["expressions"][0] =
@@ -1334,10 +1372,10 @@ mod tests {
         // Hostile lengths with almost no payload must fail without reserving them.
         let mut cbor = vec![0x9b];
         cbor.extend(u64::MAX.to_be_bytes());
-        assert!(decode::<Vec<Value>>(&cbor, SerializationFormat::Cbor)
-            .unwrap_err()
-            .to_string()
-            .contains("limit"));
+        assert!(matches!(
+            decode::<Vec<Value>>(&cbor, SerializationFormat::Cbor),
+            Err(SerializationError::LimitExceeded(_))
+        ));
         for &format in SerializationFormat::ALL {
             let mut nested = Value::Integer(7);
             for _ in 0..8 {
@@ -1351,20 +1389,16 @@ mod tests {
                 nested = Value::Multifield(Box::new(vec![nested].into_iter().collect()));
             }
             let deep = encode(&nested, format).unwrap();
-            let error = decode::<Value>(&deep, format)
-                .unwrap_err()
-                .to_string()
-                .to_lowercase();
-            assert!(error.contains("limit"), "{format:?}: {error}");
+            assert!(
+                matches!(
+                    decode::<Value>(&deep, format),
+                    Err(SerializationError::LimitExceeded(_))
+                ),
+                "{format:?}: recursive decode must retain its limit error family"
+            );
         }
-        // The aggregate budget also applies when no collection advertises a size.
-        let mut cbor = vec![0x9f];
-        cbor.resize(limited::MAX_ITEMS + 2, 0xf6);
-        cbor.push(0xff);
-        assert!(decode::<Vec<()>>(&cbor, SerializationFormat::Cbor)
-            .unwrap_err()
-            .to_string()
-            .contains("item limit"));
+        // Small-budget decoder tests cover definite and indefinite collection
+        // exhaustion without allocating a production-budget-sized array.
     }
 
     #[test]
@@ -1465,29 +1499,35 @@ mod tests {
     }
 
     #[test]
-    fn two_nested_exists_serialize_but_three_exceed_the_ncc_depth() {
-        // Each `exists` is a double negation: two levels reach the snapshot
-        // NCC depth of four, and a third exceeds it.
-        let mut engine = Engine::with_rules(
-            "(deffacts seed (a))
-             (defrule two (exists (exists (a))) => (printout t two crlf))",
-        )
-        .unwrap();
-        engine.reset().unwrap();
-        let snapshot = engine.serialize(SerializationFormat::Cbor).unwrap();
-        let mut restored = Engine::deserialize(&snapshot, SerializationFormat::Cbor).unwrap();
-        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(restored.get_output("t"), Some("two\n"));
-
-        let engine = Engine::with_rules(
-            "(defrule three (exists (exists (exists (a)))) => (printout t three crlf))",
-        )
-        .unwrap();
-        let error = engine
-            .serialize(SerializationFormat::Cbor)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("NCC nesting exceeds 4"), "{error}");
+    fn nested_exists_serialize_through_the_source_nesting_limit() {
+        // Each `exists` is a double negation: four source levels compile to
+        // eight NCC layers, the snapshot validator's compiled bound.
+        for (name, condition) in [
+            ("two", "(exists (exists (a)))"),
+            ("three", "(exists (exists (exists (a))))"),
+            ("four", "(exists (exists (exists (exists (a)))))"),
+            (
+                "four-or",
+                "(exists (exists (exists (exists (or (a) (b))))))",
+            ),
+        ] {
+            let mut engine = Engine::with_rules(&format!(
+                "(deffacts seed (a))
+                 (defrule {name} {condition} => (printout t {name} crlf))"
+            ))
+            .unwrap();
+            engine.reset().unwrap();
+            for format in [SerializationFormat::Cbor, SerializationFormat::Json] {
+                let snapshot = engine.serialize(format).unwrap();
+                let mut restored = Engine::deserialize(&snapshot, format).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                assert_eq!(
+                    restored.get_output("t"),
+                    Some(format!("{name}\n").as_str()),
+                    "{format:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1723,9 +1763,10 @@ mod tests {
                 fields: smallvec::smallvec![value],
             }))
             .unwrap();
-        assert!(
-            matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::InvalidState(message)) if message.contains("value limit"))
-        );
+        assert!(matches!(
+            engine.serialize(SerializationFormat::Cbor),
+            Err(SerializationError::LimitExceeded("32-level value"))
+        ));
         let mut engine = Engine::with_rules("(defglobal ?*value* = 0)").unwrap();
         engine.globals.set(
             engine.module_registry.main_module_id(),
@@ -1752,9 +1793,10 @@ mod tests {
                 ))],
             )
             .unwrap();
-        assert!(
-            matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::Encode(message)) if message.contains("byte limit"))
-        );
+        assert!(matches!(
+            engine.serialize(SerializationFormat::Cbor),
+            Err(SerializationError::LimitExceeded("16 MiB byte"))
+        ));
     }
 
     #[test]
@@ -2510,9 +2552,19 @@ mod tests {
                     }
                 }
             });
+            let expected_error = if corruption == 6 {
+                matches!(
+                    result,
+                    Err(SerializationError::LimitExceeded(
+                        "16-level expression-depth"
+                    ))
+                )
+            } else {
+                matches!(result, Err(SerializationError::InvalidState(_)))
+            };
             assert!(
-                matches!(result, Err(SerializationError::InvalidState(_))),
-                "accepted query corruption {corruption}: {:?}",
+                expected_error,
+                "wrong error for query corruption {corruption}: {:?}",
                 result.err()
             );
         }
@@ -3120,9 +3172,12 @@ mod tests {
             }
             *field = expression;
         });
-        assert!(
-            matches!(too_deep, Err(SerializationError::InvalidState(message)) if message.contains("expression-depth"))
-        );
+        assert!(matches!(
+            too_deep,
+            Err(SerializationError::LimitExceeded(
+                "16-level expression-depth"
+            ))
+        ));
     }
 
     #[test]
@@ -3218,9 +3273,10 @@ mod tests {
             nodes.push(appended);
             state["rete"]["alpha"]["next_node_id"] = serde_json::json!(id + 1);
         });
-        assert!(
-            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("64 tests"))
-        );
+        assert!(matches!(
+            result,
+            Err(SerializationError::LimitExceeded("64 tests per alpha path"))
+        ));
         // Removing an accepted fact must also stay within the bounded path.
         alpha
             .load_str(&format!("(assert (wide {fields}))"))
@@ -3272,9 +3328,10 @@ mod tests {
             beta["next_node_id"] = serde_json::json!(id + 1);
             beta["next_memory_id"] = serde_json::json!(memory + 1);
         });
-        assert!(
-            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("66 nodes"))
-        );
+        assert!(matches!(
+            result,
+            Err(SerializationError::LimitExceeded("66 nodes per beta path"))
+        ));
     }
 
     fn beta_body_mut(nodes: &mut [serde_json::Value], id: u64) -> &mut serde_json::Value {
@@ -3292,9 +3349,10 @@ mod tests {
     #[test]
     fn short_beta_paths_cannot_hide_deep_or_cyclic_ncc_callbacks() {
         use std::fmt::Write;
-        for (count, cycle, expected) in
-            [(2, true, "cyclic NCC"), (5, false, "NCC nesting exceeds 4")]
-        {
+        for (count, cycle, expected) in [
+            (2, true, "cyclic NCC"),
+            (9, false, "8-level compiled NCC nesting"),
+        ] {
             let mut source = String::new();
             for index in 0..count {
                 write!(
@@ -3329,10 +3387,15 @@ mod tests {
                     beta_body_mut(nodes, partner)["parent"] = serde_json::json!(next);
                 }
             });
-            assert!(
-                matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(expected)),
-                "{expected}"
-            );
+            match result {
+                Err(SerializationError::InvalidState(message)) if cycle => {
+                    assert!(message.contains(expected), "{message}");
+                }
+                Err(SerializationError::LimitExceeded(limit)) if !cycle => {
+                    assert_eq!(limit, expected);
+                }
+                _ => panic!("{expected}: wrong error family"),
+            }
         }
     }
 

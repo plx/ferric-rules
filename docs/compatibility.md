@@ -783,15 +783,13 @@ language limits or a guarantee that arbitrary large fact populations fit a
 host's memory. The recommended snapshot envelope applies its own input and
 restored-graph validation limits.
 
-The current snapshot validator also limits NCC dependency nesting to four.
-Each `exists` compiles to a double negation, so nested quantifiers can exceed
-that bound within the four-level source nesting limit: for example
-`(exists (exists (exists (a))))`, `(exists (a) (exists (b) (exists (c) (d))))`,
-`exists` over `or` inside further nesting, or an `exists` at the bottom of a
-deep `not (and ...)` chain. Such rules load and run, but `Engine::serialize`
-rejects them with `snapshot NCC nesting exceeds 4`; two nested `exists` levels
-still serialize. This persistence boundary is tracked with the snapshot-limit
-work in #410.
+The snapshot validator allows compiled NCC dependency depth up to eight. Each
+`exists` compiles to a double negation, so this covers every rule within the
+four-level source nesting limit: for example `(exists (exists (exists (a))))`,
+`(exists (a) (exists (b) (exists (c) (d))))`, `exists` over `or` inside further
+nesting, and an `exists` at the bottom of a deep `not (and ...)` chain all
+serialize and restore. Restoration also checks partner ancestry and rejects
+cyclic NCC callback dependencies.
 
 ### Pattern Nesting Restrictions
 
