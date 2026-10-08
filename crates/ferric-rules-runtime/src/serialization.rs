@@ -310,7 +310,7 @@ impl EngineSnapshotOwned {
             input_buffer: self.input_buffer,
             input_source: None,
             before_input: None,
-            root_dynamic_module: None,
+            root_cleared: false,
             active_expression_scopes: 0,
         };
         // The registry is derived; restoring existing activations must not

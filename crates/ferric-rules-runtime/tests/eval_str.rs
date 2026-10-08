@@ -570,3 +570,156 @@ fn excerpt_entry_points_locate_diagnostics_in_the_enclosing_source() {
         Value::Integer(3)
     ));
 }
+
+/// An engine whose current module `A` owns `?*g*` = 1.
+fn engine_with_global_in_module_a() -> Engine {
+    let mut engine = engine_in_module_a();
+    engine.load_str("(defglobal A ?*g* = 1)").unwrap();
+    engine
+}
+
+/// A root clear inside a nested context deletes the module the expression
+/// was parsed in, so later global reads resolve in the new MAIN. With A
+/// current and `(defglobal A ?*g* = 1)`, CLIPS 6.30 prints 4, 5, 6 and 7 for
+/// `(progn (eval "(clear)") (build "(defglobal ?*g* = 4)") ?*g*)` and the
+/// `loop-for-count`, `progn$` and `foreach` forms below, and binds the new
+/// MAIN's global for
+/// `(progn (eval "(clear)") (build "(defglobal ?*g* = 4)") (bind ?*g* 3))`.
+#[test]
+fn nested_root_clear_moves_global_reads_and_binds_to_the_new_main() {
+    for (source, expected) in [
+        (
+            r#"(progn (eval "(clear)") (build "(defglobal ?*g* = 4)") ?*g*)"#,
+            4,
+        ),
+        (
+            r#"(progn (loop-for-count 1 (clear)) (build "(defglobal ?*g* = 5)") ?*g*)"#,
+            5,
+        ),
+        (
+            r#"(progn (progn$ (?x (create$ 1)) (clear)) (build "(defglobal ?*g* = 6)") ?*g*)"#,
+            6,
+        ),
+        (
+            r#"(progn (foreach ?x (create$ 1) (clear)) (build "(defglobal ?*g* = 7)") ?*g*)"#,
+            7,
+        ),
+    ] {
+        let mut engine = engine_with_global_in_module_a();
+        let value = engine.eval_str(source).unwrap();
+        assert!(
+            matches!(value, Value::Integer(value) if value == expected),
+            "{source}: {value:?}"
+        );
+    }
+    let mut engine = engine_with_global_in_module_a();
+    let value = engine
+        .eval_str(r#"(progn (eval "(clear)") (build "(defglobal ?*g* = 4)") (bind ?*g* 3))"#)
+        .unwrap();
+    assert!(matches!(value, Value::Integer(3)), "{value:?}");
+    assert_eq!(engine.current_module(), "MAIN");
+    assert!(matches!(engine.get_global("g"), Some(Value::Integer(3))));
+}
+
+/// A computed query restriction names its template when it runs. After
+/// `(defmodule A)`, CLIPS 6.30 returns () for
+/// `(progn (eval "(clear)") (build "(deftemplate p)") (find-all-facts ((?f (sym-cat p))) TRUE))`.
+/// With `A::p` and A current, `(progn (reset) (assert (p)) (length$
+/// (find-all-facts ((?f p)) TRUE)))` gives 1 through the literal restriction,
+/// while the `(sym-cat p)` restriction cannot find `p` from MAIN.
+#[test]
+fn computed_query_restrictions_follow_the_root_module() {
+    let mut engine = engine_in_module_a();
+    let value = engine
+        .eval_str(
+            r#"(progn (eval "(clear)") (build "(deftemplate p)") (find-all-facts ((?f (sym-cat p))) TRUE))"#,
+        )
+        .unwrap();
+    assert!(
+        matches!(&value, Value::Multifield(facts) if facts.is_empty()),
+        "{value:?}"
+    );
+    let engine_with_template = || {
+        let mut engine = engine_in_module_a();
+        engine.load_str("(deftemplate A::p)").unwrap();
+        engine
+    };
+    let mut engine = engine_with_template();
+    assert!(matches!(
+        engine
+            .eval_str("(progn (reset) (assert (p)) (length$ (find-all-facts ((?f p)) TRUE)))")
+            .unwrap(),
+        Value::Integer(1)
+    ));
+    let mut engine = engine_with_template();
+    assert!(engine
+        .eval_str("(progn (reset) (assert (p)) (length$ (find-all-facts ((?f (sym-cat p))) TRUE)))")
+        .is_err());
+}
+
+/// A built defmodule becomes current for the rest of the expression: CLIPS
+/// 6.30 prints `(r)|()` for `(get-defrule-list A)|(get-defrule-list MAIN)`
+/// after `(progn (build "(defmodule A)") (build "(defrule r =>)"))`.
+#[test]
+fn built_defmodule_receives_later_root_builds() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .eval_str(r#"(progn (build "(defmodule A)") (build "(defrule r =>)"))"#)
+        .unwrap();
+    assert_eq!(rule_list(&mut engine), "A::r");
+    assert_eq!(engine.current_module(), "A");
+}
+
+/// A root reset moves global reads to MAIN, but `bind` keeps the global the
+/// expression named when it was parsed. With A current and
+/// `(defglobal A ?*g* = 1)`, CLIPS 6.30 prints `[GLOBLDEF1] Global variable
+/// ?*g* is unbound.` for `(progn (eval "(reset)") ?*g*)` and
+/// `(progn (reset) ?*g*)`, and `(progn (reset) (bind ?*g* 9))` sets A's
+/// global to 9.
+#[test]
+fn root_reset_moves_global_reads_but_not_binds() {
+    for source in [r#"(progn (eval "(reset)") ?*g*)"#, "(progn (reset) ?*g*)"] {
+        let mut engine = engine_with_global_in_module_a();
+        assert!(engine.eval_str(source).is_err(), "{source}");
+    }
+    let mut engine = engine_with_global_in_module_a();
+    assert!(matches!(
+        engine.eval_str("(progn (reset) (bind ?*g* 9))").unwrap(),
+        Value::Integer(9)
+    ));
+    assert_eq!(engine.current_module(), "MAIN");
+    engine.load_str("(defmodule A)").unwrap();
+    assert!(matches!(engine.get_global("g"), Some(Value::Integer(9))));
+}
+
+/// A deffunction or method restores the current module when it returns. With
+/// MAIN exporting `rs` (a deffunction that resets), `mk` (one that builds
+/// `(defmodule X)`) and generic `grs` (whose method resets), and A importing
+/// them, CLIPS 6.30 lists `(r)` in A after each of `(progn (rs) (build
+/// "(defrule r =>)"))`, `(progn (mk) ...)` and `(progn (grs) ...)`, and A
+/// stays current after `(rs)`.
+#[test]
+fn callables_restore_the_current_module() {
+    let engine_in_a = || {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str(
+                r#"(defmodule MAIN (export ?ALL))
+                   (deffunction rs () (reset))
+                   (deffunction mk () (build "(defmodule X)"))
+                   (defgeneric grs) (defmethod grs () (reset))
+                   (defmodule A (import MAIN ?ALL))"#,
+            )
+            .unwrap();
+        assert_eq!(engine.current_module(), "A");
+        engine
+    };
+    for call in ["(rs)", "(mk)", "(grs)"] {
+        let mut engine = engine_in_a();
+        engine
+            .eval_str(&format!(r#"(progn {call} (build "(defrule r =>)"))"#))
+            .unwrap();
+        assert_eq!(rule_list(&mut engine), "A::r", "{call}");
+        assert_eq!(engine.current_module(), "A", "{call}");
+    }
+}

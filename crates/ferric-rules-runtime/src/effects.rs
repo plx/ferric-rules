@@ -153,14 +153,28 @@ fn is_root_context(ctx: &EvalContext<'_>) -> bool {
 }
 
 /// The module that dynamic source (`eval`, `assert-string`, `build`, fact
-/// files) resolves in. As in CLIPS, a root `reset` or `clear` selects MAIN for
-/// later dynamic source, while the expression's own references stay bound to
-/// the module it was parsed in.
+/// files) and run-time name lookups resolve in. A root expression follows the
+/// engine's current module, as CLIPS's top-level commands follow its global
+/// one: a root `reset` or `clear` selects MAIN and a built `defmodule` selects
+/// itself, while the expression's own parsed references stay bound to the
+/// module it was parsed in.
 pub(crate) fn dynamic_module(ctx: &EvalContext<'_>) -> ModuleId {
-    ctx.engine
-        .root_dynamic_module
-        .filter(|_| is_root_context(ctx))
-        .unwrap_or(ctx.current_module)
+    if is_root_context(ctx) {
+        ctx.engine.module_registry.current_module()
+    } else {
+        ctx.current_module
+    }
+}
+
+/// The module `bind` resolves an unqualified defglobal in. CLIPS binds the
+/// global a command names when it parses the command, so this is the
+/// expression's own module, unless a root `clear` has deleted that module.
+pub(crate) fn bind_module(ctx: &EvalContext<'_>) -> ModuleId {
+    if ctx.engine.root_cleared && is_root_context(ctx) {
+        ctx.engine.module_registry.current_module()
+    } else {
+        ctx.current_module
+    }
 }
 
 pub(crate) fn eval_call(
@@ -189,10 +203,6 @@ fn eval_call_inner(
                     ctx.engine
                         .reset_for_evaluation()
                         .map_err(|error| failure(name, error.to_string(), span))?;
-                    if is_root_context(ctx) {
-                        ctx.engine.root_dynamic_module =
-                            Some(ctx.engine.module_registry.current_module());
-                    }
                 }
                 "clear" => {
                     if ctx
@@ -201,7 +211,11 @@ fn eval_call_inner(
                         .map_err(|error| failure(name, error.to_string(), span))?
                     {
                         let main = ctx.engine.module_registry.current_module();
-                        ctx.engine.root_dynamic_module = Some(main);
+                        // Enclosing contexts of the expression still hold the
+                        // deleted module; see `bind_module`.
+                        if is_root_context(ctx) {
+                            ctx.engine.root_cleared = true;
+                        }
                         // The clear deleted the expression's module, and module
                         // ids restart. It refused if the expression names a
                         // template, fact or user callable, so nothing left in

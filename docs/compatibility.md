@@ -558,14 +558,20 @@ runs) or calls a deffunction or generic function, or while a callable runs
 outside any rule, it refuses before removing facts. Later actions and eligible
 activations continue. At an ordinary expression root with no constructs in
 use, clear removes constructs, restores `initial-fact` as f-0, and selects
-MAIN; the next user assertion is f-1. A root clear or reset, including one
-inside `eval` source, also selects MAIN for dynamic source that the enclosing
-expression evaluates afterwards (`build`, `eval`, `assert-string`, fact files,
-`save-facts` selectors and construct lookups by name such as `funcall`, `sort`
-and construct lists), so a later `build` defines into MAIN as in CLIPS. As in
-CLIPS, the expression's own function and template references stay bound to
-the module it was parsed in. Inside a rule, later dynamic source still
-resolves in the rule's module, where CLIPS uses MAIN after the reset. Source
+MAIN; the next user assertion is f-1. As in CLIPS, a top-level expression
+follows the current module while it runs: a root clear or reset, including
+one inside `eval` source or a loop body, selects MAIN, and a built
+`defmodule` selects itself. Dynamic source that the expression evaluates
+afterwards (`build`, `eval`, `assert-string`, fact files, `save-facts`
+selectors), construct lookups by name (`funcall`, `sort`, construct lists,
+computed fact-query restrictions) and defglobal reads resolve in that module,
+so a later `build` defines into it. The expression's own function and
+template references, literal query restrictions and `bind` targets stay bound
+to the module it was parsed in; after a root clear deletes that module, `bind`
+also uses the new MAIN. A deffunction or method restores the current module
+when it returns, so a reset or `defmodule` build in its body does not move its
+caller. Inside a rule, later dynamic source still resolves in the rule's
+module, where CLIPS uses MAIN after the reset. Source
 clear preserves queued input, printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
 the same expression through `assert-string` does not keep its relation in use.
 

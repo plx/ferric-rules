@@ -178,7 +178,7 @@ fn with_dynamic_context<T>(
     // global reference observes the assertion caller. A called function gets
     // its own ordinary lexical global scope from execute_callable_body.
     let mut child = EvalContext {
-        global_module: Some(ctx.global_module.unwrap_or(ctx.current_module)),
+        global_module: Some(evaluator::global_lookup_module(ctx)),
         engine: ctx.engine,
         bindings: &bindings,
         var_map: &variables,

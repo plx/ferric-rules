@@ -499,8 +499,19 @@ fn sorted_dedup_modules(
     modules
 }
 
-fn global_lookup_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
-    ctx.global_module.unwrap_or(ctx.current_module)
+/// The module a defglobal read resolves in. As in CLIPS, a root expression
+/// looks a global up when it reads it, from the module its earlier `reset`,
+/// `clear` or `defmodule` build selected.
+pub(crate) fn global_lookup_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
+    ctx.global_module
+        .unwrap_or_else(|| crate::effects::dynamic_module(ctx))
+}
+
+/// The module `bind` resolves a defglobal in: the one the expression was
+/// parsed in (see `effects::bind_module`).
+fn global_bind_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
+    ctx.global_module
+        .unwrap_or_else(|| crate::effects::bind_module(ctx))
 }
 
 /// The modules among `modules` whose `construct_type` named `local_name` is
@@ -1409,8 +1420,14 @@ fn eval_fact_query_inner(
     validate_query_predicate(ctx, predicate, name, span, 0)?;
     let members = crate::query_targets::prepare_query_members(members, |expression, span| {
         let value = eval_inner(ctx, expression)?;
-        ctx.engine
-            .retain_query_targets(&value, ctx.current_module, span)
+        // A literal restriction names its template where the query was
+        // parsed; a computed one is looked up by name when it runs.
+        let module = if matches!(expression, RuntimeExpr::Literal(Value::Symbol(_))) {
+            ctx.current_module
+        } else {
+            crate::effects::dynamic_module(ctx)
+        };
+        ctx.engine.retain_query_targets(&value, module, span)
     })?;
     let mut cursor = crate::query_cursor::ActionQueryCursor::new(members, ctx.engine)?;
     let delayed = name == "delayed-do-for-all-facts";
@@ -1695,12 +1712,29 @@ fn execute_callable_body(
         allow_engine_effects: ctx.allow_engine_effects,
     };
 
+    // As in CLIPS, a deffunction or method restores the current module when
+    // it returns: a `reset` or `defmodule` build in its body does not move
+    // the caller's dynamic source. A clear that deletes modules refuses while
+    // a callable runs, so the saved module still exists.
+    let saved_module = inner_ctx.engine.module_registry.current_module();
+    let result = execute_callable_exprs(&mut inner_ctx, &body_exprs);
+    inner_ctx
+        .engine
+        .module_registry
+        .set_current_module(saved_module);
+    result
+}
+
+fn execute_callable_exprs(
+    ctx: &mut EvalContext<'_>,
+    body_exprs: &[RuntimeExpr],
+) -> Result<Value, EvalError> {
     let mut result = clips_false(
-        &mut inner_ctx.engine.symbol_table,
-        inner_ctx.engine.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     );
-    for body_expr in &body_exprs {
-        match eval_inner(&mut inner_ctx, body_expr) {
+    for body_expr in body_exprs {
+        match eval_inner(ctx, body_expr) {
             Ok(value) => result = value,
             Err(EvalError::ReturnControl { value, .. }) => return Ok(value),
             Err(EvalError::BreakControl { span }) => {
@@ -3613,7 +3647,7 @@ fn dispatch_bind(
                     });
                 }
                 if !ctx.engine.module_registry.is_construct_visible(
-                    global_lookup_module(ctx),
+                    global_bind_module(ctx),
                     module_id,
                     "defglobal",
                     local_name,
@@ -3621,18 +3655,14 @@ fn dispatch_bind(
                     return Err(EvalError::NotVisible {
                         name: format!("?*{name}*"),
                         construct_type: "defglobal".to_string(),
-                        from_module: module_label(ctx, global_lookup_module(ctx)),
+                        from_module: module_label(ctx, global_bind_module(ctx)),
                         owning_module: module_name.to_string(),
                         span: span.cloned(),
                     });
                 }
                 module_id
-            } else if ctx
-                .engine
-                .globals
-                .contains(global_lookup_module(ctx), &name)
-            {
-                global_lookup_module(ctx)
+            } else if ctx.engine.globals.contains(global_bind_module(ctx), &name) {
+                global_bind_module(ctx)
             } else {
                 let all_modules = sorted_dedup_modules(ctx.engine.globals.modules_for_name(&name));
                 if all_modules.is_empty() {
@@ -3643,7 +3673,7 @@ fn dispatch_bind(
                 }
                 let visible = visible_modules_for_construct(
                     ctx,
-                    global_lookup_module(ctx),
+                    global_bind_module(ctx),
                     &all_modules,
                     "defglobal",
                     &name,
@@ -3654,7 +3684,7 @@ fn dispatch_bind(
                         return Err(EvalError::NotVisible {
                             name: format!("?*{name}*"),
                             construct_type: "defglobal".to_string(),
-                            from_module: module_label(ctx, global_lookup_module(ctx)),
+                            from_module: module_label(ctx, global_bind_module(ctx)),
                             owning_module: module_label(ctx, all_modules[0]),
                             span: span.cloned(),
                         })
@@ -6517,8 +6547,7 @@ fn builtin_funcall(
     // and a name that reaches no visible function is a notice: either way the
     // call returns FALSE without evaluating its operands.
     let unresolved = is_module_qualified(&fn_name)
-        || match resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span)
-        {
+        || match resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span) {
             Err(EvalError::UnknownFunction { .. } | EvalError::NotVisible { .. }) => true,
             result => {
                 result?;

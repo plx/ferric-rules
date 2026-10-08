@@ -234,11 +234,10 @@ pub struct Engine {
     /// fields of a top-level assertion. The templates and ordered relations
     /// it names stay in use until it returns.
     pub(crate) active_expressions: Vec<(ModuleId, Arc<RuntimeExpr>)>,
-    /// The module a root `reset` or `clear` selected while the outermost
-    /// active expression runs. Its own prepared references stay bound to
-    /// their module; only later dynamic source (`eval`, `build`, fact files)
-    /// uses this one. Scoped to the outermost active expression.
-    pub(crate) root_dynamic_module: Option<ModuleId>,
+    /// Whether a root `clear` ran while the outermost active expression
+    /// runs. It deleted the module the expression was parsed in, whose id a
+    /// new module may now reuse. Scoped to the outermost active expression.
+    pub(crate) root_cleared: bool,
     /// Nesting of `with_active_expressions` scopes. Unlike
     /// `active_expressions`, a source `clear` does not reset it.
     pub(crate) active_expression_scopes: usize,
@@ -392,7 +391,7 @@ impl Engine {
             input_buffer: VecDeque::new(),
             input_source: None,
             before_input: None,
-            root_dynamic_module: None,
+            root_cleared: false,
             active_expression_scopes: 0,
         }
     }
@@ -495,7 +494,7 @@ impl Engine {
     ) -> T {
         let depth = self.active_expressions.len();
         if self.active_expression_scopes == 0 {
-            self.root_dynamic_module = None;
+            self.root_cleared = false;
         }
         self.active_expression_scopes += 1;
         self.active_expressions.extend(
@@ -507,7 +506,7 @@ impl Engine {
         self.active_expressions.truncate(depth);
         self.active_expression_scopes -= 1;
         if self.active_expression_scopes == 0 {
-            self.root_dynamic_module = None;
+            self.root_cleared = false;
         }
         result
     }
@@ -1871,7 +1870,7 @@ impl Engine {
             // A host clear runs outside every evaluation; recover the scope
             // count that a contained panic may have left behind.
             self.active_expression_scopes = 0;
-            self.root_dynamic_module = None;
+            self.root_cleared = false;
         }
     }
 
