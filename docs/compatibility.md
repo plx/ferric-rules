@@ -292,10 +292,12 @@ existential conditions contribute absence entries, which are older than every
 real fact. If one recency vector is a prefix of another, the longer vector
 wins. Equal vectors compare rule specificity, then prefer the older activation.
 Specificity counts source patterns and comparisons separately for each expanded
-OR branch; nested function arguments do not add predicate specificity. MEA
-first compares the first outer pattern's recency, including a leading absence,
-then uses the same LEX comparison. These rules also order multiple partitions
-of one multifield fact.
+OR branch. Each predicate or return-value call counts once and its ordinary
+arguments add nothing, but each call nested in `and`, `or`, or `not` counts
+separately (`agenda/412_predicate_call_complexity_*`). MEA first compares the
+first outer pattern's recency, including a leading absence, then uses the same
+LEX comparison. These rules also order multiple partitions of one multifield
+fact.
 
 `Simplicity`, `Complexity`, and `Random` are not implemented.
 CLIPS `set-strategy`/`get-strategy` source commands are
