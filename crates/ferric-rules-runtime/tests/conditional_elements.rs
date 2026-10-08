@@ -264,3 +264,186 @@ fn positive_or_normalizes_each_branch_without_changing_multiplicity() {
     engine.retract(blocker).unwrap();
     fire(&mut engine, 1);
 }
+
+#[test]
+fn exists_over_or_is_one_condition_however_many_branches_hold() {
+    for (rule, seed) in [
+        (
+            "(defrule any (exists (or (a 1) (b 1))) => (printout t any crlf))",
+            &[] as &[&str],
+        ),
+        (
+            "(defrule any (exists (x) (or (not (c)) (b 1))) => (printout t any crlf))",
+            &["x"] as &[&str],
+        ),
+    ] {
+        for late in [false, true] {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            if !late {
+                engine.load_str(rule).unwrap();
+            }
+            for relation in seed {
+                engine.assert_ordered(relation, ()).unwrap();
+            }
+            let a = engine.assert_ordered("a", 1_i64).unwrap();
+            let b = engine.assert_ordered("b", 1_i64).unwrap();
+            if late {
+                engine.load_str(rule).unwrap();
+            }
+            // Every branch holds, but exists still yields one activation.
+            fire(&mut engine, 1);
+            engine.retract(a).unwrap();
+            fire(&mut engine, 0);
+            engine.retract(b).unwrap();
+            let blocker = engine.assert_ordered("c", ()).unwrap();
+            fire(&mut engine, 0);
+            engine.retract(blocker).unwrap();
+            // Without (x), the second rule's body has no tuple at all.
+            fire(&mut engine, usize::from(!seed.is_empty()));
+            engine.assert_ordered("b", 1_i64).unwrap();
+            fire(&mut engine, usize::from(seed.is_empty()));
+            assert_eq!(engine.get_output("t"), Some("any\nany\n"), "{rule}");
+        }
+    }
+}
+
+#[test]
+fn nested_groups_flatten_and_distribute_into_rule_level_disjuncts() {
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (b) (c) (x))
+         (defrule or-or (or (or (a) (b)) (z)) => (printout t or-or crlf))
+         (defrule or-and-or (or (and (or (a) (b)) (c)) (d)) => (printout t or-and-or crlf))
+         (defrule and-and-or (and (and (or (a) (b)))) => (printout t and-and-or crlf))
+         (defrule not-exists-or (x) (not (exists (or (a) (d)))) => (printout t not-exists-or crlf))
+         (defrule not-and-and (not (and (x) (and (b) (d)))) => (printout t not-and-and crlf))
+         (defrule exists-and-and (exists (and (b) (and (c) (x)))) => (printout t exists-and-and crlf))
+         (defrule not-not-and (not (not (and (b) (c)))) => (printout t not-not-and crlf))",
+    )
+    .unwrap();
+    fire(&mut engine, 7);
+    let mut lines: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            "and-and-or",
+            "exists-and-and",
+            "not-and-and",
+            "not-exists-or",
+            "not-not-and",
+            "or-and-or",
+            "or-or",
+        ]
+    );
+    // A second disjunct of each positive or adds its own activation.
+    engine.assert_ordered("a", ()).unwrap();
+    fire(&mut engine, 3);
+}
+
+#[test]
+fn negated_and_existential_locals_cannot_reach_a_later_test() {
+    // CLIPS rejects each of these with [ANALYSIS4]: ?x is first bound inside
+    // the negated or existential CE, so the later test reads an undefined name.
+    for (lhs, column) in [
+        ("(exists (or (a ?x) (b ?x)))", 46),
+        ("(exists (and (c) (or (a ?x) (b ?x))))", 56),
+        ("(not (or (a ?x) (b ?x)))", 43),
+        ("(not (a ?x))", 31),
+    ] {
+        let source = format!("(defrule r {lhs} (test (> ?x 0)) => (printout t fired crlf))");
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine.load_str(&source).expect_err(&source);
+        let message = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            message.contains("rule `r` variable ?x is not exported by existential or negated")
+                && message.contains(&format!("at line 1, column {column}")),
+            "{source}: {message}"
+        );
+        assert!(engine.rules().is_empty(), "{source}");
+    }
+
+    // A binding exported by an earlier positive pattern remains visible.
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (a 1) (a 2) (a -1) (b 1) (b -1) (c 3))
+         (defrule exists-or (a ?x) (exists (or (b ?x) (c ?x))) (test (> ?x 0))
+           => (printout t exists ?x crlf))
+         (defrule not-b (a ?x) (not (b ?x)) (test (> ?x 0))
+           => (printout t not ?x crlf))",
+    )
+    .unwrap();
+    fire(&mut engine, 2);
+    let mut lines: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["exists1", "not2"]);
+}
+
+#[test]
+fn nested_tests_read_only_variables_bound_earlier_in_their_scope() {
+    // CLIPS rejects each of these with [ANALYSIS4], wherever the test is
+    // nested: the variable is local to an earlier negation, bound nowhere, or
+    // bound in only some branches of an `or`.
+    const NOT_EXPORTED: &str = "is not exported by existential or negated conditional element";
+    const UNBOUND: &str = "is unbound in test";
+    for (lhs, variable, reason) in [
+        (
+            "(not (and (c ?) (not (a ?x)) (test (> ?x 0))))",
+            "?x",
+            NOT_EXPORTED,
+        ),
+        (
+            "(not (and (c ?) (exists (or (a ?x) (b ?x))) (test (> ?x 0))))",
+            "?x",
+            NOT_EXPORTED,
+        ),
+        (
+            "(exists (c ?) (not (a ?x)) (test (> ?x 0)))",
+            "?x",
+            NOT_EXPORTED,
+        ),
+        ("(not (and (c ?) (test (> ?zz 0))))", "?zz", UNBOUND),
+        ("(exists (c ?) (test (> ?zz 0)))", "?zz", UNBOUND),
+        ("(test (> ?zz 0))", "?zz", UNBOUND),
+        ("(or (a ?x) (b ?y)) (test (> ?x 0))", "?x", UNBOUND),
+        (
+            "(not (and (c ?) (or (a ?x) (b ?y)) (test (> ?x 0))))",
+            "?x",
+            UNBOUND,
+        ),
+        ("(forall (a ?x) (test (> ?q 0)))", "?q", UNBOUND),
+    ] {
+        let source = format!("(defrule r (seed) {lhs} => (printout t fired crlf))");
+        let column = source.find("(test ").unwrap() + "(test ".len() + 1;
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine.load_str(&source).expect_err(&source);
+        let message = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            message.contains(&format!("rule `r` variable {variable} {reason}"))
+                && message.contains(&format!("at line 1, column {column}")),
+            "{source}: {message}"
+        );
+        assert!(engine.rules().is_empty(), "{source}");
+    }
+
+    // A name bound earlier in the same negation, or in every `or` branch,
+    // stays visible to the test.
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (seed) (a 1) (a -1) (b 1) (b 2) (c 1))
+         (defrule inner (seed) (not (and (c ?) (not (a ?x)) (b ?y) (test (> ?y 0))))
+           => (printout t inner crlf))
+         (defrule both (or (a ?x) (b ?x)) (test (> ?x 0))
+           => (printout t both ?x crlf))",
+    )
+    .unwrap();
+    fire(&mut engine, 4);
+    let mut lines: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["both1", "both1", "both2", "inner"]);
+}

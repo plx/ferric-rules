@@ -1,0 +1,7 @@
+(deftemplate p (slot x))
+(deftemplate q (slot x))
+(deffacts d (p (x 1)) (p (x 2)) (q (x 2)) (go))
+(defrule notq (declare (salience 30)) (go) (p (x ?x)) (not (and (q (x ?y)) (test (any-factp ((?f p)) (and (eq ?f:x ?x) (eq ?y ?x)))))) => (printout t notq " " ?x crlf))
+(defrule existsq (declare (salience 20)) (go) (exists (p (x ?x)) (test (any-factp ((?f q)) (eq ?f:x ?x)))) => (printout t existsq crlf))
+(defrule forallq (declare (salience 10)) (go) (forall (p (x ?x)) (test (any-factp ((?f p)) (eq ?f:x ?x)))) => (printout t forallq crlf))
+(defrule forallno (declare (salience 5)) (go) (forall (p (x ?x)) (test (any-factp ((?f q)) (eq ?f:x ?x)))) => (printout t forallno crlf))

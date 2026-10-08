@@ -1,0 +1,6 @@
+
+[PRCDRPSR2] The break function not valid in this context.
+
+ERROR:
+(defrule MAIN::r
+   (test (break

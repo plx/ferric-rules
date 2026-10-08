@@ -1,0 +1,5 @@
+(deftemplate p (slot x))
+(deffacts d (p (x 1)) (p (x 2)) (go))
+(defrule own (declare (salience 30)) ?a <- (p (x ?x)) (test (any-factp ((?f p)) (and (eq ?f ?a) (eq ?f:x 2)))) => (printout t own " " ?x crlf))
+(defrule other (declare (salience 20)) (go) ?a <- (p (x 1)) (p (x ?y&:(any-factp ((?f p)) (and (neq ?f ?a) (eq ?f:x ?y))))) => (printout t other " " ?y crlf))
+(defrule count (declare (salience 10)) ?g <- (go) => (printout t (length$ (find-all-facts ((?f go)) (eq ?f ?g))) crlf))

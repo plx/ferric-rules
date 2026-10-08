@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::fact_initializer::PreparedFact;
-use crate::{EngineConfig, RunLimit};
+use crate::{EngineConfig, HostValue, RunLimit};
+use std::fmt::Write as _;
 
 fn roundtrip(engine: &Engine, format: SerializationFormat) -> Engine {
     let bytes = engine.serialize(format).unwrap();
@@ -99,6 +100,56 @@ fn five_thousand_pending_joins_resume_in_both_codecs() {
         assert!(seen.into_iter().all(|present| present));
         assert_eq!(restored.agenda_len(), 0);
         assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+    }
+}
+
+#[test]
+fn issue_rule_base_beyond_the_old_budget_roundtrips_in_both_codecs() {
+    // Issue #410's fact-free rule base first failed at 1,915 rules; 2,500
+    // rules (about 5.9 MB of CBOR) exceed the old 1M-step budget in both codecs.
+    const COUNT: usize = 2_500;
+    let mut source = String::new();
+    for i in 0..COUNT {
+        writeln!(
+            source,
+            "(defrule r{i} (a{i} ?x) (b{i} ?y&:(> ?y ?x)) (not (c{i} ?x ?y)) =>)"
+        )
+        .unwrap();
+    }
+    let engine = Engine::with_rules(&source).unwrap();
+    assert_eq!(engine.rules().len(), COUNT);
+    for &format in SerializationFormat::ALL {
+        let mut restored = roundtrip(&engine, format);
+        assert_eq!(restored.rules().len(), COUNT);
+        restored.assert_ordered("a7", 1).unwrap();
+        restored.assert_ordered("b7", 2).unwrap();
+        assert_eq!(restored.agenda_len(), 1);
+        restored.assert_ordered("c7", [1, 2]).unwrap();
+        assert_eq!(restored.agenda_len(), 0);
+    }
+}
+
+#[test]
+fn write_side_readback_reports_decoder_step_limit() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let a = engine.symbol_value("a").unwrap();
+    let fields: Vec<HostValue> = vec![a; 750_000];
+    let handle = engine.assert_ordered("t", fields).unwrap();
+    // Repeated symbols cost few bytes per decode step: this payload is about
+    // 11 MB of CBOR (16.5 MB of JSON), under MAX_SNAPSHOT_BYTES, so only the
+    // read-back decode inside serialize can raise this limit.
+    for &format in SerializationFormat::ALL {
+        assert!(
+            matches!(
+                engine.serialize(format),
+                Err(SerializationError::LimitExceeded("decoder step"))
+            ),
+            "{format:?}"
+        );
+    }
+    engine.retract(handle).unwrap();
+    for &format in SerializationFormat::ALL {
+        roundtrip(&engine, format);
     }
 }
 
