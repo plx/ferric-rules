@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 1258 small programs progress from individual features to
+CLIPS subset. Its 1262 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 1235 clean conformance cases, 232 of which
+CLIPS-verified output oracle. There are 1240 clean conformance cases, 232 of which
 reproduce a CLIPS error, and 22 active characterizations of documented
 differences: CLIPS output that is not UTF-8, malformed `format` directives,
 equal-salience ties involving identical negative/NCC joins or multi-pattern
@@ -69,7 +69,9 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   globals, deffacts, refraction, and derived working memory. Optional `strategy`
   selects `"breadth"`, `"lex"`, or `"mea"`; omission selects depth. The reference
   supplies CLIPS `(set-strategy ...)` before loading, while Ferric uses
-  `EngineConfig::with_strategy`. Source strategy commands remain unsupported.
+  `EngineConfig::with_strategy`. Source `set-strategy` and `get-strategy` are
+  also supported; [agenda/413_set_strategy_reorders_pending.clp](agenda/413_set_strategy_reorders_pending.clp)
+  covers them, while `strategy` still selects the initial strategy.
 - Prefer a single observable distinction per program. Use salience or phase
   facts where side-effect ordering matters, except when the case explicitly
   tests conflict-resolution ordering. Keep each problematic function or

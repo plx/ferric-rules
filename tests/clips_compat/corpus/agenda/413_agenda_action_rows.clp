@@ -1,0 +1,6 @@
+(deftemplate item (slot n))
+(deffacts seed (item (n 1)) (q 2))
+(defrule show-agenda (declare (salience 10)) => (agenda) (printout t "done" crlf))
+(defrule pos (item (n ?n)) => )
+(defrule neg (q ?x) (not (r ?x)) => )
+(defrule empty-lhs (declare (salience -5)) => )

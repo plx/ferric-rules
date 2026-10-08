@@ -13068,6 +13068,44 @@
         "procedural",
         "watch"
       ]
+    },
+    {
+      "path": "agenda/413_set_strategy_reorders_pending.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "strategy",
+        "set-strategy",
+        "get-strategy",
+        "breadth"
+      ]
+    },
+    {
+      "path": "agenda/413_agenda_action_rows.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "agenda-rendering",
+        "empty-lhs",
+        "not"
+      ]
+    },
+    {
+      "path": "agenda/413_agenda_empty.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "agenda-rendering"
+      ]
+    },
+    {
+      "path": "modules/413_agenda_all_modules.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "agenda",
+        "agenda-rendering"
+      ]
     }
   ]
 }
