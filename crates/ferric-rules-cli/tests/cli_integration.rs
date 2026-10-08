@@ -781,3 +781,16 @@ fn contract_lock_json_additive_evolution_baseline() {
         }
     }
 }
+
+#[test]
+fn run_refuses_a_source_file_that_is_not_utf8() {
+    // CLIPS reads source bytes as they are; Ferric keeps UTF-8 text (#394).
+    let directory = tempfile::tempdir().expect("create temp dir");
+    let path = directory.path().join("latin1.clp");
+    std::fs::write(&path, b"(printout t \"caf\xe9\" crlf)\n").expect("write temp clp");
+
+    let output = run_ferric(&["run", path.to_str().expect("utf8 temp path")]);
+    assert_exit_code(&output, 1);
+    assert_stderr_contains(&output, "invalid utf-8");
+    assert_eq!(stdout_str(&output), "");
+}

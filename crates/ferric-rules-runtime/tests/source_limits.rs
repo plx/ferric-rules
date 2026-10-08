@@ -217,6 +217,51 @@ fn source_files_are_bounded_before_reading_and_keep_io_errors_distinct() {
     assert_eq!(engine.find_facts("from-file").unwrap().len(), 1);
 }
 
+/// CLIPS reads source and fact files byte for byte; Ferric keeps UTF-8 text
+/// (#394), so `load` and `load-facts` refuse a file that is not UTF-8 and the
+/// enclosing evaluation continues.
+#[test]
+fn load_and_load_facts_refuse_files_that_are_not_utf8() {
+    let directory = tempfile::tempdir().unwrap();
+    let facts = directory.path().join("facts.fct");
+    let rules = directory.path().join("rules.clp");
+    std::fs::write(&facts, b"(caf\xe9 1)").unwrap();
+    std::fs::write(&rules, b"(defrule extra => (assert (loaded \"caf\xe9\")))").unwrap();
+    let escape = |path: &std::path::Path| path.to_string_lossy().replace('\\', "\\\\");
+    let mut engine = Engine::with_rules(&format!(
+        "(defrule go
+           => (printout t \"facts:\" (load-facts \"{}\") crlf)
+              (printout t \"load:\" (load \"{}\") crlf)
+              (printout t \"after\" crlf))",
+        escape(&facts),
+        escape(&rules)
+    ))
+    .unwrap();
+    engine.reset().unwrap();
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    assert_eq!(
+        engine.get_output("t"),
+        Some("facts:FALSE\nload:FALSE\nafter\n")
+    );
+    let notice = engine.get_output("werror").unwrap_or_default();
+    assert!(
+        notice.contains("[ARGACCES2] Function load-facts was unable to open file"),
+        "{notice}"
+    );
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(
+        engine
+            .rules()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>(),
+        ["go"]
+    );
+    assert!(engine.find_facts("caf\u{e9}").unwrap().is_empty());
+    assert!(engine.find_facts("caf\u{fffd}").unwrap().is_empty());
+    assert!(engine.find_facts("loaded").unwrap().is_empty());
+}
+
 #[test]
 fn empty_lhs_rules_still_obey_the_per_rule_byte_limit() {
     let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
