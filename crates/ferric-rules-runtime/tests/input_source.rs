@@ -151,7 +151,9 @@ fn before_input_hook_receives_pending_output_before_the_source_blocks() {
         )
         .unwrap();
     engine.reset().unwrap();
-    engine.run(ferric_rules_runtime::RunLimit::Unlimited).unwrap();
+    engine
+        .run(ferric_rules_runtime::RunLimit::Unlimited)
+        .unwrap();
     // Queued input never consults the source, so only the second read
     // delivers the output that precedes it.
     assert_eq!(

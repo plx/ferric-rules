@@ -164,10 +164,8 @@ fn root_called_callable_clear_keeps_the_callable_and_facts() {
 /// and return 7, while `(eval "(progn (clear) (+ 1 2))")` clears and gives 3.
 #[test]
 fn root_clear_refuses_while_the_expression_calls_a_user_callable() {
-    let mut engine = Engine::with_rules(
-        "(deffunction f () 7) (defgeneric g) (defmethod g () 8)",
-    )
-    .unwrap();
+    let mut engine =
+        Engine::with_rules("(deffunction f () 7) (defgeneric g) (defmethod g () 8)").unwrap();
     engine.eval_str("(assert (p))").unwrap();
     for (source, expected) in [
         ("(progn (clear) (f))", 7),
