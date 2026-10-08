@@ -1698,7 +1698,9 @@ NaN generation and C printing vary across platforms: CLIPS may render
 `(sin 1e309)` as `nan.0` or `-nan.0`. Ferric renders both NaN signs as `nan.0`
 (or `nan` for numeric `format` conversions). The portable corpus checks exact
 `format` padding and `implode$` consistency with the displayed scalar spelling.
-Its direct `printout` non-finite fixture covers positive and negative infinity;
+Its direct `printout` non-finite fixture covers positive and negative infinity,
+and the math NaN-propagation fixture prints each result's NaN kind rather than
+its sign;
 Rust host-value tests separately check scalar and multifield output for both
 explicit NaN bit signs. Corpus output comparison remains byte-exact, with no
 NaN normalization.

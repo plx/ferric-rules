@@ -185,6 +185,10 @@ immutable local ID once per run and records that ID, the actual version, case
 selection, and completed or failed results in its report. A local image ID is
 not a portable registry digest.
 
+Goldens must not depend on the reference host's architecture: CI verifies them
+on linux/amd64, local reference images are usually arm64, and the two print NaN
+signs differently.
+
 Every program gets a separate Docker container, a read-only source mount, a
 120-second default deadline, and a 1,000-firing bound. Image and version probes
 use the same configured deadline. Timed-out containers are
