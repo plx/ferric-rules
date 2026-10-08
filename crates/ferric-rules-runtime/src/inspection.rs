@@ -167,7 +167,7 @@ impl Engine {
                     });
                 }
                 text.push_str(template.name.rsplit("::").next().unwrap_or(&template.name));
-                for (name, value) in template.slot_names.iter().zip(&fact.slots) {
+                for (name, value) in template.slot_names.iter().zip(fact.slots.iter()) {
                     text.push_str(" (");
                     text.push_str(name);
                     append_fields(value, &mut text);
