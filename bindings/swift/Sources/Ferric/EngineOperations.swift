@@ -21,7 +21,10 @@ extension Engine {
     }
   }
 
-  /// Remove constructs and working memory, invalidating this engine's fact IDs.
+  /// Remove all constructs (including globals and non-MAIN modules) and working
+  /// memory, invalidating this engine's fact IDs. This also discards captured
+  /// output on every channel, lines queued with `pushInput(_:)`, action
+  /// diagnostics, and the native halt flag.
   public func clear() async throws {
     try await storage.perform { state in
       let handle = try state.requireHandle()
@@ -185,7 +188,8 @@ extension Engine {
     }
   }
 
-  /// Explicit registered templates and their slots. Ordering follows the native registry.
+  /// Explicit registered templates and their slots. Template order is
+  /// unspecified; slot names keep declaration order.
   public func templates() async throws -> [TemplateInfo] {
     try await storage.perform { state in
       let handle = try state.requireHandle()

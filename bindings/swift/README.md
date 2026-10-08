@@ -72,7 +72,7 @@ The wrapper also exposes these native operations:
 | API | Result or behavior |
 | --- | --- |
 | `step()` | `.fired(diagnostics:)`, `.agendaEmpty`, or `.halted` (no eligible activation while the native halt flag is set); action errors accompany a fired step. Step does not honour or clear a pending halt |
-| `clear()` | Remove constructs and facts, invalidating old fact IDs |
+| `clear()` | Remove all constructs, globals, modules, and facts, invalidating old fact IDs; also discards captured output, queued `pushInput` lines, action diagnostics, and the halt flag |
 | `isHalted`, `agendaCount` | Async throwing properties for the native halt flag and pending activation count |
 | `global(_:)` | An owned `Value`, or `nil` for the ABI's missing/ambiguous lookup result |
 | `pushInput(_:)` | Queue a complete line for `read` or `readline` |
@@ -81,7 +81,7 @@ The wrapper also exposes these native operations:
 | `slotValue(_:of:)` | An owned template slot value; foreign, stale, or invalid IDs/slots throw |
 | `currentModule`, `focus` | Async throwing properties; focus is `nil` when its stack is empty |
 | `focusStack()` | Module names from bottom to top |
-| `rules()`, `templates()`, `modules()` | Owned native metadata; rule listings include compiled disjunction branches |
+| `rules()`, `templates()`, `modules()` | Owned native metadata; rule listings include compiled disjunction branches. Rules keep registration order; template and module order is unspecified |
 
 ## Ownership and concurrency
 
