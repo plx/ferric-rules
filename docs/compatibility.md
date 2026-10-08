@@ -518,7 +518,7 @@ activation order and the blocker history used for future activations.
 | `focus` | Push one or more modules onto the focus stack, skipping a module already on top; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
-| `agenda` | Print the current agenda |
+| `agenda` | Print the current module's activations as CLIPS rows with fact bases (`*` for a negated condition or an empty LHS) and a tally, or every module's under headings with `*`; an empty agenda prints nothing |
 | `run` | No-op when called from RHS (documented behavior) |
 | `reset` | Reset working memory and globals immediately, preserving current execution and printed output; return no value |
 | `clear` | During execution, retract all facts and refuse construct removal; continue execution and return no value |
@@ -1759,6 +1759,10 @@ the live event queue or observation setting.
 |----------|-------------|
 | `get-focus` | Return the current focus module name |
 | `get-focus-stack` | Return the focus stack as a multifield |
+| `get-strategy` | Return the current conflict-resolution strategy symbol |
+| `set-strategy` | Select `depth`, `breadth`, `lex`, or `mea`, reorder pending activations, and return the previous strategy (see [Conflict Resolution Strategies](#conflict-resolution-strategies)) |
+| `watch` | Trace `facts`, `rules`, or `all`; other CLIPS 6.30 items are accepted no-ops; return no value |
+| `unwatch` | Stop tracing `facts`, `rules`, or `all`; other CLIPS 6.30 items are accepted no-ops; return no value |
 
 ---
 

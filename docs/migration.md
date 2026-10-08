@@ -325,6 +325,49 @@ like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   precedence over user deffunctions and defgenerics of the same name, which are
   no longer called. Rename such functions.
 
+## Pre-1.0 shell and inspection changes
+
+The fixes for issue #413 change these command-line and inspection behaviors:
+
+- `ferric run` still loads a construct-only file, resets, and runs it. A file
+  with any top-level procedural form, including `assert`, `printout`, or
+  `watch`, is now a script: its forms run in source order with no implicit
+  reset or run. A script that relied on the old implicit reset/run loads its
+  rules but never fires them, and still exits 0. Add explicit `(reset)` and
+  `(run)` forms where the program should start.
+- `ferric run` reads piped standard input when `read` or `readline` asks for a
+  line, instead of ignoring it, and prints every standard logical channel to
+  stdout in emission order, not only `t`. A program that never reads leaves
+  its standard input unread. A read error or invalid UTF-8 prints one warning
+  and then reads as end of input. Hosts can supply the same on-demand input
+  with `Engine::set_input_source`.
+- The REPL's `(save "file")` command is removed. Use
+  `(save-facts "file.fct")` and `(load-facts "file.fct")`, which also work in
+  rules and expressions and reload template facts with their slot names.
+- `(agenda)` now prints CLIPS rows such as `0      pos: f-1`, with `*` for a
+  negated condition or an empty LHS and a `For a total of N activations.`
+  tally. `(agenda *)` adds module headings.
+  An empty agenda prints nothing, not `(no activations)`. `(facts)` and
+  `(rules)` print CLIPS listings with their tallies.
+- `watch` and `unwatch` previously accepted any argument, traced nothing, and
+  returned `TRUE`. They now return no value. `facts`, `rules`, and `all` trace
+  assertions, retractions, and firings; the other CLIPS 6.30 watch items are
+  accepted without effect. An unknown item, or a construct name that does not
+  name an existing construct of the right kind, stops the evaluation.
+- `load-facts` returns `FALSE` with a notice when the file cannot be opened. A
+  syntax, template, value, or source-limit error in the file stops the
+  enclosing evaluation (an RHS halts the run); facts loaded before it stay
+  asserted. `save-facts` returns `FALSE` for an unknown symbol mode or a bad
+  template selector, and stops the evaluation when its mode is not a symbol.
+- Source `set-strategy` and `get-strategy` now work for `depth`, `breadth`,
+  `lex`, and `mea`; `set-strategy` returns the previous strategy and reorders
+  pending activations. An unknown strategy name writes CLIPS's `[ARGACCES5]`
+  notice and keeps the current strategy. `complexity`, `simplicity`, and
+  `random` are rejected.
+
+See [Command-line evaluation and inspection](compatibility.md#command-line-evaluation-and-inspection)
+for the full contract.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:
