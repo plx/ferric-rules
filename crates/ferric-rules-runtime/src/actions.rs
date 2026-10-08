@@ -297,6 +297,9 @@ pub(crate) struct ActivationLayout {
     fact_address_slots: Vec<(VarId, usize)>,
     /// Whether any RHS expression uses the compact `?fact:slot` form.
     compact_slot_refs: bool,
+    /// Indexed like `test_conditions`: whether a match condition can read a
+    /// pattern fact address, so only those conditions pay for binding them.
+    condition_reads_fact_addresses: Vec<bool>,
 }
 
 impl CompiledRuleInfo {
@@ -318,8 +321,91 @@ impl CompiledRuleInfo {
                 .actions
                 .iter()
                 .any(|action| call_uses_compact_slot_refs(&action.call)),
+            condition_reads_fact_addresses: self
+                .test_conditions
+                .iter()
+                .map(|CompiledTestCondition::Expr(expr)| {
+                    runtime_expr_reads_fact_addresses(expr, &self.fact_address_vars)
+                })
+                .collect(),
         })
     }
+
+    /// Whether the match condition at `index` can read a pattern fact address.
+    /// Unknown indexes answer `true`, which keeps the binding path conservative.
+    pub(crate) fn condition_reads_fact_addresses(
+        &self,
+        index: usize,
+        symbol_table: &SymbolTable,
+        encoding: ferric_rules_core::StringEncoding,
+    ) -> bool {
+        if self.fact_address_vars.is_empty() {
+            return false;
+        }
+        self.activation_layout(symbol_table, encoding)
+            .condition_reads_fact_addresses
+            .get(index)
+            .copied()
+            .unwrap_or(true)
+    }
+}
+
+fn is_fact_address_name(name: &str, addresses: &HashMap<String, usize>) -> bool {
+    let name = name.strip_prefix("$?").unwrap_or(name);
+    addresses
+        .keys()
+        .any(|address| address.strip_prefix("$?").unwrap_or(address) == name)
+}
+
+/// Conservative scan of a compiled match condition. Shadowing query members or
+/// loop variables with an address name still answers `true`.
+fn runtime_expr_reads_fact_addresses(
+    root: &crate::evaluator::RuntimeExpr,
+    addresses: &HashMap<String, usize>,
+) -> bool {
+    use crate::evaluator::RuntimeExpr;
+    if addresses.is_empty() {
+        return false;
+    }
+    let raw_reads = |entries: &[(ActionExpr, Option<Box<RuntimeExpr>>)]| {
+        entries.iter().any(|(raw, runtime)| {
+            runtime.is_none() && action_expr_reads_fact_addresses(raw, addresses)
+        })
+    };
+    crate::fact_initializer::RuntimeExpressions::new(root).any(|expr| match expr {
+        RuntimeExpr::BoundVar { name, .. } => is_fact_address_name(name, addresses),
+        RuntimeExpr::EffectCall { call } => call
+            .args
+            .iter()
+            .any(|arg| action_expr_reads_fact_addresses(arg, addresses)),
+        RuntimeExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => raw_reads(then_branch) || raw_reads(else_branch),
+        RuntimeExpr::While { body, .. }
+        | RuntimeExpr::LoopForCount { body, .. }
+        | RuntimeExpr::Progn { body, .. }
+        | RuntimeExpr::QueryAction { body, .. } => raw_reads(body),
+        RuntimeExpr::Switch { cases, default, .. } => {
+            cases.iter().any(|(_, body)| raw_reads(body))
+                || default.as_deref().is_some_and(raw_reads)
+        }
+        RuntimeExpr::Literal(_) | RuntimeExpr::GlobalVar { .. } | RuntimeExpr::Call { .. } => false,
+    })
+}
+
+fn action_expr_reads_fact_addresses(root: &ActionExpr, addresses: &HashMap<String, usize>) -> bool {
+    let mut pending = vec![root];
+    while let Some(expr) = pending.pop() {
+        if let ActionExpr::Variable(name, _) = expr {
+            if is_fact_address_name(name, addresses) {
+                return true;
+            }
+        }
+        expr.push_children(&mut pending);
+    }
+    false
 }
 
 fn call_uses_compact_slot_refs(call: &FunctionCall) -> bool {
@@ -2843,6 +2929,81 @@ mod tests {
         assert!(Arc::ptr_eq(&shared, merged));
         // The activation frame itself is unchanged.
         assert_eq!(token.bindings.bound_count(), 2);
+    }
+
+    #[test]
+    fn only_conditions_that_can_read_fact_addresses_bind_them() {
+        let mut engine = Engine::new(crate::EngineConfig::utf8());
+        engine
+            .load_str(
+                "(deftemplate p (slot x))
+                 (deftemplate count (slot n))
+                 (defrule plain ?c <- (count (n ?n)) (a ?a) (b ?b) (test (neq ?a ?b)) =>)
+                 (defrule query ?f <- (p (x ?)) (test (any-factp ((?x p)) (eq ?x ?f))) =>)
+                 (defrule slot ?f <- (p (x ?)) (test (eq ?f:x 1)) =>)
+                 (defrule pair ?f <- (p (x ?)) ?g <- (count (n ?)) (test (eq ?f ?g)) =>)
+                 (defrule branch ?f <- (p (x ?))
+                   (test (if (eq 1 1) then (progn$ (?v (create$ 1)) (eq ?v ?f)) else FALSE))
+                   =>)",
+            )
+            .unwrap();
+        let expectations = [
+            ("plain", false),
+            ("query", true),
+            ("slot", true),
+            ("pair", true),
+            ("branch", true),
+        ];
+        for (name, expected) in expectations {
+            let info = engine
+                .rule_info
+                .iter()
+                .flatten()
+                .find(|info| info.name == name)
+                .unwrap();
+            assert!(!info.fact_address_vars.is_empty(), "{name}");
+            assert!(!info.test_conditions.is_empty(), "{name}");
+            for index in 0..info.test_conditions.len() {
+                assert_eq!(
+                    info.condition_reads_fact_addresses(
+                        index,
+                        &engine.symbol_table,
+                        engine.config.string_encoding,
+                    ),
+                    expected,
+                    "{name} condition {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn untranslated_branches_and_effect_calls_are_scanned_for_fact_addresses() {
+        use crate::evaluator::RuntimeExpr;
+        use ferric_rules_parser::{FileId, Position, Span};
+        let span = Span::new(Position::new(), Position::new(), FileId(0));
+        let addresses = HashMap::from([("f".to_owned(), 0)]);
+        let raw_if = |name: &str| RuntimeExpr::If {
+            condition: Box::new(RuntimeExpr::Literal(Value::Integer(1))),
+            then_branch: vec![(ActionExpr::Variable(name.to_owned(), span), None)],
+            else_branch: Vec::new(),
+            span: None,
+        };
+        assert!(runtime_expr_reads_fact_addresses(&raw_if("f"), &addresses));
+        assert!(!runtime_expr_reads_fact_addresses(&raw_if("g"), &addresses));
+        let effect = |name: &str| RuntimeExpr::EffectCall {
+            call: Box::new(FunctionCall {
+                name: "retract".to_owned(),
+                args: vec![ActionExpr::Variable(name.to_owned(), span)],
+                span,
+            }),
+        };
+        assert!(runtime_expr_reads_fact_addresses(&effect("f"), &addresses));
+        assert!(!runtime_expr_reads_fact_addresses(&effect("g"), &addresses));
+        assert!(!runtime_expr_reads_fact_addresses(
+            &raw_if("f"),
+            &HashMap::new()
+        ));
     }
 
     #[test]

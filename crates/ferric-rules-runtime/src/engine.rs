@@ -570,15 +570,20 @@ impl Engine {
             };
             // A predicate sees only the facts already matched at its position.
             // Later pattern addresses remain unbound in this private token copy.
-            // The graph retains its original pass-through bindings.
-            let mut evaluation_token = std::borrow::Cow::Borrowed(&token);
-            if !info.fact_address_vars.is_empty() {
+            // The graph retains its original pass-through bindings. Conditions
+            // that cannot read an address skip the copy entirely.
+            let mut bound_token = None;
+            if info.condition_reads_fact_addresses(
+                pending.condition_index as usize,
+                &self.symbol_table,
+                self.config.string_encoding,
+            ) {
                 let facts = self
                     .rete
                     .token_store
                     .collect_all_facts(pending.parent_token);
                 actions::bind_fact_addresses(
-                    evaluation_token.to_mut(),
+                    bound_token.insert(token.clone()),
                     info.as_ref(),
                     &facts,
                     &self.symbol_table,
@@ -595,7 +600,7 @@ impl Engine {
                     current_module,
                 };
                 actions::evaluate_test_condition(
-                    evaluation_token.as_ref(),
+                    bound_token.as_ref().unwrap_or(&token),
                     info.as_ref(),
                     condition,
                     &mut context,
