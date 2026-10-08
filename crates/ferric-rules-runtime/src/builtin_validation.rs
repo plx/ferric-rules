@@ -139,7 +139,9 @@ pub(crate) fn validate_call(call: &FunctionCall) -> Result<(), String> {
     if call.name == "set-strategy" {
         if let [ActionExpr::Literal(literal)] = call.args.as_slice() {
             if let LiteralKind::Symbol(name) = &literal.value {
-                if !matches!(name.as_str(), "depth" | "breadth" | "lex" | "mea") {
+                // Valid CLIPS strategies Ferric does not implement. Other bad
+                // names load, and report ARGACCES5 when they run, as in CLIPS.
+                if matches!(name.as_str(), "complexity" | "simplicity" | "random") {
                     return Err(format!(
                         "set-strategy does not support `{name}`; expected depth, breadth, lex, or mea"
                     ));

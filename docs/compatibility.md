@@ -304,7 +304,10 @@ fact.
 returns the previous strategy and reorders pending activations without changing
 their identity or creation order. The supported names are `depth`, `breadth`,
 `lex`, and `mea`; the setting survives reset, clear, and snapshots. Changing it
-from a match condition is rejected. Bindings reject unknown enum/name values.
+from a match condition is rejected. `complexity`, `simplicity`, and `random` are
+rejected when the call is loaded, or with an error at run time. As in CLIPS, any
+other symbol writes an `[ARGACCES5]` notice, keeps the current strategy, and
+returns it, and evaluation continues. Bindings reject unknown enum/name values.
 
 For equal salience, activation creation order breaks ties: depth selects the
 newest activation and breadth the oldest. Shared beta successors and mixed

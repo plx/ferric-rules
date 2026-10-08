@@ -158,20 +158,30 @@ fn strategy(
             });
         };
         let strategy = match ctx.engine.symbol_table.resolve_symbol_str(symbol) {
-            Some("depth") => ConflictResolutionStrategy::Depth,
-            Some("breadth") => ConflictResolutionStrategy::Breadth,
-            Some("lex") => ConflictResolutionStrategy::Lex,
-            Some("mea") => ConflictResolutionStrategy::Mea,
-            _ => {
+            Some("depth") => Some(ConflictResolutionStrategy::Depth),
+            Some("breadth") => Some(ConflictResolutionStrategy::Breadth),
+            Some("lex") => Some(ConflictResolutionStrategy::Lex),
+            Some("mea") => Some(ConflictResolutionStrategy::Mea),
+            Some("complexity" | "simplicity" | "random") => {
                 return Err(failure(
                     name,
                     &"supported strategies are depth, breadth, lex, and mea",
                     span,
                 ))
             }
+            // CLIPS reports any other name, keeps the strategy, and continues.
+            _ => {
+                ctx.engine.globals.push_printout_event(
+                    "werror".to_owned(),
+                    "[ARGACCES5] Function set-strategy expected argument #1 to be of type symbol with value depth, breadth, lex, mea, complexity, simplicity, or random\n".to_owned(),
+                );
+                None
+            }
         };
-        ctx.engine.rete.agenda.set_strategy(strategy);
-        ctx.engine.config.strategy = strategy;
+        if let Some(strategy) = strategy {
+            ctx.engine.rete.agenda.set_strategy(strategy);
+            ctx.engine.config.strategy = strategy;
+        }
     }
     let name = match previous {
         ConflictResolutionStrategy::Depth => "depth",
