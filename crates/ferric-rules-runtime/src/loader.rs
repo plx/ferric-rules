@@ -4433,6 +4433,11 @@ impl Engine {
             ),
             _ => return None,
         };
+        // An empty group has no condition to test. The parser rejects it;
+        // leave it to the ordinary CE paths rather than synthesize `(and)`.
+        if arguments.is_empty() {
+            return None;
+        }
         if name != "not" && arguments.len() == 1 {
             return arguments.into_iter().next();
         }
@@ -6766,15 +6771,9 @@ fn validate_forall_operands(
 
 /// Test-only quantified trees lower to a predicate. Logical CEs never qualify:
 /// they remain unsupported and must not disappear during normalization.
+/// Derived from the lowering itself so validation and normalization agree.
 fn is_pure_test_condition(pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Test(..) => true,
-        Pattern::Not(inner, _) => is_pure_test_condition(inner),
-        Pattern::And(children, _) | Pattern::Or(children, _) | Pattern::Exists(children, _) => {
-            !children.is_empty() && children.iter().all(is_pure_test_condition)
-        }
-        _ => false,
-    }
+    Engine::test_only_pattern_expression(pattern).is_some()
 }
 
 fn single_exists_negative_operand(pattern: &Pattern) -> bool {

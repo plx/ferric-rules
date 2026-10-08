@@ -1731,6 +1731,12 @@ fn interpret_conditional_pattern(
             Ok(Some(Pattern::Test(list[1].clone(), expr.span())))
         }
         Some("exists") => {
+            if list.len() < 2 {
+                return Err(InterpretError::missing(
+                    "pattern after 'exists'",
+                    list[0].span(),
+                ));
+            }
             let patterns = conditional_elements::interpret_sequence(&list[1..], false)?;
             Ok(Some(Pattern::Exists(patterns, expr.span())))
         }

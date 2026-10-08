@@ -11569,6 +11569,15 @@
         "test",
         "activation-order"
       ]
+    },
+    {
+      "path": "patterns/405_exists_empty_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "conditional-elements"
+      ],
+      "error": "load"
     }
   ]
 }
