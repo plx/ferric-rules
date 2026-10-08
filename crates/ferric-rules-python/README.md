@@ -206,8 +206,8 @@ scripts/python-consumer-smoke.sh
 ```
 
 The script installs the locked Maturin dependency into a temporary environment,
-leaving the development `.venv` untouched, and builds one release wheel for the
-host. It installs that wheel into a fresh virtual environment
+leaving the development `.venv` untouched, and builds one release `cp39-abi3`
+wheel for the host. It installs that wheel into a fresh virtual environment
 outside the checkout and runs Python in isolated mode. The consumer verifies its import location,
 rule execution, facts, output, and snapshot restoration. An optional interpreter
 path selects the Python used for both the build and consumer:

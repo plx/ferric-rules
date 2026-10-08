@@ -32,6 +32,11 @@ if [[ ${#wheels[@]} -ne 1 ]]; then
     echo "python-consumer-smoke: expected one host wheel, found ${#wheels[@]}" >&2
     exit 1
 fi
+wheel_name="${wheels[0]##*/}"
+if [[ "$wheel_name" != *-cp39-abi3-*.whl ]]; then
+    echo "python-consumer-smoke: expected a cp39-abi3 host wheel, got $wheel_name" >&2
+    exit 1
+fi
 uv venv --python "$python_path" "$smoke_dir/venv"
 consumer_python="$smoke_dir/venv/bin/python"
 uv pip install --python "$consumer_python" --no-index "${wheels[0]}"
