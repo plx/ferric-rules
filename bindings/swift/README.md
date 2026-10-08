@@ -92,14 +92,18 @@ cooperative executor. This uses Ferric's serialized thread-transfer contract;
 the queue is not assumed to remain on one OS thread.
 
 `run()` cooperatively checks Swift task cancellation and `engine.halt()` between
-bounded native chunks. Both stop the active logical run and return its completed
-rule count with `.haltRequested`. `halt()` is synchronous and does not wait for
-the engine queue; with no active run it does nothing. A cancellation belongs to
-one run, so canceling an older or queued task cannot stop a different run.
+bounded native chunks. Both stop the logical run and return its completed rule
+count with `.haltRequested`. `halt()` is synchronous and does not wait for the
+engine queue. It affects only a run that has started executing on the queue and
+does nothing when no run is executing, including while a run is still queued
+(for example, immediately after starting it in a new `Task`). To stop a specific
+run, including one started moments ago, cancel its task: a cancellation belongs
+to one run, is recorded even while that run waits, and canceling an older or
+queued task cannot stop a different run.
 
 ```swift
 let running = Task { try await engine.run() }
-// Later, from the task that owns this handle:
+// Later, from the task that owns this handle (works even before the run starts):
 running.cancel()
 let stopped = try await running.value
 try await engine.close()
