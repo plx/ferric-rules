@@ -435,12 +435,7 @@ impl Engine {
         }
     }
 
-    pub(crate) fn declare_fact_templates(
-        &mut self,
-        fact: &ferric_rules_parser::FactBody,
-        module: ModuleId,
-    ) {
-        use ferric_rules_parser::{FactBody, FactValue};
+    pub(crate) fn declare_fact_templates(&mut self, fact: &FactBody, module: ModuleId) {
         let mut expressions = Vec::new();
         match fact {
             FactBody::Ordered(fact) => {
