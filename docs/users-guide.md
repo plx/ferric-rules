@@ -339,14 +339,15 @@ A few rules of thumb:
 - `forall (P) (Q)` is "for every P, some Q." If there are no P facts, it is
   vacuously true. That usually matches what you want for "all tasks
   complete," but read the logic carefully before wiring it up.
-- Pattern nesting is single-level. Triple negations, `(exists (not ...))`,
-  and nested `forall` are rejected by the compiler. The typical workaround
-  is a helper rule that asserts an intermediate "flag" fact
-  (see [`migration.md`](migration.md) §3).
-- A `(test ...)` clause inside an NCC currently requires every NCC child to
-  be a test; mixing positive patterns with `test` inside `(not (and ...))`
-  is rejected. If you need an inequality test inside an NCC, derive a
-  helper fact that captures the predicate and reference it instead.
+- Up to four combined `not`/`exists`/`forall` levels are supported along
+  each pattern path, and `and`/`or` groups nest freely inside each other,
+  `not`, and `exists`. `(exists (not ...))`, `(exists (or ...))`, and
+  `(not (or ...))` work, and a `(not (and ...))` may mix fact patterns with
+  `test` CEs. Nested `forall` and `forall` under `not` or `exists` are
+  rejected; the typical workaround is a helper rule that asserts an
+  intermediate "flag" fact. See
+  [the nesting restrictions](compatibility.md#pattern-nesting-restrictions)
+  and [reducing excessive nesting](migration.md#reduce-excessive-nesting).
 
 ### Parser nesting limit
 
