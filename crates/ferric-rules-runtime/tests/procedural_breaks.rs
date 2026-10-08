@@ -347,3 +347,28 @@ fn snapshot_roundtrips_keep_rule_and_callable_break_scopes() {
         assert_eq!(engine.get_output("t"), Some("done after\n"));
     }
 }
+
+#[test]
+fn break_in_lhs_expressions_is_rejected_at_load() {
+    for (name, pattern) in [
+        ("test-ce", "(test (break))"),
+        ("predicate", "(a ?x&:(break))"),
+        ("return-value", "(a ?x) (b =(break))"),
+        ("negated-test", "(not (test (break)))"),
+        ("nested-predicate", "(not (a ?x&:(> (break) 0)))"),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let source = format!(
+            "(defrule {name} {pattern} => (printout t hi crlf))\n(defrule kept => (printout t ok crlf))"
+        );
+        let errors = engine.load_str(&source).expect_err(&source);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("[PRCDRPSR2]")),
+            "{source}: {errors:?}"
+        );
+        let rules: Vec<_> = engine.rules().into_iter().map(|(rule, _)| rule).collect();
+        assert_eq!(rules, ["kept"], "{source}");
+    }
+}

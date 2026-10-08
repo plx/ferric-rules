@@ -142,9 +142,15 @@ is derived from the configured byte cap (one step per four maximum bytes), not
 from the size of the particular input. Scalars, struct field names, options, enum
 tags, and containers consume steps; this is a work bound, not a count of facts or
 an exact heap-memory allowance. Ignored fields consume the same budget.
+Because steps count Serde operations rather than bytes, payloads made mostly of
+small values can reach the step limit before the byte cap: facts of repeated
+symbols do so at about 10.5 MB of CBOR, and indexed join pairs or small-integer
+facts at about 14 MB, while rule bases and two-slot template facts reach the byte
+cap first. `Engine::serialize` reports either case as `LimitExceeded`.
 Collection length hints are checked before allocation and do not control
 allocation capacity. Regression tests cover 50,000 runtime-asserted two-slot
-template facts and 5,000 pending indexed join matches in both JSON and CBOR.
+template facts, 5,000 pending indexed join matches, and a 2,500-rule base in both
+JSON and CBOR.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
 16 levels, alpha paths 64 value tests plus one ordered field-count test,
 beta parent paths 66 nodes (including root

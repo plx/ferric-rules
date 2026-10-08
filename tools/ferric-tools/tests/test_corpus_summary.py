@@ -105,11 +105,54 @@ def test_default_settings_and_reference_stamp_do_not_change_scenario(checkout):
     path = checkout / cs.MANIFEST
     manifest = json.loads(path.read_text())
     manifest["reference"]["verified_on"] = "later"
-    manifest["cases"][0].update(resets=1, strategy="depth", recoverable_fact_notices=False)
+    manifest["cases"][0].update(resets=1, strategy="depth", **dict.fromkeys(cs.NOTICE_FLAGS, False))
     cs.write_json(path, manifest)
     after = cs.capture(checkout)
     assert before["corpus"]["cases"] == after["corpus"]["cases"]
     assert before["corpus"]["manifest_sha256"] != after["corpus"]["manifest_sha256"]
+
+
+def _edit_case(root, **fields):
+    path = root / cs.MANIFEST
+    manifest = json.loads(path.read_text())
+    manifest["cases"][1].update(fields)
+    manifest["cases"][1] = {k: v for k, v in manifest["cases"][1].items() if v is not None}
+    cs.write_json(path, manifest)
+
+
+@pytest.mark.parametrize("flag", cs.NOTICE_FLAGS)
+def test_notice_flags_are_part_of_the_scenario(checkout, flag):
+    base = cs.capture(checkout)
+    _edit_case(checkout, **{flag: False})
+    assert cs.capture(checkout)["corpus"]["cases"] == base["corpus"]["cases"]
+    _edit_case(checkout, **{flag: True})
+    flipped = cs.capture(checkout)
+    assert (
+        flipped["corpus"]["cases"]["two.clp"]["scenario_sha256"]
+        != base["corpus"]["cases"]["two.clp"]["scenario_sha256"]
+    )
+    # Allowing a notice while dropping the gap is a changed scenario, never a fix.
+    _edit_case(checkout, gap=None)
+    delta = cs.corpus_delta(base, cs.capture(checkout))
+    assert delta["changed_scenarios"] == ["two.clp"]
+    assert delta["fixed_gaps"] == []
+
+
+@pytest.mark.parametrize("flag", cs.NOTICE_FLAGS)
+def test_notice_flags_must_be_booleans(checkout, flag):
+    _edit_case(checkout, **{flag: 1})
+    with pytest.raises(ValueError, match=flag):
+        cs.capture(checkout)
+
+
+def test_unknown_case_fields_are_rejected(checkout):
+    _edit_case(checkout, recoverable_future_notices=True)
+    with pytest.raises(ValueError, match="unknown corpus case fields"):
+        cs.capture(checkout)
+
+
+def test_real_manifest_is_captured():
+    assert cs.corpus_identity(cs.repo_root())["declared"]["total"] > 0
 
 
 @pytest.mark.parametrize(

@@ -148,31 +148,46 @@ fn typed_address_slots_accept_real_addresses_and_reject_integer_indices() {
 }
 
 #[test]
-fn missing_fact_indices_return_false_but_slot_and_argument_errors_still_stop() {
+fn unresolved_designators_return_false_before_the_slot_argument_is_evaluated() {
+    // CLIPS 6.30 resolves the designator first: missing, negative, stale, and
+    // wrong-type designators return FALSE (fact-index -1) without evaluating
+    // the slot argument, and the rule continues.
     let mut engine = Engine::with_rules(
         r#"
         (deftemplate item (slot v))
         (deffacts seed (item (v 1)))
-        (defrule inspect =>
+        (deffunction seven () 7)
+        (deffunction slot-v () (printout t "evaluated|") v)
+        (deffunction text () "x")
+        (deffunction one () 1)
+        (defrule inspect ?f <- (item) =>
           (printout t (fact-slot-value 9 v) " " (fact-slot-value -1 v) crlf)
+          (printout t (fact-slot-value 9 (seven)) " " (fact-slot-value -1 (slot-v)) " "
+                      (fact-slot-value (text) (slot-v)) crlf)
+          (printout t (fact-existp (text)) " " (fact-relation (text)) " "
+                      (fact-slot-names (text)) " " (fact-index (one)) crlf)
+          (retract ?f)
+          (printout t (fact-slot-value ?f (slot-v)) crlf)
           (printout t continued crlf))
         "#,
     )
     .unwrap();
     run_clean(&mut engine);
-    assert_eq!(engine.get_output("t"), Some("FALSE FALSE\ncontinued\n"));
+    assert_eq!(
+        engine.get_output("t"),
+        Some("FALSE FALSE\nFALSE FALSE FALSE\nFALSE FALSE FALSE -1\nFALSE\ncontinued\n")
+    );
+}
 
-    for expression in [
-        "(fact-slot-value 1 absent)",
-        "(funcall fact-slot-value 9 7)",
-        "(fact-slot-value -1 (/ 1 0))",
-        "(funcall fact-slot-value \"1\" v)",
-    ] {
+#[test]
+fn invalid_slots_and_slot_argument_types_on_live_facts_still_stop() {
+    for expression in ["(fact-slot-value 1 absent)", "(fact-slot-value 1 (seven))"] {
         let mut engine = Engine::new(EngineConfig::default());
         engine
             .load_str(&format!(
                 "(deftemplate item (slot v))
              (deffacts seed (item (v 1)))
+             (deffunction seven () 7)
              (defrule inspect => (printout t before) {expression} (printout t after))"
             ))
             .unwrap();

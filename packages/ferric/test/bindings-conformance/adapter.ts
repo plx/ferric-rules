@@ -121,6 +121,23 @@ function valueCase(caseId: string): unknown {
       }
       return { host_representation: "rejected", ingress };
     }
+    case "value.fact-address": {
+      const engine = Engine.fromSource(fixture("fact-address.clp"));
+      try {
+        engine.run();
+        try {
+          engine.getGlobal("address");
+        } catch (error) {
+          if (/fact addresses.*not supported/.test(String(error))) {
+            return { egress: "rejected", ingress: "unsupported" };
+          }
+          throw error;
+        }
+        throw new Error("a fact address crossed the Node value boundary");
+      } finally {
+        engine.close();
+      }
+    }
     default:
       throw new Error(`unknown value case ${caseId}`);
   }

@@ -65,7 +65,12 @@ pub enum ParseErrorKind {
     UnexpectedCharacter,
     /// String literal was not closed before end of input.
     UnterminatedString,
-    /// Number literal could not be parsed.
+    /// Formerly: a number literal could not be parsed.
+    ///
+    /// Since #404 the lexer follows CLIPS 6.30: malformed number-like lexemes
+    /// are SYMBOLs and out-of-range integers saturate, so this kind is no
+    /// longer produced. It remains only for API and serialization
+    /// compatibility.
     InvalidNumber,
     /// Token appeared where it was not expected.
     UnexpectedToken,

@@ -34,22 +34,14 @@ pub(crate) fn is_construct(expr: &SExpr) -> bool {
     )
 }
 
-/// Store only the form text; retain its location without quadratic padding
-/// across a file containing many small forms.
+/// One form's text and where it starts in its source. The engine parses the
+/// text from that origin, so diagnostics stay located without re-lexing the
+/// preceding source for every form.
 #[derive(Debug)]
 pub(crate) struct SourceForm {
-    text: String,
-    line: u32,
-    column: u32,
-}
-
-impl SourceForm {
-    pub fn located(&self) -> String {
-        let mut source = "\n".repeat(self.line.saturating_sub(1) as usize);
-        source.push_str(&" ".repeat(self.column.saturating_sub(1) as usize));
-        source.push_str(&self.text);
-        source
-    }
+    pub text: String,
+    pub line: u32,
+    pub column: u32,
 }
 
 fn located_source(source: &str, expr: &SExpr) -> SourceForm {
@@ -161,9 +153,11 @@ mod tests {
     fn expressions_and_constructs_are_distinct_and_keep_locations() {
         let commands = parse_commands("\n(defrule r =>)\n  (assert (p))\n(+ 1 2)").unwrap();
         assert!(matches!(commands[0], ReplCommand::Construct { .. }));
-        assert!(
-            matches!(&commands[1], ReplCommand::Eval { source } if source.located() == "\n\n  (assert (p))")
-        );
+        assert!(matches!(
+            &commands[1],
+            ReplCommand::Eval { source }
+                if source.text == "(assert (p))" && (source.line, source.column) == (3, 3)
+        ));
         assert!(matches!(commands[2], ReplCommand::Eval { .. }));
         assert!(parse_commands("; empty").unwrap().is_empty());
     }

@@ -7,7 +7,9 @@
 //! valid UTF-8 input every token except an escaped end of input is valid
 //! UTF-8, and callers decode the rest lossily.
 
-use ferric_rules_parser::numeric_scanner::{scan_number, NumberKind};
+use ferric_rules_parser::numeric_scanner::{
+    is_symbol_continuation, is_utf8_start, scan_number, NumberKind,
+};
 use std::borrow::Cow;
 
 /// One scanned CLIPS token.
@@ -251,19 +253,8 @@ impl<'a> FieldScanner<'a> {
     }
 }
 
-fn is_utf8_start(byte: u8) -> bool {
-    (0xc0..=0xf7).contains(&byte)
-}
-
 fn is_utf8_continuation(byte: u8) -> bool {
     (0x80..=0xbf).contains(&byte)
-}
-
-fn is_symbol_continuation(byte: u8) -> bool {
-    !matches!(
-        byte,
-        b'<' | b'"' | b'(' | b')' | b'&' | b'|' | b'~' | b' ' | b';'
-    ) && (byte.is_ascii_graphic() || is_utf8_start(byte) || is_utf8_continuation(byte))
 }
 
 /// `ExpandStringWithChar`: a backspace erases the previous character.

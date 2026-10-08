@@ -274,8 +274,12 @@ public final class Engine: Sendable {
     }
   }
 
-  /// Request that the active run stop between chunks without entering its queue.
-  /// Idle/closed engines are unchanged; this does not latch a native halt flag.
+  /// Ask the run currently executing on the engine queue to stop at its next
+  /// chunk boundary, without entering the queue. A `run()` still waiting for the
+  /// queue (for example, one just started in a new `Task` or one queued behind
+  /// earlier operations) is not affected and runs normally; cancel that run's
+  /// `Task` to stop it reliably. Idle/closed engines are unchanged, and this does
+  /// not latch the native halt flag.
   public func halt() { storage.haltActiveRun() }
 
   /// Return owned copies of all current facts and their typed values.

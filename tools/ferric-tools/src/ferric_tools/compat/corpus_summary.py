@@ -25,6 +25,17 @@ VERDICTS = {
     "unexpected_fix": (True, False),
     "gap_changed": (False, False),
 }
+# Every manifest flag that changes how a case's output is compared belongs to
+# its execution contract, so flipping one is a changed scenario, not a fix.
+NOTICE_FLAGS = tuple(
+    f"recoverable_{name}_notices"
+    for name in ("fact", "control", "random", "build", "introspection")
+)
+# Mirrors the Rust harness's `deny_unknown_fields`: a new manifest field must be
+# classified here before capture accepts it.
+CASE_FIELDS = frozenset(
+    {"path", "level", "covers", "error", "gap", "resets", "strategy", *NOTICE_FLAGS}
+)
 
 
 def digest(data: bytes) -> str:
@@ -91,6 +102,9 @@ def corpus_identity(root: Path) -> dict:
     files = {}
     for case in manifest["cases"]:
         path = _case_path(case.get("path"))
+        unknown = sorted(case.keys() - CASE_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown corpus case fields for {path}: {', '.join(unknown)}")
         if path in cases:
             raise ValueError(f"duplicate corpus case: {path}")
         error = case.get("error")
@@ -113,8 +127,7 @@ def corpus_identity(root: Path) -> dict:
             "resets": case.get("resets", 1),
             "strategy": case.get("strategy", "depth"),
         }
-        for name in ("fact", "control", "random"):
-            key = f"recoverable_{name}_notices"
+        for key in NOTICE_FLAGS:
             contract[key] = case.get(key, False)
             if type(contract[key]) is not bool:
                 raise ValueError(f"invalid {key} for {path}")

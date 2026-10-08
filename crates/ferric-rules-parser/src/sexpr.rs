@@ -1,6 +1,6 @@
 //! S-expression tree types and parser.
 
-use crate::error::{ParseError, ParseErrorKind};
+use crate::error::{LexError, ParseError, ParseErrorKind};
 use crate::lexer::{lex, SpannedToken, Token};
 use crate::span::{FileId, Span};
 
@@ -189,34 +189,44 @@ impl ParseResult {
 /// assert_eq!(result.exprs.len(), 1);
 /// ```
 pub fn parse_sexprs(source: &str, file_id: FileId) -> ParseResult {
-    // First, lex the source
-    let tokens = match lex(source, file_id) {
-        Ok(tokens) => tokens,
-        Err(lex_errors) => {
-            // Convert lex errors to parse errors
-            let errors = lex_errors.into_iter().map(ParseError::from).collect();
-            return ParseResult {
-                exprs: Vec::new(),
-                errors,
-            };
-        }
-    };
+    parse_tokens(lex(source, file_id))
+}
 
-    // Then, parse the tokens
-    let parser = Parser::new(tokens);
-    parser.parse_all()
+/// Parse an excerpt whose first character is at `line`/`column` of its file.
+///
+/// Spans report locations in that file, while their byte offsets remain
+/// relative to `source`. This keeps an excerpt's diagnostics located without
+/// re-lexing the text that precedes it.
+///
+/// # Examples
+///
+/// ```
+/// use ferric_rules_parser::{parse_sexprs_at, FileId};
+///
+/// let result = parse_sexprs_at("(a\n b)", FileId(0), 3, 5);
+/// let span = result.exprs[0].span();
+/// assert_eq!((span.start.line, span.start.column, span.start.offset), (3, 5, 0));
+/// assert_eq!((span.end.line, span.end.column), (4, 4));
+/// ```
+pub fn parse_sexprs_at(source: &str, file_id: FileId, line: u32, column: u32) -> ParseResult {
+    parse_tokens(crate::lexer::lex_at(source, file_id, line, column))
+}
+
+fn parse_tokens(tokens: Result<Vec<SpannedToken>, Vec<LexError>>) -> ParseResult {
+    match tokens {
+        Ok(tokens) => Parser::new(tokens).parse_all(),
+        // Lex errors are reported as parse errors.
+        Err(lex_errors) => ParseResult {
+            exprs: Vec::new(),
+            errors: lex_errors.into_iter().map(ParseError::from).collect(),
+        },
+    }
 }
 
 /// Parse one expression, ignoring subsequent input, as CLIPS `eval` and `build` do.
 /// Trailing input is not lexed; errors within the first expression remain errors.
 pub fn parse_first_sexpr(source: &str, file_id: FileId) -> ParseResult {
-    match crate::lexer::lex_first(source, file_id) {
-        Ok(tokens) => Parser::new(tokens).parse_all(),
-        Err(errors) => ParseResult {
-            exprs: Vec::new(),
-            errors: errors.into_iter().map(ParseError::from).collect(),
-        },
-    }
+    parse_tokens(crate::lexer::lex_first(source, file_id))
 }
 
 struct Parser {
@@ -701,6 +711,28 @@ mod tests {
         assert_eq!(span.start.column, 1);
         assert_eq!(span.end.line, 1);
         assert_eq!(span.end.column, 4); // After the closing paren
+    }
+
+    #[test]
+    fn excerpt_spans_use_the_origin_and_slice_the_excerpt() {
+        let source = "(a \"x\")\r\n  (b";
+        let result = parse_sexprs_at(source, file(), 40, 7);
+        let first = result.exprs[0].span();
+        assert_eq!((first.start.line, first.start.column), (40, 7));
+        assert_eq!(&source[first.start.offset..first.end.offset], "(a \"x\")");
+        let second = result.exprs[1].span();
+        assert_eq!((second.start.line, second.start.column), (41, 3));
+        assert_eq!(result.errors[0].kind, ParseErrorKind::UnclosedParen);
+        assert_eq!(result.errors[0].span.start.line, 41);
+
+        let lex_error = parse_sexprs_at("\"open", file(), 9, 4);
+        assert_eq!(
+            (
+                lex_error.errors[0].span.start.line,
+                lex_error.errors[0].span.start.column
+            ),
+            (9, 4)
+        );
     }
 
     #[test]

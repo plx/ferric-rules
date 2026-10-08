@@ -400,7 +400,7 @@ fn bench_control_frames(c: &mut Criterion) {
     let cases = [
         (
             "unnamed_10000",
-            "(loop-for-count (10000) (bind ?sum (+ ?sum 1)))".to_owned(),
+            "(loop-for-count 10000 (bind ?sum (+ ?sum 1)))".to_owned(),
             10000_i64,
         ),
         (

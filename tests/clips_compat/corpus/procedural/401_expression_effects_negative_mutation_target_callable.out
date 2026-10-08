@@ -1,0 +1,4 @@
+before in-callable
+[ARGACCES5] Function modify expected argument #1 to be of type non-void return value
+[PRCCODE4] Execution halted during the actions of deffunction mutate.
+[PRCCODE4] Execution halted during the actions of defrule probe.
