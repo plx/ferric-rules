@@ -14,11 +14,11 @@ a tagged or stable PyPI release.
 
 ## Supported Python and platforms
 
-The binding supports GIL-enabled CPython 3.9 through 3.13. Wheels use
+The binding supports GIL-enabled CPython 3.9 through 3.14. Wheels use
 PyO3's stable ABI with a Python/ABI tag of `cp39-abi3`, so one wheel per native
 target covers every supported minor.
 
-Python 3.14, PyPy, GraalPy, free-threaded CPython, CPython subinterpreters,
+Python 3.15, PyPy, GraalPy, free-threaded CPython, CPython subinterpreters,
 and cross-platform wheel distribution are outside the current support contract.
 Local builds use the host's native compiler and linker; CI checks source tests
 and the isolated host-wheel consumer on its configured runners.
@@ -185,7 +185,7 @@ current support contract.
 
 ## Building from source
 
-A source build requires a supported CPython, Rust 1.75 or newer, Maturin 1.x,
+A source build requires a supported CPython, Rust 1.83 or newer, Maturin 1.x,
 and the platform's native compiler and linker. Resolving build dependencies
 also requires network access or pre-populated Python and Cargo caches.
 
@@ -211,7 +211,7 @@ wheel for the host. It installs that wheel into a fresh virtual environment
 outside the checkout and runs Python in isolated mode. The consumer verifies its import location,
 rule execution, facts, output, and snapshot restoration. An optional interpreter
 path selects the Python used for both the build and consumer:
-`scripts/python-consumer-smoke.sh /path/to/python3.13`.
+`scripts/python-consumer-smoke.sh /path/to/python3.14`.
 
 ## License
 

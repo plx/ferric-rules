@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 191
+- MIT License: 188
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -28,7 +28,7 @@ acceptable license is selected for notice generation.
 
 Used by:
 
-- target-lexicon 0.12.16 (`Apache-2.0 WITH LLVM-exception`) - https://github.com/bytecodealliance/target-lexicon
+- target-lexicon 0.13.5 (`Apache-2.0 WITH LLVM-exception`) - https://github.com/bytecodealliance/target-lexicon
 
 ```text
 
@@ -1224,34 +1224,6 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- memoffset 0.9.1 (`MIT`) - https://github.com/Gilnaa/memoffset
-
-```text
-Copyright (c) 2017 Gilad Naaman
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
 - autocfg 1.5.1 (`Apache-2.0 OR MIT`) - https://github.com/cuviper/autocfg
 
 ```text
@@ -1700,11 +1672,11 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- pyo3-build-config 0.23.5 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
-- pyo3-ffi 0.23.5 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
-- pyo3-macros-backend 0.23.5 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
-- pyo3-macros 0.23.5 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
-- pyo3 0.23.5 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
+- pyo3-build-config 0.29.3 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
+- pyo3-ffi 0.29.3 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
+- pyo3-macros-backend 0.29.3 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
+- pyo3-macros 0.29.3 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
+- pyo3 0.29.3 (`MIT OR Apache-2.0`) - https://github.com/pyo3/pyo3
 
 ```text
 Copyright (c) 2023-present PyO3 Project and Contributors.  https://github.com/PyO3
@@ -2153,7 +2125,6 @@ Used by:
 - anyhow 1.0.104 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/anyhow
 - fastrand 2.5.0 (`Apache-2.0 OR MIT`) - https://github.com/smol-rs/fastrand
 - hermit-abi 0.5.2 (`MIT OR Apache-2.0`) - https://github.com/hermit-os/hermit-rs
-- indoc 2.0.7 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/indoc
 - is-terminal 0.4.17 (`MIT`) - https://github.com/sunfishcode/is-terminal
 - itoa 1.0.18 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/itoa
 - linux-raw-sys 0.12.1 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/sunfishcode/linux-raw-sys
@@ -2176,7 +2147,6 @@ Used by:
 - thiserror-impl 2.0.19 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/thiserror
 - thiserror 2.0.19 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/thiserror
 - unicode-ident 1.0.24 (`(MIT OR Apache-2.0) AND Unicode-3.0`) - https://github.com/dtolnay/unicode-ident
-- unindent 0.2.4 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/indoc
 - wasi 0.11.1+wasi-snapshot-preview1 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/wasi
 - zmij 1.0.23 (`MIT`) - https://github.com/dtolnay/zmij
 

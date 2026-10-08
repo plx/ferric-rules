@@ -125,7 +125,7 @@ pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
             Some(LoadError::Engine(error)) => {
                 // Preserve the selected concrete exception type and attach the
                 // full diagnostic list, including later failures.
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     let kind = engine_error_to_pyerr(error).get_type(py);
                     PyErr::from_type(kind, (msg,))
                 })

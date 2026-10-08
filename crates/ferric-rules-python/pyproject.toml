@@ -10,7 +10,7 @@ readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Ferric contributors" }]
-requires-python = ">=3.9,<3.14"
+requires-python = ">=3.9,<3.15"
 keywords = ["clips", "expert-system", "rete", "rules-engine"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -26,6 +26,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 
 [project.urls]

@@ -9,9 +9,9 @@ PYPROJECT = REPO_ROOT / "crates" / "ferric-rules-python" / "pyproject.toml"
 JUSTFILE = REPO_ROOT / "justfile"
 UV_LOCK = REPO_ROOT / "crates" / "ferric-rules-python" / "uv.lock"
 
-SUPPORTED_MINORS = ["3.9", "3.10", "3.11", "3.12", "3.13"]
-REQUIRES_PYTHON = ">=3.9,<3.14"
-LOCK_REQUIRES_PYTHON = ">=3.9, <3.14"
+SUPPORTED_MINORS = ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+REQUIRES_PYTHON = ">=3.9,<3.15"
+LOCK_REQUIRES_PYTHON = ">=3.9, <3.15"
 
 
 def _accepts_minor(specifier: str, minor: str) -> bool:
@@ -42,7 +42,7 @@ def test_python_metadata_declares_the_supported_range():
         pyproject,
     )
     assert classifiers == SUPPORTED_MINORS
-    assert "3.14" not in classifiers
+    assert "3.15" not in classifiers
 
     expected_acceptance = {
         "3.8": False,
@@ -51,7 +51,8 @@ def test_python_metadata_declares_the_supported_range():
         "3.11": True,
         "3.12": True,
         "3.13": True,
-        "3.14": False,
+        "3.14": True,
+        "3.15": False,
     }
     actual_acceptance = {
         minor: _accepts_minor(requires_python.group(1), minor)
@@ -60,7 +61,7 @@ def test_python_metadata_declares_the_supported_range():
     assert actual_acceptance == expected_acceptance
 
 
-def test_lockfile_carries_the_same_python_range_without_314_artifacts():
+def test_lockfile_carries_the_same_python_range():
     pyproject = PYPROJECT.read_text(encoding="utf-8")
     lockfile = UV_LOCK.read_text(encoding="utf-8")
 
@@ -74,7 +75,6 @@ def test_lockfile_carries_the_same_python_range_without_314_artifacts():
     assert "".join(lock_range.group(1).split()) == "".join(
         project_range.group(1).split()
     )
-    assert re.search(r"(?i)(?:cp|cpython[-_])314", lockfile) is None
 
 
 def test_supported_builds_do_not_use_pyo3_forward_compatibility_escape_hatch():

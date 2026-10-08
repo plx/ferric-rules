@@ -9,7 +9,7 @@ use ferric_rules_runtime::{Engine, HostValue, Value, HOST_VALUE_MAX_DEPTH, HOST_
 ///
 /// Wraps a Python string and converts to `Value::Symbol` on the Rust side.
 /// Use this explicit marker for unquoted CLIPS symbols.
-#[pyclass(name = "Symbol", module = "ferric")]
+#[pyclass(from_py_object, name = "Symbol", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct Symbol {
     #[pyo3(get)]
@@ -32,7 +32,7 @@ impl Symbol {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        if let Ok(sym) = other.downcast::<Symbol>() {
+        if let Ok(sym) = other.cast::<Symbol>() {
             return self.value == sym.borrow().value;
         }
         false
@@ -45,7 +45,7 @@ impl Symbol {
 
 /// A CLIPS instance name such as `[widget]`, holding the spelling without
 /// brackets. Distinct from `Symbol`; Ferric has no object system.
-#[pyclass(name = "InstanceName", module = "ferric")]
+#[pyclass(from_py_object, name = "InstanceName", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct InstanceName {
     #[pyo3(get)]
@@ -68,7 +68,7 @@ impl InstanceName {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        if let Ok(name) = other.downcast::<InstanceName>() {
+        if let Ok(name) = other.cast::<InstanceName>() {
             return self.value == name.borrow().value;
         }
         false
@@ -83,7 +83,7 @@ impl InstanceName {
 ///
 /// Plain Python `str` also maps to a CLIPS string literal.
 /// Returned values retain this wrapper to preserve their native type.
-#[pyclass(name = "String", module = "ferric")]
+#[pyclass(from_py_object, name = "String", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct ClipsString {
     #[pyo3(get)]
@@ -106,7 +106,7 @@ impl ClipsString {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        if let Ok(cs) = other.downcast::<ClipsString>() {
+        if let Ok(cs) = other.cast::<ClipsString>() {
             return self.value == cs.borrow().value;
         }
         false
@@ -123,7 +123,7 @@ impl ClipsString {
 ///
 /// Returns a `PyErr` if the Python object cannot be created or contains an
 /// unsupported external identity or fact address, including inside multifields.
-pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult<PyObject> {
+pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult<Py<PyAny>> {
     match val {
         Value::Integer(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
         Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
@@ -154,7 +154,7 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
         .into_any()
         .unbind()),
         Value::Multifield(mf) => {
-            let items: PyResult<Vec<PyObject>> = mf
+            let items: PyResult<Vec<Py<PyAny>>> = mf
                 .as_slice()
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
@@ -206,7 +206,7 @@ impl PythonValueBudget {
             ));
         }
         // Check marker types first: Symbol and ClipsString
-        if let Ok(cs) = obj.downcast::<ClipsString>() {
+        if let Ok(cs) = obj.cast::<ClipsString>() {
             let val = cs.borrow().value.clone();
             let fs = engine
                 .create_string(&val)
@@ -214,14 +214,14 @@ impl PythonValueBudget {
             return Ok(Value::String(fs).into());
         }
 
-        if let Ok(sym) = obj.downcast::<Symbol>() {
+        if let Ok(sym) = obj.cast::<Symbol>() {
             let val = sym.borrow().value.clone();
             return engine
                 .symbol_value(&val)
                 .map_err(crate::error::engine_error_to_pyerr);
         }
 
-        if let Ok(name) = obj.downcast::<InstanceName>() {
+        if let Ok(name) = obj.cast::<InstanceName>() {
             let val = name.borrow().value.clone();
             return engine
                 .instance_name_value(&val)
@@ -229,25 +229,25 @@ impl PythonValueBudget {
         }
 
         // Check bool before int (bool is a subclass of int in Python)
-        if let Ok(b) = obj.downcast::<PyBool>() {
+        if let Ok(b) = obj.cast::<PyBool>() {
             let sym_name = if b.is_true() { "TRUE" } else { "FALSE" };
             return engine
                 .symbol_value(sym_name)
                 .map_err(crate::error::engine_error_to_pyerr);
         }
 
-        if let Ok(i) = obj.downcast::<PyInt>() {
+        if let Ok(i) = obj.cast::<PyInt>() {
             let val: i64 = i.extract()?;
             return Ok(Value::Integer(val).into());
         }
 
-        if let Ok(f) = obj.downcast::<PyFloat>() {
+        if let Ok(f) = obj.cast::<PyFloat>() {
             let val: f64 = f.extract()?;
             return Ok(Value::Float(val).into());
         }
 
         // Match the other embedding surfaces: host strings are CLIPS strings.
-        if let Ok(s) = obj.downcast::<PyString>() {
+        if let Ok(s) = obj.cast::<PyString>() {
             let val: String = s.extract()?;
             let string = engine
                 .create_string(&val)
@@ -261,7 +261,7 @@ impl PythonValueBudget {
             ));
         }
 
-        if let Ok(list) = obj.downcast::<PyList>() {
+        if let Ok(list) = obj.cast::<PyList>() {
             let items: PyResult<Vec<HostValue>> = list
                 .iter()
                 .map(|item| self.convert_at_depth(&item, engine, depth + 1))
@@ -269,7 +269,7 @@ impl PythonValueBudget {
             return HostValue::multifield(items?).map_err(crate::error::engine_error_to_pyerr);
         }
 
-        if let Ok(tuple) = obj.downcast::<PyTuple>() {
+        if let Ok(tuple) = obj.cast::<PyTuple>() {
             let items: PyResult<Vec<HostValue>> = tuple
                 .iter()
                 .map(|item| self.convert_at_depth(&item, engine, depth + 1))

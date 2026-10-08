@@ -1003,7 +1003,7 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 - **Go**: `bindings/go` provides an idiomatic `Engine` façade; see its
   [README](../bindings/go/README.md).
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through
-  `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.13. Python 3.14,
+  `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.14. Python 3.15,
   free-threaded CPython, subinterpreters, and other interpreters are not
   currently supported. `Engine` operations serialize across threads without
   waiting for the native mutex under the GIL; the documented load/run/snapshot/

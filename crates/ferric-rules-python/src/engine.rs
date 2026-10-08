@@ -330,7 +330,7 @@ impl PyEngine {
     where
         F: FnOnce(&mut Engine) -> PyResult<R>,
     {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             EngineOperationGuard::check(self.engine_id)?;
             let mut state = loop {
                 if self.closing.load(Ordering::Acquire) {
@@ -340,7 +340,7 @@ impl PyEngine {
                     Ok(state) => break state,
                     Err(TryLockError::Poisoned(error)) => break error.into_inner(),
                     Err(TryLockError::WouldBlock) => {
-                        py.allow_threads(|| drop(lock_unpoisoned(&self.engine)));
+                        py.detach(|| drop(lock_unpoisoned(&self.engine)));
                     }
                 }
             };
@@ -361,7 +361,7 @@ impl PyEngine {
         R: Send,
     {
         EngineOperationGuard::check(self.engine_id)?;
-        py.allow_threads(move || {
+        py.detach(move || {
             let _operation = EngineOperationGuard::enter(self.engine_id)?;
             let mut state = lock_unpoisoned(&self.engine);
             if self.closing.load(Ordering::Acquire) {
@@ -439,9 +439,8 @@ impl PyEngine {
     ) -> PyResult<Self> {
         let config = make_config(strategy, encoding, max_call_depth)?;
         let source = source.to_owned();
-        let engine = py.allow_threads(move || {
-            Engine::with_rules_config(&source, config).map(OwnedEngine::new)
-        });
+        let engine =
+            py.detach(move || Engine::with_rules_config(&source, config).map(OwnedEngine::new));
         engine
             .map(Self::from_owned_engine)
             .map_err(init_error_to_pyerr)
@@ -487,7 +486,7 @@ impl PyEngine {
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         EngineOperationGuard::check(self.engine_id)?;
         self.begin_close();
-        py.allow_threads(|| self.destroy_engine());
+        py.detach(|| self.destroy_engine());
         Ok(())
     }
 
@@ -793,7 +792,7 @@ impl PyEngine {
     }
 
     /// Get the value of a template fact slot by name.
-    fn get_fact_slot(&self, py: Python<'_>, fact_id: u64, slot_name: &str) -> PyResult<PyObject> {
+    fn get_fact_slot(&self, py: Python<'_>, fact_id: u64, slot_name: &str) -> PyResult<Py<PyAny>> {
         self.with_engine(|engine| {
             let fid = FactHandle::from_raw(fact_id);
             let val = engine
@@ -806,7 +805,7 @@ impl PyEngine {
     // -- Introspection --
 
     /// Return a list of `(name, salience)` tuples for all rules.
-    fn rules(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn rules(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.with_engine(|engine| {
             let rules = engine.rules();
             let list = PyList::empty(py);
@@ -830,7 +829,7 @@ impl PyEngine {
     }
 
     /// Get the value of a global variable, or `None`.
-    fn get_global(&self, py: Python<'_>, name: &str) -> PyResult<Option<PyObject>> {
+    fn get_global(&self, py: Python<'_>, name: &str) -> PyResult<Option<Py<PyAny>>> {
         self.with_engine(|engine| {
             engine
                 .get_global(name)
@@ -906,8 +905,7 @@ impl PyEngine {
         }
         let data = data.to_vec();
         let format = format.unwrap_or(crate::config::Format::Cbor).into();
-        let engine =
-            py.allow_threads(move || Engine::deserialize(&data, format).map(OwnedEngine::new));
+        let engine = py.detach(move || Engine::deserialize(&data, format).map(OwnedEngine::new));
         engine
             .map(Self::from_owned_engine)
             .map_err(|error| crate::error::FerricSerializationError::new_err(error.to_string()))
@@ -952,9 +950,8 @@ impl PyEngine {
         format: Option<crate::config::Format>,
     ) -> PyResult<Self> {
         let format = format.unwrap_or(crate::config::Format::Cbor).into();
-        let engine = py.allow_threads(move || {
-            Engine::deserialize_from_file(&path, format).map(OwnedEngine::new)
-        });
+        let engine =
+            py.detach(move || Engine::deserialize_from_file(&path, format).map(OwnedEngine::new));
         engine
             .map(Self::from_owned_engine)
             .map_err(snapshot_file_error_to_pyerr)

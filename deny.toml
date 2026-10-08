@@ -12,12 +12,7 @@ unsound = "all"
 yanked = "deny"
 unused-ignored-advisory = "deny"
 disable-yank-checking = false
-# Applicability and reconsideration conditions: docs/dependency-security-policy.md.
-# These are advisory-specific exceptions, not package or severity suppressions.
-ignore = [
-    { id = "RUSTSEC-2025-0020", reason = "Ferric never calls PyString::from_object; revisit when changing Python conversion APIs or upgrading PyO3." },
-    { id = "RUSTSEC-2026-0177", reason = "Ferric never creates PyCFunction closures; revisit when adding Python callbacks or upgrading PyO3." },
-]
+ignore = []
 
 [licenses]
 confidence-threshold = 0.8
