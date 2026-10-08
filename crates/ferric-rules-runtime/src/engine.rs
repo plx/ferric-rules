@@ -218,6 +218,8 @@ pub struct Engine {
     pub(crate) source_load_depth: usize,
     /// Transient executing callable identities, retained across nested evaluator frames.
     pub(crate) active_callables: Vec<(ModuleId, String)>,
+    /// Query schemas retained while restrictions, predicates, and bodies execute.
+    pub(crate) active_query_targets: Vec<crate::query_targets::QueryTarget>,
     /// Templates whose fact is being assembled or published; transient like
     /// `active_callables`. A slot expression or dynamic default cannot
     /// redefine such a template underneath its own assertion.
@@ -344,6 +346,7 @@ impl Engine {
             reset_in_progress: false,
             source_load_depth: 0,
             active_callables: Vec::new(),
+            active_query_targets: Vec::new(),
             active_templates: Vec::new(),
             active_ordered_relations: Vec::new(),
             active_expressions: Vec::new(),
@@ -565,12 +568,43 @@ impl Engine {
                 )));
                 continue;
             };
+            // A predicate sees only the facts already matched at its position.
+            // Later pattern addresses remain unbound in this private token copy.
+            // The graph retains its original pass-through bindings. Conditions
+            // that cannot read an address skip the copy entirely.
+            let mut bound_token = None;
+            if info.condition_reads_fact_addresses(
+                pending.condition_index as usize,
+                &self.symbol_table,
+                self.config.string_encoding,
+            ) {
+                let facts = self
+                    .rete
+                    .token_store
+                    .collect_all_facts(pending.parent_token);
+                actions::bind_fact_addresses(
+                    bound_token.insert(token.clone()),
+                    info.as_ref(),
+                    &facts,
+                    &self.symbol_table,
+                    self.config.string_encoding,
+                    &self.fact_base,
+                    self.initial_fact_id,
+                    self.fact_epoch,
+                    self.fact_index_starts_at_zero,
+                );
+            }
             let evaluation = {
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
                 };
-                actions::evaluate_test_condition(&token, info.as_ref(), condition, &mut context)
+                actions::evaluate_test_condition(
+                    bound_token.as_ref().unwrap_or(&token),
+                    info.as_ref(),
+                    condition,
+                    &mut context,
+                )
             };
             let passed = match evaluation {
                 Ok(passed) => passed,
@@ -1697,6 +1731,10 @@ impl Engine {
         self.active_templates.clear();
         self.active_ordered_relations.clear();
         self.active_expressions.clear();
+        // A contained panic can skip the scoped truncation of these markers;
+        // clear recreates template keys, so stale entries would alias new ones.
+        self.active_query_targets.clear();
+        self.active_callables.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the
@@ -2193,6 +2231,28 @@ mod tests {
     fn new_engine_has_utf8_encoding_by_default() {
         let engine = Engine::new(EngineConfig::default());
         assert_eq!(engine.config.string_encoding, StringEncoding::Utf8);
+    }
+
+    #[test]
+    fn clear_releases_stale_query_target_markers() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str("(deftemplate a (slot x))").unwrap();
+        let id = engine
+            .resolve_template_id("a", engine.module_registry.current_module())
+            .unwrap();
+        // As if a panic unwound past the scoped release of a query target.
+        engine
+            .active_query_targets
+            .push(crate::query_targets::QueryTarget::Template(id));
+        engine
+            .active_callables
+            .push((engine.module_registry.current_module(), "f".to_owned()));
+        engine.clear();
+        // The new template reuses the cleared key; redefinition stays legal.
+        engine.load_str("(deftemplate b (slot x))").unwrap();
+        engine.load_str("(deftemplate b (slot y))").unwrap();
+        assert!(engine.active_query_targets.is_empty());
+        assert!(engine.active_callables.is_empty());
     }
 
     #[test]

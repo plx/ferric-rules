@@ -1,0 +1,8 @@
+before=1:3
+after=1:3:FALSE:FALSE
+before=1:4
+after=1:4:FALSE:TRUE
+before=2:3
+after=2:3:TRUE:TRUE
+before=2:4
+after=2:4:TRUE:TRUE

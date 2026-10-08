@@ -1,0 +1,15 @@
+(deftemplate p (slot x))
+(deftemplate q (slot x))
+(deftemplate r (slot x))
+(deftemplate s (slot x))
+(deffacts d (p (x 1)) (q (x 2)) (r (x 3)) (s (x 4)))
+(deffunction check ()
+ (bind ?did FALSE)
+ (do-for-all-facts ((?a p q) (?b r s)) TRUE
+  (printout t "before=" ?a:x ":" ?b:x crlf)
+  (if (not ?did) then (bind ?did TRUE) (reset))
+  (printout t "after=" ?a:x ":" ?b:x ":" (fact-existp ?a) ":" (fact-existp ?b) crlf)))
+(defrule query =>
+(check)
+(halt)
+)

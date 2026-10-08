@@ -4,7 +4,7 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:c21c810ed614827ad81b57d67403d3b9fb79200592cbc593c0fc4013eb7b0ebd",
-    "ferric_revision": "880d6bc0155089bfb9c2ee19d6d30dca9e3e444c",
+    "ferric_revision": "bccabc0eb7e1db734b3446ef78ec5ea03b2a4e33",
     "verified_on": "2026-10-04",
     "discovery_revision": "eb24cc50"
   },
@@ -11944,6 +11944,544 @@
         "specificity"
       ],
       "strategy": "mea"
+    },
+    {
+      "path": "patterns/407_issue_lhs_if.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "predicate-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_issue_lhs_query.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "predicate-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_issue_predicate_query.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "predicate-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_dynamic_targets.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "query-restrictions"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_if_switch_predicates.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "if",
+        "switch",
+        "predicate-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_query_assertion_timing.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "assertion-order"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_query_unknown_predicate_variable.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "test",
+        "predicate-constraints",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/407_lhs_query_unknown_test_variable.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "test",
+        "predicate-constraints",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/407_lhs_return_query.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "switch",
+        "return-value-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_switch.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "switch",
+        "return-value-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_query_fact_address.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "fact-address",
+        "predicate-constraints"
+      ]
+    },
+    {
+      "path": "patterns/407_lhs_query_quantified.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "test",
+        "not",
+        "exists",
+        "forall"
+      ]
+    },
+    {
+      "path": "patterns/407_ordered_lhs_declaration_before_query.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "declaration-order",
+        "test"
+      ]
+    },
+    {
+      "path": "procedural/407_assert_declaration_before_query.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "declaration-order",
+        "assert"
+      ]
+    },
+    {
+      "path": "procedural/407_assert_own_query_initializer.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "declaration-order",
+        "assert"
+      ]
+    },
+    {
+      "path": "procedural/407_branch_declaration_before_query.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "declaration-order",
+        "if",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/407_cartesian_members.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "fact-address"
+      ]
+    },
+    {
+      "path": "procedural/407_delayed_append_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "assert",
+        "delayed-do-for-all-facts"
+      ]
+    },
+    {
+      "path": "procedural/407_duplicate_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "duplicates"
+      ]
+    },
+    {
+      "path": "procedural/407_duplicate_member.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_dynamic_definition_module.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "deffunction",
+        "defmodule",
+        "query-restrictions"
+      ]
+    },
+    {
+      "path": "procedural/407_dynamic_error_empty_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "error-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_dynamic_error_mixed_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "error-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_dynamic_error_number.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "error-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_dynamic_error_qualified.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "error-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_dynamic_error_string.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "error-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_dynamic_error_unknown.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "error-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_dynamic_later_declaration.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "declaration-order"
+      ]
+    },
+    {
+      "path": "procedural/407_dynamic_multifield_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "multifield",
+        "bind"
+      ]
+    },
+    {
+      "path": "procedural/407_empty_restrictions.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_immediate_append_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "assert",
+        "do-for-all-facts"
+      ]
+    },
+    {
+      "path": "procedural/407_issue_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions"
+      ]
+    },
+    {
+      "path": "procedural/407_issue_dynamic.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions"
+      ]
+    },
+    {
+      "path": "procedural/407_issue_ordered.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered"
+      ]
+    },
+    {
+      "path": "procedural/407_member_scope_leak.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_mixed_ordered_templates.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "deftemplate",
+        "query-restrictions"
+      ]
+    },
+    {
+      "path": "procedural/407_nested_member_shadow.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "scope"
+      ]
+    },
+    {
+      "path": "procedural/407_ordered_all_forms.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "find-fact",
+        "delayed-do-for-all-facts"
+      ]
+    },
+    {
+      "path": "procedural/407_ordered_import.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "ordered",
+        "defmodule"
+      ]
+    },
+    {
+      "path": "procedural/407_ordered_later_assert.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "declaration-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_ordered_later_branch.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "declaration-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_ordered_later_construct.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "declaration-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_ordered_later_lhs.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "declaration-order"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_qualified_literal.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_reset_alternative_frames.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "reset",
+        "fact-address"
+      ]
+    },
+    {
+      "path": "procedural/407_restriction_bind_scope.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "bind",
+        "scope"
+      ]
+    },
+    {
+      "path": "procedural/407_restriction_eager_empty_and_first.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "evaluation-order",
+        "any-factp"
+      ]
+    },
+    {
+      "path": "procedural/407_restriction_error_stops_later_effects.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "evaluation-order"
+      ],
+      "error": "run"
+    },
+    {
+      "path": "procedural/407_restriction_evaluation_order.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "evaluation-order",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/407_restriction_global_once.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "defglobal",
+        "bind"
+      ]
+    },
+    {
+      "path": "procedural/407_restriction_nested_lexical.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "scope",
+        "progn$",
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/407_restriction_reset_before_cursor.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "reset"
+      ]
+    },
+    {
+      "path": "procedural/407_retract_duplicate_alternatives.clp",
+      "level": "interaction",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "retract"
+      ]
+    },
+    {
+      "path": "procedural/407_unknown_literal.clp",
+      "level": "boundary",
+      "covers": [
+        "fact-query",
+        "query-restrictions",
+        "scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "procedural/407_defglobal_query_error_keeps_earlier.clp",
+      "level": "boundary",
+      "covers": [
+        "defglobal",
+        "global-multiple",
+        "global-expression-initializer",
+        "fact-query"
+      ],
+      "error": "load"
     },
     {
       "path": "agenda/412_template_slot_specificity_lex.clp",

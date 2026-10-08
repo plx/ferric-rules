@@ -58,6 +58,8 @@ pub mod loader;
 pub mod modules;
 pub mod qualified_name;
 mod query_cursor;
+mod query_source_order;
+mod query_targets;
 mod query_validation;
 mod random;
 pub mod router;

@@ -110,15 +110,22 @@ focus stack. The previous split, blocker migration, initializer, method,
 default, and random-state checks remain. Schema 10 bytes remain unchanged and
 are explicitly rejected.
 
-`schema-12.cbor` is the current format. Its source adds dormant rules with
+`schema-12.cbor` preserves the previous format. Its source adds dormant rules with
 different specificity and an absent first conditional element. Restoration
 preserves their rule complexity and produces the CLIPS LEX/MEA order after
 new matches arrive. Activations retain all recency positions, including zero
 for absent conditional elements; both codecs validate those positions against
 the saved network. Schema 11 bytes remain unchanged and are explicitly rejected.
 
-Regenerate schema 12 only after an intentional change to its unreleased layout:
+`schema-13.cbor` is the current format. Its source adds an ordered relation,
+a template, dynamic query restrictions, and a dormant rule with a typed LHS
+conditional/query. The resume test replaces the target-producing function and
+checks that later queries use its new ordered alternatives, including duplicates.
+Both codecs retain these expressions without evaluating them during restore.
+Schema 12 bytes remain unchanged and are explicitly rejected.
+
+Regenerate schema 13 only after an intentional change to its unreleased layout:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_twelve_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_thirteen_fixture -- --ignored
 ```

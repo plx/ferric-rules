@@ -25,7 +25,14 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-The current schema is 12. Snapshots retain each rule's CLIPS specificity and
+The current schema is 13. Query members retain their ordered restriction
+expressions, including dynamic and multiple targets. Restoration validates these
+expressions without executing them; queries resolve their targets when called.
+Active query cursors and their temporary target protection are not persisted.
+Schema 12 stored only single template names and is rejected with
+`UnsupportedVersion(12)`.
+
+Snapshots retain each rule's CLIPS specificity and
 each activation's conditional-element recencies, including absent positions.
 LEX and MEA ordering keys use sorted recencies, specificity, and older
 activation ties. Restore checks this metadata against terminals and the token
@@ -116,7 +123,7 @@ Every format uses the same binary envelope, including JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`12`) |
+| 8–9 | Little-endian schema version (`13`) |
 | 10 | Codec: JSON `1`, CBOR `2` (`0`, `3`, `4` were removed codecs) |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

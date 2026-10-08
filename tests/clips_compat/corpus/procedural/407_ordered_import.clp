@@ -1,0 +1,5 @@
+(defmodule MAIN (export ?ALL))
+(deffacts MAIN::d (item 1))
+(defmodule A (import MAIN ?ALL))
+(defrule A::query => (do-for-all-facts ((?f item)) TRUE (printout t ?f:implied crlf)))
+(defrule MAIN::start => (focus A))

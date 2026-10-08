@@ -10,7 +10,7 @@ use std::path::Path;
 
 use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
 
-use super::common::{emit_error, emit_warning};
+use super::common::{emit_action_diagnostics, emit_error};
 
 /// Execute the `run` subcommand.
 pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
@@ -33,6 +33,9 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
         }
         return 1;
     }
+    // Loading can assert facts or install rules against existing facts. Report
+    // their match-time errors before reset clears the diagnostic buffer.
+    emit_action_diagnostics(json_mode, "run", &engine);
 
     // Reset (asserts initial-fact, processes deffacts)
     if let Err(err) = engine.reset() {
@@ -44,6 +47,9 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
         );
         return 1;
     }
+    // Reset evaluates LHS expressions while asserting seeds; run starts a new
+    // diagnostic buffer even when those errors left no activation to fire.
+    emit_action_diagnostics(json_mode, "run", &engine);
 
     // Run
     match engine.run(RunLimit::Unlimited) {
@@ -54,9 +60,7 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
             }
 
             // Print any action diagnostics as warnings
-            for diag in engine.action_diagnostics() {
-                emit_warning(json_mode, "run", "action_warning", diag);
-            }
+            emit_action_diagnostics(json_mode, "run", &engine);
 
             // halt is normal termination in CLIPS — all outcomes are success
             0

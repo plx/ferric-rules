@@ -143,6 +143,20 @@ pub struct FunctionCall {
 
 const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
 
+/// A fact-query member and its source-ordered template restriction expressions.
+///
+/// Symbol literals name declarations resolved when the containing construct is
+/// loaded. Other expressions produce a template symbol or a nonempty multifield
+/// of template symbols when the query runs. Alternatives retain duplicates.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct QueryBinding {
+    pub variable: String,
+    pub restrictions: Vec<ActionExpr>,
+    /// The entire `(?variable restriction ...)` binding specification.
+    pub span: Span,
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ActionExpr {
@@ -192,14 +206,15 @@ pub enum ActionExpr {
     /// - `(find-fact ((?v tmpl)) <query>)` — no body
     /// - `(find-all-facts ((?v tmpl)) <query>)` — no body
     ///
-    /// `name` is the macro name. `bindings` lists `(variable, template)` pairs.
+    /// `name` is the macro name. Each binding declares a member and one or more
+    /// template restriction expressions, evaluated before candidate traversal.
     /// `query` is the filter expression. `body` holds body actions (empty for
     /// `any-factp`, `find-fact`, and `find-all-facts`).
     QueryAction {
         /// The specific macro name (e.g. `"do-for-fact"`).
         name: String,
-        /// Binding specifications: `(variable_name, template_name)` pairs.
-        bindings: Vec<(String, String)>,
+        /// Member bindings in source order.
+        bindings: Vec<QueryBinding>,
         /// Query expression evaluated against each candidate fact.
         query: Box<ActionExpr>,
         /// Body actions executed for matching facts (empty for query-only forms).
@@ -250,7 +265,15 @@ impl ActionExpr {
                 pending.push(list_expr);
                 pending.extend(body);
             }
-            ActionExpr::QueryAction { query, body, .. } => {
+            ActionExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            } => {
+                for binding in bindings {
+                    pending.extend(&binding.restrictions);
+                }
                 pending.push(query);
                 pending.extend(body);
             }
@@ -2757,10 +2780,10 @@ fn interpret_query_action_expr(
         ));
     }
 
-    // First element is the binding list: a list of `(?var template)` pairs.
+    // Each member has one or more template restriction expressions.
     let binding_list = rest[0].as_list().ok_or_else(|| {
         InterpretError::expected(
-            &format!("binding list ((?var template) ...) in ({name} ...)"),
+            &format!("binding list ((?var restriction ...) ...) in ({name} ...)"),
             rest[0].span(),
         )
     })?;
@@ -2776,14 +2799,14 @@ fn interpret_query_action_expr(
     for binding_expr in binding_list {
         let pair = binding_expr.as_list().ok_or_else(|| {
             InterpretError::expected(
-                "(?variable template-name) binding pair",
+                "(?variable restriction ...) binding specification",
                 binding_expr.span(),
             )
         })?;
 
         let member_expr = pair.first().ok_or_else(|| {
             InterpretError::missing(
-                "?variable and template name in query binding",
+                "?variable and template restriction in query binding",
                 binding_expr.span(),
             )
         })?;
@@ -2803,29 +2826,17 @@ fn interpret_query_action_expr(
             ));
         }
 
-        let template_expr = pair.get(1).ok_or_else(|| {
-            InterpretError::missing(
-                "template name in binding pair (?var template)",
+        if pair.len() == 1 {
+            return Err(InterpretError::missing(
+                "at least one template restriction in query binding",
                 binding_expr.span(),
-            )
-        })?;
-        let template_name = template_expr
-            .as_symbol()
-            .ok_or_else(|| {
-                InterpretError::expected(
-                    "template name (symbol) in binding pair",
-                    template_expr.span(),
-                )
-            })?
-            .to_string();
-        if let Some(extra_template) = pair.get(2) {
-            return Err(InterpretError::invalid(
-                "multiple-template query restrictions are unsupported; use one template per query member",
-                extra_template.span(),
             ));
         }
-
-        bindings.push((var_name.clone(), template_name));
+        bindings.push(QueryBinding {
+            variable: var_name.clone(),
+            restrictions: interpret_action_expr_sequence(&pair[1..])?,
+            span: binding_expr.span(),
+        });
     }
 
     let (query, query_len) = interpret_action_expr_prefix(&rest[1..], span)?;
@@ -6477,15 +6488,13 @@ mod tests {
         ] {
             for (bindings, diagnostic) in [
                 ("()", "at least one query member binding"),
-                ("(())", "?variable and template name"),
+                ("(())", "?variable and template restriction"),
                 ("((? item))", "named single-field query member"),
                 ("(($? item))", "named single-field query member"),
                 ("(($?f item))", "named single-field query member"),
                 ("((f item))", "named single-field query member"),
                 ("((?*f* item))", "named single-field query member"),
-                ("((?f))", "template name in binding pair"),
-                ("((?f 42))", "template name (symbol)"),
-                ("((?f (create$ item)))", "template name (symbol)"),
+                ("((?f))", "at least one template restriction"),
             ] {
                 let source = format!("({name} {bindings} TRUE)");
                 let parsed = parse_sexprs(&source, file());
@@ -6518,9 +6527,7 @@ mod tests {
     }
 
     #[test]
-    fn query_template_alternatives_report_an_explicit_support_limit() {
-        // CLIPS accepts multiple template restrictions for one member. Ferric
-        // must report its support limit instead of silently choosing the first.
+    fn query_restrictions_preserve_expression_kinds_order_and_spans() {
         for name in [
             "do-for-fact",
             "do-for-all-facts",
@@ -6529,17 +6536,75 @@ mod tests {
             "find-fact",
             "find-all-facts",
         ] {
-            let source = format!("({name} ((?f item other)) TRUE)");
-            let parsed = parse_sexprs(&source, file());
-            let error = interpret_action_expr_inner(&parsed.exprs[0]).unwrap_err();
-            assert!(
-                error
-                    .message
-                    .contains("multiple-template query restrictions are unsupported"),
-                "{error:?}"
+            let source = format!(
+                "({name} ((?f item ?target ?*global* (create$ other item) 42 \"item\")) TRUE)"
             );
-            assert_eq!(error.span.start.offset, source.find("other").unwrap());
+            let expression = slot_reference_expression(&source);
+            let ActionExpr::QueryAction { bindings, .. } = expression else {
+                panic!("expected query");
+            };
+            let [binding] = bindings.as_slice() else {
+                panic!("expected one member");
+            };
+            assert_eq!(binding.variable, "f");
+            assert_eq!(binding.span.start.offset, source.find("(?f").unwrap());
+            assert_eq!(binding.span.end.offset, source.rfind(") TRUE").unwrap());
+            let [literal, local, global, call, number, string] = binding.restrictions.as_slice()
+            else {
+                panic!("expected all six restriction expressions");
+            };
+            assert!(matches!(literal, ActionExpr::Literal(value)
+                if matches!(&value.value, LiteralKind::Symbol(name) if name == "item")));
+            assert!(matches!(local, ActionExpr::Variable(name, span)
+                if name == "target" && span.start.offset == source.find("?target").unwrap()));
+            assert!(matches!(global, ActionExpr::GlobalVariable(name, _) if name == "global"));
+            assert!(matches!(call, ActionExpr::FunctionCall(call)
+                if call.name == "create$" && call.args.len() == 2));
+            // Value type and declaration visibility are runtime/loader concerns.
+            assert!(matches!(number, ActionExpr::Literal(value)
+                if matches!(value.value, LiteralKind::Integer(42))));
+            assert!(matches!(string, ActionExpr::Literal(value)
+                if matches!(&value.value, LiteralKind::String(name) if name == "item")));
         }
+    }
+
+    #[test]
+    fn query_restrictions_preserve_compact_references_and_nested_lexical_forms() {
+        let expression = slot_reference_expression(
+            "(any-factp ((?f ?outer:kind (if TRUE then item else other) \
+             (progn$ (?f (create$ item)) ?f) \
+             (if (any-factp ((?f item)) ?f:enabled) then item else other))) TRUE)",
+        );
+        let ActionExpr::QueryAction { bindings, .. } = expression else {
+            panic!("expected query");
+        };
+        let [binding] = bindings.as_slice() else {
+            panic!("expected one member");
+        };
+        let [compact, conditional, iterator, nested] = binding.restrictions.as_slice() else {
+            panic!("expected four restrictions");
+        };
+        assert_slot_reference(compact, "outer", "kind");
+        assert!(matches!(conditional, ActionExpr::If { .. }));
+        assert!(matches!(iterator, ActionExpr::Progn { var_name, .. } if var_name == "f"));
+        assert!(matches!(nested, ActionExpr::If { condition, .. }
+            if matches!(condition.as_ref(), ActionExpr::QueryAction { .. })));
+    }
+
+    #[test]
+    fn query_child_walk_includes_restrictions_before_predicate_and_body() {
+        let expression = slot_reference_expression(
+            "(do-for-fact ((?a (sym-cat first) item) (?b ?target)) \
+             (> ?a:value 0) (printout t ?b:value))",
+        );
+        let mut children = Vec::new();
+        expression.push_children(&mut children);
+        assert_eq!(children.len(), 5);
+        assert!(matches!(children[0], ActionExpr::FunctionCall(call) if call.name == "sym-cat"));
+        assert!(matches!(children[1], ActionExpr::Literal(_)));
+        assert!(matches!(children[2], ActionExpr::Variable(name, _) if name == "target"));
+        assert!(matches!(children[3], ActionExpr::FunctionCall(call) if call.name == ">"));
+        assert!(matches!(children[4], ActionExpr::FunctionCall(call) if call.name == "printout"));
     }
 
     #[test]
@@ -6560,6 +6625,14 @@ mod tests {
         }
     }
 
+    fn assert_query_literal_binding(binding: &QueryBinding, variable: &str, template: &str) {
+        assert_eq!(binding.variable, variable);
+        assert!(
+            matches!(binding.restrictions.as_slice(), [ActionExpr::Literal(value)]
+            if matches!(&value.value, LiteralKind::Symbol(name) if name == template))
+        );
+    }
+
     #[test]
     fn query_result_forms_preserve_compact_predicates_and_binding_order() {
         for name in ["any-factp", "find-fact", "find-all-facts"] {
@@ -6575,13 +6648,9 @@ mod tests {
             else {
                 panic!("expected query");
             };
-            assert_eq!(
-                bindings,
-                [
-                    ("second".into(), "right".into()),
-                    ("first".into(), "left".into())
-                ]
-            );
+            assert_eq!(bindings.len(), 2);
+            assert_query_literal_binding(&bindings[0], "second", "right");
+            assert_query_literal_binding(&bindings[1], "first", "left");
             assert_slot_reference(&query, "second", "enabled");
             assert!(body.is_empty());
         }
@@ -6598,7 +6667,8 @@ mod tests {
         else {
             panic!("expected outer query");
         };
-        assert_eq!(bindings, [("f".into(), "item".into())]);
+        assert_eq!(bindings.len(), 1);
+        assert_query_literal_binding(&bindings[0], "f", "item");
         let ActionExpr::QueryAction {
             bindings,
             query,
@@ -6608,7 +6678,8 @@ mod tests {
         else {
             panic!("expected nested query");
         };
-        assert_eq!(bindings, &[("f".into(), "other".into())]);
+        assert_eq!(bindings.len(), 1);
+        assert_query_literal_binding(&bindings[0], "f", "other");
         assert_slot_reference(query, "f", "enabled");
         assert!(body.is_empty());
     }

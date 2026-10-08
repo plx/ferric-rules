@@ -105,7 +105,14 @@ impl<'a> Iterator for RuntimeExpressions<'a> {
                 self.pending.push(list_expr);
                 branches.push(body);
             }
-            RuntimeExpr::QueryAction { query, body, .. } => {
+            RuntimeExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            } => {
+                self.pending
+                    .extend(bindings.iter().flat_map(|binding| &binding.restrictions));
                 self.pending.push(query);
                 branches.push(body);
             }
@@ -316,6 +323,7 @@ impl Engine {
         expression: &ActionExpr,
         module: ModuleId,
     ) -> Result<RuntimeExpr, LoadError> {
+        self.declare_expression_query_order(std::iter::once(expression), module)?;
         self.validate_source_default_control(expression, module, "eval")?;
         // As when loading source, parsing an assertion declares its implied
         // template, whether or not the assertion runs.
@@ -411,6 +419,7 @@ impl Engine {
         allow_local_reads: bool,
     ) -> Result<PreparedFact, LoadError> {
         self.declare_implicit_template(name, module);
+        self.declare_expression_query_order(fields, module)?;
         for expression in fields {
             self.declare_expression_templates(expression, module);
         }
@@ -441,6 +450,10 @@ impl Engine {
         let validated = template
             .slot_overrides(&overrides, &self.symbol_table)
             .map_err(LoadError::Compile)?;
+        self.declare_expression_query_order(
+            validated.iter().flat_map(|(_, slot)| &slot.args),
+            module,
+        )?;
         let assigned: HashSet<_> = validated.iter().map(|(index, _)| *index).collect();
         for (index, default) in template.defaults.iter().enumerate() {
             if !assigned.contains(&index) && template.dynamic_defaults[index].is_none() {

@@ -1,0 +1,10 @@
+(deftemplate p (slot x))
+(deftemplate q (slot x))
+(deftemplate empty)
+(deffacts d (p (x 1)) (q (x 2)) (p (x 3)))
+(defrule query =>
+(do-for-all-facts ((?f (if (any-factp ((?f q)) (= ?f:x 2)) then p else q))) TRUE (printout t "nested=" ?f:x crlf))
+(do-for-all-facts ((?f (progn$ (?f (create$ p)) ?f))) TRUE (printout t "iterator=" ?f:x crlf))
+(do-for-all-facts ((?f (progn (loop-for-count (?f 1 1) do (printout t ?f)) p))) TRUE (printout t "count=" ?f:x crlf))
+(do-for-all-facts ((?f (bind ?f q))) TRUE (printout t "bound=" ?f:x crlf))
+)

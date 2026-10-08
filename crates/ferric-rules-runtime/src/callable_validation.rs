@@ -133,8 +133,15 @@ fn validate_break_expression(
             validate_break_body(body, true, is_template)
         }
         ActionExpr::QueryAction {
-            name, query, body, ..
+            name,
+            bindings,
+            query,
+            body,
+            ..
         } => {
+            for expression in bindings.iter().flat_map(|binding| &binding.restrictions) {
+                validate_break_expression(expression, false, is_template)?;
+            }
             validate_break_expression(query, false, is_template)?;
             validate_break_body(
                 body,
@@ -316,7 +323,15 @@ fn validate(
             // the actual element variable is protected by CLIPS syntax.
             validate_iteration(body, Some(var_name), "MULTIFUN2", protected, is_template)
         }
-        ActionExpr::QueryAction { query, body, .. } => {
+        ActionExpr::QueryAction {
+            bindings,
+            query,
+            body,
+            ..
+        } => {
+            for expression in bindings.iter().flat_map(|binding| &binding.restrictions) {
+                validate(expression, protected, is_template)?;
+            }
             validate(query, protected, is_template)?;
             validate_body(body, protected, is_template)
         }
