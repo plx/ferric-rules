@@ -415,3 +415,27 @@ fn watch_accepts_every_clips_item_and_validates_construct_names() {
     // A rejected name leaves the watch state unchanged.
     assert!(!engine.watch_facts());
 }
+
+#[test]
+fn source_clear_refused_during_execution_removes_facts_without_retraction_traces() {
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (item 1) (item 2))
+         (defrule clrr (item 1) => (clear) (assert (z)))",
+    )
+    .unwrap();
+    engine.reset().unwrap();
+    engine.enable_output_events();
+    engine.set_watch_facts(true);
+    engine.run(RunLimit::Unlimited).unwrap();
+    let events = engine.drain_output_events();
+    assert_eq!(
+        events,
+        vec![
+            (
+                "werror".into(),
+                "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n".into()
+            ),
+            ("wtrace".into(), "==> f-0     (z)\n".into()),
+        ]
+    );
+}

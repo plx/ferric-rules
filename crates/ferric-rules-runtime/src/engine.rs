@@ -1869,8 +1869,8 @@ impl Engine {
             .map(|(id, entry)| (entry.timestamp, id, entry.fact.clone()))
             .collect();
         facts.sort_by_key(|(timestamp, _, _)| *timestamp);
+        // CLIPS removes the facts silently here: no `<==` traces.
         for (_, id, fact) in facts {
-            self.trace_fact(id, false);
             self.rete.retract_fact(id, &fact, &self.fact_base);
             self.fact_base.retract(id);
         }
