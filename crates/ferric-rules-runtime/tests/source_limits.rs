@@ -248,7 +248,8 @@ fn load_facts_bounds_file_reads_and_reports_resource_limits() {
         .unwrap();
     let escaped = path.to_string_lossy().replace('\\', "\\\\");
     let mut engine = Engine::with_rules(&format!(
-        "(deffacts seeds (retained 7)) (defrule read => (load-facts \"{escaped}\"))"
+        "(deffacts seeds (retained 7))
+         (defrule read => (load-facts \"{escaped}\") (printout t continued))"
     ))
     .unwrap();
     engine.reset().unwrap();
@@ -256,6 +257,7 @@ fn load_facts_bounds_file_reads_and_reports_resource_limits() {
     let diagnostics = engine.action_diagnostics();
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     let diagnostic = diagnostics[0].to_string();
+    assert_eq!(engine.get_output("t"), None);
     assert!(diagnostic.contains("load-facts"), "{diagnostic}");
     assert!(diagnostic.contains("source bytes"), "{diagnostic}");
     assert!(diagnostic.contains("16777217"), "{diagnostic}");
@@ -266,6 +268,7 @@ fn load_facts_bounds_file_reads_and_reports_resource_limits() {
     engine.reset().unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
     assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t"), Some("continued"));
     assert_eq!(engine.find_facts("loaded").unwrap().len(), 1);
     assert_eq!(engine.find_facts("retained").unwrap().len(), 1);
 }

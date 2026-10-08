@@ -690,8 +690,18 @@ name — `t` is the conventional "standard output," but using a dedicated
 channel per concern (`audit`, `trace`, etc.) and reading them separately
 is often cleaner.
 
+To consume output in cross-channel order, enable `engine.enable_output_events()`
+before execution, then call `engine.drain_output_events()`. Each returned pair
+contains a channel and its text; adjacent writes may be combined. Draining also
+clears the channel buffers. Pending events survive reset and clear, while
+snapshots retain only the ordinary channel buffers, not live observation state.
+
 For *input*, `(read)` and `(readline)` consume from an engine-managed
-input buffer. Push lines from Rust before the run:
+input buffer. Push lines from Rust before the run (or install a lazy line
+source with `engine.set_input_source(...)`, which they pull from, one line at a
+time, once the pushed lines run out). To show a prompt before such a read
+blocks, install `engine.set_before_input(...)`: it receives the drained output
+events and action diagnostics just before each source read:
 
 <!-- example: 10-io-channels/src/main.rs -->
 ```rust
@@ -755,8 +765,9 @@ Available strategies are `Depth` (default), `Breadth`, `Lex`, and `Mea`.
 Salience takes priority in each strategy. Depth selects the newest activation;
 breadth selects the oldest. LEX compares sorted fact recencies, rule specificity,
 and finally older activations. MEA compares the first pattern's recency before
-using the LEX comparison. Configure these through the host API; source
-`set-strategy` and `get-strategy` commands are unsupported. `Simplicity`,
+using the LEX comparison. Configure these through the host API or use
+`(set-strategy breadth)`, which returns the previous strategy and reorders
+pending activations. `(get-strategy)` returns the current strategy. `Simplicity`,
 `Complexity`, and `Random` are not implemented.
 
 If you pass source via `Engine::with_rules_config(source, config)`,
@@ -947,7 +958,11 @@ A non-exhaustive list worth internalizing:
   preserving active local bindings and output. An unconditional rule that
   resets can activate again; use a run limit or an explicit halt when needed.
 - **Source `clear` preserves active constructs.** It removes facts, refuses
-  construct removal, and continues the current execution.
+  construct removal, and continues the current execution. During fact
+  initialization, or when the prompt expression itself asserts or queries
+  facts or calls a deffunction or generic function, it refuses before
+  removing facts. At the prompt, with no constructs in use, it clears
+  constructs and restores `initial-fact` as f-0.
 - **Equal-salience order follows network construction.** Under depth and
   breadth, ties follow activation creation order, which depends on how the
   rules' network is built. It is deterministic, the same on every run, and
@@ -997,7 +1012,19 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   and [Python package release contract](python-package-release.md).
 - **CLI**: the `ferric` binary (`crates/ferric-rules-cli`) runs `.clp` files
   batch-style or drops you into a REPL. `ferric check [--json] file.clp`
-  validates without running; `ferric run` executes.
+  validates without running; `ferric run` executes. Construct-only files get an
+  implicit reset/run. Files with procedural forms execute as scripts, so include
+  `(reset)` and `(run)` explicitly. Piped input is read line by line when
+  `read`/`readline` asks for it, and standard logical output channels print to
+  stdout in order.
+  The REPL evaluates expressions such as `(+ 1 2)` and echoes their values.
+  Use `(save-facts "file.fct")` and `(load-facts "file.fct")` to exchange facts;
+  `(facts)`, `(agenda)`, and watch output show public fact indices and real
+  template/slot names.
+
+Rust hosts can use `engine.eval_str("(+ 1 2)")` to evaluate one expression.
+Each call has fresh local bindings; use one `progn` expression when several
+operations need the same local variable. Engine changes and output persist.
 
 For anything not covered here, start with [`compatibility.md`](compatibility.md)
 for "what's supported" and [`migration.md`](migration.md) for the differences

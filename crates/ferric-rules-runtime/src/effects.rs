@@ -14,7 +14,16 @@ use crate::templates::RegisteredTemplate;
 pub(crate) fn is_effect(name: &str) -> bool {
     matches!(
         name,
-        "assert" | "retract" | "modify" | "duplicate" | "halt" | "focus" | "reset" | "clear"
+        "assert"
+            | "retract"
+            | "modify"
+            | "duplicate"
+            | "halt"
+            | "focus"
+            | "reset"
+            | "clear"
+            | "load-facts"
+            | "save-facts"
     )
 }
 
@@ -134,6 +143,40 @@ pub(crate) fn with_depth_floor<T>(
     result
 }
 
+/// Whether `ctx` evaluates a top-level expression (or `eval` source it runs)
+/// rather than a rule, callable body or fact initializer.
+fn is_root_context(ctx: &EvalContext<'_>) -> bool {
+    ctx.call_depth == 0
+        && ctx.engine.active_rules.is_empty()
+        && ctx.engine.active_fact_initializers == 0
+        && ctx.engine.active_expression_scopes != 0
+}
+
+/// The module that dynamic source (`eval`, `assert-string`, `build`, fact
+/// files) and run-time name lookups resolve in. A root expression follows the
+/// engine's current module, as CLIPS's top-level commands follow its global
+/// one: a root `reset` or `clear` selects MAIN and a built `defmodule` selects
+/// itself, while the expression's own parsed references stay bound to the
+/// module it was parsed in.
+pub(crate) fn dynamic_module(ctx: &EvalContext<'_>) -> ModuleId {
+    if is_root_context(ctx) {
+        ctx.engine.module_registry.current_module()
+    } else {
+        ctx.current_module
+    }
+}
+
+/// The module `bind` resolves an unqualified defglobal in. CLIPS binds the
+/// global a command names when it parses the command, so this is the
+/// expression's own module, unless a root `clear` has deleted that module.
+pub(crate) fn bind_module(ctx: &EvalContext<'_>) -> ModuleId {
+    if ctx.engine.root_cleared && is_root_context(ctx) {
+        ctx.engine.module_registry.current_module()
+    } else {
+        ctx.current_module
+    }
+}
+
 pub(crate) fn eval_call(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -151,18 +194,36 @@ fn eval_call_inner(
 ) -> Result<Value, EvalError> {
     require_effects(ctx, name, span)?;
     match name {
+        "load-facts" | "save-facts" => crate::fact_io::eval_call(ctx, name, args, span),
         "halt" | "reset" | "clear" => {
             arity(name, args.len(), 0, true, span)?;
             match name {
                 "halt" => ctx.engine.halt(),
-                "reset" => ctx
-                    .engine
-                    .reset_for_evaluation()
-                    .map_err(|error| failure(name, error.to_string(), span))?,
-                "clear" => ctx
-                    .engine
-                    .clear_for_evaluation()
-                    .map_err(|error| failure(name, error.to_string(), span))?,
+                "reset" => {
+                    ctx.engine
+                        .reset_for_evaluation()
+                        .map_err(|error| failure(name, error.to_string(), span))?;
+                }
+                "clear" => {
+                    if ctx
+                        .engine
+                        .clear_for_evaluation()
+                        .map_err(|error| failure(name, error.to_string(), span))?
+                    {
+                        let main = ctx.engine.module_registry.current_module();
+                        // Enclosing contexts of the expression still hold the
+                        // deleted module; see `bind_module`.
+                        if is_root_context(ctx) {
+                            ctx.engine.root_cleared = true;
+                        }
+                        // The clear deleted the expression's module, and module
+                        // ids restart. It refused if the expression names a
+                        // template, fact or user callable, so nothing left in
+                        // it is bound to the old module.
+                        ctx.current_module = main;
+                        ctx.global_module = None;
+                    }
+                }
                 _ => unreachable!(),
             }
             Ok(Value::Void)
@@ -339,7 +400,12 @@ pub(crate) fn eval_syntax(
     ctx: &mut EvalContext<'_>,
     call: &FunctionCall,
 ) -> Result<Value, EvalError> {
-    with_depth_floor(ctx, |ctx| eval_syntax_inner(ctx, call))
+    with_depth_floor(ctx, |ctx| {
+        ctx.engine.active_fact_initializers += 1;
+        let result = eval_syntax_inner(ctx, call);
+        ctx.engine.active_fact_initializers -= 1;
+        result
+    })
 }
 
 fn eval_syntax_inner(ctx: &mut EvalContext<'_>, call: &FunctionCall) -> Result<Value, EvalError> {
@@ -568,6 +634,7 @@ fn calls_user_callable(ctx: &EvalContext<'_>, expression: &RuntimeExpr) -> bool 
 }
 
 fn retract(engine: &mut Engine, id: FactId) {
+    engine.trace_fact(id, false);
     if let Some(entry) = engine.fact_base.get(id) {
         engine.rete.retract_fact(id, &entry.fact, &engine.fact_base);
         engine.fact_base.retract(id);

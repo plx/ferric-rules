@@ -367,12 +367,18 @@ fn load_facts_stays_literal_only_and_preserves_earlier_facts_on_failure() {
             "(deftemplate item (slot one) (multislot many))
              (defglobal ?*g* = 5 ?*calls* = 0)
              (deffunction mark () (bind ?*calls* (+ ?*calls* 1)) ?*calls*)
-             (defrule read => (load-facts \"{escaped}\"))"
+             (defrule read => (load-facts \"{escaped}\") (printout t continued))"
         ))
         .unwrap();
         let result = engine.run(RunLimit::Unlimited).unwrap();
+        // As in CLIPS, a content error halts the rule after the prefix loads.
         assert_eq!(result.halt_reason, HaltReason::ActionError, "{invalid}");
-        assert!(!engine.action_diagnostics().is_empty());
+        let diagnostics = format!("{:?}", engine.action_diagnostics());
+        assert!(
+            diagnostics.contains("Function load-facts encountered an error"),
+            "{diagnostics}"
+        );
+        assert_eq!(engine.get_output("t"), None, "{invalid}");
         assert_eq!(integers(&engine, "before"), [7]);
         assert!(engine.find_facts("after").unwrap().is_empty());
         assert!(engine.find_facts("bad").unwrap().is_empty());
@@ -537,8 +543,10 @@ fn load_facts_reports_an_unknown_template_for_slot_style_facts() {
         .unwrap()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    let mut engine =
-        Engine::with_rules(&format!("(defrule read => (load-facts \"{escaped}\"))")).unwrap();
+    let mut engine = Engine::with_rules(&format!(
+        "(defrule read => (load-facts \"{escaped}\") (printout t continued))"
+    ))
+    .unwrap();
     let result = engine.run(RunLimit::Unlimited).unwrap();
     assert_eq!(result.halt_reason, HaltReason::ActionError);
     let diagnostics = format!("{:?}", engine.action_diagnostics());
@@ -546,6 +554,7 @@ fn load_facts_reports_an_unknown_template_for_slot_style_facts() {
         diagnostics.contains("unknown template `person`"),
         "{diagnostics}"
     );
+    assert_eq!(engine.get_output("t"), None);
     assert_eq!(integers(&engine, "ok"), [1]);
     assert_eq!(engine.fact_count(), 1);
 }

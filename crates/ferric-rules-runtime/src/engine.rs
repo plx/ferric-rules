@@ -216,6 +216,7 @@ pub struct Engine {
     pub(crate) fact_index_starts_at_zero: bool,
     pub(crate) reset_in_progress: bool,
     pub(crate) source_load_depth: usize,
+    pub(crate) active_fact_initializers: usize,
     /// Transient executing callable identities, retained across nested evaluator frames.
     pub(crate) active_callables: Vec<(ModuleId, String)>,
     /// Query schemas retained while restrictions, predicates, and bodies execute.
@@ -233,8 +234,17 @@ pub struct Engine {
     /// fields of a top-level assertion. The templates and ordered relations
     /// it names stay in use until it returns.
     pub(crate) active_expressions: Vec<(ModuleId, Arc<RuntimeExpr>)>,
+    /// Whether a root `clear` ran while the outermost active expression
+    /// runs. It deleted the module the expression was parsed in, whose id a
+    /// new module may now reuse. Scoped to the outermost active expression.
+    pub(crate) root_cleared: bool,
+    /// Nesting of `with_active_expressions` scopes. Unlike
+    /// `active_expressions`, a source `clear` does not reset it.
+    pub(crate) active_expression_scopes: usize,
     /// Currently executing RHS definitions; transient across snapshot transfer.
     pub(crate) active_rules: Vec<(ModuleId, Arc<CompiledRuleInfo>)>,
+    /// Transient host/session tracing state; never restored from snapshots.
+    pub(crate) watch: crate::inspection::WatchState,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
     /// Guards match-time predicate draining against evaluator-triggered assertions.
@@ -248,7 +258,28 @@ pub struct Engine {
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
     pub(crate) input_buffer: VecDeque<String>,
+    /// Transient host source that `read`/`readline` pull single lines from
+    /// once `input_buffer` is empty; never serialized.
+    pub(crate) input_source: Option<InputSource>,
+    /// Transient host hook that receives pending output before the input
+    /// source blocks; never serialized.
+    pub(crate) before_input: Option<BeforeInput>,
 }
+
+/// A host-supplied line source for `read` and `readline`.
+///
+/// Each call returns the next line without its terminator, or `None` at end
+/// of input. It is called only when a `read` or `readline` needs a line that
+/// [`Engine::push_input`] has not already queued.
+pub type InputSource = Box<dyn FnMut() -> Option<String> + Send + Sync>;
+
+/// A host hook that delivers pending output before an [`InputSource`] read.
+///
+/// It receives the drained chronological output events (as
+/// [`Engine::drain_output_events`] returns them) followed by the action
+/// diagnostics recorded so far, so a prompt printed before `read` or
+/// `readline` reaches the host before the source blocks.
+pub type BeforeInput = Box<dyn FnMut(Vec<(String, String)>, Vec<ActionError>) + Send + Sync>;
 
 impl Engine {
     /// Remove executable metadata and reclaim only rule-exclusive graph state.
@@ -345,17 +376,23 @@ impl Engine {
             fact_index_starts_at_zero: false,
             reset_in_progress: false,
             source_load_depth: 0,
+            active_fact_initializers: 0,
             active_callables: Vec::new(),
             active_query_targets: Vec::new(),
             active_templates: Vec::new(),
             active_ordered_relations: Vec::new(),
             active_expressions: Vec::new(),
             active_rules: Vec::new(),
+            watch: crate::inspection::WatchState::default(),
             action_diagnostics: Vec::new(),
             processing_predicates: false,
             eval_depth_floor: (0, 0),
             halted: false,
             input_buffer: VecDeque::new(),
+            input_source: None,
+            before_input: None,
+            root_cleared: false,
+            active_expression_scopes: 0,
         }
     }
 
@@ -456,6 +493,10 @@ impl Engine {
         run: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let depth = self.active_expressions.len();
+        if self.active_expression_scopes == 0 {
+            self.root_cleared = false;
+        }
+        self.active_expression_scopes += 1;
         self.active_expressions.extend(
             expressions
                 .into_iter()
@@ -463,6 +504,10 @@ impl Engine {
         );
         let result = run(self);
         self.active_expressions.truncate(depth);
+        self.active_expression_scopes -= 1;
+        if self.active_expression_scopes == 0 {
+            self.root_cleared = false;
+        }
         result
     }
 
@@ -487,6 +532,7 @@ impl Engine {
                 .try_assert_fact(fact, self.fact_duplication())?
             {
                 FactInsertionResult::Inserted(fact_id) => {
+                    self.trace_fact(fact_id, true);
                     propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
                     self.drain_network_events();
                     FactAssertionResult::Asserted(fact_id)
@@ -513,6 +559,7 @@ impl Engine {
         // Predicates may introspect indices during propagation. Publish the
         // protected identity before any match-time expression can run.
         self.initial_fact_id = Some(fact_id);
+        self.trace_fact(fact_id, true);
         propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
         self.drain_network_events();
         Ok(())
@@ -1051,6 +1098,7 @@ impl Engine {
         if Some(fact_id) == self.initial_fact_id {
             return Err(EngineError::ProtectedInitialFact);
         }
+        self.trace_fact(fact_id, false);
         let entry = self
             .fact_base
             .get(fact_id)
@@ -1462,6 +1510,9 @@ impl Engine {
             token_id: activation.token,
         };
 
+        self.watch.firing_ordinal = 0;
+        self.trace_rule_firing(&activation);
+
         // Execute actions. Diagnostics remain available through
         // action_diagnostics(), while step() returns Some(fired) to indicate
         // that the activation was processed even when action evaluation fails.
@@ -1518,6 +1569,7 @@ impl Engine {
     fn run_inner(&mut self, limit: RunLimit, clear_execution_state: bool) -> RunResult {
         ferric_span!(info_span, "engine_run", limit = ?limit);
         if clear_execution_state {
+            self.watch.firing_ordinal = 0;
             self.halted = false;
             self.action_diagnostics.clear();
             if self.module_registry.current_focus().is_none() {
@@ -1556,6 +1608,7 @@ impl Engine {
                 return run_result(rules_fired, HaltReason::AgendaEmpty);
             };
 
+            self.trace_rule_firing(&activation);
             let (logically_fired, action_error) =
                 self.execute_activation_actions(activation.rule, activation.token);
 
@@ -1647,6 +1700,12 @@ impl Engine {
         self.host.clear_facts();
         ferric_span!(info_span, "engine_reset");
 
+        if !preserve_output {
+            self.router.clear();
+            self.action_diagnostics.clear();
+        }
+        self.trace_fact_removals();
+
         // Clear all runtime state
         self.fact_base = FactBase::new();
         self.initial_fact_id = None;
@@ -1654,10 +1713,6 @@ impl Engine {
         // Reset focus before root matches emit their new auto-focus notices.
         self.module_registry.reset_focus();
         self.rete.clear_working_memory();
-        if !preserve_output {
-            self.router.clear();
-            self.action_diagnostics.clear();
-        }
         if clear_halt {
             self.halted = false;
         }
@@ -1704,12 +1759,64 @@ impl Engine {
         self.input_buffer.push_back(line.to_string());
     }
 
+    /// Install (or remove, with `None`) a lazy line source for `read` and
+    /// `readline`.
+    ///
+    /// Lines queued with [`push_input`](Self::push_input) are consumed first;
+    /// the source is asked for exactly one line each time the queue is empty.
+    /// The source is transient host state: snapshots do not record it, and
+    /// `clear` keeps it in place.
+    pub fn set_input_source(&mut self, source: Option<InputSource>) {
+        self.input_source = source;
+    }
+
+    /// Install (or remove, with `None`) a hook that receives pending output
+    /// and action diagnostics each time the input source is about to be asked
+    /// for a line.
+    ///
+    /// Without a hook, output stays queued until the host drains it. The hook
+    /// is transient host state: snapshots do not record it, and `clear` keeps
+    /// it in place.
+    pub fn set_before_input(&mut self, hook: Option<BeforeInput>) {
+        self.before_input = hook;
+    }
+
+    /// Take the next input line: the queued input first, then the source.
+    pub(crate) fn next_input_line(&mut self) -> Option<String> {
+        if let Some(line) = self.input_buffer.pop_front() {
+            return Some(line);
+        }
+        self.input_source.as_ref()?;
+        if self.before_input.is_some() {
+            let events = self.drain_output_events();
+            let diagnostics = std::mem::take(&mut self.action_diagnostics);
+            if let Some(hook) = self.before_input.as_mut() {
+                hook(events, diagnostics);
+            }
+        }
+        let mut line = (self.input_source.as_mut()?)()?;
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        Some(line)
+    }
+
     /// Clear the engine: remove all rules, facts, templates, functions, globals,
     /// and module definitions. Returns the engine to its initial empty state.
     ///
     /// Unlike `reset()`, which preserves compiled rules and templates,
     /// `clear()` removes everything.
     pub fn clear(&mut self) {
+        self.clear_internal(false);
+    }
+
+    fn clear_internal(&mut self, preserve_io: bool) {
+        if !preserve_io {
+            self.trace_fact_removals();
+        }
         // Clear discards every internal address carrier, including registered
         // globals. Host assertions reject retained addresses, so epoch reuse
         // here cannot revive one. Reset preserves carriers and must not wrap.
@@ -1735,7 +1842,9 @@ impl Engine {
         // clear recreates template keys, so stale entries would alias new ones.
         self.active_query_targets.clear();
         self.active_callables.clear();
-        self.router.clear();
+        if !preserve_io {
+            self.router.clear();
+        }
         self.functions = FunctionEnv::new();
         // Clear removes constructs and bindings, but does not reseed the
         // environment's random stream (nor affect another engine's stream).
@@ -1756,7 +1865,13 @@ impl Engine {
         self.processing_predicates = false;
         self.eval_depth_floor = (0, 0);
         self.halted = false;
-        self.input_buffer.clear();
+        if !preserve_io {
+            self.input_buffer.clear();
+            // A host clear runs outside every evaluation; recover the scope
+            // count that a contained panic may have left behind.
+            self.active_expression_scopes = 0;
+            self.root_cleared = false;
+        }
     }
 
     /// Drain expression output before an effect can clear or replace globals.
@@ -1766,20 +1881,51 @@ impl Engine {
         }
     }
 
-    /// CLIPS first clears facts, then refuses to remove in-use constructs.
-    /// Keep the active rule/callable frames and the existing refraction state.
-    pub(crate) fn clear_for_evaluation(&mut self) -> Result<(), EngineError> {
+    /// Clear constructs only when no active evaluation frame depends on them.
+    /// Returns whether constructs were removed, so the caller can reset its
+    /// module context. In-use constructs retain their existing refraction state.
+    pub(crate) fn clear_for_evaluation(&mut self) -> Result<bool, EngineError> {
         self.flush_expression_output();
+        if self.active_fact_initializers != 0
+            || !self.active_templates.is_empty()
+            || !self.active_ordered_relations.is_empty()
+            || self.active_expressions_name_facts()
+            || self.active_expressions_name_callables()
+            // Outside a rule, CLIPS keeps facts while a callable runs.
+            || (self.active_rules.is_empty() && !self.active_callables.is_empty())
+        {
+            self.router.write(
+                "werror",
+                "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n",
+            );
+            return Ok(false);
+        }
         let epoch = self
             .fact_epoch
             .checked_add(1)
             .ok_or(EngineError::FactEpochExhausted)?;
-        let facts: Vec<_> = self
+        if self.active_rules.is_empty()
+            && self.active_callables.is_empty()
+            && self.active_query_targets.is_empty()
+            && self.source_load_depth == 0
+            && !self.reset_in_progress
+        {
+            // clear_internal preserves the symbol pool: the compiled outer
+            // expression and its locals may still contain interned literals.
+            self.clear_internal(true);
+            self.fact_epoch = epoch;
+            self.fact_index_starts_at_zero = false;
+            self.ensure_initial_fact()?;
+            return Ok(true);
+        }
+        let mut facts: Vec<_> = self
             .fact_base
             .iter()
-            .map(|(id, entry)| (id, entry.fact.clone()))
+            .map(|(id, entry)| (entry.timestamp, id, entry.fact.clone()))
             .collect();
-        for (id, fact) in facts {
+        facts.sort_by_key(|(timestamp, _, _)| *timestamp);
+        // CLIPS removes the facts silently here: no `<==` traces.
+        for (_, id, fact) in facts {
             self.rete.retract_fact(id, &fact, &self.fact_base);
             self.fact_base.retract(id);
         }
@@ -1789,7 +1935,11 @@ impl Engine {
         self.fact_index_starts_at_zero = true;
         self.host.clear_facts();
         self.drain_network_events();
-        Ok(())
+        self.router.write(
+            "werror",
+            "[CONSTRCT1] Some constructs are still in use. Clear cannot continue.\n",
+        );
+        Ok(false)
     }
 
     /// Check whether the engine is currently halted.

@@ -1,138 +1,124 @@
-//! REPL command parsing and dispatch.
-//!
-//! Commands are represented as an enum, parsed from user input strings,
-//! and dispatched to handler methods on [`super::session::ReplSession`].
+//! Parse shell commands using the same syntax as ordinary CLIPS expressions.
 
-use super::session::ReplSession;
+use ferric_rules_parser::{parse_sexprs, Atom, FileId, SExpr};
+use ferric_rules_runtime::MAX_SOURCE_BYTES;
 
-/// A parsed REPL command.
 #[derive(Debug)]
 pub(crate) enum ReplCommand {
-    /// Exit the REPL.
     Exit,
-    /// Reset the engine (clear facts, preserve rules, re-assert deffacts).
-    Reset,
-    /// Clear the engine completely (remove all rules, facts, templates, etc.).
-    Clear,
-    /// Run the inference engine.
     Run { limit: Option<usize> },
-    /// List all facts in working memory.
     Facts,
-    /// Show the count of activations on the agenda.
-    Agenda,
-    /// List all defined rules.
+    Agenda { module: Option<String> },
     Rules,
-    /// Load a CLIPS file.
     Load { path: String },
-    /// Save current facts to a file.
-    Save { path: String },
-    /// Show help for available commands.
     Help,
-    /// Enable tracing for a target.
-    Watch { target: WatchTarget },
-    /// Disable tracing for a target.
-    Unwatch { target: WatchTarget },
-    /// Evaluate a general CLIPS form via `load_str`.
-    Eval { source: String },
+    Construct { source: SourceForm },
+    Eval { source: SourceForm },
 }
 
-/// Targets for the `(watch)` / `(unwatch)` commands.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum WatchTarget {
-    Facts,
-    Rules,
+pub(crate) fn is_construct(expr: &SExpr) -> bool {
+    matches!(
+        expr.as_list()
+            .and_then(|items| items.first())
+            .and_then(SExpr::as_symbol),
+        Some(
+            "defrule"
+                | "deffacts"
+                | "deftemplate"
+                | "defglobal"
+                | "defmodule"
+                | "deffunction"
+                | "defgeneric"
+                | "defmethod"
+        )
+    )
 }
 
-/// Parse a trimmed input string into a [`ReplCommand`].
-pub(crate) fn parse_command(input: &str) -> ReplCommand {
-    match input {
-        "(exit)" | "(quit)" => return ReplCommand::Exit,
-        "(reset)" => return ReplCommand::Reset,
-        "(clear)" => return ReplCommand::Clear,
-        "(facts)" => return ReplCommand::Facts,
-        "(agenda)" => return ReplCommand::Agenda,
-        "(rules)" => return ReplCommand::Rules,
-        "(help)" => return ReplCommand::Help,
-        "(run)" => return ReplCommand::Run { limit: None },
-        "(watch facts)" => {
-            return ReplCommand::Watch {
-                target: WatchTarget::Facts,
-            }
-        }
-        "(watch rules)" => {
-            return ReplCommand::Watch {
-                target: WatchTarget::Rules,
-            }
-        }
-        "(unwatch facts)" => {
-            return ReplCommand::Unwatch {
-                target: WatchTarget::Facts,
-            }
-        }
-        "(unwatch rules)" => {
-            return ReplCommand::Unwatch {
-                target: WatchTarget::Rules,
-            }
-        }
-        _ => {}
-    }
+/// One form's text and where it starts in its source. The engine parses the
+/// text from that origin, so diagnostics stay located without re-lexing the
+/// preceding source for every form.
+#[derive(Debug)]
+pub(crate) struct SourceForm {
+    pub text: String,
+    pub line: u32,
+    pub column: u32,
+}
 
-    // (run N)
-    if let Some(rest) = input.strip_prefix("(run ") {
-        if let Some(num_str) = rest.strip_suffix(')') {
-            if let Ok(n) = num_str.trim().parse::<usize>() {
-                return ReplCommand::Run { limit: Some(n) };
-            }
-        }
-    }
-
-    // (load "path")
-    if let Some(rest) = input.strip_prefix("(load ") {
-        if let Some(path_expr) = rest.strip_suffix(')') {
-            let path_str = path_expr.trim().trim_matches('"');
-            return ReplCommand::Load {
-                path: path_str.to_string(),
-            };
-        }
-    }
-
-    // (save "path")
-    if let Some(rest) = input.strip_prefix("(save ") {
-        if let Some(path_expr) = rest.strip_suffix(')') {
-            let path_str = path_expr.trim().trim_matches('"');
-            return ReplCommand::Save {
-                path: path_str.to_string(),
-            };
-        }
-    }
-
-    // Fall through: evaluate as a general CLIPS form.
-    ReplCommand::Eval {
-        source: input.to_string(),
+fn located_source(source: &str, expr: &SExpr) -> SourceForm {
+    let span = expr.span();
+    SourceForm {
+        text: source[span.start.offset..span.end.offset].to_owned(),
+        line: span.start.line,
+        column: span.start.column,
     }
 }
 
-impl ReplSession {
-    /// Dispatch a parsed command. Returns `true` if the REPL should exit.
-    #[allow(clippy::needless_pass_by_value)] // Ownership is cleaner for the match + Eval variant.
-    pub(crate) fn dispatch(&mut self, cmd: ReplCommand) -> bool {
-        match cmd {
-            ReplCommand::Exit => return true,
-            ReplCommand::Reset => self.cmd_reset(),
-            ReplCommand::Clear => self.cmd_clear(),
-            ReplCommand::Run { limit } => self.cmd_run(limit),
-            ReplCommand::Facts => self.cmd_facts(),
-            ReplCommand::Agenda => self.cmd_agenda(),
-            ReplCommand::Rules => self.cmd_rules(),
-            ReplCommand::Load { ref path } => self.cmd_load(path),
-            ReplCommand::Save { ref path } => self.cmd_save(path),
-            ReplCommand::Help => self.cmd_help(),
-            ReplCommand::Watch { target } => self.cmd_watch(target, true),
-            ReplCommand::Unwatch { target } => self.cmd_watch(target, false),
-            ReplCommand::Eval { ref source } => self.cmd_eval(source),
-        }
-        false
+pub(crate) fn parse_commands(source: &str) -> Result<Vec<ReplCommand>, String> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"));
     }
+    let expressions = parse_sexprs(source, FileId(0))
+        .into_result()
+        .map_err(|errors| {
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?;
+    expressions
+        .iter()
+        .map(|expr| parse_command(source, expr))
+        .collect()
+}
+
+fn parse_command(source: &str, expr: &SExpr) -> Result<ReplCommand, String> {
+    if is_construct(expr) {
+        return Ok(ReplCommand::Construct {
+            source: located_source(source, expr),
+        });
+    }
+    let Some(items) = expr.as_list() else {
+        return Ok(ReplCommand::Eval {
+            source: located_source(source, expr),
+        });
+    };
+    let Some(name) = items.first().and_then(SExpr::as_symbol) else {
+        return Ok(ReplCommand::Eval {
+            source: located_source(source, expr),
+        });
+    };
+    let args = &items[1..];
+    let command = match (name, args) {
+        ("exit" | "quit", []) => ReplCommand::Exit,
+        ("run", []) => ReplCommand::Run { limit: None },
+        ("run", [SExpr::Atom(Atom::Integer(value), _)]) if *value >= 0 => ReplCommand::Run {
+            limit: Some(usize::try_from(*value).map_err(|_| "run limit is too large")?),
+        },
+        ("run", [SExpr::Atom(Atom::Integer(value), _)]) if *value == -1 => {
+            ReplCommand::Run { limit: None }
+        }
+        ("facts", []) => ReplCommand::Facts,
+        ("agenda", []) => ReplCommand::Agenda { module: None },
+        ("agenda", [SExpr::Atom(Atom::Symbol(module), _)]) => ReplCommand::Agenda {
+            module: Some(module.clone()),
+        },
+        ("rules", []) => ReplCommand::Rules,
+        ("help", []) => ReplCommand::Help,
+        ("load", [SExpr::Atom(Atom::String(path) | Atom::Symbol(path), _)]) => {
+            ReplCommand::Load { path: path.clone() }
+        }
+        ("exit" | "quit" | "run" | "facts" | "agenda" | "rules" | "help" | "load", _) => {
+            return Err(format!(
+                "{}: invalid arguments for {name}",
+                expr.span().start
+            ));
+        }
+        _ => ReplCommand::Eval {
+            source: located_source(source, expr),
+        },
+    };
+    Ok(command)
 }
 
 #[cfg(test)]
@@ -140,63 +126,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_exit() {
-        assert!(matches!(parse_command("(exit)"), ReplCommand::Exit));
-        assert!(matches!(parse_command("(quit)"), ReplCommand::Exit));
+    fn shell_commands_use_parser_whitespace_comments_and_escaping() {
+        let commands =
+            parse_commands("; comment\n( run\n 3 ) (load \"a\\\"b\\\\c.clp\") (exit ; done\n)")
+                .unwrap();
+        assert!(matches!(commands[0], ReplCommand::Run { limit: Some(3) }));
+        assert!(matches!(&commands[1], ReplCommand::Load { path } if path == "a\"b\\c.clp"));
+        assert!(matches!(commands[2], ReplCommand::Exit));
     }
 
     #[test]
-    fn parse_reset() {
-        assert!(matches!(parse_command("(reset)"), ReplCommand::Reset));
+    fn malformed_shell_commands_do_not_fall_through_or_ignore_arguments() {
+        for source in [
+            "(run bad)",
+            "(run 1 2)",
+            "(load \"x\" extra)",
+            "(exit 1)",
+            "(facts MAIN)",
+        ] {
+            assert!(parse_commands(source).is_err(), "{source}");
+        }
+        assert!(parse_commands("(+ 1 2) (").is_err());
     }
 
     #[test]
-    fn parse_run_unlimited() {
+    fn expressions_and_constructs_are_distinct_and_keep_locations() {
+        let commands = parse_commands("\n(defrule r =>)\n  (assert (p))\n(+ 1 2)").unwrap();
+        assert!(matches!(commands[0], ReplCommand::Construct { .. }));
         assert!(matches!(
-            parse_command("(run)"),
-            ReplCommand::Run { limit: None }
+            &commands[1],
+            ReplCommand::Eval { source }
+                if source.text == "(assert (p))" && (source.line, source.column) == (3, 3)
         ));
-    }
-
-    #[test]
-    fn parse_run_with_limit() {
-        match parse_command("(run 10)") {
-            ReplCommand::Run { limit: Some(10) } => {}
-            other => panic!("Expected Run with limit 10, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_load() {
-        match parse_command(r#"(load "test.clp")"#) {
-            ReplCommand::Load { path } => assert_eq!(path, "test.clp"),
-            other => panic!("Expected Load, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_save() {
-        match parse_command(r#"(save "output.clp")"#) {
-            ReplCommand::Save { path } => assert_eq!(path, "output.clp"),
-            other => panic!("Expected Save, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_watch_facts() {
-        assert!(matches!(
-            parse_command("(watch facts)"),
-            ReplCommand::Watch {
-                target: WatchTarget::Facts
-            }
-        ));
-    }
-
-    #[test]
-    fn parse_unknown_falls_to_eval() {
-        match parse_command("(assert (hello world))") {
-            ReplCommand::Eval { source } => assert_eq!(source, "(assert (hello world))"),
-            other => panic!("Expected Eval, got {other:?}"),
-        }
+        assert!(matches!(commands[2], ReplCommand::Eval { .. }));
+        assert!(parse_commands("; empty").unwrap().is_empty());
     }
 }

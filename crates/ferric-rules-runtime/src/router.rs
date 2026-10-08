@@ -7,6 +7,12 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
+/// Standard CLIPS logical channels observed by the command-line shell.
+pub const STANDARD_CHANNELS: &[&str] = &[
+    "t", "stdin", "stdout", "stderr", "wclips", "wdialog", "wdisplay", "werror", "wtrace",
+    "wwarning",
+];
+
 /// An output router that captures output by logical channel name.
 ///
 /// CLIPS uses channel names like `t` (standard output), `stdout`, and
@@ -22,6 +28,10 @@ pub struct OutputRouter {
         serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")
     )]
     buffers: HashMap<String, String>,
+    /// Optional live delivery queue. Observation settings and delivery history
+    /// belong to the host session, not to the persisted engine state.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    events: Option<Vec<(String, String)>>,
 }
 
 impl OutputRouter {
@@ -37,6 +47,17 @@ impl OutputRouter {
             .entry(channel.to_string())
             .or_default()
             .push_str(data);
+        if let Some(events) = &mut self.events {
+            if let Some((previous_channel, previous_text)) = events.last_mut() {
+                if previous_channel == channel {
+                    previous_text.push_str(data);
+                    return;
+                }
+            }
+            if !data.is_empty() {
+                events.push((channel.to_owned(), data.to_owned()));
+            }
+        }
     }
 
     /// Return the captured output for `channel`, or `None` if nothing has
@@ -54,6 +75,55 @@ impl OutputRouter {
     /// Clear captured output for a single channel.
     pub fn clear_channel(&mut self, channel: &str) {
         self.buffers.remove(channel);
+    }
+
+    /// Start recording output for ordered delivery. Buffered history is seeded
+    /// in channel-name order because it predates chronological observation.
+    pub(crate) fn enable_events(&mut self) {
+        if self.events.is_none() {
+            let mut events: Vec<_> = self
+                .buffers
+                .iter()
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(channel, text)| (channel.clone(), text.clone()))
+                .collect();
+            events.sort_by(|left, right| left.0.cmp(&right.0));
+            self.events = Some(events);
+        }
+    }
+
+    /// Consume live output and release its per-channel copies. Clearing buffers
+    /// does not revoke already emitted events; only this drain delivers them.
+    pub(crate) fn drain_events(&mut self) -> Vec<(String, String)> {
+        let Some(events) = &mut self.events else {
+            return Vec::new();
+        };
+        self.buffers.clear();
+        std::mem::take(events)
+    }
+}
+
+impl crate::Engine {
+    /// Enable chronological output delivery for this host session.
+    ///
+    /// Future writes retain their cross-channel order. Existing buffered output,
+    /// including output restored from a snapshot, is queued first in channel-name
+    /// order. Calling this again does not replay output. Observation is opt-in,
+    /// survives reset/clear, and is disabled when restoring a snapshot.
+    pub fn enable_output_events(&mut self) {
+        self.flush_expression_output();
+        self.router.enable_events();
+    }
+
+    /// Drain chronological `(channel, text)` chunks and their captured buffers.
+    ///
+    /// Call [`Self::enable_output_events`] first. Adjacent writes to the same
+    /// channel may be coalesced. Reset and buffer-clearing operations preserve
+    /// undelivered chunks, as they describe output that has already occurred.
+    /// With observation disabled this returns no chunks and leaves buffers alone.
+    pub fn drain_output_events(&mut self) -> Vec<(String, String)> {
+        self.flush_expression_output();
+        self.router.drain_events()
     }
 }
 
@@ -109,6 +179,36 @@ mod tests {
 
         assert!(router.get_output("t").is_none());
         assert_eq!(router.get_output("stderr"), Some("error"));
+    }
+
+    #[test]
+    fn ordered_delivery_survives_buffer_clears_and_drains_once() {
+        let mut router = OutputRouter::new();
+        router.write("t", "before observation");
+        assert!(router.drain_events().is_empty());
+        assert_eq!(router.get_output("t"), Some("before observation"));
+        router.enable_events();
+        router.write("werror", "error");
+        router.clear();
+        router.write("t", "after");
+        router.write("t", " reset");
+        router.clear_channel("t");
+        router.enable_events();
+        assert_eq!(
+            router.drain_events(),
+            vec![
+                ("t".to_owned(), "before observation".to_owned()),
+                ("werror".to_owned(), "error".to_owned()),
+                ("t".to_owned(), "after reset".to_owned()),
+            ]
+        );
+        assert!(router.drain_events().is_empty());
+        assert!(router.get_output("t").is_none());
+        router.write("stdout", "next");
+        assert_eq!(
+            router.drain_events(),
+            vec![("stdout".to_owned(), "next".to_owned())]
+        );
     }
 
     // -----------------------------------------------------------------------

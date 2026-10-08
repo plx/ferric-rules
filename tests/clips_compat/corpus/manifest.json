@@ -13047,6 +13047,113 @@
         "no-match",
         "anonymous-captures"
       ]
+    },
+    {
+      "path": "procedural/413_clear_eval_names_template.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "eval",
+        "refusal",
+        "fact-query"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/413_clear_keeps_called_deffunction.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "eval",
+        "refusal",
+        "deffunction"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/413_clear_computed_query_restriction.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "clear",
+        "eval",
+        "fact-query"
+      ],
+      "recoverable_control_notices": true
+    },
+    {
+      "path": "procedural/413_funcall_unknown_name_notice.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "funcall",
+        "modules",
+        "deffunction"
+      ],
+      "recoverable_introspection_notices": true
+    },
+    {
+      "path": "procedural/413_reset_keeps_bound_module_calls.clp",
+      "level": "interaction",
+      "covers": [
+        "procedural",
+        "expression-effects",
+        "reset",
+        "eval",
+        "modules",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/413_watch_items_accepted.clp",
+      "level": "basic",
+      "covers": [
+        "procedural",
+        "watch"
+      ]
+    },
+    {
+      "path": "agenda/413_set_strategy_reorders_pending.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "strategy",
+        "set-strategy",
+        "get-strategy",
+        "breadth"
+      ]
+    },
+    {
+      "path": "agenda/413_agenda_action_rows.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "agenda-rendering",
+        "empty-lhs",
+        "not"
+      ]
+    },
+    {
+      "path": "agenda/413_agenda_empty.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "agenda-rendering"
+      ]
+    },
+    {
+      "path": "modules/413_agenda_all_modules.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "agenda",
+        "agenda-rendering"
+      ]
     }
   ]
 }

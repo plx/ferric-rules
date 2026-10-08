@@ -21,7 +21,8 @@ const COMMAND_NAMES: &[&str] = &[
     "(rules)",
     "(run)",
     "(run ",
-    "(save ",
+    "(save-facts ",
+    "(load-facts ",
     "(unwatch ",
     "(watch ",
 ];
@@ -95,37 +96,35 @@ pub(crate) fn parens_balanced(input: &str) -> bool {
     let mut depth: i32 = 0;
     let mut in_string = false;
     let mut in_comment = false;
-    let mut prev_char = '\0';
+    let mut escaped = false;
 
     for ch in input.chars() {
         if in_comment {
-            if ch == '\n' {
+            if matches!(ch, '\n' | '\r') {
                 in_comment = false;
             }
-            prev_char = ch;
             continue;
         }
         if in_string {
-            if ch == '"' && prev_char != '\\' {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
                 in_string = false;
             }
         } else {
             match ch {
-                ';' => {
-                    in_comment = true;
-                    prev_char = ch;
-                    continue;
-                }
+                ';' => in_comment = true,
                 '"' => in_string = true,
                 '(' => depth += 1,
                 ')' => depth -= 1,
                 _ => {}
             }
         }
-        prev_char = ch;
     }
 
-    depth <= 0
+    depth <= 0 && !in_string
 }
 
 #[cfg(test)]
@@ -184,5 +183,13 @@ mod tests {
     #[test]
     fn balanced_string_with_escaped_quote() {
         assert!(parens_balanced(r#"(assert (msg "say \"hi\""))"#));
+    }
+
+    #[test]
+    fn string_completeness_handles_even_backslashes_and_unclosed_strings() {
+        assert!(parens_balanced(r#"(printout t "path\\")"#));
+        assert!(!parens_balanced(r#""unfinished"#));
+        assert!(!parens_balanced(r#"(printout t "unfinished)"#));
+        assert!(!parens_balanced("; comment\r(printout"));
     }
 }

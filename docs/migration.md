@@ -120,10 +120,14 @@ Effects completed before a later evaluation error remain visible.
 Source `(reset)` now executes immediately, preserves output and active local
 bindings, and continues the current RHS or callable. It also allows the run to
 select new activations. A nested reset inside reset-time initialization is
-ignored. Source `(clear)` removes facts and restarts public fact numbering at
-zero, then preserves constructs because they are in active use. It continues
-execution instead of stopping the run. Public host `reset()` and `clear()`
-retain their output-clearing and construct-removal contracts.
+ignored. Source `(clear)` inside an active rule removes facts and restarts
+public fact numbering at zero, then preserves in-use constructs and continues
+execution. During fact initialization, in a callable called outside a rule,
+or when the prompt expression calls a deffunction or generic function, it
+refuses before removing facts. At the prompt, with no constructs in use, clear removes constructs and
+restores `initial-fact` as f-0; the next user assertion is f-1. Source clear
+preserves input and output. Public host `reset()` and `clear()` retain their
+output-clearing and construct-removal contracts.
 
 Action queries return their last body value, `FALSE` when no body runs, or no
 value after `break`. Ordinary action queries stop selecting members after a
@@ -310,7 +314,9 @@ like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   accepts those lexemes as well as a multifield.
 - `str-cat` and `sym-cat` reject multifield arguments.
 - `funcall` evaluates all its operands before calling its target, including
-  those of short-circuit targets such as `and` and `eq`.
+  those of short-circuit targets such as `and` and `eq`. A module-qualified
+  name, or a name that reaches no visible function, prints `[ARGACCES5]` and
+  returns FALSE instead of stopping the evaluation.
 - `eq` and `neq` take two or more arguments and compare every later argument
   with the first.
 - `mod` with a FLOAT operand returns `a - trunc(a / b) * b`, as CLIPS does.
@@ -321,6 +327,53 @@ like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   `next-methodp`, `override-next-method` and `call-specific-method`) take
   precedence over user deffunctions and defgenerics of the same name, which are
   no longer called. Rename such functions.
+
+## Pre-1.0 shell and inspection changes
+
+The fixes for issue #413 change these command-line and inspection behaviors:
+
+- `ferric run` still loads a construct-only file, resets, and runs it. A file
+  with any top-level procedural form, including `assert`, `printout`, or
+  `watch`, is now a script: its forms run in source order with no implicit
+  reset or run. A script that relied on the old implicit reset/run loads its
+  rules but never fires them, and still exits 0. Add explicit `(reset)` and
+  `(run)` forms where the program should start.
+- `ferric run` reads piped standard input when `read` or `readline` asks for a
+  line, instead of ignoring it, and prints every standard logical channel to
+  stdout in emission order, not only `t`. A program that never reads leaves
+  its standard input unread. A read error or invalid UTF-8 prints one warning
+  and then reads as end of input. Output printed before a read, such as a
+  prompt, reaches stdout before the read waits for input, as in CLIPS. Hosts
+  can supply the same on-demand input with `Engine::set_input_source`, and
+  receive pending output before each source read with
+  `Engine::set_before_input`.
+- The REPL's `(save "file")` command is removed. Use
+  `(save-facts "file.fct")` and `(load-facts "file.fct")`, which also work in
+  rules and expressions and reload template facts with their slot names.
+- `(agenda)` now prints CLIPS rows such as `0      pos: f-1`, with `*` for a
+  negated condition or an empty LHS and a `For a total of N activations.`
+  tally. `(agenda *)` adds module headings.
+  An empty agenda prints nothing, not `(no activations)`. `(facts)` and
+  `(rules)` print CLIPS listings with their tallies.
+- `watch` and `unwatch` previously accepted any argument, traced nothing, and
+  returned `TRUE`. They now return no value. `facts`, `rules`, and `all` trace
+  assertions, retractions, and firings; the other CLIPS 6.30 watch items are
+  accepted without effect. An unknown item, or a construct name that does not
+  name an existing construct of the right kind, stops the evaluation.
+- `load-facts` returns `FALSE` with a notice when the file cannot be opened. A
+  lexical, syntax, template, value, or source-limit error in the file stops
+  the enclosing evaluation (an RHS halts the run); facts loaded before it stay
+  asserted. The first token that does not open a fact ends the file quietly,
+  even before a later error. `save-facts` returns `FALSE` for an unknown symbol mode or a bad
+  template selector, and stops the evaluation when its mode is not a symbol.
+- Source `set-strategy` and `get-strategy` now work for `depth`, `breadth`,
+  `lex`, and `mea`; `set-strategy` returns the previous strategy and reorders
+  pending activations. An unknown strategy name writes CLIPS's `[ARGACCES5]`
+  notice and keeps the current strategy. `complexity`, `simplicity`, and
+  `random` are rejected.
+
+See [Command-line evaluation and inspection](compatibility.md#command-line-evaluation-and-inspection)
+for the full contract.
 
 ## Step 1: Check Feature Coverage
 

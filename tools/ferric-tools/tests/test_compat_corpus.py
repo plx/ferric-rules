@@ -498,6 +498,8 @@ INTROSPECTION_NOTICES = (
     "[ARGACCES5] Function deftemplate-slot-types expected argument #1 to be of type "
     "deftemplate name\n"
     "[ARGACCES5] Function get-defrule-list expected argument #1 to be of type defmodule name\n"
+    "[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, "
+    "or generic function name\n"
 )
 
 
@@ -525,6 +527,7 @@ def test_introspection_notice_requires_opt_in_and_remains_in_captured_output():
         "[ARGACCES5] Function get-defrule-list expected argument #1 to be of type "
         "deftemplate name\n",
         "[ARGACCES5] Function focus expected argument #1 to be of type defmodule name\n",
+        "[ARGACCES5] Function funcall expected argument #1 to be of type symbol or string\n",
         "[PRCCODE4] Execution halted.\n",
     ],
 )

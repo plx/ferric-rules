@@ -1,9 +1,9 @@
 # Granular CLIPS compatibility corpus
 
 This is a systematic discovery and characterization suite for Ferric's targeted
-CLIPS subset. Its 1256 small programs progress from individual features to
+CLIPS subset. Its 1266 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 1234 clean conformance cases, 232 of which
+CLIPS-verified output oracle. There are 1244 clean conformance cases, 232 of which
 reproduce a CLIPS error, and 22 active characterizations of documented
 differences: CLIPS output that is not UTF-8, malformed `format` directives,
 equal-salience ties involving identical negative/NCC joins or multi-pattern
@@ -69,7 +69,9 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   globals, deffacts, refraction, and derived working memory. Optional `strategy`
   selects `"breadth"`, `"lex"`, or `"mea"`; omission selects depth. The reference
   supplies CLIPS `(set-strategy ...)` before loading, while Ferric uses
-  `EngineConfig::with_strategy`. Source strategy commands remain unsupported.
+  `EngineConfig::with_strategy`. Source `set-strategy` and `get-strategy` are
+  also supported; [agenda/413_set_strategy_reorders_pending.clp](agenda/413_set_strategy_reorders_pending.clp)
+  covers them, while `strategy` still selects the initial strategy.
 - Prefer a single observable distinction per program. Use salience or phase
   facts where side-effect ordering matters, except when the case explicitly
   tests conflict-resolution ordering. Keep each problematic function or
@@ -118,10 +120,11 @@ back to a Ferric-only run. Goldens are never regenerated automatically.
   Such a case must otherwise succeed.
 - Cases marked `recoverable_introspection_notices: true` allow only CLIPS's
   exact recoverable introspection notices: `[PRNTUTIL1] Unable to find
-  deftemplate NAME.` and the `[ARGACCES5]` notice for a first argument of a
+  deftemplate NAME.`, the `[ARGACCES5]` notice for a first argument of a
   `deftemplate-slot-*` function or a construct list that is not a deftemplate
-  or defmodule name. The oracle retains them; comparison moves them to the
-  expected notices, so Ferric must print the same notices, in order, on
+  or defmodule name, and the `[ARGACCES5]` notice for a `funcall` name that
+  reaches no visible function. The oracle retains them; comparison moves them
+  to the expected notices, so Ferric must print the same notices, in order, on
   `werror`. Such a case must otherwise succeed.
 - A separate exception is the two recoverable `[SCANNER1]` scanner notices (integer
   overflow, unterminated string). CLIPS prints them on its warning and error

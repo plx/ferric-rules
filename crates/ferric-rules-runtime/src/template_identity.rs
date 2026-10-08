@@ -15,6 +15,125 @@ use ferric_rules_core::{AlphaEntryType, Fact};
 use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern, RuleConstruct};
 
 impl Engine {
+    /// Whether compiled source running outside any construct (see
+    /// `active_expressions`) names a template or ordered relation: a fact
+    /// assertion or a fact query with a literal restriction. Like CLIPS's
+    /// installed top-level command, such an expression keeps those constructs
+    /// in use, so `clear` refuses. A computed restriction names nothing until
+    /// it runs.
+    pub(crate) fn active_expressions_name_facts(&self) -> bool {
+        self.active_expressions.iter().any(|(module, expression)| {
+            RuntimeExpressions::new(expression).any(|expression| match expression {
+                RuntimeExpr::QueryAction { bindings, .. } => bindings
+                    .iter()
+                    .flat_map(|binding| &binding.restrictions)
+                    .any(|restriction| {
+                        matches!(
+                            restriction,
+                            RuntimeExpr::Literal(ferric_rules_core::Value::Symbol(_))
+                        )
+                    }),
+                RuntimeExpr::EffectCall { call } => self.call_names_facts(call, *module),
+                _ => false,
+            })
+        })
+    }
+
+    /// Whether compiled source running outside any construct calls a user
+    /// deffunction or defgeneric visible from its module. CLIPS binds such a
+    /// call when it parses the expression, so the callable stays in use and
+    /// `clear` refuses rather than leave the call without a target.
+    pub(crate) fn active_expressions_name_callables(&self) -> bool {
+        self.active_expressions.iter().any(|(module, expression)| {
+            RuntimeExpressions::new(expression).any(|expression| match expression {
+                RuntimeExpr::Call { name, .. } => self.names_user_callable(name, *module),
+                RuntimeExpr::EffectCall { call } => self.effect_names_callables(call, *module),
+                _ => false,
+            })
+        })
+    }
+
+    fn effect_names_callables(&self, call: &FunctionCall, module: ModuleId) -> bool {
+        self.names_user_callable(&call.name, module)
+            || crate::effects::evaluated_arguments(self, module, call)
+                .iter()
+                .any(|expr| self.expr_names_callables(expr, module))
+    }
+
+    fn expr_names_callables(&self, expr: &ActionExpr, module: ModuleId) -> bool {
+        if let ActionExpr::FunctionCall(call) = expr {
+            return self.effect_names_callables(call, module);
+        }
+        let mut children = Vec::new();
+        expr.push_children(&mut children);
+        children
+            .into_iter()
+            .any(|child| self.expr_names_callables(child, module))
+    }
+
+    /// Whether `name`, called from `module`, names a registered deffunction or
+    /// defgeneric there or one that module can see.
+    fn names_user_callable(&self, name: &str, module: ModuleId) -> bool {
+        if let Ok(crate::QualifiedName::Qualified { module, name }) =
+            crate::parse_qualified_name(name)
+        {
+            return self
+                .module_registry
+                .get_by_name(&module)
+                .is_some_and(|owner| {
+                    self.functions.contains(owner, &name) || self.generics.contains(owner, &name)
+                });
+        }
+        let visible = |owner: &ModuleId, construct_type| {
+            self.module_registry
+                .is_construct_visible(module, *owner, construct_type, name)
+        };
+        self.functions
+            .modules_for_name(name)
+            .iter()
+            .any(|owner| visible(owner, "deffunction"))
+            || self
+                .generics
+                .modules_for_name(name)
+                .iter()
+                .any(|owner| visible(owner, "defgeneric"))
+    }
+
+    fn call_names_facts(&self, call: &FunctionCall, module: ModuleId) -> bool {
+        (call.name == "assert"
+            && call
+                .args
+                .iter()
+                .any(|expr| matches!(expr, ActionExpr::FunctionCall(_))))
+            || crate::effects::evaluated_arguments(self, module, call)
+                .iter()
+                .any(|expr| self.expr_names_facts(expr, module))
+    }
+
+    fn expr_names_facts(&self, expr: &ActionExpr, module: ModuleId) -> bool {
+        match expr {
+            ActionExpr::FunctionCall(call) => self.call_names_facts(call, module),
+            ActionExpr::QueryAction { bindings, .. }
+                if bindings
+                    .iter()
+                    .flat_map(|binding| &binding.restrictions)
+                    .any(|restriction| {
+                        matches!(restriction, ActionExpr::Literal(literal)
+                            if matches!(literal.value, ferric_rules_parser::LiteralKind::Symbol(_)))
+                    }) =>
+            {
+                true
+            }
+            _ => {
+                let mut children = Vec::new();
+                expr.push_children(&mut children);
+                children
+                    .into_iter()
+                    .any(|child| self.expr_names_facts(child, module))
+            }
+        }
+    }
+
     pub(crate) fn ordered_identity_is_live(&self, name: &str) -> bool {
         if name == "initial-fact" || self.active_query_targets.iter().any(|target| {
             matches!(target, QueryTarget::Ordered(symbol)

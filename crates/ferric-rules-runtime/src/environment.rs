@@ -3,11 +3,20 @@
 use ferric_rules_core::Value;
 
 use crate::evaluator::{self, EvalContext, EvalError, RuntimeExpr, SourceSpan};
+use crate::modules::ModuleId;
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     matches!(
         name,
-        "random" | "seed" | "time" | "eval" | "build" | "assert-string" | "str-assert"
+        "random"
+            | "seed"
+            | "time"
+            | "eval"
+            | "build"
+            | "assert-string"
+            | "str-assert"
+            | "get-strategy"
+            | "set-strategy"
     )
 }
 
@@ -45,6 +54,7 @@ pub(crate) fn eval(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     match name {
+        "get-strategy" | "set-strategy" => strategy(ctx, name, args, span),
         "eval" | "build" | "assert-string" | "str-assert" => dynamic_source(ctx, name, args, span),
         "seed" => {
             let [argument] = args else {
@@ -109,6 +119,82 @@ fn failure(name: &str, reason: &dyn std::fmt::Display, span: Option<&SourceSpan>
         reason: reason.to_string(),
         span: span.cloned(),
     }
+}
+
+fn strategy(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    use ferric_rules_core::ConflictResolutionStrategy;
+
+    // The reference captures the return value before evaluating the argument,
+    // which can itself call set-strategy.
+    let previous = ctx.engine.config.strategy;
+    let expected = usize::from(name == "set-strategy");
+    if args.len() != expected {
+        return Err(arity(
+            name,
+            args,
+            if expected == 0 { "0" } else { "1" },
+            span,
+        ));
+    }
+    if let Some(argument) = args.first() {
+        if !ctx.allow_engine_effects {
+            return Err(failure(
+                name,
+                &"engine mutation is unavailable while evaluating a match condition",
+                span,
+            ));
+        }
+        let value = evaluator::eval_inner(ctx, argument)?;
+        let Value::Symbol(symbol) = value else {
+            return Err(EvalError::TypeError {
+                function: name.to_owned(),
+                expected: "SYMBOL strategy".to_owned(),
+                actual: value.type_name().to_owned(),
+                span: span.cloned(),
+            });
+        };
+        let strategy = match ctx.engine.symbol_table.resolve_symbol_str(symbol) {
+            Some("depth") => Some(ConflictResolutionStrategy::Depth),
+            Some("breadth") => Some(ConflictResolutionStrategy::Breadth),
+            Some("lex") => Some(ConflictResolutionStrategy::Lex),
+            Some("mea") => Some(ConflictResolutionStrategy::Mea),
+            Some("complexity" | "simplicity" | "random") => {
+                return Err(failure(
+                    name,
+                    &"supported strategies are depth, breadth, lex, and mea",
+                    span,
+                ))
+            }
+            // CLIPS reports any other name, keeps the strategy, and continues.
+            _ => {
+                ctx.engine.globals.push_printout_event(
+                    "werror".to_owned(),
+                    "[ARGACCES5] Function set-strategy expected argument #1 to be of type symbol with value depth, breadth, lex, mea, complexity, simplicity, or random\n".to_owned(),
+                );
+                None
+            }
+        };
+        if let Some(strategy) = strategy {
+            ctx.engine.rete.agenda.set_strategy(strategy);
+            ctx.engine.config.strategy = strategy;
+        }
+    }
+    let name = match previous {
+        ConflictResolutionStrategy::Depth => "depth",
+        ConflictResolutionStrategy::Breadth => "breadth",
+        ConflictResolutionStrategy::Lex => "lex",
+        ConflictResolutionStrategy::Mea => "mea",
+    };
+    ctx.engine
+        .symbol_table
+        .intern_symbol(name, ctx.engine.config.string_encoding)
+        .map(Value::Symbol)
+        .map_err(|error| failure("strategy", &error, span))
 }
 
 fn dynamic_source(
@@ -183,24 +269,34 @@ fn dynamic_source(
         interpret_action_expr(&wrapped)
     }
     .map_err(|error| failure(name, &error, span))?;
+    let module = crate::effects::dynamic_module(ctx);
     let expression = std::sync::Arc::new(
         ctx.engine
-            .prepare_eval_expression(&expression, ctx.current_module)
+            .prepare_eval_expression(&expression, module)
             .map_err(|error| failure(name, &error, span))?,
     );
+    eval_detached(ctx, module, &expression)
+}
+
+/// Evaluate prepared `eval`/`assert-string` source in a fresh local scope.
+fn eval_detached(
+    ctx: &mut EvalContext<'_>,
+    current_module: ModuleId,
+    expression: &std::sync::Arc<RuntimeExpr>,
+) -> Result<Value, EvalError> {
     // Dynamic source cannot see the surrounding rule/callable's local variables.
     let bindings = ferric_rules_core::binding::BindingSet::new();
     let variables = ferric_rules_core::binding::VarMap::new();
     let mut locals = evaluator::CallableLocals::default();
     let (call_depth, expression_depth) = (ctx.call_depth, ctx.expression_depth);
-    let (current_module, global_module) = (ctx.current_module, ctx.global_module);
+    let global_module = ctx.global_module;
     let allow_engine_effects = ctx.allow_engine_effects;
     // As in CLIPS, the parsed expression keeps the templates and ordered
     // relations it names in use while it runs, so its own `build` cannot
     // redefine them underneath a later assertion (CSTRCPSR4).
     ctx.engine.with_active_expressions(
         current_module,
-        [std::sync::Arc::clone(&expression)],
+        [std::sync::Arc::clone(expression)],
         |engine| {
             let mut child = EvalContext {
                 engine,
@@ -215,7 +311,7 @@ fn dynamic_source(
                 compact_fact_bindings: None,
                 allow_engine_effects,
             };
-            evaluator::eval_inner(&mut child, &expression)
+            evaluator::eval_inner(&mut child, expression)
         },
     )
 }
@@ -277,7 +373,7 @@ fn build(
     }
     ctx.engine
         .module_registry
-        .set_current_module(ctx.current_module);
+        .set_current_module(crate::effects::dynamic_module(ctx));
     // Defglobal initializers, rule-priming conditions, template defaults and
     // fact initializers evaluated by this load continue the caller's depth.
     let result = crate::effects::with_depth_floor(ctx, |ctx| {
@@ -314,7 +410,7 @@ fn active_definition_error(
     let parsed = crate::qualified_name::parse_qualified_name(items.get(1)?.as_symbol()?).ok()?;
     let module = match parsed.module_name() {
         Some(name) => ctx.engine.module_registry.get_by_name(name)?,
-        None => ctx.current_module,
+        None => crate::effects::dynamic_module(ctx),
     };
     let name = parsed.local_name();
     let active = if kind == "defrule" {

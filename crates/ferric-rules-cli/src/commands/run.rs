@@ -1,78 +1,123 @@
-//! `ferric run` command — load and execute a CLIPS file.
-//!
-//! Pipeline: load file → reset → run → print output
-//!
-//! Exit codes:
-//! - 0: Success
-//! - 1: Runtime/load error
+//! Execute construct files with implicit reset/run, or scripts in source order.
 
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 
-use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
+use ferric_rules_runtime::{BeforeInput, Engine, EngineConfig, InputSource, MAX_SOURCE_BYTES};
 
-use super::common::{emit_action_diagnostics, emit_error};
+use super::common::{emit_error, emit_warning};
+use super::repl::commands::{parse_commands, ReplCommand};
+use super::repl::display;
+use super::repl::session::ReplSession;
 
-/// Execute the `run` subcommand.
 pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
-    if !file_path.exists() {
-        emit_error(
-            json_mode,
-            "run",
-            "io_error",
-            format_args!("file not found: {}", file_path.display()),
-        );
-        return 1;
-    }
-
+    let source = match read_source(file_path) {
+        Ok(source) => source,
+        Err(error) => {
+            emit_error(json_mode, "run", "io_error", error);
+            return 1;
+        }
+    };
+    // Parse the whole bounded file before executing anything. Syntax errors do
+    // not partly execute a script; runtime errors retain completed effects.
+    let commands = match parse_commands(&source) {
+        Ok(commands) => commands,
+        Err(error) => {
+            emit_error(json_mode, "run", "load_error", error);
+            return 1;
+        }
+    };
+    let construct_only = commands
+        .iter()
+        .all(|command| matches!(command, ReplCommand::Construct { .. }));
     let mut engine = Engine::new(EngineConfig::default());
-
-    // Load
-    if let Err(errors) = engine.load_file(file_path) {
-        for err in &errors {
-            emit_error(json_mode, "run", "load_error", err);
+    if !std::io::stdin().is_terminal() {
+        // Read piped input lazily, one line per `read`/`readline`, so programs
+        // that never read neither wait for nor consume the caller's input.
+        engine.set_input_source(Some(stdin_line_source(json_mode)));
+        // Deliver what the program has printed so far, such as a prompt,
+        // before each blocking read; the session drains the rest afterwards.
+        engine.set_before_input(Some(deliver_before_input(json_mode)));
+    }
+    let mut session = ReplSession::with_engine(engine, Some(json_mode));
+    if construct_only {
+        // Keep one load for ordinary files, including its forward declarations.
+        if session.load_source(&source).is_err()
+            || session.cmd_reset().is_err()
+            || session.cmd_run(None).is_err()
+        {
+            return 1;
         }
-        return 1;
-    }
-    // Loading can assert facts or install rules against existing facts. Report
-    // their match-time errors before reset clears the diagnostic buffer.
-    emit_action_diagnostics(json_mode, "run", &engine);
-
-    // Reset (asserts initial-fact, processes deffacts)
-    if let Err(err) = engine.reset() {
-        emit_error(
-            json_mode,
-            "run",
-            "runtime_error",
-            format_args!("reset failed: {err}"),
-        );
-        return 1;
-    }
-    // Reset evaluates LHS expressions while asserting seeds; run starts a new
-    // diagnostic buffer even when those errors left no activation to fire.
-    emit_action_diagnostics(json_mode, "run", &engine);
-
-    // Run
-    match engine.run(RunLimit::Unlimited) {
-        Ok(_result) => {
-            // Print captured output from channel "t" (standard CLIPS output)
-            if let Some(output) = engine.get_output("t") {
-                print!("{output}");
+    } else {
+        for command in commands {
+            match session.dispatch(command, false) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(()) => return 1,
             }
-
-            // Print any action diagnostics as warnings
-            emit_action_diagnostics(json_mode, "run", &engine);
-
-            // halt is normal termination in CLIPS — all outcomes are success
-            0
-        }
-        Err(err) => {
-            emit_error(
-                json_mode,
-                "run",
-                "runtime_error",
-                format_args!("execution failed: {err}"),
-            );
-            1
         }
     }
+    0
+}
+
+/// Print pending output and action warnings as `ReplSession::drain` does,
+/// then flush both streams so a reader of the pipe sees them before the read.
+fn deliver_before_input(json_mode: bool) -> BeforeInput {
+    Box::new(move |events, diagnostics| {
+        display::print_events(events);
+        for diagnostic in diagnostics {
+            emit_warning(json_mode, "run", "action_warning", diagnostic);
+        }
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+    })
+}
+
+/// One line of standard input per call. EOF, a read error, or invalid UTF-8
+/// ends input (the latter two with a single warning).
+fn stdin_line_source(json_mode: bool) -> InputSource {
+    let mut finished = false;
+    Box::new(move || {
+        if finished {
+            return None;
+        }
+        let mut line = String::new();
+        match std::io::stdin().lock().read_line(&mut line) {
+            Ok(0) => {
+                finished = true;
+                None
+            }
+            Ok(_) => Some(line),
+            Err(error) => {
+                finished = true;
+                emit_warning(
+                    json_mode,
+                    "run",
+                    "io_error",
+                    format_args!("reading stdin: {error}; treating it as end of input"),
+                );
+                None
+            }
+        }
+    })
+}
+
+fn read_source(path: &Path) -> Result<String, std::io::Error> {
+    let file = std::fs::File::open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            std::io::Error::new(error.kind(), format!("file not found: {}", path.display()))
+        } else {
+            error
+        }
+    })?;
+    let mut bytes = Vec::new();
+    file.take((MAX_SOURCE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err(std::io::Error::other(format!(
+            "source exceeds the {MAX_SOURCE_BYTES}-byte limit"
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }

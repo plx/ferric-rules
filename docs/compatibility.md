@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1256
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1266
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -300,9 +300,14 @@ LEX comparison. These rules also order multiple partitions of one multifield
 fact.
 
 `Simplicity`, `Complexity`, and `Random` are not implemented.
-CLIPS `set-strategy`/`get-strategy` source commands are
-unsupported and produce missing-function diagnostics; configure a declared
-strategy through the host API. Bindings reject unknown enum/name values.
+`(get-strategy)` returns the current strategy symbol. `(set-strategy breadth)`
+returns the previous strategy and reorders pending activations without changing
+their identity or creation order. The supported names are `depth`, `breadth`,
+`lex`, and `mea`; the setting survives reset, clear, and snapshots. Changing it
+from a match condition is rejected. `complexity`, `simplicity`, and `random` are
+rejected when the call is loaded, or with an error at run time. As in CLIPS, any
+other symbol writes an `[ARGACCES5]` notice, keeps the current strategy, and
+returns it, and evaluation continues. Bindings reject unknown enum/name values.
 
 For equal salience, activation creation order breaks ties: depth selects the
 newest activation and breadth the oldest. Shared beta successors and mixed
@@ -513,7 +518,7 @@ activation order and the blocker history used for future activations.
 | `focus` | Push one or more modules onto the focus stack, skipping a module already on top; return `TRUE`, or `FALSE` for a missing module (without CLIPS's `[PRNTUTIL1]` notice) |
 | `bind` | Bind a variable or update a global |
 | `list-focus-stack` | Print the current focus stack |
-| `agenda` | Print the current agenda |
+| `agenda` | Print the current module's activations as CLIPS rows with fact bases (`*` for a negated condition or an empty LHS) and a tally, or every module's under headings with `*`; an empty agenda prints nothing |
 | `run` | No-op when called from RHS (documented behavior) |
 | `reset` | Reset working memory and globals immediately, preserving current execution and printed output; return no value |
 | `clear` | During execution, retract all facts and refuse construct removal; continue execution and return no value |
@@ -544,10 +549,31 @@ already written. It can repopulate the agenda, so a rule that resets must
 arrange to terminate. A halt requested earlier in the same RHS, directly or in
 a callable, survives the reset: the RHS finishes and the run stops. A nested
 reset during reset-time initialization is ignored. Clear during active
-execution refuses construct removal without output (CLIPS prints
-`[CONSTRCT1]`; Ferric omits it), retains constructs and refraction, removes
-facts, and restarts public fact indices at zero. Later actions and eligible
-activations continue.
+execution emits a recoverable refusal (`[CONSTRCT1]`), retains constructs and
+refraction, removes facts, and restarts public fact indices at zero. During
+fact initialization, while the running top-level expression or `eval`
+source names a template or ordered relation (in a fact assertion or as a
+literal fact-query restriction; a computed restriction names nothing until it
+runs) or calls a deffunction or generic function, or while a callable runs
+outside any rule, it refuses before removing facts. Later actions and eligible
+activations continue. At an ordinary expression root with no constructs in
+use, clear removes constructs, restores `initial-fact` as f-0, and selects
+MAIN; the next user assertion is f-1. As in CLIPS, a top-level expression
+follows the current module while it runs: a root clear or reset, including
+one inside `eval` source or a loop body, selects MAIN, and a built
+`defmodule` selects itself. Dynamic source that the expression evaluates
+afterwards (`build`, `eval`, `assert-string`, fact files, `save-facts`
+selectors), construct lookups by name (`funcall`, `sort`, construct lists,
+computed fact-query restrictions) and defglobal reads resolve in that module,
+so a later `build` defines into it. The expression's own function and
+template references, literal query restrictions and `bind` targets stay bound
+to the module it was parsed in; after a root clear deletes that module, `bind`
+also uses the new MAIN. A deffunction or method restores the current module
+when it returns, so a reset or `defmodule` build in its body does not move its
+caller. Inside a rule, later dynamic source still resolves in the rule's
+module, where CLIPS uses MAIN after the reset. Source
+clear preserves queued input, printed output, and watch settings. Unlike CLIPS, a fact asserted earlier by
+the same expression through `assert-string` does not keep its relation in use.
 
 `break` is valid only inside the body of `while`, `loop-for-count`,
 `progn$`, `foreach`, or an action fact query. Loop conditions, count bounds,
@@ -1474,6 +1500,10 @@ sequence expansion directly in its body.
 `funcall` evaluates all its operands before invoking the selected function,
 including operands of short-circuit targets such as `and` and `eq`. Argument
 effects can install a new callable definition before that invocation begins.
+A module-qualified name, or a name that reaches no visible function, prints
+CLIPS's `[ARGACCES5]` notice and returns FALSE without evaluating the
+operands; as in CLIPS 6.30, `funcall` never resolves a qualified name, even one
+that names a visible function.
 
 ### Construct Introspection
 
@@ -1628,7 +1658,23 @@ identity; use an engine snapshot when identity must survive persistence.
 | `read` | Read the first CLIPS field of the next nonblank input line |
 | `readline` | Read a line from input |
 | `load-facts` | Load facts from a `.fct` file into working memory |
-| `save-facts` | Save all facts to a `.fct` file |
+| `save-facts` | Save local or visible facts, optionally restricted to named templates |
+
+`save-facts` and `load-facts` work both as RHS actions and ordinary expressions,
+including at the REPL. Fact files contain literal facts with real template and
+slot names, without an `assert` wrapper. Saving defaults to `local`; use
+`(save-facts "facts.fct" visible template-name ...)` to select visible templates.
+The templates must already exist when loading their facts. A file that cannot
+be opened, a symbol `save-facts` mode other than `local` or `visible`, and a
+template selector that is not a symbol or names no matching template return
+`FALSE` and write a diagnostic, and evaluation continues. As in CLIPS, a lexical
+(such as an unterminated string), syntax, template, or value error in a fact
+file and a `save-facts` mode that is not a symbol stop the enclosing evaluation
+(an RHS halts the run); facts loaded before the bad one stay asserted. The first
+standalone token that does not open a fact, such as a word, number, string, or
+stray `)`, quietly ends the file, even before a later lexical error:
+`load-facts` returns `TRUE` and ignores the rest. Saving escapes strings for reloading; fact
+addresses remain the lossy quoted representation described above.
 
 `printout` writes a top-level STRING without quotes, and a multifield in
 parentheses with its STRING fields quoted but not escaped:
@@ -1658,12 +1704,83 @@ CLIPS hands a malformed directive such as `%5-3d` to `printf`, which echoes it;
 Ferric reports a format error. Ferric also rejects a width or precision above
 4096 (CLIPS 6.30 crashes on `%5000d`).
 
+### Command-line evaluation and inspection
+
+`ferric run file.clp` reads non-terminal standard input line by line, only
+when a `read` or `readline` (including one in a deffacts or defglobal
+initializer) asks for it, as CLIPS does. A program that never reads neither
+waits for nor consumes its caller's input. A read error or invalid UTF-8 on
+standard input prints one warning and then reads as end of input. Construct-only files receive an implicit reset and unlimited run. A file
+containing any procedural form, including `assert`, is a script: its forms
+execute in source order, with no additional reset/run or expression-result echo.
+Use explicit `(reset)` and `(run)` where needed. The entire bounded file is
+parsed before execution; later evaluation/loading failures retain earlier
+effects and make the command exit unsuccessfully.
+
+The CLI writes captured standard channels to process stdout in emission order:
+`t`, `stdin`, `stdout`, `stderr`, `wclips`, `wdialog`, `wdisplay`, `werror`,
+`wtrace`, and `wwarning`. These are Ferric's channel names; native CLIPS 6.30
+does not accept all of them as output destinations. Host-facing CLI diagnostics
+retain their usual text/JSON error handling.
+
+The REPL accepts constructs, shell commands such as `(run)` and `(facts)`, and
+ordinary expressions. It echoes non-void values, including assertion addresses,
+and uses the runtime's CLIPS value/fact formatter. `(facts)` lists working
+memory by fact index, including `f-0     (initial-fact)`, with CLIPS's
+`For a total of N fact(s).` tally. A fresh Ferric engine has no
+`initial-fact` until it is reset or cleared or loads a rule, where CLIPS
+lists f-0 from start-up. `(rules)` lists the current module's rules
+unqualified, in definition order, with a `defrule(s)` tally. As in CLIPS,
+an empty `(facts)`, `(rules)`, or `(agenda)` listing prints nothing.
+`(agenda [module])` prints ordered rows with fact bases; `*` lists all modules. `(watch facts)` records each
+assertion and retraction, including facts created and removed within one run.
+`(watch rules)` includes each firing's fact basis. Watch settings are transient
+host state and are disabled when restoring a snapshot.
+
+`watch` and `unwatch` accept every CLIPS 6.30 watch item: `facts`, `instances`,
+`slots`, `rules`, `activations`, `messages`, `message-handlers`,
+`generic-functions`, `methods`, `deffunctions`, `compilations`, `statistics`,
+`globals`, `focus`, and `all`. They return no value. Only `facts` and `rules`
+(and `all`) produce trace output; the other items are accepted without effect,
+so batch files that begin with `(unwatch compilations)` or `(watch statistics)`
+run normally. Trailing construct names, as in `(watch facts item)` or
+`(watch rules r)`, must name an existing deftemplate, defrule, deffunction,
+defglobal, or defgeneric, as CLIPS requires; Ferric has no COOL classes, so names
+after `instances`, `slots`, and `message-handlers` are not checked, and `methods`
+takes generic function names but not method indices. Tracing stays global:
+`(watch facts item)` traces every fact, not only `item` facts. An unknown item or
+construct name, a non-symbol item, or a name after `messages`, `focus`,
+`compilations`, `statistics`, or `all` is an error that stops the enclosing
+evaluation, as in CLIPS.
+
+`Engine::eval_str` evaluates exactly one expression with fresh local bindings.
+Globals, engine changes, and output persist, including changes before a runtime
+error. `(bind ?x 3)` returns `3`, but a later call cannot read `?x`; bind and read
+within one `progn` to share a local. This differs from CLIPS's persistent prompt
+locals. The Ferric REPL also accepts multiple forms on one input line.
+`Engine::load_str` remains the construct-loading API. A root `(reset)` selects
+`MAIN` for subsequent shell commands and remaining root-expression operands.
+Nested callable evaluation retains its lexical module for dynamic `build` and
+query target resolution; it does not reproduce CLIPS's temporary ambient-module
+switch after a reset inside a callable.
+
+For hosts that need cross-channel order, call `enable_output_events()` before
+evaluation and consume `(channel, text)` chunks with `drain_output_events()`.
+Draining clears the captured per-channel buffers. Reset and buffer clearing
+preserve undelivered events. Output already buffered when observation starts is
+delivered in channel-name order; snapshots retain those buffers but do not retain
+the live event queue or observation setting.
+
 ### Agenda / Focus Functions
 
 | Function | Description |
 |----------|-------------|
 | `get-focus` | Return the current focus module name |
 | `get-focus-stack` | Return the focus stack as a multifield |
+| `get-strategy` | Return the current conflict-resolution strategy symbol |
+| `set-strategy` | Select `depth`, `breadth`, `lex`, or `mea`, reorder pending activations, and return the previous strategy (see [Conflict Resolution Strategies](#conflict-resolution-strategies)) |
+| `watch` | Trace `facts`, `rules`, or `all`; other CLIPS 6.30 items are accepted no-ops; return no value |
+| `unwatch` | Stop tracing `facts`, `rules`, or `all`; other CLIPS 6.30 items are accepted no-ops; return no value |
 
 ---
 

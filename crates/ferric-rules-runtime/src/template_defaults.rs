@@ -178,7 +178,7 @@ fn with_dynamic_context<T>(
     // global reference observes the assertion caller. A called function gets
     // its own ordinary lexical global scope from execute_callable_body.
     let mut child = EvalContext {
-        global_module: Some(ctx.global_module.unwrap_or(ctx.current_module)),
+        global_module: Some(evaluator::global_lookup_module(ctx)),
         engine: ctx.engine,
         bindings: &bindings,
         var_map: &variables,
@@ -193,7 +193,11 @@ fn with_dynamic_context<T>(
     // A default is not lexically inside the asserting callable or loop, so a
     // `return` or `break` reached through `funcall` must not escape into it:
     // callers contain control signals in the result.
-    evaluate(&mut child)
+    // The counter makes `clear` refuse while a fact initializer is running.
+    child.engine.active_fact_initializers += 1;
+    let result = evaluate(&mut child);
+    child.engine.active_fact_initializers -= 1;
+    result
 }
 
 /// One source per slot for a prepared fact, whose overrides may be stored out
@@ -242,7 +246,9 @@ pub(crate) fn evaluate_slots(
     sources: Vec<SlotSource<'_>>,
 ) -> Result<Vec<Value>, SlotEvaluationError> {
     let owns_budget = ctx.engine.config.begin_action_loop_budget_if_inactive();
+    ctx.engine.active_fact_initializers += 1;
     let result = evaluate_slots_inner(ctx, template, sources);
+    ctx.engine.active_fact_initializers -= 1;
     if owns_budget {
         ctx.engine.config.end_action_loop_budget();
     }

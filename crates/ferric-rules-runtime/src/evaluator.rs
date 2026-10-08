@@ -499,21 +499,30 @@ fn sorted_dedup_modules(
     modules
 }
 
-fn global_lookup_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
-    ctx.global_module.unwrap_or(ctx.current_module)
+/// The module a defglobal read resolves in. As in CLIPS, a root expression
+/// looks a global up when it reads it, from the module its earlier `reset`,
+/// `clear` or `defmodule` build selected.
+pub(crate) fn global_lookup_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
+    ctx.global_module
+        .unwrap_or_else(|| crate::effects::dynamic_module(ctx))
 }
 
+/// The module `bind` resolves a defglobal in: the one the expression was
+/// parsed in (see `effects::bind_module`).
+fn global_bind_module(ctx: &EvalContext<'_>) -> crate::modules::ModuleId {
+    ctx.global_module
+        .unwrap_or_else(|| crate::effects::bind_module(ctx))
+}
+
+/// The modules among `modules` whose `construct_type` named `local_name` is
+/// visible from `lookup_module`.
 fn visible_modules_for_construct(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     modules: &[crate::modules::ModuleId],
     construct_type: &str,
     local_name: &str,
 ) -> Vec<crate::modules::ModuleId> {
-    let lookup_module = if construct_type == "defglobal" {
-        global_lookup_module(ctx)
-    } else {
-        ctx.current_module
-    };
     sorted_dedup_modules(
         modules
             .iter()
@@ -536,8 +545,10 @@ struct AmbiguityMessages<'a> {
     actual: &'a str,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_visible_owner_module(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     all_modules: &[crate::modules::ModuleId],
     construct_type: &str,
     local_name: &str,
@@ -545,20 +556,14 @@ fn resolve_visible_owner_module(
     ambiguity: AmbiguityMessages<'_>,
     span: Option<SourceSpan>,
 ) -> Result<crate::modules::ModuleId, EvalError> {
-    let visible = visible_modules_for_construct(ctx, all_modules, construct_type, local_name);
+    let visible =
+        visible_modules_for_construct(ctx, lookup_module, all_modules, construct_type, local_name);
     match visible.as_slice() {
         [owner] => Ok(*owner),
         [] => Err(EvalError::NotVisible {
             name: display_name.to_string(),
             construct_type: construct_type.to_string(),
-            from_module: module_label(
-                ctx,
-                if construct_type == "defglobal" {
-                    global_lookup_module(ctx)
-                } else {
-                    ctx.current_module
-                },
-            ),
+            from_module: module_label(ctx, lookup_module),
             owning_module: module_label(ctx, all_modules[0]),
             span,
         }),
@@ -571,23 +576,26 @@ fn resolve_visible_owner_module(
     }
 }
 
+/// Resolve an unqualified deffunction or defgeneric name from `lookup_module`:
+/// a binding there wins, otherwise the single visible owner.
 fn resolve_unqualified_callable_module(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     name: &str,
     construct_type: &str,
     modules_for_name: &[crate::modules::ModuleId],
-    local_binding_exists: bool,
     ambiguity: AmbiguityMessages<'_>,
     span: Option<SourceSpan>,
 ) -> Result<Option<crate::modules::ModuleId>, EvalError> {
     if modules_for_name.is_empty() {
         return Ok(None);
     }
-    if local_binding_exists {
-        return Ok(Some(ctx.current_module));
+    if modules_for_name.contains(&lookup_module) {
+        return Ok(Some(lookup_module));
     }
     let owner = resolve_visible_owner_module(
         ctx,
+        lookup_module,
         modules_for_name,
         construct_type,
         name,
@@ -757,6 +765,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
 
             let owner = resolve_visible_owner_module(
                 ctx,
+                global_lookup_module(ctx),
                 &all_modules,
                 "defglobal",
                 name,
@@ -812,10 +821,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         sorted_dedup_modules(ctx.engine.functions.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
                         ctx,
+                        ctx.current_module,
                         name,
                         "deffunction",
                         &function_modules,
-                        ctx.engine.functions.contains(ctx.current_module, name),
                         AmbiguityMessages {
                             expected: "unambiguous deffunction resolution",
                             actual: "multiple visible deffunctions; use MODULE::name",
@@ -837,10 +846,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         sorted_dedup_modules(ctx.engine.generics.modules_for_name(name));
                     if let Some(target_module) = resolve_unqualified_callable_module(
                         ctx,
+                        ctx.current_module,
                         name,
                         "defgeneric",
                         &generic_modules,
-                        ctx.engine.generics.contains(ctx.current_module, name),
                         AmbiguityMessages {
                             expected: "unambiguous defgeneric resolution",
                             actual: "multiple visible defgenerics; use MODULE::name",
@@ -1411,8 +1420,14 @@ fn eval_fact_query_inner(
     validate_query_predicate(ctx, predicate, name, span, 0)?;
     let members = crate::query_targets::prepare_query_members(members, |expression, span| {
         let value = eval_inner(ctx, expression)?;
-        ctx.engine
-            .retain_query_targets(&value, ctx.current_module, span)
+        // A literal restriction names its template where the query was
+        // parsed; a computed one is looked up by name when it runs.
+        let module = if matches!(expression, RuntimeExpr::Literal(Value::Symbol(_))) {
+            ctx.current_module
+        } else {
+            crate::effects::dynamic_module(ctx)
+        };
+        ctx.engine.retain_query_targets(&value, module, span)
     })?;
     let mut cursor = crate::query_cursor::ActionQueryCursor::new(members, ctx.engine)?;
     let delayed = name == "delayed-do-for-all-facts";
@@ -1697,12 +1712,29 @@ fn execute_callable_body(
         allow_engine_effects: ctx.allow_engine_effects,
     };
 
+    // As in CLIPS, a deffunction or method restores the current module when
+    // it returns: a `reset` or `defmodule` build in its body does not move
+    // the caller's dynamic source. A clear that deletes modules refuses while
+    // a callable runs, so the saved module still exists.
+    let saved_module = inner_ctx.engine.module_registry.current_module();
+    let result = execute_callable_exprs(&mut inner_ctx, &body_exprs);
+    inner_ctx
+        .engine
+        .module_registry
+        .set_current_module(saved_module);
+    result
+}
+
+fn execute_callable_exprs(
+    ctx: &mut EvalContext<'_>,
+    body_exprs: &[RuntimeExpr],
+) -> Result<Value, EvalError> {
     let mut result = clips_false(
-        &mut inner_ctx.engine.symbol_table,
-        inner_ctx.engine.config.string_encoding,
+        &mut ctx.engine.symbol_table,
+        ctx.engine.config.string_encoding,
     );
-    for body_expr in &body_exprs {
-        match eval_inner(&mut inner_ctx, body_expr) {
+    for body_expr in body_exprs {
+        match eval_inner(ctx, body_expr) {
             Ok(value) => result = value,
             Err(EvalError::ReturnControl { value, .. }) => return Ok(value),
             Err(EvalError::BreakControl { span }) => {
@@ -2377,10 +2409,10 @@ fn specific_generic(
             let owners = ctx.engine.generics.modules_for_name(name);
             let owner = resolve_unqualified_callable_module(
                 ctx,
+                crate::effects::dynamic_module(ctx),
                 name,
                 "defgeneric",
                 &owners,
-                ctx.engine.generics.contains(ctx.current_module, name),
                 AmbiguityMessages {
                     expected: "unambiguous generic function",
                     actual: "multiple visible generic functions",
@@ -3386,7 +3418,7 @@ fn dispatch_builtin(
         return crate::environment::eval(ctx, name, args, span_ref);
     }
     match name {
-        "retract" | "halt" | "focus" | "reset" | "clear" => {
+        "retract" | "halt" | "focus" | "reset" | "clear" | "load-facts" | "save-facts" => {
             crate::effects::eval_call(ctx, name, args, span_ref)
         }
         // Arithmetic
@@ -3536,8 +3568,6 @@ fn dispatch_builtin(
 
         // Fact I/O — require engine access; return FALSE when called from pure
         // expression context (the real implementation lives in actions.rs).
-        "load-facts" => builtin_load_save_facts_stub(ctx, args, "load-facts", span_ref),
-        "save-facts" => builtin_load_save_facts_stub(ctx, args, "save-facts", span_ref),
 
         // Special forms
         "bind" => dispatch_bind(ctx, args, span_ref),
@@ -3617,7 +3647,7 @@ fn dispatch_bind(
                     });
                 }
                 if !ctx.engine.module_registry.is_construct_visible(
-                    global_lookup_module(ctx),
+                    global_bind_module(ctx),
                     module_id,
                     "defglobal",
                     local_name,
@@ -3625,18 +3655,14 @@ fn dispatch_bind(
                     return Err(EvalError::NotVisible {
                         name: format!("?*{name}*"),
                         construct_type: "defglobal".to_string(),
-                        from_module: module_label(ctx, global_lookup_module(ctx)),
+                        from_module: module_label(ctx, global_bind_module(ctx)),
                         owning_module: module_name.to_string(),
                         span: span.cloned(),
                     });
                 }
                 module_id
-            } else if ctx
-                .engine
-                .globals
-                .contains(global_lookup_module(ctx), &name)
-            {
-                global_lookup_module(ctx)
+            } else if ctx.engine.globals.contains(global_bind_module(ctx), &name) {
+                global_bind_module(ctx)
             } else {
                 let all_modules = sorted_dedup_modules(ctx.engine.globals.modules_for_name(&name));
                 if all_modules.is_empty() {
@@ -3645,14 +3671,20 @@ fn dispatch_bind(
                         span: span.cloned(),
                     });
                 }
-                let visible = visible_modules_for_construct(ctx, &all_modules, "defglobal", &name);
+                let visible = visible_modules_for_construct(
+                    ctx,
+                    global_bind_module(ctx),
+                    &all_modules,
+                    "defglobal",
+                    &name,
+                );
                 match visible.as_slice() {
                     [module_id] => *module_id,
                     [] => {
                         return Err(EvalError::NotVisible {
                             name: format!("?*{name}*"),
                             construct_type: "defglobal".to_string(),
-                            from_module: module_label(ctx, global_lookup_module(ctx)),
+                            from_module: module_label(ctx, global_bind_module(ctx)),
                             owning_module: module_label(ctx, all_modules[0]),
                             span: span.cloned(),
                         })
@@ -5151,32 +5183,176 @@ fn builtin_refresh_agenda(
     })
 }
 
-/// `watch` — debugging command accepted for compatibility.
+/// Enable transient observer output for supported watch targets.
 fn builtin_watch(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("watch", args, 1, span)?;
-    let _ = eval_args(ctx, args)?;
-    Ok(clips_true(
-        &mut ctx.engine.symbol_table,
-        ctx.engine.config.string_encoding,
-    ))
+    configure_watch(ctx, args, "watch", true, span)
 }
 
-/// `unwatch` — debugging command accepted for compatibility.
+/// Disable transient observer output for supported watch targets.
 fn builtin_unwatch(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("unwatch", args, 1, span)?;
-    let _ = eval_args(ctx, args)?;
-    Ok(clips_true(
-        &mut ctx.engine.symbol_table,
-        ctx.engine.config.string_encoding,
-    ))
+    configure_watch(ctx, args, "unwatch", false, span)
+}
+
+/// Configure a CLIPS 6.30 watch item. Every item `list-watch-items` reports is
+/// accepted, but only `facts` and `rules` (and `all`) produce trace output; the
+/// others are no-ops. Trailing construct names are validated where Ferric has a
+/// registry for the construct type, then ignored: tracing stays global.
+fn configure_watch(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    name: &str,
+    enabled: bool,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min(name, args, 1, span)?;
+    let value = eval_inner(ctx, &args[0])?;
+    let Value::Symbol(symbol) = value else {
+        return Err(watch_argument_error(name, 1, "symbol", &value, span));
+    };
+    let item = ctx
+        .engine
+        .symbol_table
+        .resolve_symbol_str(symbol)
+        .unwrap_or("")
+        .to_owned();
+    // The construct type CLIPS checks each trailing name against, or `None`
+    // for items that take no names.
+    let construct = match item.as_str() {
+        "facts" => Some("deftemplate"),
+        "rules" | "activations" => Some("defrule"),
+        "deffunctions" => Some("deffunction"),
+        "globals" => Some("defglobal"),
+        "generic-functions" => Some("defgeneric"),
+        "methods" => Some("generic function name"),
+        "instances" | "slots" => Some("defclass"),
+        "message-handlers" => Some("class name"),
+        "messages" | "focus" | "compilations" | "statistics" | "all" => None,
+        _ => {
+            return Err(watch_argument_error(
+                name,
+                1,
+                "watchable symbol",
+                &value,
+                span,
+            ))
+        }
+    };
+    match construct {
+        None => check_arity_exact(name, args, 1, span)?,
+        Some(construct) => {
+            // CLIPS validates every name before changing any watch state.
+            for (index, argument) in args.iter().enumerate().skip(1) {
+                let value = eval_inner(ctx, argument)?;
+                let found = match &value {
+                    Value::Symbol(symbol) => {
+                        let raw = ctx
+                            .engine
+                            .symbol_table
+                            .resolve_symbol_str(*symbol)
+                            .unwrap_or("")
+                            .to_owned();
+                        watch_construct_exists(ctx, construct, &raw)
+                    }
+                    _ => false,
+                };
+                if !found {
+                    return Err(watch_argument_error(
+                        name,
+                        index + 1,
+                        construct,
+                        &value,
+                        span,
+                    ));
+                }
+            }
+        }
+    }
+    match item.as_str() {
+        "facts" => {
+            ctx.engine.set_watch_facts(enabled);
+        }
+        "rules" => {
+            ctx.engine.set_watch_rules(enabled);
+        }
+        "all" => {
+            ctx.engine.set_watch_facts(enabled);
+            ctx.engine.set_watch_rules(enabled);
+        }
+        _ => {}
+    }
+    Ok(Value::Void)
+}
+
+fn watch_argument_error(
+    name: &str,
+    position: usize,
+    kind: &str,
+    value: &Value,
+    span: Option<&SourceSpan>,
+) -> EvalError {
+    EvalError::TypeError {
+        function: name.to_owned(),
+        expected: format!("argument #{position} to be of type {kind}"),
+        actual: value.type_name().to_owned(),
+        span: span.cloned(),
+    }
+}
+
+/// Whether `raw` names a construct of the given watch construct type from the
+/// module dynamic lookups resolve in. COOL classes have no registry, so class
+/// names are accepted.
+fn watch_construct_exists(ctx: &EvalContext<'_>, construct: &str, raw: &str) -> bool {
+    let engine = &*ctx.engine;
+    let lookup_module = crate::effects::dynamic_module(ctx);
+    if construct == "deftemplate" {
+        return engine.resolve_template_id(raw, lookup_module).is_ok()
+            || engine.has_implicit_template(raw, lookup_module);
+    }
+    let Ok(parsed) = parse_qualified_name(raw) else {
+        return false;
+    };
+    let (module, local) = match &parsed {
+        QualifiedName::Qualified { module, name } => {
+            let Some(module) = engine.module_registry.get_by_name(module) else {
+                return false;
+            };
+            (Some(module), name.as_str())
+        }
+        QualifiedName::Unqualified(name) => (None, name.as_str()),
+    };
+    let (modules, construct_type) = match construct {
+        "defrule" => {
+            // Rules are never imported: an unqualified name is local.
+            let module = module.unwrap_or(lookup_module);
+            return engine
+                .rule_declarations
+                .iter()
+                .any(|(owner, name)| *owner == module && name == local);
+        }
+        "deffunction" => (engine.functions.modules_for_name(local), "deffunction"),
+        "defglobal" => (engine.globals.modules_for_name(local), "defglobal"),
+        "defgeneric" | "generic function name" => {
+            (engine.generics.modules_for_name(local), "defgeneric")
+        }
+        _ => return true,
+    };
+    if let Some(module) = module {
+        return modules.contains(&module);
+    }
+    let lookup_module = if construct_type == "defglobal" {
+        global_lookup_module(ctx)
+    } else {
+        lookup_module
+    };
+    !visible_modules_for_construct(ctx, lookup_module, &modules, construct_type, local).is_empty()
 }
 
 /// `str-length` — the character length of a STRING, SYMBOL or INSTANCE-NAME.
@@ -6277,7 +6453,7 @@ fn builtin_sort(
         .resolve_symbol_str(symbol)
         .unwrap_or("")
         .to_string();
-    let predicate = resolve_named_callable(ctx, &name, span)?;
+    let predicate = resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &name, span)?;
     let mut fields = Vec::new();
     for arg in &args[1..] {
         match eval_inner(ctx, arg)? {
@@ -6367,7 +6543,27 @@ fn builtin_funcall(
             })
         }
     };
-    resolve_named_callable(ctx, &fn_name, span)?;
+    // As in CLIPS 6.30, a module-qualified name never names a funcall target,
+    // and a name that reaches no visible function is a notice: either way the
+    // call returns FALSE without evaluating its operands.
+    let unresolved = is_module_qualified(&fn_name)
+        || match resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span) {
+            Err(EvalError::UnknownFunction { .. } | EvalError::NotVisible { .. }) => true,
+            result => {
+                result?;
+                false
+            }
+        };
+    if unresolved {
+        ctx.engine.globals.push_printout_event(
+            "werror".to_owned(),
+            "[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, or generic function name\n".to_owned(),
+        );
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
+    }
     // funcall evaluates its operands before invoking even a short-circuit target
     // or checking that target's arity. Resolve first so an unknown name does not
     // evaluate operands; preserve values as single arguments until dispatch.
@@ -6380,7 +6576,12 @@ fn builtin_funcall(
         validate_expanded_arity(&fn_name, arguments.len(), span)?;
     }
     // Eager operands may build a replacement before the target starts executing.
-    resolve_named_callable(ctx, &fn_name, span)?.call(ctx, &fn_name, &arguments, span.cloned())
+    resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span)?.call(
+        ctx,
+        &fn_name,
+        &arguments,
+        span.cloned(),
+    )
 }
 
 /// A function named by a runtime value (`funcall`, `sort`).
@@ -6406,10 +6607,11 @@ impl NamedCallable {
     }
 }
 
-/// Resolve a function name from the current module: builtins first, then
-/// visible deffunctions, then visible defgenerics.
+/// Resolve a function name from `lookup_module`: builtins first, then visible
+/// deffunctions, then visible defgenerics.
 fn resolve_named_callable(
     ctx: &EvalContext<'_>,
+    lookup_module: crate::modules::ModuleId,
     name: &str,
     span: Option<&SourceSpan>,
 ) -> Result<NamedCallable, EvalError> {
@@ -6420,10 +6622,10 @@ fn resolve_named_callable(
     let function_modules = sorted_dedup_modules(ctx.engine.functions.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
+        lookup_module,
         name,
         "deffunction",
         &function_modules,
-        ctx.engine.functions.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous deffunction resolution",
             actual: "multiple visible deffunctions; use MODULE::name",
@@ -6438,10 +6640,10 @@ fn resolve_named_callable(
     let generic_modules = sorted_dedup_modules(ctx.engine.generics.modules_for_name(name));
     if let Some(target_module) = resolve_unqualified_callable_module(
         ctx,
+        lookup_module,
         name,
         "defgeneric",
         &generic_modules,
-        ctx.engine.generics.contains(ctx.current_module, name),
         AmbiguityMessages {
             expected: "unambiguous defgeneric resolution",
             actual: "multiple visible defgenerics; use MODULE::name",
@@ -6476,7 +6678,7 @@ pub(crate) fn call_names_user_callable(ctx: &EvalContext<'_>, name: &str) -> boo
             });
     }
     matches!(
-        resolve_named_callable(ctx, name, None),
+        resolve_named_callable(ctx, ctx.current_module, name, None),
         Ok(NamedCallable::Function(..) | NamedCallable::Generic(..))
     )
 }
@@ -6823,13 +7025,14 @@ fn intern_eof_symbol(
     Ok(Value::Symbol(sym))
 }
 
-/// `read` — read one CLIPS field from the queued input lines.
+/// `read` — read one CLIPS field from the queued input lines, then from the
+/// engine's input source.
 ///
 /// `(read)` or `(read <channel>)`
 ///
 /// Like CLIPS reading `stdin`, each call consumes whole lines until one
 /// contains a field, returns that line's first field and discards the rest.
-/// Returns the symbol `EOF` when the queue runs out first.
+/// Returns the symbol `EOF` when the input runs out first.
 fn builtin_read(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -6849,7 +7052,7 @@ fn builtin_read(
     }
 
     loop {
-        let Some(line) = ctx.engine.input_buffer.pop_front() else {
+        let Some(line) = ctx.engine.next_input_line() else {
             return intern_eof_symbol(ctx, span);
         };
         match scan_field(ctx, &mut FieldScanner::new(line.as_bytes())) {
@@ -6862,7 +7065,8 @@ fn builtin_read(
     }
 }
 
-/// `readline` — read a complete line from the input buffer as a string.
+/// `readline` — read a complete line from the queued input, or else from the
+/// engine's input source, as a string.
 ///
 /// `(readline)` or `(readline <channel>)`
 ///
@@ -6885,7 +7089,7 @@ fn builtin_readline(
         let _ = eval_inner(ctx, &args[0])?;
     }
 
-    match ctx.engine.input_buffer.pop_front() {
+    match ctx.engine.next_input_line() {
         Some(line) => {
             let fs = FerricString::new(&line, ctx.engine.config.string_encoding).map_err(|_| {
                 EvalError::TypeError {
@@ -7413,33 +7617,6 @@ fn builtin_fact_slot_names(
             Ok(Value::Multifield(Box::new(result)))
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Fact I/O stubs (load-facts / save-facts)
-// ---------------------------------------------------------------------------
-
-/// Existing expression fallback for `load-facts` and `save-facts`.
-///
-/// The real implementations live in `actions.rs` and are dispatched before
-/// the evaluator is reached.  When these functions appear in an expression
-/// context (e.g., inside a `deffunction` body or a `test` CE), we evaluate
-/// the filename argument for side-effect hygiene and return FALSE.
-fn builtin_load_save_facts_stub(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    name: &'static str,
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    check_arity_exact(name, args, 1, span)?;
-    // Evaluate the filename arg to surface any errors (e.g., wrong type).
-    let _ = eval_inner(ctx, &args[0])?;
-    // These I/O operations still use their existing top-level action handlers.
-    // Preserve the expression fallback until those handlers share dispatch.
-    Ok(clips_false(
-        &mut ctx.engine.symbol_table,
-        ctx.engine.config.string_encoding,
-    ))
 }
 
 // ===========================================================================
@@ -11691,10 +11868,17 @@ mod tests {
 
     #[test]
     fn watch_and_unwatch_with_argument_succeed() {
-        let watch_result = eval_expr(&call("watch", vec![str_lit("facts")])).unwrap();
-        assert!(matches!(watch_result, Value::Symbol(_)));
-        let unwatch_result = eval_expr(&call("unwatch", vec![str_lit("facts")])).unwrap();
-        assert!(matches!(unwatch_result, Value::Symbol(_)));
+        let mut engine = crate::Engine::new(EngineConfig::default());
+        assert!(matches!(
+            engine.eval_str("(watch facts)").unwrap(),
+            Value::Void
+        ));
+        assert!(engine.watch_facts());
+        assert!(matches!(
+            engine.eval_str("(unwatch facts)").unwrap(),
+            Value::Void
+        ));
+        assert!(!engine.watch_facts());
     }
 
     #[test]

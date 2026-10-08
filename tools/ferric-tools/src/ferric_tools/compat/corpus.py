@@ -67,8 +67,9 @@ BUILD_NOTICE = re.compile(
     r"\n\[CSTRCPSR4\] Cannot redefine deftemplate ([A-Za-z0-9_-]+) while it is in use\.\n"
     r"\nERROR:\n\(deftemplate [A-Za-z0-9_-]+::\1\n"
 )
-# A missing deftemplate, or a first argument to template or construct
-# introspection that does not name a deftemplate or defmodule.
+# A missing deftemplate, a first argument to template or construct
+# introspection that does not name a deftemplate or defmodule, or a funcall
+# name that reaches no visible function.
 INTROSPECTION_NOTICE = re.compile(
     r"\[PRNTUTIL1\] Unable to find deftemplate [A-Za-z0-9_:-]+\.\n"
     r"|\[ARGACCES5\] Function deftemplate-slot-(?:names|allowed-values|types|default-value"
@@ -76,6 +77,8 @@ INTROSPECTION_NOTICE = re.compile(
     r"expected argument #1 to be of type deftemplate name\n"
     r"|\[ARGACCES5\] Function get-(?:defrule|deftemplate|defglobal)-list "
     r"expected argument #1 to be of type defmodule name\n"
+    r"|\[ARGACCES5\] Function funcall expected argument #1 to be of type "
+    r"function, deffunction, or generic function name\n"
 )
 
 
