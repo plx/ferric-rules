@@ -144,7 +144,8 @@ tags, and containers consume steps; this is a work bound, not a count of facts o
 an exact heap-memory allowance. Ignored fields consume the same budget.
 Collection length hints are checked before allocation and do not control
 allocation capacity. Regression tests cover 50,000 runtime-asserted two-slot
-template facts and 5,000 pending indexed join matches in both JSON and CBOR.
+template facts, 5,000 pending indexed join matches, and a 2,500-rule base in both
+JSON and CBOR.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
 16 levels, alpha paths 64 value tests plus one ordered field-count test,
 beta parent paths 66 nodes (including root
