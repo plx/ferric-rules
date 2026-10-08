@@ -377,6 +377,38 @@ fn root_reset_moves_runtime_name_lookups_to_main() {
     );
 }
 
+/// CLIPS 6.30's `funcall` never resolves a module-qualified name, even one
+/// that names a visible deffunction: with MAIN's `gt`,
+/// `(funcall MAIN::gt 2 (progn (printout t "operand" crlf) 1))` and
+/// `(funcall "MAIN::gt" 2 1)` each print `[ARGACCES5] Function funcall expected
+/// argument #1 to be of type function, deffunction, or generic function name`
+/// and return FALSE without evaluating the operands.
+#[test]
+fn funcall_reports_every_module_qualified_name() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine
+        .load_str("(deffunction gt (?a ?b) (> ?a ?b))")
+        .unwrap();
+    for source in [
+        r#"(funcall MAIN::gt 2 (progn (printout t "operand" crlf) 1))"#,
+        r#"(funcall "MAIN::gt" 2 1)"#,
+        "(funcall MAIN::nosuch)",
+    ] {
+        engine.clear_output_channel("werror");
+        let value = engine.eval_str(source).unwrap();
+        assert!(
+            matches!(value, Value::Symbol(symbol) if engine.resolve_core_symbol(symbol) == Some("FALSE")),
+            "{source}: {value:?}"
+        );
+        assert_eq!(
+            engine.get_output("werror"),
+            Some("[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, or generic function name\n"),
+            "{source}"
+        );
+    }
+    assert_eq!(engine.get_output("t"), None);
+}
+
 /// A root clear deletes the expression's module, so later lookups resolve in
 /// the new MAIN: after `(defmodule A)`, CLIPS 6.30 returns 5 for
 /// `(progn (clear) (build "(deffunction h () 5)") (funcall h))`.

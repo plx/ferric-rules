@@ -6513,25 +6513,27 @@ fn builtin_funcall(
             })
         }
     };
-    match resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span) {
-        // As in CLIPS, a name that reaches no visible function is a notice
-        // and the call returns FALSE. Qualified names are not looked up here
-        // and keep the error.
-        Err(EvalError::UnknownFunction { .. } | EvalError::NotVisible { .. })
-            if !is_module_qualified(&fn_name) =>
+    // As in CLIPS 6.30, a module-qualified name never names a funcall target,
+    // and a name that reaches no visible function is a notice: either way the
+    // call returns FALSE without evaluating its operands.
+    let unresolved = is_module_qualified(&fn_name)
+        || match resolve_named_callable(ctx, crate::effects::dynamic_module(ctx), &fn_name, span)
         {
-            ctx.engine.globals.push_printout_event(
-                "werror".to_owned(),
-                "[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, or generic function name\n".to_owned(),
-            );
-            return Ok(clips_false(
-                &mut ctx.engine.symbol_table,
-                ctx.engine.config.string_encoding,
-            ));
-        }
-        result => {
-            result?;
-        }
+            Err(EvalError::UnknownFunction { .. } | EvalError::NotVisible { .. }) => true,
+            result => {
+                result?;
+                false
+            }
+        };
+    if unresolved {
+        ctx.engine.globals.push_printout_event(
+            "werror".to_owned(),
+            "[ARGACCES5] Function funcall expected argument #1 to be of type function, deffunction, or generic function name\n".to_owned(),
+        );
+        return Ok(clips_false(
+            &mut ctx.engine.symbol_table,
+            ctx.engine.config.string_encoding,
+        ));
     }
     // funcall evaluates its operands before invoking even a short-circuit target
     // or checking that target's arity. Resolve first so an unknown name does not

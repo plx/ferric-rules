@@ -314,9 +314,9 @@ like CLIPS 6.30. Programs that relied on the earlier behavior need changes:
   accepts those lexemes as well as a multifield.
 - `str-cat` and `sym-cat` reject multifield arguments.
 - `funcall` evaluates all its operands before calling its target, including
-  those of short-circuit targets such as `and` and `eq`. A name that reaches
-  no visible function prints `[ARGACCES5]` and returns FALSE instead of
-  stopping the evaluation.
+  those of short-circuit targets such as `and` and `eq`. A module-qualified
+  name, or a name that reaches no visible function, prints `[ARGACCES5]` and
+  returns FALSE instead of stopping the evaluation.
 - `eq` and `neq` take two or more arguments and compare every later argument
   with the first.
 - `mod` with a FLOAT operand returns `a - trunc(a / b) * b`, as CLIPS does.

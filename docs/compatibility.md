@@ -1494,8 +1494,10 @@ sequence expansion directly in its body.
 `funcall` evaluates all its operands before invoking the selected function,
 including operands of short-circuit targets such as `and` and `eq`. Argument
 effects can install a new callable definition before that invocation begins.
-An unqualified name that reaches no visible function prints CLIPS's
-`[ARGACCES5]` notice and returns FALSE without evaluating the operands.
+A module-qualified name, or a name that reaches no visible function, prints
+CLIPS's `[ARGACCES5]` notice and returns FALSE without evaluating the
+operands; as in CLIPS 6.30, `funcall` never resolves a qualified name, even one
+that names a visible function.
 
 ### Construct Introspection
 
