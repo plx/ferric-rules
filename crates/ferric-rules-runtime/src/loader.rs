@@ -1372,6 +1372,11 @@ impl Engine {
                         let pending_ordered_use = rules_with_module.iter().any(|(rule, module)| {
                             self.rule_uses_ordered_name(rule, *module, &name)
                         }) || pending_ordered_fact_names.contains(&name)
+                            || deffacts_constructs.iter().any(|(facts, module)| {
+                                facts.facts.iter().any(|fact| {
+                                    self.fact_body_uses_ordered_name(fact, *module, &name)
+                                })
+                            })
                             || assert_forms.iter().any(|expr| {
                                 expr.span().start.offset < template.span.start.offset
                                     && expr.as_list().is_some_and(|form| {

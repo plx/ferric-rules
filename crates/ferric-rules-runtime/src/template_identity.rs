@@ -12,7 +12,7 @@ use crate::modules::ModuleId;
 use crate::query_targets::QueryTarget;
 use crate::templates::DynamicSlotDefault;
 use ferric_rules_core::{AlphaEntryType, Fact};
-use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
+use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern, RuleConstruct};
 
 impl Engine {
     pub(crate) fn ordered_identity_is_live(&self, name: &str) -> bool {
@@ -167,6 +167,33 @@ impl Engine {
                 ferric_rules_parser::interpret_action_expr(expression)
                     .is_ok_and(|expression| self.expr_uses_ordered_name(&expression, module, name))
             })
+    }
+
+    /// A deffacts body still queued in the current load uses an ordered
+    /// relation through its head or through a fact query in an initializer.
+    pub(crate) fn fact_body_uses_ordered_name(
+        &self,
+        fact: &FactBody,
+        module: ModuleId,
+        name: &str,
+    ) -> bool {
+        let initializer_uses = |value: &FactValue| matches!(value, FactValue::Expression(expr) if self.expr_uses_ordered_name(expr, module, name));
+        match fact {
+            FactBody::Ordered(fact) => {
+                self.ordered_name_is(&fact.relation, module, name)
+                    || fact.values.iter().any(initializer_uses)
+            }
+            FactBody::Template(fact) => {
+                self.ordered_name_is(&fact.template, module, name)
+                    || fact.slot_values.iter().any(|slot| {
+                        slot.values.iter().any(initializer_uses)
+                            || slot
+                                .ordered_expression
+                                .as_deref()
+                                .is_some_and(|expr| self.expr_uses_ordered_name(expr, module, name))
+                    })
+            }
+        }
     }
 
     fn call_uses_ordered_name(&self, call: &FunctionCall, module: ModuleId, name: &str) -> bool {
