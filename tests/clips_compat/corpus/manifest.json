@@ -11728,6 +11728,25 @@
         "conditional-elements"
       ],
       "error": "load"
+    },
+    {
+      "path": "patterns/405_assigned_or_partial_unused.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "fact-address",
+        "retract"
+      ]
+    },
+    {
+      "path": "patterns/405_assigned_or_partial_rhs_rejected.clp",
+      "level": "interaction",
+      "covers": [
+        "or",
+        "fact-address",
+        "retract"
+      ],
+      "error": "load"
     }
   ]
 }
