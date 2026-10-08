@@ -248,13 +248,16 @@ fn load_facts_bounds_file_reads_and_reports_resource_limits() {
         .unwrap();
     let escaped = path.to_string_lossy().replace('\\', "\\\\");
     let mut engine = Engine::with_rules(&format!(
-        "(deffacts seeds (retained 7)) (defrule read => (load-facts \"{escaped}\"))"
+        "(deffacts seeds (retained 7))
+         (defrule read => (load-facts \"{escaped}\") (printout t continued))"
     ))
     .unwrap();
     engine.reset().unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert!(engine.action_diagnostics().is_empty());
-    let diagnostic = engine.get_output("werror").unwrap();
+    let diagnostics = engine.action_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = diagnostics[0].to_string();
+    assert_eq!(engine.get_output("t"), None);
     assert!(diagnostic.contains("load-facts"), "{diagnostic}");
     assert!(diagnostic.contains("source bytes"), "{diagnostic}");
     assert!(diagnostic.contains("16777217"), "{diagnostic}");
@@ -265,6 +268,7 @@ fn load_facts_bounds_file_reads_and_reports_resource_limits() {
     engine.reset().unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
     assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t"), Some("continued"));
     assert_eq!(engine.find_facts("loaded").unwrap().len(), 1);
     assert_eq!(engine.find_facts("retained").unwrap().len(), 1);
 }
@@ -294,4 +298,40 @@ fn per_load_expansion_budget_preserves_already_installed_constructs() {
     // installed partially, while the first two remain usable.
     engine.assert_ordered("left", ()).unwrap();
     assert_eq!(engine.agenda_len(), 2);
+}
+
+#[test]
+fn compiled_condition_limit_names_the_rule_and_its_location() {
+    let patterns = (0..65).fold(String::new(), |mut source, n| {
+        write!(source, "(p{n}) ").unwrap();
+        source
+    });
+    let branches = (0..64).fold(String::new(), |mut source, n| {
+        write!(source, "(b{n}) ").unwrap();
+        source
+    });
+    for (name, lhs) in [
+        ("wide", patterns),
+        // One NCC whose negated branches exceed the compiled condition budget.
+        ("any-branch", format!("(exists (or {branches}))")),
+    ] {
+        let mut engine = Engine::new(EngineConfig::default());
+        let source = format!("(defrule ok (seed) =>)\n  (defrule {name} {lhs} =>)");
+        let errors = engine.load_str(&source).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, LoadError::ResourceLimit {
+                rule, resource: "rule conditions", required, limit: 64, line: 2, column: 3,
+            } if rule == name && *required > 64)),
+            "{errors:?}"
+        );
+        assert!(
+            errors[0]
+                .to_string()
+                .starts_with(&format!("rule `{name}` at line 2, column 3:")),
+            "{errors:?}"
+        );
+        assert_eq!(engine.rules().len(), 1);
+    }
 }

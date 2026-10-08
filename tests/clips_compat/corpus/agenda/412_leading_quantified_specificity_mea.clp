@@ -1,0 +1,10 @@
+(deffacts seed (a) (b) (u 3) (w 1))
+(defrule g1-ncc (declare (salience 50)) (not (and (a) (zz))) (u ?) => (printout t G1-NCC crlf))
+(defrule g2-forall (declare (salience 40)) (forall (a) (b)) (u ?) => (printout t G2-FORALL crlf))
+(defrule g3-exists (declare (salience 30)) (exists (a) (b)) (u ?) => (printout t G3-EXISTS crlf))
+(defrule g4-ncc-mid (declare (salience 20)) (w ?) (not (and (a) (zz))) (u ?) => (printout t G4-NCC-MID crlf))
+(defrule install (declare (salience 1000)) =>
+  (build "(defrule g1-not (declare (salience 50)) (not (zz 1 2)) (u ?) => (printout t G1-NOT crlf))")
+  (build "(defrule g2-not (declare (salience 40)) (not (zz 1 2 3)) (u ?) => (printout t G2-NOT crlf))")
+  (build "(defrule g3-not (declare (salience 30)) (not (zz 1 2)) (u ?) => (printout t G3-NOT crlf))")
+  (build "(defrule g4-not (declare (salience 20)) (w ?) (not (zz 1 2 3)) (u ?) => (printout t G4-NOT crlf))"))

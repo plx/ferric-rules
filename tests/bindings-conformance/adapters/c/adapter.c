@@ -295,6 +295,39 @@ static bool value_case(const char *case_id) {
                code == FERRIC_ERROR_OK ? "accepted" : "rejected");
         return true;
     }
+    if (strcmp(case_id, "value.fact-address") == 0) {
+        /* The C value model has no fact-address type, so there is no
+         * ingress constructor; egress must fail rather than erase it. */
+        struct FerricEngine *engine = engine_from_fixture("fact-address.clp");
+        struct FerricValue value;
+        uint64_t fired = 0;
+        enum FerricHaltReason reason = FERRIC_HALT_REASON_AGENDA_EMPTY;
+        enum FerricError code;
+        const char *message;
+        bool rejected;
+        if (engine == NULL) {
+            return false;
+        }
+        if (ferric_engine_run_ex(engine, -1, &fired, &reason) != FERRIC_ERROR_OK) {
+            ferric_engine_free(engine);
+            return false;
+        }
+        memset(&value, 0, sizeof(value));
+        code = ferric_engine_get_global(engine, "address", &value);
+        message = ferric_engine_last_error(engine);
+        rejected = code == FERRIC_ERROR_INVALID_ARGUMENT &&
+                   value.value_type == FERRIC_VALUE_TYPE_VOID && message != NULL &&
+                   strstr(message, "fact addresses") != NULL;
+        if (code == FERRIC_ERROR_OK) {
+            ferric_value_free(&value);
+        }
+        ferric_engine_free(engine);
+        if (!rejected) {
+            return false;
+        }
+        fputs("{\"egress\":\"rejected\",\"ingress\":\"unsupported\"}", stdout);
+        return true;
+    }
     return false;
 }
 

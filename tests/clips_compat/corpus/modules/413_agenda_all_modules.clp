@@ -1,0 +1,6 @@
+(defmodule MAIN (export ?ALL))
+(deffacts seed (a 1))
+(defrule MAIN::show-agenda (declare (salience 10)) => (agenda *) (printout t "done" crlf))
+(defrule MAIN::m1 (a ?x) => )
+(defmodule B (import MAIN ?ALL))
+(defrule B::b1 (a ?x) => )

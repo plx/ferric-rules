@@ -104,6 +104,17 @@ def value_case(case_id: str) -> Any:
         finally:
             engine.close()
         return {"host_representation": "rejected", "ingress": ingress}
+    if case_id == "value.fact-address":
+        engine = ferric.Engine.from_source(fixture("fact-address.clp"))
+        try:
+            engine.run()
+            try:
+                engine.get_global("address")
+            except TypeError:
+                return {"egress": "rejected", "ingress": "unsupported"}
+            raise RuntimeError("a fact address crossed the Python value boundary")
+        finally:
+            engine.close()
     raise RuntimeError(f"unknown value case {case_id}")
 
 

@@ -25,12 +25,12 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for
 
 Depth and breadth use activation creation order. LEX and MEA compare fact recencies and specificity before breaking remaining ties in favor of older activations. Salience takes precedence for all four strategies.
 
-| Strategy | Description                               |
-| -------- | ----------------------------------------- |
-| Depth    | Most recent activation fires first.       |
-| Breadth  | Oldest activation fires first.            |
+| Strategy | Description                                                 |
+| -------- | ----------------------------------------------------------- |
+| Depth    | Most recent activation fires first.                         |
+| Breadth  | Oldest activation fires first.                              |
 | LEX      | Sorted fact recencies, specificity, then older activations. |
-| MEA      | First-pattern recency, then the LEX comparison. |
+| MEA      | First-pattern recency, then the LEX comparison.             |
 
 Choose a strategy through the host configuration API. Source `set-strategy` and `get-strategy` commands are unsupported. Simplicity, Complexity, and Random are not implemented.
 

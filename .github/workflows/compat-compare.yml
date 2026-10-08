@@ -261,6 +261,7 @@ jobs:
               /tmp/base-compat-manifest.json /tmp/head-compat-manifest.json \
               --base-corpus-summary /tmp/compat-evidence/base-corpus/summary.json \
               --head-corpus-summary /tmp/compat-evidence/head-corpus/summary.json \
+              --tsv /tmp/compat-diff.tsv \
               --report /tmp/compat-diff-report.md \
               --repo "${{ github.repository }}" \
               --base-sha "$COMPAT_BASE_SHA" \

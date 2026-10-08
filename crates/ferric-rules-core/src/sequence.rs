@@ -533,7 +533,7 @@ pub(crate) struct SplitView<'a> {
     pub lengths: SmallVec<[usize; 2]>,
 }
 
-impl SplitView<'_> {
+impl<'a> SplitView<'a> {
     /// Number of leading logical fields available to a prefix predicate.
     pub(crate) fn placed_fields(&self) -> usize {
         self.fields.len()
@@ -552,6 +552,20 @@ impl SplitView<'_> {
             FieldRef::Single(value) => value,
             FieldRef::Multi(values) => copy.get_or_init(|| capture(values)),
         })
+    }
+
+    /// The borrowed values of a capture field, without copying them.
+    /// Returns `None` for a single field or a missing field.
+    pub(crate) fn capture(&self, slot: SlotIndex) -> Option<&'a [Value]> {
+        let ((SlotIndex::Ordered(index), Fact::Ordered(_))
+        | (SlotIndex::Template(index), Fact::Template(_))) = (slot, self.fact)
+        else {
+            return None;
+        };
+        match self.fields.get(index)?.0 {
+            FieldRef::Single(_) => None,
+            FieldRef::Multi(values) => Some(values),
+        }
     }
 
     /// Whether `get` has copied any capture of this split.

@@ -8,7 +8,6 @@ fn unsupported_conditional_elements_are_located_in_text_and_json() {
     let path = directory.path().join("limits.clp");
     for (pattern, detail) in [
         ("(not (not (not (not (not (item))))))", "nesting depth"),
-        ("(exists (not (item)))", "exists"),
         ("(forall (a ?x) (forall (b ?x) (c ?x)))", "forall"),
         ("(not (forall (a ?x) (b ?x)))", "forall"),
         ("(exists (forall (a ?x) (b ?x)))", "forall"),
