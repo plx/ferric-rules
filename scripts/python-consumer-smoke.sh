@@ -7,11 +7,9 @@ if [[ $# -gt 1 ]]; then
     echo "usage: scripts/python-consumer-smoke.sh [python-interpreter]" >&2
     exit 1
 fi
-if [[ $# -eq 1 ]]; then
-    python_path="$("$1" -c 'import sys; print(sys.executable)')"
-else
-    python_path="$(uv run --project "$package" --locked python -c 'import sys; print(sys.executable)')"
-fi
+# Leave the binding's development environment alone: find, never sync.
+candidate="${1:-$(uv python find --project "$package")}"
+python_path="$("$candidate" -c 'import sys; print(sys.executable)')"
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/ferric-python-consumer.XXXXXX")"
 trap 'rm -rf "$smoke_dir"' EXIT
 # A caller's TMPDIR must not turn this into an in-checkout import test.
@@ -22,12 +20,12 @@ root, temporary = (Path(value).resolve() for value in sys.argv[1:])
 if root == temporary or root in temporary.parents:
     raise SystemExit("python-consumer-smoke: TMPDIR must be outside the checkout")
 ' "$root" "$smoke_dir"
-(
-    cd "$package"
-    uv run --locked --python "$python_path" maturin build \
-        --manifest-path "$package/Cargo.toml" --release --locked \
-        --interpreter "$python_path" --out "$smoke_dir/wheels"
-)
+# The locked maturin comes from a throwaway environment, not the project .venv.
+UV_PROJECT_ENVIRONMENT="$smoke_dir/build-env" uv sync --project "$package" \
+    --locked --no-install-project --python "$python_path" --quiet
+"$smoke_dir/build-env/bin/maturin" build \
+    --manifest-path "$package/Cargo.toml" --release --locked \
+    --interpreter "$python_path" --out "$smoke_dir/wheels"
 shopt -s nullglob
 wheels=("$smoke_dir"/wheels/*.whl)
 if [[ ${#wheels[@]} -ne 1 ]]; then
