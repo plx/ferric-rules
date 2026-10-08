@@ -11,6 +11,7 @@ use crate::span::Span;
 use std::collections::HashSet;
 use std::fmt;
 
+mod conditional_elements;
 mod rule_declarations;
 mod slot_attributes;
 
@@ -40,7 +41,7 @@ pub enum Pattern {
     Logical(Vec<Pattern>, Span),
     /// Disjunction CE: (or <pattern> <pattern> ...)
     Or(Vec<Pattern>, Span),
-    /// Assigned pattern: ?var <- <pattern>
+    /// Assigned fact pattern: ?var <- <ordered-or-template-pattern>
     Assigned {
         variable: String,
         pattern: Box<Pattern>,
@@ -981,30 +982,8 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
 
     let arrow_idx = idx + arrow_pos;
 
-    // Interpret LHS patterns
-    let lhs_elements = &elements[idx..arrow_idx];
-    let mut patterns = Vec::new();
-    let mut i = 0;
-    while i < lhs_elements.len() {
-        // Check for ?var <- (pattern) syntax
-        if i + 2 < lhs_elements.len() {
-            if let Some(Atom::SingleVar(var_name)) = lhs_elements[i].as_atom() {
-                if let Some(Atom::Connective(Connective::Assign)) = lhs_elements[i + 1].as_atom() {
-                    let inner_pattern = interpret_pattern(&lhs_elements[i + 2])?;
-                    let pat_span = Span::merge(lhs_elements[i].span(), lhs_elements[i + 2].span());
-                    patterns.push(Pattern::Assigned {
-                        variable: var_name.clone(),
-                        pattern: Box::new(inner_pattern),
-                        span: pat_span,
-                    });
-                    i += 3;
-                    continue;
-                }
-            }
-        }
-        patterns.push(interpret_pattern(&lhs_elements[i])?);
-        i += 1;
-    }
+    // Assignment prefixes occupy three S-expressions but form one CE operand.
+    let patterns = conditional_elements::interpret_sequence(&elements[idx..arrow_idx], true)?;
 
     // Interpret RHS actions
     let rhs_elements = &elements[arrow_idx + 1..];
@@ -1692,7 +1671,7 @@ fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, Int
 // ============================================================================
 
 /// Interpret a single pattern element from a rule's LHS.
-fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
+fn interpret_pattern(expr: &SExpr, bindings_allowed: bool) -> Result<Pattern, InterpretError> {
     let list = expr
         .as_list()
         .ok_or_else(|| InterpretError::expected("pattern (list)", expr.span()))?;
@@ -1701,7 +1680,7 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
         return Err(InterpretError::invalid("empty pattern", expr.span()));
     }
 
-    if let Some(conditional) = interpret_conditional_pattern(list, expr)? {
+    if let Some(conditional) = interpret_conditional_pattern(list, expr, bindings_allowed)? {
         return Ok(conditional);
     }
 
@@ -1711,6 +1690,7 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
 fn interpret_conditional_pattern(
     list: &[SExpr],
     expr: &SExpr,
+    bindings_allowed: bool,
 ) -> Result<Option<Pattern>, InterpretError> {
     match list[0].as_symbol() {
         Some("and") => {
@@ -1720,26 +1700,24 @@ fn interpret_conditional_pattern(
                     list[0].span(),
                 ));
             }
-            let mut patterns = Vec::new();
-            for pattern_expr in &list[1..] {
-                patterns.push(interpret_pattern(pattern_expr)?);
-            }
+            let patterns = conditional_elements::interpret_sequence(&list[1..], bindings_allowed)?;
             Ok(Some(Pattern::And(patterns, expr.span())))
         }
         Some("not") => {
-            if list.len() < 2 {
+            let mut patterns = conditional_elements::interpret_sequence(&list[1..], false)?;
+            if patterns.is_empty() {
                 return Err(InterpretError::missing(
                     "pattern after 'not'",
                     list[0].span(),
                 ));
             }
-            if list.len() > 2 {
+            if patterns.len() > 1 {
                 return Err(InterpretError::invalid(
                     "'not' conditional element: expected exactly one pattern",
                     list[2].span(),
                 ));
             }
-            let inner_pattern = interpret_pattern(&list[1])?;
+            let inner_pattern = patterns.remove(0);
             Ok(Some(Pattern::Not(Box::new(inner_pattern), expr.span())))
         }
         Some("test") => {
@@ -1753,43 +1731,37 @@ fn interpret_conditional_pattern(
             Ok(Some(Pattern::Test(list[1].clone(), expr.span())))
         }
         Some("exists") => {
-            let mut patterns = Vec::new();
-            for pattern_expr in &list[1..] {
-                patterns.push(interpret_pattern(pattern_expr)?);
+            if list.len() < 2 {
+                return Err(InterpretError::missing(
+                    "pattern after 'exists'",
+                    list[0].span(),
+                ));
             }
+            let patterns = conditional_elements::interpret_sequence(&list[1..], false)?;
             Ok(Some(Pattern::Exists(patterns, expr.span())))
         }
         Some("forall") => {
-            if list.len() < 3 {
+            let patterns = conditional_elements::interpret_sequence(&list[1..], false)?;
+            if patterns.len() < 2 {
                 return Err(InterpretError::missing(
                     "condition and then-clause (forall requires at least two sub-patterns)",
                     expr.span(),
                 ));
             }
-            let mut patterns = Vec::new();
-            for pattern_expr in &list[1..] {
-                patterns.push(interpret_pattern(pattern_expr)?);
-            }
             Ok(Some(Pattern::Forall(patterns, expr.span())))
         }
         Some("logical") => {
-            let mut patterns = Vec::new();
-            for pattern_expr in &list[1..] {
-                patterns.push(interpret_pattern(pattern_expr)?);
-            }
+            let patterns = conditional_elements::interpret_sequence(&list[1..], bindings_allowed)?;
             Ok(Some(Pattern::Logical(patterns, expr.span())))
         }
         Some("or") => {
-            if list.len() < 3 {
+            if list.len() < 2 {
                 return Err(InterpretError::missing(
-                    "at least two patterns in (or ...)",
-                    expr.span(),
+                    "pattern after 'or'",
+                    list[0].span(),
                 ));
             }
-            let mut patterns = Vec::new();
-            for pattern_expr in &list[1..] {
-                patterns.push(interpret_pattern(pattern_expr)?);
-            }
+            let patterns = conditional_elements::interpret_sequence(&list[1..], bindings_allowed)?;
             Ok(Some(Pattern::Or(patterns, expr.span())))
         }
         _ => Ok(None),
@@ -4946,30 +4918,12 @@ mod tests {
     }
 
     #[test]
-    fn interpret_assigned_not_pattern() {
-        // ?f <- (not (danger)) — while unusual, should parse correctly
-        let parsed = parse_sexprs(
-            "(defrule test ?f <- (not (danger)) => (printout t ok))",
-            file(),
-        );
-        let config = InterpreterConfig::default();
-        let result = interpret_constructs(&parsed.exprs, &config);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-
-        if let Construct::Rule(rule) = &result.constructs[0] {
-            assert_eq!(rule.patterns.len(), 1);
-            if let Pattern::Assigned {
-                variable, pattern, ..
-            } = &rule.patterns[0]
-            {
-                assert_eq!(variable, "f");
-                assert!(matches!(pattern.as_ref(), Pattern::Not(..)));
-            } else {
-                panic!("expected Assigned pattern");
-            }
-        } else {
-            panic!("expected Rule construct");
-        }
+    fn interpret_assigned_not_pattern_is_rejected() {
+        let result =
+            interpret_source_inner("(defrule test ?f <- (not (danger)) => (printout t ok))");
+        assert!(result.constructs.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("fact pattern"));
     }
 
     // -----------------------------------------------------------------------

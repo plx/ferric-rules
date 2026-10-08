@@ -318,9 +318,20 @@ Review your CLIPS codebase for features that Ferric does not support:
 - Conflict strategies: `simplicity`, `complexity`, `random`
 
 **Partially supported:**
-- Pattern nesting: single-level `not`, `exists`, `forall`, and NCC are
-  supported. Triple-nested negation, `(exists (not ...))`, and nested
-  `(forall ...)` are not.
+- Pattern nesting: up to four combined `not`/`exists`/`forall` levels are
+  supported, subject to compiled-condition limits. Triple and four-deep
+  negation work, and `and`/`or` groups nest freely inside each other, `not`,
+  and `exists`. Nested `forall` and `forall` under `not` or `exists` remain
+  unsupported. `forall` takes exactly one fact
+  condition and one fact or test-only requirement; other operands are rejected
+  with a source location. Positive `and`/`or` groups accept fact-address
+  bindings, and `(not (or ...))`, `(exists (not ...))` and `(exists (or ...))`
+  are supported.
+  Snapshot validation has a separate four-level NCC dependency limit. Nested
+  `exists` (even single-pattern, such as `(exists (exists (exists (a))))`),
+  `exists` over `or` inside further nesting, and `exists` under a deep
+  `not (and ...)` chain can load and run yet exceed that persistence limit.
+  See [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
 
 If your rules use only `defrule`, `deftemplate`, `deffacts`, `deffunction`,
 `defglobal`, `defmodule`, `defgeneric`, and `defmethod` with standard
@@ -344,17 +355,17 @@ Fix any reported parse or compilation errors before proceeding.
 
 ## Step 3: Review Rule Patterns and Actions
 
-### Replace nested negation
+### Reduce excessive nesting
+
+For a boolean condition without new variable bindings, redundant negations
+can be simplified:
 
 ```clp
-;; CLIPS (unsupported triple nesting)
-(not (not (not (condition))))
+;; Exceeds Ferric's four-level source limit
+(not (not (not (not (not (condition))))))
 
-;; Ferric: use an intermediate fact
-(defrule detect-condition
-    (condition) => (assert (condition-present)))
-(defrule no-condition
-    (not (condition-present)) => ...)
+;; Same boolean condition within the limit
+(not (condition))
 ```
 
 ### Use if/then/else in actions and callable bodies
@@ -378,21 +389,6 @@ To select matching rules with the condition instead, use a `test` CE:
     (value ?x) (test (> ?x 10)) => (printout t "big" crlf))
 (defrule classify-small
     (value ?x) (test (<= ?x 10)) => (printout t "small" crlf))
-```
-
-### Replace (exists (not ...))
-
-```clp
-;; CLIPS (unsupported nesting)
-(exists (not (done ?x)))
-
-;; Ferric: use a helper rule
-(defrule find-undone
-    (item ?x) (not (done ?x))
-    => (assert (has-undone-item)))
-
-(defrule process-undone
-    (has-undone-item) => ...)
 ```
 
 ## Step 4: Review format Usage
@@ -540,7 +536,7 @@ was never populated.
 | `defgeneric` / `defmethod` | Supported (bodies may assert, retract, modify, duplicate, halt, focus, reset and clear, and run action queries) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
 | `printout` / `format` / `read` / `readline` | Supported |
-| `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |
+| `not` / `exists` / `forall` / `test` | Supported within the four-level source nesting and quantified-operand limits above |
 | Salience | Supported |
 | Focus stack | Supported |
 | Depth / Breadth | Supported |

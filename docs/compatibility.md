@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1075
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1147
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -69,7 +69,10 @@ Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
 constraint inside a negated ordered pattern, tracked in
 [#300](https://github.com/plx/ferric-rules/issues/300) (see
-[Template Facts](#template-facts)).
+[Template Facts](#template-facts)). Ten further `gap` cases from
+[#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
+located load error for the explicit conditional-element nesting and operand
+limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
 
 ---
 
@@ -685,12 +688,21 @@ All of the following are supported:
 
 - **Ordered patterns**: `(fact-name ?x ?y)`
 - **Template patterns**: `(template (slot ?v))`
-- **Variable binding**: `?f <- (pattern)`
+- **Fact-address binding**: `?f <- (pattern)`, including positive `and`/`or` operands
 - **test CE**: `(test (> ?x 10))`
 - **not CE**: `(not (pattern))`
-- **exists CE**: `(exists (pattern))`
-- **forall CE**: `(forall (P) (Q))`
-- **Negated conjunction**: `(not (and (P) (Q)))`
+- **exists CE**: `(exists (pattern) ...)`, including negated operands such as
+  `(exists (not (P)))`. A body containing `or` is one condition, as in CLIPS:
+  `(exists (or (P) (Q)))` fires once however many branches hold.
+- **forall CE**: `(forall (P) (Q))` or `(forall (P) (test expression))`
+- **Negated conjunction**: `(not (and (P) (Q)))`, and its double negation
+  `(not (not (and (P) (Q))))`
+- **Negated disjunction**: `(not (or (P) (Q)))`
+- **Nested groups**: `and` and `or` nest to any depth, inside each other and
+  inside `not` and `exists`, e.g. `(or (and (or (P) (Q)) (R)) (S))` or
+  `(not (exists (P) (or (Q) (R))))`. Like CLIPS, Ferric flattens `and` groups
+  and turns every positive `or` into rule-level alternatives, so each true
+  branch of a positive `or` is its own activation.
 - **Constraint connectives**: `&`, `|`, `~`
 
 ### Source and compiled network limits
@@ -722,26 +734,49 @@ language limits or a guarantee that arbitrary large fact populations fit a
 host's memory. The recommended snapshot envelope applies its own input and
 restored-graph validation limits.
 
+The current snapshot validator also limits NCC dependency nesting to four.
+Each `exists` compiles to a double negation, so nested quantifiers can exceed
+that bound within the four-level source nesting limit: for example
+`(exists (exists (exists (a))))`, `(exists (a) (exists (b) (exists (c) (d))))`,
+`exists` over `or` inside further nesting, or an `exists` at the bottom of a
+deep `not (and ...)` chain. Such rules load and run, but `Engine::serialize`
+rejects them with `snapshot NCC nesting exceeds 4`; two nested `exists` levels
+still serialize. This persistence boundary is tracked with the snapshot-limit
+work in #410.
+
 ### Pattern Nesting Restrictions
 
-Ferric supports single-level negation, exists, forall, and NCC. The following
-nestings are **not** supported:
+Ferric accepts up to four nested `not`, `exists`, and `forall` operators along
+each source pattern path. `and` and `or` do not add a level; triple and
+four-deep `not` are supported. Compiled condition limits still apply after
+normalization. The following forms are **not** supported:
 
 | Unsupported Pattern | Rationale |
 |---------------------|-----------|
-| Triple-nested negation | Rete subnetwork complexity; rarely needed in practice |
-| `(exists (not ...))` | Equivalent refactorings exist using separate rules |
+| Five or more nested quantifiers | Reduce combined `not`/`exists`/`forall` depth to four |
 | Nested `(forall ...)` | Decompose into multiple rules with phase facts |
+| `forall` under `not` or `exists`, including through `and`/`or` wrappers | Universal quantification is supported only in positive rule conditions |
+| `forall` with more than two operands, a non-fact first operand, or a second operand other than a fact pattern or test-only expression | Use one fact condition and one fact/test requirement |
 
-**Refactoring example** -- replace `(exists (not (done ?x)))` with:
+Fact-address bindings must target fact patterns. They may occur inside positive
+`and`/`or` groups, but not inside `not`, `exists`, or `forall`, or around an
+entire conditional element. CLIPS 6.30 rejects the same placements
+(`[RULELHS2]` inside `not`/`exists`/`forall`, `[PRNTUTIL2]` around a group), so
+these are not Ferric restrictions; see the `patterns/405_assigned_*_rejected`
+corpus cases. An address bound in only some branches of an `or` may be used
+only where every alternative binds it: like CLIPS, Ferric rejects a RHS that
+uses it (`[PRCCODE3]`). Pure-test `not`/`exists` wrappers are boolean
+conditions and do not introduce fact bindings.
 
-```clp
-(defrule has-undone
-    (item ?x)
-    (not (done ?x))
-    =>
-    (assert (has-undone-item)))
-```
+A variable first bound inside `not`, `exists`, or `forall`, including inside
+an `or` or `and` beneath them, is local to that conditional element. A `test`,
+at rule level or nested inside `not`, `exists`, or `forall`, may read only
+variables bound before it in its own scope: by an earlier positive pattern at
+its level or in an enclosing group, by its `forall` antecedent, or by every
+branch of an earlier `or`. Like CLIPS (`[ANALYSIS4]`), Ferric rejects at load a
+`test` that reads a variable local to an earlier negation or quantifier, a
+variable bound nowhere before it, or one bound in only some `or` branches. It
+also rejects a RHS reference unless a positive pattern binds it (`[PRCCODE3]`).
 
 ### Logical support
 
@@ -753,8 +788,12 @@ when the application owns that lifecycle.
 
 ### forall Semantics
 
-`forall` is desugared to `NCC([P, neg(Q)])` at loader level. This means
-"for every fact matching P, there also exists a matching Q."
+`forall` requires exactly two operands. The first is one ordered or template
+fact pattern; the second is one fact pattern or a test-only expression. The
+latter may combine `test` CEs with `and`, `or`, `not`, and `exists`. With a fact requirement,
+it means "for every fact matching P, there also exists a matching Q." With a
+test requirement, the expression must hold for every matching P. Variables
+bound by P are available to its requirement and do not escape the `forall`.
 
 Vacuous truth: when no facts match P, the forall condition holds:
 
@@ -766,6 +805,9 @@ Vacuous truth: when no facts match P, the forall condition holds:
     =>
     (printout t "all done" crlf))
 ```
+
+For example, `(forall (task ?p) (test (> ?p 0)))` holds when every matching
+task has positive priority, including when there are no tasks.
 
 ### Module Scoping
 
@@ -792,8 +834,10 @@ Vacuous truth: when no facts match P, the forall condition holds:
 
 ### Pattern Restriction Diagnostics
 
-Unsupported constructs produce source-located compile errors. Ferric does not
-silently ignore invalid patterns.
+Unsupported constructs produce diagnostics with the restriction and source
+location. `ferric run` and `ferric check` retain this detail in both ordinary
+stderr and the `message` field of `--json` diagnostics. Ferric does not silently
+ignore invalid patterns.
 
 ---
 
@@ -1231,7 +1275,7 @@ its fields have been expanded.
 
 `min` and `max` return the selected operand with its own type, the first on a
 tie: `(max 1 1.0)` is `1`. For a FLOAT, `round` computes `ceil(x - 0.5)` as
-CLIPS does, so `(round -0.49999999999999994)` is `-1`.
+CLIPS does, so `(round -0.49999999999999995)` is `-1`.
 
 Domain errors in `sqrt`, `asin`, `acos`, `acosh`, `atanh`, `log`, `log10`,
 and `**` stop the current run with an `EMATHFUN1` diagnostic. Zero logarithm
@@ -1589,9 +1633,9 @@ The following features are explicitly out of scope.
 | `Random` strategy | Deferred | Until fully specified |
 | General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
-| Triple-nested negation | Not supported | Decompose into multiple rules |
-| `(exists (not ...))` | Not supported | Use separate rules |
+| More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
+| `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |
 | File routers (`open` and file-backed logical-name I/O) | Not supported | `close` is a compatibility stub; use host I/O, captured output, `load-facts`, or `save-facts` |
 | Source command `load` | Compatibility stub returning FALSE | Use host `Engine::load_str` / `load_file`, or `build` for one construct |
 | Environment commands `load*`, `facts`, `batch*`, `exit`, `ppfact` | Not supported | Drive loading, inspection, batching, and process lifetime from the host |

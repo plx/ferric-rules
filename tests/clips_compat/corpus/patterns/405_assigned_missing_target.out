@@ -1,0 +1,7 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for binding patterns.
+
+ERROR:
+(defrule MAIN::r
+   (or  (a)
+        ?f <- )

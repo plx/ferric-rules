@@ -1464,6 +1464,32 @@ mod tests {
     }
 
     #[test]
+    fn two_nested_exists_serialize_but_three_exceed_the_ncc_depth() {
+        // Each `exists` is a double negation: two levels reach the snapshot
+        // NCC depth of four, and a third exceeds it.
+        let mut engine = Engine::with_rules(
+            "(deffacts seed (a))
+             (defrule two (exists (exists (a))) => (printout t two crlf))",
+        )
+        .unwrap();
+        engine.reset().unwrap();
+        let snapshot = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&snapshot, SerializationFormat::Cbor).unwrap();
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(restored.get_output("t"), Some("two\n"));
+
+        let engine = Engine::with_rules(
+            "(defrule three (exists (exists (exists (a)))) => (printout t three crlf))",
+        )
+        .unwrap();
+        let error = engine
+            .serialize(SerializationFormat::Cbor)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("NCC nesting exceeds 4"), "{error}");
+    }
+
+    #[test]
     fn resume_preserves_exists_and_ncc_support_transitions() {
         for condition in [
             "(exists (support ?n ?reason))",

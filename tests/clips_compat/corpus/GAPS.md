@@ -33,6 +33,16 @@ trailing test), shared-join, shared-entry, and deferred-predicate late
 installation, ordinary activation hooks, and deferred-predicate admission have
 separate conforming coverage.
 
+Nine [#405](https://github.com/plx/ferric-rules/issues/405) cases preserve the
+remaining explicit conditional-element limits, with successful CLIPS goldens
+and exact, located Ferric load errors. They cover excessive source nesting,
+`forall` nested or beneath `not`/`exists`, and unsupported universal-quantifier
+operands. Each executes successfully in
+CLIPS and records an explicit Ferric support limit. The conforming #405 cases separately
+exercise positive nested fact bindings, negated disjunctions, nested `and`/`or`
+groups, `exists` over `or` and `not`, and quantified tests with local variables
+and vacuous truth.
+
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.
 
