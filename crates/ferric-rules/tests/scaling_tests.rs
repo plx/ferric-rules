@@ -677,6 +677,90 @@ fn test_scaling_sequence_negative_admission() {
     );
 }
 
+/// With four fixed bound keys and unique list values, placement pruning should
+/// scale with list length in the positive join, in the first-match search of a
+/// negated pattern, and when a bound multifield capture is compared before a
+/// later same-fact test rejects the split. Each direction must still produce
+/// exactly six positive pairs and ten absent pairs; `bound-prefix` never fires.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_bound_sequence_join() {
+    const N_KEYS: usize = 4;
+    const RULE: &str = "
+        (defrule bound-sequence
+            (key ?a) (key ?b) (lst $? ?a $? ?b $?)
+            => (assert (hit ?a ?b)))
+        (defrule bound-sequence-absent
+            (key ?a) (key ?b) (not (lst $? ?a $? ?b $?))
+            => (assert (miss ?a ?b)))
+        (defrule bound-prefix
+            (key $?p) (lst $?p ?x $? ?x)
+            => (assert (prefix $?p)))";
+
+    fn prepare(length: usize, list_first: bool) -> (Engine, Vec<i64>) {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str(RULE).unwrap();
+        engine.reset().unwrap();
+        let keys = (0..N_KEYS)
+            .map(|index| i64::try_from((index + 1) * length / (N_KEYS + 1)).unwrap())
+            .collect::<Vec<_>>();
+        // The -1 frame lets the list pass `bound-prefix`'s same-fact test
+        // (empty prefix, ?x = -1 at both ends), so each key's join search
+        // runs, yet no key equals a list value outside 0..length.
+        let list = std::iter::once(-1)
+            .chain(0..i64::try_from(length).unwrap())
+            .chain(std::iter::once(-1))
+            .collect::<Vec<_>>();
+        let incoming = if list_first {
+            engine.assert_ordered("lst", list).unwrap();
+            keys
+        } else {
+            for key in keys {
+                engine.assert_ordered("key", key).unwrap();
+            }
+            list
+        };
+        (engine, incoming)
+    }
+
+    fn complete(mut engine: Engine, incoming: Vec<i64>, list_first: bool) -> Engine {
+        if list_first {
+            for key in incoming {
+                engine.assert_ordered("key", key).unwrap();
+            }
+        } else {
+            engine.assert_ordered("lst", incoming).unwrap();
+        }
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        // Six ordered pairs occur in the list; the other ten (four with
+        // ?a = ?b, six reversed) are absent.
+        assert_eq!(result.rules_fired, N_KEYS * N_KEYS);
+        assert!(engine.action_diagnostics().is_empty());
+        engine
+    }
+
+    fn measure(length: usize, list_first: bool) -> Duration {
+        measure_op_median(
+            || prepare(length, list_first),
+            |(engine, incoming)| {
+                black_box(complete(engine, incoming, list_first));
+            },
+        )
+    }
+
+    let (small, large) = (2_000, 8_000);
+    for (arrival, list_first) in [("list_arrives", false), ("keys_arrive", true)] {
+        assert_scaling(
+            &format!("bound_sequence_join ({arrival})"),
+            small,
+            large,
+            measure(small, list_first),
+            measure(large, list_first),
+            8.0,
+        );
+    }
+}
+
 /// N rules sharing `(item ?x)` leave N NCC siblings under one join. Visiting
 /// each top-level NCC must not scan its older siblings for a subnetwork entry
 /// it never waits for, or each parent token costs O(N²).

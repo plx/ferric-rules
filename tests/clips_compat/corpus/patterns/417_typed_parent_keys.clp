@@ -1,0 +1,11 @@
+; One active phase isolates each typed parent while preserving every split.
+(deffacts d (key integer 1) (key float 1.0) (key symbol same) (key string "same")
+ (lst 1 1.0 same "same" 1) (phase integer))
+(defrule observe (key ?kind ?value) (lst $?before ?value $?after) (phase ?kind)
+ => (printout t ?kind ":" (length$ ?before) ":" (length$ ?after) crlf))
+(defrule next-float (declare (salience -10)) ?phase <- (phase integer)
+ => (retract ?phase) (assert (phase float)))
+(defrule next-symbol (declare (salience -10)) ?phase <- (phase float)
+ => (retract ?phase) (assert (phase symbol)))
+(defrule next-string (declare (salience -10)) ?phase <- (phase symbol)
+ => (retract ?phase) (assert (phase string)))

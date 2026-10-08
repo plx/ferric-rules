@@ -5,6 +5,8 @@
 
 #[cfg(test)]
 mod activation_order_tests;
+#[cfg(test)]
+mod sequence_prefix_tests;
 
 use smallvec::SmallVec;
 use std::cmp::Ordering;
@@ -2823,6 +2825,38 @@ pub(crate) fn evaluate_pattern(
     }
 }
 
+/// Join predicates read one logical field and an immutable parent binding.
+/// Test only fields placed since the previous readiness boundary; the complete
+/// fallback still checks invalid selectors and missing parent bindings.
+fn sequence_join_prefix_matches(
+    split: &SplitView<'_>,
+    checked: usize,
+    complete: bool,
+    bindings: &BindingSet,
+    tests: &[JoinTest],
+) -> bool {
+    let placed = split.placed_fields();
+    tests.iter().all(|test| {
+        let (SlotIndex::Ordered(index) | SlotIndex::Template(index)) = test.alpha_slot;
+        let need = index.saturating_add(1);
+        if need <= checked || (need > placed && !complete) {
+            return true;
+        }
+        // Compare a capture in place: copying every candidate capture would
+        // make a search that later rejects the split quadratic in its length.
+        if let Some(values) = split.capture(test.alpha_slot) {
+            return bindings
+                .get(test.beta_var)
+                .is_some_and(|token| capture_join_matches(values, token, test.test_type));
+        }
+        evaluate_join_fields(
+            |slot| split.get(slot),
+            Some(bindings),
+            std::slice::from_ref(test),
+        )
+    })
+}
+
 #[inline(never)]
 fn any_split_matches(
     fact: &Fact,
@@ -2831,14 +2865,16 @@ fn any_split_matches(
     sequence: &SequencePattern,
 ) -> bool {
     sequence
-        .search(fact, &mut |event| match event {
-            SplitEvent::Match(split)
-                if evaluate_join_fields(|slot| split.get(slot), Some(&token.bindings), tests) =>
-            {
-                ControlFlow::Break(())
-            }
-            _ => ControlFlow::Continue(()),
-        })
+        .search_with_prefix(
+            fact,
+            &mut |split, checked, complete| {
+                sequence_join_prefix_matches(split, checked, complete, &token.bindings, tests)
+            },
+            &mut |event| match event {
+                SplitEvent::Match(_) => ControlFlow::Break(()),
+                SplitEvent::Step => ControlFlow::Continue(()),
+            },
+        )
         .is_break()
 }
 
@@ -2862,9 +2898,13 @@ fn sequence_matches(
     sequence: &SequencePattern,
 ) -> SmallVec<[(BindingSet, SmallVec<[usize; 2]>); 2]> {
     let mut matches = SmallVec::new();
-    let _ = sequence.search(fact, &mut |event| {
-        if let SplitEvent::Match(split) = event {
-            if evaluate_join_fields(|slot| split.get(slot), Some(parent_bindings), tests) {
+    let _ = sequence.search_with_prefix(
+        fact,
+        &mut |split, checked, complete| {
+            sequence_join_prefix_matches(split, checked, complete, parent_bindings, tests)
+        },
+        &mut |event| {
+            if let SplitEvent::Match(split) = event {
                 let mut extracted = parent_bindings.clone();
                 for &(slot, variable) in bindings {
                     if let Some(value) = split.get(slot) {
@@ -2873,9 +2913,9 @@ fn sequence_matches(
                 }
                 matches.push((extracted, split.lengths.clone()));
             }
-        }
-        ControlFlow::<()>::Continue(())
-    });
+            ControlFlow::<()>::Continue(())
+        },
+    );
     matches
 }
 
@@ -2901,6 +2941,43 @@ fn values_join_eq(a: &Value, b: &Value) -> Option<bool> {
         (Value::Void, _) | (_, Value::Void) => None,
         // Cross-type comparisons → definitively not equal
         _ => Some(false),
+    }
+}
+
+/// A join test against the borrowed values of a capture, with the result
+/// `evaluate_join_fields` gives for the copied multifield: equality is
+/// [`values_join_eq`] on multifields, and numeric, lexeme and offset
+/// comparisons never admit a multifield.
+fn capture_join_matches(values: &[Value], token: &Value, test_type: JoinTestType) -> bool {
+    let same = || match token {
+        Value::Multifield(bound) => {
+            values.len() == bound.len()
+                && values
+                    .iter()
+                    .zip(bound.iter())
+                    .all(|(value, bound)| value.structural_eq(bound))
+        }
+        _ => false,
+    };
+    match test_type {
+        JoinTestType::Equal => same(),
+        JoinTestType::NotEqual => !matches!(token, Value::Void) && !same(),
+        JoinTestType::GreaterThan
+        | JoinTestType::LessThan
+        | JoinTestType::GreaterOrEqual
+        | JoinTestType::LessOrEqual
+        | JoinTestType::LexEqual
+        | JoinTestType::LexNotEqual
+        | JoinTestType::LexGreaterThan
+        | JoinTestType::LexLessThan
+        | JoinTestType::LexGreaterOrEqual
+        | JoinTestType::LexLessOrEqual
+        | JoinTestType::EqualOffset(_)
+        | JoinTestType::NotEqualOffset(_)
+        | JoinTestType::GreaterThanOffset(_)
+        | JoinTestType::LessThanOffset(_)
+        | JoinTestType::GreaterOrEqualOffset(_)
+        | JoinTestType::LessOrEqualOffset(_) => false,
     }
 }
 
