@@ -218,48 +218,68 @@ fn source_files_are_bounded_before_reading_and_keep_io_errors_distinct() {
 }
 
 /// CLIPS reads source and fact files byte for byte; Ferric keeps UTF-8 text
-/// (#394), so `load` and `load-facts` refuse a file that is not UTF-8 and the
-/// enclosing evaluation continues.
+/// (#394), so it refuses a file that is not UTF-8. A nested `load-facts`
+/// reports that it cannot open the file and returns FALSE; a `load` rule
+/// action reports an action error and skips the rest of that rule's actions.
 #[test]
 fn load_and_load_facts_refuse_files_that_are_not_utf8() {
     let directory = tempfile::tempdir().unwrap();
     let facts = directory.path().join("facts.fct");
     let rules = directory.path().join("rules.clp");
+    let valid_rules = directory.path().join("valid.clp");
     std::fs::write(&facts, b"(caf\xe9 1)").unwrap();
     std::fs::write(&rules, b"(defrule extra => (assert (loaded \"caf\xe9\")))").unwrap();
+    std::fs::write(&valid_rules, "(defrule extra => (assert (loaded)))").unwrap();
     let escape = |path: &std::path::Path| path.to_string_lossy().replace('\\', "\\\\");
-    let mut engine = Engine::with_rules(&format!(
-        "(defrule go
-           => (printout t \"facts:\" (load-facts \"{}\") crlf)
-              (printout t \"load:\" (load \"{}\") crlf)
-              (printout t \"after\" crlf))",
-        escape(&facts),
-        escape(&rules)
-    ))
-    .unwrap();
+    let loading_rule = |path: &std::path::Path| {
+        format!(
+            "(defrule go
+               => (printout t \"facts:\" (load-facts \"{}\") crlf)
+                  (load \"{}\")
+                  (printout t \"after\" crlf))",
+            escape(&facts),
+            escape(path)
+        )
+    };
+    let rule_names = |engine: &Engine| {
+        engine
+            .rules()
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect::<Vec<_>>()
+    };
+
+    let mut engine = Engine::with_rules(&loading_rule(&rules)).unwrap();
     engine.reset().unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-    assert_eq!(
-        engine.get_output("t"),
-        Some("facts:FALSE\nload:FALSE\nafter\n")
-    );
+    assert_eq!(engine.get_output("t"), Some("facts:FALSE\n"));
     let notice = engine.get_output("werror").unwrap_or_default();
     assert!(
         notice.contains("[ARGACCES2] Function load-facts was unable to open file"),
         "{notice}"
     );
-    assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(
-        engine
-            .rules()
-            .iter()
-            .map(|(name, _)| *name)
-            .collect::<Vec<_>>(),
-        ["go"]
+    let diagnostics = engine.action_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].to_string().contains("invalid utf-8"),
+        "{diagnostics:?}"
     );
+    assert_eq!(rule_names(&engine), ["go"]);
     assert!(engine.find_facts("caf\u{e9}").unwrap().is_empty());
     assert!(engine.find_facts("caf\u{fffd}").unwrap().is_empty());
     assert!(engine.find_facts("loaded").unwrap().is_empty());
+
+    // The same rule loads a valid UTF-8 file, so the refusal above is not a
+    // no-op `load`.
+    let mut control = Engine::with_rules(&loading_rule(&valid_rules)).unwrap();
+    control.reset().unwrap();
+    assert_eq!(control.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+    assert_eq!(control.get_output("t"), Some("facts:FALSE\nafter\n"));
+    assert!(control.action_diagnostics().is_empty());
+    let mut names = rule_names(&control);
+    names.sort();
+    assert_eq!(names, ["extra", "go"]);
+    assert_eq!(control.find_facts("loaded").unwrap().len(), 1);
 }
 
 #[test]

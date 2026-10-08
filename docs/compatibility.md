@@ -95,8 +95,10 @@ The same decision applies to input. Source files read by `ferric run`, `load`,
 or `Engine::load_file`, and fact files read by `load-facts`, must be valid
 UTF-8, while CLIPS reads such files byte for byte. Ferric does not load a file
 that is not: `ferric run` exits with an invalid-UTF-8 error, `Engine::load_file`
-returns an I/O error, `load` returns FALSE, and `load-facts` reports that it
-cannot open the file and returns FALSE. Invalid UTF-8 on `ferric run` standard
+returns an I/O error, and `load-facts` reports that it cannot open the file and
+returns FALSE. As a top-level command, `load` stops `ferric run` with the same
+invalid-UTF-8 error; as a rule action, it reports an action error and skips the
+rest of that rule's actions. Invalid UTF-8 on `ferric run` standard
 input reads as end of input (see
 [Command-line evaluation and inspection](#command-line-evaluation-and-inspection)).
 Corpus programs must be UTF-8, so Rust tests cover these cases, not corpus gap
