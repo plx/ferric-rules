@@ -387,6 +387,37 @@ fn save_and_load_facts_round_trip_named_slots_escapes_and_multislots() {
 }
 
 #[test]
+fn repl_reports_load_facts_content_errors_and_keeps_the_loaded_prefix() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("bad.fct"),
+        "(p 1) (q 2) (r ?x) (s 3)\n",
+    )
+    .unwrap();
+    let output = invoke(
+        &["repl"],
+        "(load-facts \"bad.fct\")\n(facts)\n(load-facts \"absent.fct\")\n(+ 1 2)\n(exit)\n",
+        directory.path(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let out = stdout(&output);
+    assert!(
+        out.contains("f-1     (p 1)\nf-2     (q 2)\nFor a total of 2 facts.\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("unable to open file absent.fct.\nFALSE\n"),
+        "{out}"
+    );
+    assert!(out.contains("3\n"), "{out}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Function load-facts encountered an error"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn repl_routes_whitespace_and_escaped_paths_without_ignoring_extra_arguments() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("a\"b\\c.clp");

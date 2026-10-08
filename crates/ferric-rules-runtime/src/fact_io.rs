@@ -68,7 +68,7 @@ pub(crate) fn eval_call(
         other => return Err(type_error(name, other, "SYMBOL or STRING filename", span)),
     };
     if name == "load-facts" {
-        return Ok(load(ctx, &filename));
+        return load(ctx, &filename, span);
     }
     let mut visible = false;
     if let Some(mode) = args.get(1) {
@@ -79,7 +79,8 @@ pub(crate) fn eval_call(
                 Some("visible") => true,
                 _ => return Ok(notice(ctx, "[ARGACCES5] Function save-facts expected argument #2 to be of type symbol with value local or visible\n".to_owned())),
             },
-            _ => return Ok(notice(ctx, "[ARGACCES5] Function save-facts expected argument #2 to be of type symbol with value local or visible\n".to_owned())),
+            // As in CLIPS, a mode that is not a SYMBOL stops the evaluation.
+            other => return Err(type_error(name, &other, "SYMBOL mode", span)),
         };
     }
     let Ok(file) = std::fs::File::create(&filename) else {
@@ -91,30 +92,33 @@ pub(crate) fn eval_call(
     let mut selectors = Vec::new();
     for (index, argument) in args.iter().enumerate().skip(2) {
         let value = evaluator::eval_inner(ctx, argument)?;
-        let valid = if let Value::Symbol(symbol) = value {
-            let name = ctx
-                .engine
-                .resolve_core_symbol(symbol)
-                .unwrap_or("???")
-                .to_owned();
-            let found = ctx
-                .engine
-                .template_declarations
-                .iter()
-                .any(|(owner, local)| {
-                    selector_matches(ctx.engine, &name, *owner, local)
-                        && in_scope(ctx.engine, ctx.current_module, *owner, local, visible)
-                });
-            if found {
-                selectors.push(name);
-            }
-            found
-        } else {
-            false
+        let Value::Symbol(symbol) = value else {
+            // CLIPS reports a selector that is not a SYMBOL and continues.
+            return Ok(notice(
+                ctx,
+                format!(
+                    "[ARGACCES5] Function save-facts expected argument #{} to be of type symbol\n",
+                    index + 1
+                ),
+            ));
         };
-        if !valid {
+        let name = ctx
+            .engine
+            .resolve_core_symbol(symbol)
+            .unwrap_or("???")
+            .to_owned();
+        let found = ctx
+            .engine
+            .template_declarations
+            .iter()
+            .any(|(owner, local)| {
+                selector_matches(ctx.engine, &name, *owner, local)
+                    && in_scope(ctx.engine, ctx.current_module, *owner, local, visible)
+            });
+        if !found {
             return Ok(notice(ctx, format!("[ARGACCES5] Function save-facts expected argument #{} to be of type {} deftemplate name\n", index + 1, if visible { "visible" } else { "local" })));
         }
+        selectors.push(name);
     }
     match save(ctx.engine, ctx.current_module, file, visible, &selectors) {
         Ok(()) => Ok(boolean(ctx, true)),
@@ -125,21 +129,28 @@ pub(crate) fn eval_call(
     }
 }
 
-fn load(ctx: &mut EvalContext<'_>, filename: &str) -> Value {
+/// Load a fact file. As in CLIPS, a file that cannot be opened writes a notice
+/// and returns FALSE, while a content or source-limit error stops the enclosing
+/// evaluation after keeping the facts asserted before it.
+fn load(
+    ctx: &mut EvalContext<'_>,
+    filename: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    let failure = |error: &dyn std::fmt::Display| EvalError::UnsupportedOperation {
+        operation: "load-facts".to_owned(),
+        reason: format!("{error}\nFunction load-facts encountered an error"),
+        span: span.cloned(),
+    };
     let source = match crate::source_limits::read_source_file(std::path::Path::new(filename)) {
         Ok(source) => source,
         Err(crate::LoadError::Io(_)) => {
-            return notice(
+            return Ok(notice(
                 ctx,
                 format!("[ARGACCES2] Function load-facts was unable to open file {filename}.\n"),
-            )
+            ))
         }
-        Err(error) => {
-            return notice(
-                ctx,
-                format!("{error}\nFunction load-facts encountered an error\n"),
-            )
-        }
+        Err(error) => return Err(failure(&error)),
     };
     let module = ctx.engine.module_registry.current_module();
     ctx.engine
@@ -148,11 +159,8 @@ fn load(ctx: &mut EvalContext<'_>, filename: &str) -> Value {
     let result = ctx.engine.load_facts_str(&source);
     ctx.engine.module_registry.set_current_module(module);
     match result {
-        Ok(_) => boolean(ctx, true),
-        Err(error) => notice(
-            ctx,
-            format!("{error}\nFunction load-facts encountered an error\n"),
-        ),
+        Ok(_) => Ok(boolean(ctx, true)),
+        Err(error) => Err(failure(&error)),
     }
 }
 

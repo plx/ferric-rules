@@ -306,18 +306,14 @@ fn load_facts_evaluates_omitted_defaults_but_still_requires_literal_fields() {
     let mut engine = Engine::with_rules(&format!(
         "(defglobal ?*calls* = 0)
       (deftemplate item (slot n (default-dynamic (bind ?*calls* (+ ?*calls* 1)))))
-      (defrule read => (load-facts \"{escaped}\"))"
+      (defrule read => (load-facts \"{escaped}\") (printout t continued))"
     ))
     .unwrap();
     assert_eq!(
         engine.run(RunLimit::Unlimited).unwrap().halt_reason,
-        HaltReason::AgendaEmpty
+        HaltReason::ActionError
     );
-    assert!(engine.action_diagnostics().is_empty());
-    assert!(engine
-        .get_output("werror")
-        .unwrap()
-        .contains("Function load-facts encountered an error"));
+    assert_eq!(engine.get_output("t"), None);
     assert_eq!(engine.fact_count(), 2);
     assert!(matches!(
         engine.get_global("calls"),

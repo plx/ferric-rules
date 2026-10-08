@@ -151,7 +151,41 @@ fn save_evaluates_filename_mode_open_and_selectors_in_reference_order() {
 }
 
 #[test]
-fn load_returns_false_after_syntax_or_constraint_error_and_retains_only_prefix() {
+fn save_mode_values_that_are_not_symbols_halt_but_selector_values_continue() {
+    let directory = tempfile::tempdir().unwrap();
+    let mode = directory.path().join("mode.fct");
+    let selector = directory.path().join("selector.fct");
+    let mut engine = Engine::with_rules(&format!(
+        "(deftemplate p)
+         (deffunction text-mode () \"local\")
+         (deffunction number () 7)
+         (defrule mode => (printout t A (save-facts {} (text-mode)) crlf) (printout t B crlf))
+         (defrule selector (declare (salience 1)) => (printout t C (save-facts {} local p (number)) crlf)
+             (printout t D crlf))",
+        quoted(&mode),
+        quoted(&selector)
+    ))
+    .unwrap();
+    // CLIPS 6.30: a run-time STRING mode prints ARGACCES5 "of type symbol" and
+    // PRCCODE4, halting the rule; a non-symbol selector prints ARGACCES5 and
+    // returns FALSE while the RHS continues.
+    let result = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(result.halt_reason, HaltReason::ActionError);
+    assert_eq!(engine.get_output("t"), Some("CFALSE\nD\nA"));
+    assert!(!mode.exists());
+    assert_eq!(std::fs::read_to_string(&selector).unwrap(), "");
+    assert!(engine
+        .get_output("werror")
+        .unwrap()
+        .contains("[ARGACCES5] Function save-facts expected argument #4 to be of type symbol\n"));
+    let error = engine
+        .eval_str(&format!("(save-facts {} (number))", quoted(&mode)))
+        .unwrap_err();
+    assert!(error.to_string().contains("SYMBOL mode"), "{error}");
+}
+
+#[test]
+fn load_content_errors_stop_the_evaluation_and_retain_only_the_prefix() {
     let directory = tempfile::tempdir().unwrap();
     for (name, source) in [
         ("syntax", "(p (x 1))\n(p (x 2)"),
@@ -161,26 +195,26 @@ fn load_returns_false_after_syntax_or_constraint_error_and_retains_only_prefix()
         let path = directory.path().join(name);
         std::fs::write(&path, source).unwrap();
         let mut engine = Engine::with_rules("(deftemplate p (slot x (type INTEGER)))").unwrap();
-        assert_eq!(
-            boolean(&mut engine, &format!("(load-facts {})", quoted(&path))),
-            "FALSE",
-            "{name}"
+        // CLIPS 6.30 prints the error, "Function load-facts encountered an
+        // error", and stops the enclosing evaluation.
+        let error = engine
+            .eval_str(&format!(
+                "(progn (load-facts {}) (printout t continued) 5)",
+                quoted(&path)
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Function load-facts encountered an error"),
+            "{name}: {error}"
         );
+        assert_eq!(engine.get_output("t"), None, "{name}");
         let facts = template_facts(&engine, "p");
         assert_eq!(facts.len(), 1, "{name}");
         assert!(matches!(
             engine.get_fact_slot_by_name(facts[0], "x").unwrap(),
             Value::Integer(1)
         ));
-        assert!(engine
-            .get_output("werror")
-            .unwrap()
-            .contains("Function load-facts encountered an error"));
-        assert_eq!(
-            boolean(&mut engine, "(progn (printout t continued) TRUE)"),
-            "TRUE"
-        );
-        assert_eq!(engine.get_output("t"), Some("continued"));
     }
 }
 

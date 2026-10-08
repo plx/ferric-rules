@@ -1644,9 +1644,13 @@ identity; use an engine snapshot when identity must survive persistence.
 including at the REPL. Fact files contain literal facts with real template and
 slot names, without an `assert` wrapper. Saving defaults to `local`; use
 `(save-facts "facts.fct" visible template-name ...)` to select visible templates.
-The templates must already exist when loading their facts. File errors return
-`FALSE` and write a diagnostic; a load failure after complete valid facts retains
-those earlier assertions. Saving escapes strings for reloading; fact addresses
+The templates must already exist when loading their facts. A file that cannot
+be opened, a symbol `save-facts` mode other than `local` or `visible`, and a
+template selector that is not a symbol or names no matching template return
+`FALSE` and write a diagnostic, and evaluation continues. As in CLIPS, a syntax,
+template, or value error in a fact file and a `save-facts` mode that is not a
+symbol stop the enclosing evaluation (an RHS halts the run); facts loaded before
+the bad one stay asserted. Saving escapes strings for reloading; fact addresses
 remain the lossy quoted representation described above.
 
 `printout` writes a top-level STRING without quotes, and a multifield in
