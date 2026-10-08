@@ -11747,6 +11747,50 @@
         "retract"
       ],
       "error": "load"
+    },
+    {
+      "path": "patterns/405_exists_or_local_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "exists",
+        "or",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_not_or_local_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "not",
+        "or",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_not_local_test_rejected.clp",
+      "level": "boundary",
+      "covers": [
+        "not",
+        "test",
+        "variable-scope"
+      ],
+      "error": "load"
+    },
+    {
+      "path": "patterns/405_exists_or_outer_test.clp",
+      "level": "interaction",
+      "covers": [
+        "exists",
+        "or",
+        "not",
+        "test",
+        "variable-scope",
+        "join"
+      ]
     }
   ]
 }

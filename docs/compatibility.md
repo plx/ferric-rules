@@ -33,7 +33,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1134
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1138
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -763,6 +763,12 @@ corpus cases. An address bound in only some branches of an `or` may be used
 only where every alternative binds it: like CLIPS, Ferric rejects a RHS that
 uses it (`[PRCCODE3]`). Pure-test `not`/`exists` wrappers are boolean
 conditions and do not introduce fact bindings.
+
+A variable first bound inside `not`, `exists`, or `forall`, including inside
+an `or` or `and` beneath them, is local to that conditional element. Like
+CLIPS (`[ANALYSIS4]`), Ferric rejects a later `test` that reads it unless an
+earlier positive pattern binds the same name, and rejects a RHS reference
+unless a positive pattern binds it (`[PRCCODE3]`).
 
 ### Logical support
 

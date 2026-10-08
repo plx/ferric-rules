@@ -339,3 +339,44 @@ fn nested_groups_flatten_and_distribute_into_rule_level_disjuncts() {
     engine.assert_ordered("a", ()).unwrap();
     fire(&mut engine, 3);
 }
+
+#[test]
+fn negated_and_existential_locals_cannot_reach_a_later_test() {
+    // CLIPS rejects each of these with [ANALYSIS4]: ?x is first bound inside
+    // the negated or existential CE, so the later test reads an undefined name.
+    for (lhs, column) in [
+        ("(exists (or (a ?x) (b ?x)))", 46),
+        ("(exists (and (c) (or (a ?x) (b ?x))))", 56),
+        ("(not (or (a ?x) (b ?x)))", 43),
+        ("(not (a ?x))", 31),
+    ] {
+        let source = format!("(defrule r {lhs} (test (> ?x 0)) => (printout t fired crlf))");
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine.load_str(&source).expect_err(&source);
+        let message = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            message.contains("rule `r` variable ?x is not exported by existential or negated")
+                && message.contains(&format!("at line 1, column {column}")),
+            "{source}: {message}"
+        );
+        assert!(engine.rules().is_empty(), "{source}");
+    }
+
+    // A binding exported by an earlier positive pattern remains visible.
+    let mut engine = Engine::with_rules(
+        "(deffacts seed (a 1) (a 2) (a -1) (b 1) (b -1) (c 3))
+         (defrule exists-or (a ?x) (exists (or (b ?x) (c ?x))) (test (> ?x 0))
+           => (printout t exists ?x crlf))
+         (defrule not-b (a ?x) (not (b ?x)) (test (> ?x 0))
+           => (printout t not ?x crlf))",
+    )
+    .unwrap();
+    fire(&mut engine, 2);
+    let mut lines: Vec<_> = engine.get_output("t").unwrap().lines().collect();
+    lines.sort_unstable();
+    assert_eq!(lines, ["exists1", "not2"]);
+}

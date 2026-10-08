@@ -3814,12 +3814,12 @@ impl Engine {
                     Self::collect_pattern_binding_variables(child, variables);
                 }
             }
+            // Every variable first bound beneath a negation is local to it,
+            // whatever the negated body is. Normalization rewrites `exists`
+            // over `or` as a negated conjunction of negations, so the local
+            // scope must not depend on a direct double negation.
             Pattern::Not(inner, _) => {
-                if let Pattern::Not(existential, _) = inner.as_ref() {
-                    Self::collect_pattern_binding_variables(existential, variables);
-                } else {
-                    Self::collect_existential_local_variables(inner, variables);
-                }
+                Self::collect_pattern_binding_variables(inner, variables);
             }
             Pattern::Assigned { pattern, .. } => {
                 Self::collect_existential_local_variables(pattern, variables);
@@ -3903,7 +3903,7 @@ impl Engine {
             return Err(Self::compile_error_at(
                 &expr.span(),
                 &format!(
-                    "rule `{rule_name}` variable ?{variable} is not exported by existential conditional element"
+                    "rule `{rule_name}` variable ?{variable} is not exported by existential or negated conditional element"
                 ),
             ));
         }
@@ -4009,7 +4009,7 @@ impl Engine {
                         format!("?{name}")
                     };
                     let reason = if scope.existential.contains(scope_name) {
-                        "is not exported by existential conditional element"
+                        "is not exported by existential or negated conditional element"
                     } else {
                         "is an unbound RHS variable"
                     };
