@@ -545,11 +545,13 @@ fn load_facts_reports_an_unknown_template_for_slot_style_facts() {
     let mut engine =
         Engine::with_rules(&format!("(defrule read => (load-facts \"{escaped}\"))")).unwrap();
     let result = engine.run(RunLimit::Unlimited).unwrap();
-    assert_eq!(result.halt_reason, HaltReason::ActionError);
-    let diagnostics = format!("{:?}", engine.action_diagnostics());
+    // load-facts reports its failure on werror and returns FALSE.
+    assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+    let werror = engine.get_output("werror").unwrap_or_default();
+    assert!(werror.contains("unknown template `person`"), "{werror}");
     assert!(
-        diagnostics.contains("unknown template `person`"),
-        "{diagnostics}"
+        werror.contains("Function load-facts encountered an error"),
+        "{werror}"
     );
     assert_eq!(integers(&engine, "ok"), [1]);
     assert_eq!(engine.fact_count(), 1);
