@@ -3,7 +3,12 @@
 use ferric_rules_runtime::{Engine, STANDARD_CHANNELS};
 
 pub(crate) fn print_output(engine: &mut Engine) {
-    for (channel, output) in engine.drain_output_events() {
+    print_events(engine.drain_output_events());
+}
+
+/// Print already-drained output events, keeping only the standard channels.
+pub(crate) fn print_events(events: Vec<(String, String)>) {
+    for (channel, output) in events {
         if STANDARD_CHANNELS.contains(&channel.as_str()) {
             print!("{output}");
         }

@@ -1,12 +1,13 @@
 //! Execute construct files with implicit reset/run, or scripts in source order.
 
-use std::io::{BufRead, IsTerminal, Read};
+use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 
-use ferric_rules_runtime::{Engine, EngineConfig, InputSource, MAX_SOURCE_BYTES};
+use ferric_rules_runtime::{BeforeInput, Engine, EngineConfig, InputSource, MAX_SOURCE_BYTES};
 
 use super::common::{emit_error, emit_warning};
 use super::repl::commands::{parse_commands, ReplCommand};
+use super::repl::display;
 use super::repl::session::ReplSession;
 
 pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
@@ -34,6 +35,9 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
         // Read piped input lazily, one line per `read`/`readline`, so programs
         // that never read neither wait for nor consume the caller's input.
         engine.set_input_source(Some(stdin_line_source(json_mode)));
+        // Deliver what the program has printed so far, such as a prompt,
+        // before each blocking read; the session drains the rest afterwards.
+        engine.set_before_input(Some(deliver_before_input(json_mode)));
     }
     let mut session = ReplSession::with_engine(engine, Some(json_mode));
     if construct_only {
@@ -54,6 +58,19 @@ pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
         }
     }
     0
+}
+
+/// Print pending output and action warnings as `ReplSession::drain` does,
+/// then flush both streams so a reader of the pipe sees them before the read.
+fn deliver_before_input(json_mode: bool) -> BeforeInput {
+    Box::new(move |events, diagnostics| {
+        display::print_events(events);
+        for diagnostic in diagnostics {
+            emit_warning(json_mode, "run", "action_warning", diagnostic);
+        }
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+    })
 }
 
 /// One line of standard input per call. EOF, a read error, or invalid UTF-8

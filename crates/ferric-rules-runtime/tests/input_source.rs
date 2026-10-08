@@ -120,3 +120,47 @@ fn snapshots_restore_queued_input_but_not_the_source() {
     assert_eq!(symbol(&restored, &value), "EOF");
     assert_eq!(*pulled.lock().unwrap(), 0);
 }
+
+#[test]
+fn before_input_hook_receives_pending_output_before_the_source_blocks() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine.enable_output_events();
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hook_log = Arc::clone(&log);
+    engine.set_before_input(Some(Box::new(move |events, diagnostics| {
+        let mut log = hook_log.lock().unwrap();
+        for (channel, text) in events {
+            log.push(format!("{channel}:{text}"));
+        }
+        log.extend(diagnostics.iter().map(ToString::to_string));
+    })));
+    let source_log = Arc::clone(&log);
+    let mut lines = VecDeque::from(["hello\n".to_owned()]);
+    engine.set_input_source(Some(Box::new(move || {
+        source_log.lock().unwrap().push("read".to_owned());
+        lines.pop_front()
+    })));
+    engine.push_input("queued");
+    engine
+        .load_str(
+            r#"(defrule go =>
+                 (printout t "first " (readline) crlf)
+                 (printout t "ready" crlf)
+                 (bind ?x (readline))
+                 (printout t "got " ?x crlf))"#,
+        )
+        .unwrap();
+    engine.reset().unwrap();
+    engine.run(ferric_rules_runtime::RunLimit::Unlimited).unwrap();
+    // Queued input never consults the source, so only the second read
+    // delivers the output that precedes it.
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec!["t:first queued\nready\n".to_owned(), "read".to_owned()]
+    );
+    // Output after the last read stays queued for the host's own drain.
+    assert_eq!(
+        engine.drain_output_events(),
+        vec![("t".to_owned(), "got hello\n".to_owned())]
+    );
+}

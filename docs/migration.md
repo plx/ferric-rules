@@ -339,8 +339,11 @@ The fixes for issue #413 change these command-line and inspection behaviors:
   line, instead of ignoring it, and prints every standard logical channel to
   stdout in emission order, not only `t`. A program that never reads leaves
   its standard input unread. A read error or invalid UTF-8 prints one warning
-  and then reads as end of input. Hosts can supply the same on-demand input
-  with `Engine::set_input_source`.
+  and then reads as end of input. Output printed before a read, such as a
+  prompt, reaches stdout before the read waits for input, as in CLIPS. Hosts
+  can supply the same on-demand input with `Engine::set_input_source`, and
+  receive pending output before each source read with
+  `Engine::set_before_input`.
 - The REPL's `(save "file")` command is removed. Use
   `(save-facts "file.fct")` and `(load-facts "file.fct")`, which also work in
   rules and expressions and reload template facts with their slot names.

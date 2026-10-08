@@ -25,7 +25,7 @@
 //! - 0: Normal exit
 
 pub(super) mod commands;
-mod display;
+pub(super) mod display;
 mod history;
 mod input;
 pub(super) mod session;

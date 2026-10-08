@@ -37,9 +37,14 @@ fn invoke_with(command: &mut Command, input: &[u8], directory: &std::path::Path)
 
 /// Spawn `ferric run program.clp` with piped stdio; the caller owns stdin.
 fn spawn_run(directory: &std::path::Path, source: &str) -> std::process::Child {
+    spawn_run_with(directory, source, &["run", "program.clp"])
+}
+
+/// Spawn `ferric` with `args` after writing `source` to `program.clp`.
+fn spawn_run_with(directory: &std::path::Path, source: &str, args: &[&str]) -> std::process::Child {
     std::fs::write(directory.join("program.clp"), source).unwrap();
     Command::new(env!("CARGO_BIN_EXE_ferric"))
-        .args(["run", "program.clp"])
+        .args(args)
         .current_dir(directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -115,6 +120,57 @@ fn run_without_reads_finishes_while_the_stdin_pipe_stays_open() {
     assert!(status.success(), "{output:?}");
     assert_eq!(stdout(&output), "hello\n");
     assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+/// Drive a prompt-then-read program as an interactive caller would: wait for
+/// the prompt before supplying the line it asks for. CLIPS 6.30 writes the
+/// prompt to a piped stdout before it blocks on the read.
+fn prompt_reaches_stdout_before_the_read_blocks(args: &[&str]) {
+    use std::io::BufRead;
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = spawn_run_with(
+        directory.path(),
+        r#"(defrule go
+             => (printout t "ready" crlf)
+                (bind ?x (readline))
+                (printout t "got " ?x crlf))"#,
+        args,
+    );
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if sender.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let timeout = std::time::Duration::from_secs(10);
+    let Ok(prompt) = receiver.recv_timeout(timeout) else {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("ferric run held back its prompt while waiting for stdin");
+    };
+    assert_eq!(prompt, "ready");
+    stdin.write_all(b"hello\n").unwrap();
+    drop(stdin);
+    assert_eq!(receiver.recv_timeout(timeout).unwrap(), "got hello");
+    let output = child.wait_with_output().unwrap();
+    reader.join().unwrap();
+    assert!(receiver.try_recv().is_err(), "output was delivered twice");
+    successful(&output);
+}
+
+#[test]
+fn run_prints_a_prompt_before_blocking_on_stdin() {
+    prompt_reaches_stdout_before_the_read_blocks(&["run", "program.clp"]);
+}
+
+#[test]
+fn json_run_prints_a_prompt_before_blocking_on_stdin() {
+    prompt_reaches_stdout_before_the_read_blocks(&["run", "--json", "program.clp"]);
 }
 
 #[cfg(unix)]

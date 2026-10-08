@@ -699,7 +699,9 @@ snapshots retain only the ordinary channel buffers, not live observation state.
 For *input*, `(read)` and `(readline)` consume from an engine-managed
 input buffer. Push lines from Rust before the run (or install a lazy line
 source with `engine.set_input_source(...)`, which they pull from, one line at a
-time, once the pushed lines run out):
+time, once the pushed lines run out). To show a prompt before such a read
+blocks, install `engine.set_before_input(...)`: it receives the drained output
+events and action diagnostics just before each source read:
 
 <!-- example: 10-io-channels/src/main.rs -->
 ```rust

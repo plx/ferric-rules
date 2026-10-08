@@ -254,6 +254,9 @@ pub struct Engine {
     /// Transient host source that `read`/`readline` pull single lines from
     /// once `input_buffer` is empty; never serialized.
     pub(crate) input_source: Option<InputSource>,
+    /// Transient host hook that receives pending output before the input
+    /// source blocks; never serialized.
+    pub(crate) before_input: Option<BeforeInput>,
 }
 
 /// A host-supplied line source for `read` and `readline`.
@@ -262,6 +265,14 @@ pub struct Engine {
 /// of input. It is called only when a `read` or `readline` needs a line that
 /// [`Engine::push_input`] has not already queued.
 pub type InputSource = Box<dyn FnMut() -> Option<String> + Send + Sync>;
+
+/// A host hook that delivers pending output before an [`InputSource`] read.
+///
+/// It receives the drained chronological output events (as
+/// [`Engine::drain_output_events`] returns them) followed by the action
+/// diagnostics recorded so far, so a prompt printed before `read` or
+/// `readline` reaches the host before the source blocks.
+pub type BeforeInput = Box<dyn FnMut(Vec<(String, String)>, Vec<ActionError>) + Send + Sync>;
 
 impl Engine {
     /// Remove executable metadata and reclaim only rule-exclusive graph state.
@@ -372,6 +383,7 @@ impl Engine {
             halted: false,
             input_buffer: VecDeque::new(),
             input_source: None,
+            before_input: None,
         }
     }
 
@@ -1741,10 +1753,29 @@ impl Engine {
         self.input_source = source;
     }
 
+    /// Install (or remove, with `None`) a hook that receives pending output
+    /// and action diagnostics each time the input source is about to be asked
+    /// for a line.
+    ///
+    /// Without a hook, output stays queued until the host drains it. The hook
+    /// is transient host state: snapshots do not record it, and `clear` keeps
+    /// it in place.
+    pub fn set_before_input(&mut self, hook: Option<BeforeInput>) {
+        self.before_input = hook;
+    }
+
     /// Take the next input line: the queued input first, then the source.
     pub(crate) fn next_input_line(&mut self) -> Option<String> {
         if let Some(line) = self.input_buffer.pop_front() {
             return Some(line);
+        }
+        self.input_source.as_ref()?;
+        if self.before_input.is_some() {
+            let events = self.drain_output_events();
+            let diagnostics = std::mem::take(&mut self.action_diagnostics);
+            if let Some(hook) = self.before_input.as_mut() {
+                hook(events, diagnostics);
+            }
         }
         let mut line = (self.input_source.as_mut()?)()?;
         if line.ends_with('\n') {
