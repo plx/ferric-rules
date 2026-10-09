@@ -130,6 +130,13 @@ the constructors or canonical tagged wire objects. The package also exports
 `WireSymbol` and `WireInstanceName` with those tagged transport shapes; the
 worker-backed APIs handle their conversion automatically.
 
+CLIPS fact addresses and external addresses have no `ClipsValue`
+representation. Rule-created fact addresses (`?f`, including `<Dummy Fact>`
+slot defaults and addresses inside multifields) are rejected instead of
+becoming `null`: reading a global or fact holding one throws, and `facts()`
+fails as a whole while any fact holds one (`findFacts()` when one of its facts
+does). Use fact IDs and application keys instead.
+
 ### Enums
 
 ```typescript

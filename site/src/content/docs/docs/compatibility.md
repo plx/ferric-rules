@@ -62,8 +62,8 @@ it and reorders pending activations.
 | MEA      | First outer condition's recency, then the full LEX comparison.                    |
 
 Absent conditions contribute recency entries older than every fact. The remaining
-activation-order differences concern specific network-sharing and late-install
-cases, not the former LEX/MEA comparison defects. Use salience or focus when an
+activation-order differences concern specific network-sharing and
+installation-history cases, not the former LEX/MEA comparison defects. Use salience or focus when an
 application requires explicit precedence.
 
 ## Explicit compatibility differences

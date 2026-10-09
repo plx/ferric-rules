@@ -13,7 +13,7 @@ linked from [§6](#6-documentation-docs).
 | `ferric-rules-core` | Rete network internals: values/symbols/encoding, facts, alpha/beta networks, tokens, negative/NCC/exists nodes, agenda and conflict strategies, the rule compiler, and pattern validation. Not for direct use. |
 | `ferric-rules-parser` | Lexer → S-expressions → Stage 2 typed constructs (`defrule`, `deftemplate`, `deffacts`, `deffunction`, `defglobal`, `defmodule`, `defgeneric`, `defmethod`). |
 | `ferric-rules-runtime` | `Engine`, loader, run loop, expression evaluator, builtin functions, modules/focus, output router, host values (`host.rs`), and snapshots (`serialization.rs`, feature `serde`). |
-| `ferric-rules-cli` | The `ferric` binary: `run`, `check`, `repl`, snapshot commands, `version`. Exit codes: 0 success, 1 runtime error, 2 usage error. |
+| `ferric-rules-cli` | The `ferric` binary: `run`, `check`, `repl`, `version`. The `snapshot` command and REPL snapshot options require `--features serde`. Exit codes: 0 success, 1 runtime error, 2 usage error. |
 | `ferric-rules-ffi` | C ABI over the runtime (`libferric_rules_ffi`, checked-in `ferric.h` verified by `just check-ffi-header`). Has its own `ffi-dev`/`ffi-release` profiles; C regression harnesses live in `crates/ferric-rules-ffi/tests/c/`. |
 | `ferric-rules-ffi-macros` | Proc macro that wraps each exported C function in panic containment. |
 | `ferric-rules-napi` | napi-rs native addon used by the TypeScript package. |
@@ -97,7 +97,7 @@ to `ferric-rules`; its import name can remain `ferric`.
 
 Criterion suites live in `crates/ferric-rules/benches/` (engine, join,
 negation, exists, forall, Waltz, Manners, churn, cascade, alpha fanout,
-strategies, modules, queries, compile, evaluator, serialization) plus smaller
+strategies, modules, queries, compile, constraint, evaluator, serialization) plus smaller
 suites in `ferric-rules-runtime`, `ferric-rules-core`, and `ferric-rules-ffi`.
 `benches/README.md` and `benches/PROTOCOL.md` describe the workloads and
 measurement protocol; [`benchmark-policy.md`](benchmark-policy.md) covers

@@ -34,9 +34,10 @@ for the project's regression thresholds.
 just scaling-check
 ```
 
-Thirteen [release-mode scaling tests](https://github.com/plx/ferric-rules/blob/main/crates/ferric-rules/tests/scaling_tests.rs)
+Fourteen [release-mode scaling tests](https://github.com/plx/ferric-rules/blob/main/crates/ferric-rules/tests/scaling_tests.rs)
 exercise join propagation, engine execution, retraction, churn, alpha fanout,
-exists and NCC support, negative cleanup, focus selection, and sequence matching.
+exists and NCC support, negative cleanup, focus selection, template multislot
+joins, and sequence matching.
 Each measures two input sizes, four times apart, and checks the ratio against
 bounds for the expected complexity. The bound-sequence join case holds the
 number of join keys fixed while increasing sequence length.
