@@ -229,8 +229,10 @@ artifact generation pipeline in the repository.
   that already removed it; stale hook-window listeners are detached without
   double settlement. A replaceable removal-hook failure cannot replace that
   outcome; synchronous-abort reconciliation retries detachment, with repeated
-  hostile removal best-effort. Successful root dispatch removes its queue
-  listener before sending.
+  hostile removal best-effort. This is not generic FR-NODE-006 cleanup after an
+  ordinary successful root dispatch: a signaled request dispatched from the
+  root FIFO keeps its inert once-listener until the caller's signal aborts or
+  is collected.
 - Once a host request is registered, its pending-map entry, pool in-flight unit,
   and request-owned abort listener form one ownership unit until a response,
   terminal event, close path, abort-before-dispatch, or synchronous send
@@ -249,12 +251,14 @@ not establish `EngineHandle` ownership. Failed-create cleanup covers an
 initialization send that throws. Ordinary sends use request-local rollback;
 unpublished failed-create teardown remains a separate ownership transaction.
 
-Worker terminal cleanup removes listeners from discarded work. Successful root
-dispatch removes its queue listener before sending. A failed send removes only
-its request-owned bookkeeping and wakes close waiters. Concurrent public
-`close()` calls share a completion Promise; an admitted pool callback retains
-its lease until it settles and its accepted proxy calls drain. Worker-to-main
-response sends own no host request registration and follow the Worker lifecycle.
+Worker terminal cleanup removes listeners from discarded work. Owner-FIFO
+dispatch and lease admission detach the queue listener, but generic listener
+cleanup after a successful root dispatch remains FR-NODE-006. A failed send
+removes only its request-owned bookkeeping and wakes close waiters. Concurrent
+public `close()` calls share a completion Promise; an admitted pool callback
+retains its lease until it settles and its accepted proxy calls drain.
+Worker-to-main response sends own no host request registration and follow the
+Worker lifecycle.
 The `1..64` construction bound limits one pool's Worker allocation. The
 independent per-slot `queueCapacity` bounds waiting entries, not bytes retained
 by one request and not arbitrary JavaScript retained by an admitted callback.

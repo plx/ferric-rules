@@ -780,8 +780,12 @@ independently of the outer cancellation outcome.
   listener is detached; the hook cannot roll it back or settle it twice. This
   reconciliation retries a synchronous-abort detachment if a replaceable
   removal hook throws, without replacing the owned outcome; persistently
-  hostile removal remains best-effort. Successful root dispatch also removes its
-  queue listener before sending.
+  hostile removal remains best-effort. It does not implement FR-NODE-006's
+  general successful-root-dispatch listener cleanup: a signaled request that
+  waited in the root FIFO and was then dispatched keeps its inert once-listener
+  on the caller's signal until that signal aborts or is collected. Owner-FIFO
+  dispatch, lease admission, send rollback, abort while queued, and Worker
+  terminal or close cleanup do detach it.
 - A queue unit is reclaimed when its entry is removed or dequeued. Abort frees
   a queued root request or not-yet-admitted lease; it does not dequeue a proxy
   call already accepted under the callback-cancellation contract. Dispatch
@@ -1028,9 +1032,9 @@ it constructed.
 This rule covers main-to-Worker sends that own host request bookkeeping.
 Worker-to-main response sends create no such registration and follow the Worker
 error/exit lifecycle. A queued unit is reclaimed when removed for dispatch;
-send rollback must not reclaim it a second time. Successful root dispatch
-removes its queue listener before sending, and concurrent close callers share
-the cleanup completion barrier.
+send rollback must not reclaim it a second time. It does not add generic
+listener cleanup after a *successful* queued root dispatch (FR-NODE-006).
+Concurrent close callers share the cleanup completion barrier.
 
 ## Cancellation Semantics
 
