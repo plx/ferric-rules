@@ -12,9 +12,9 @@ Each `Engine` instance owns its state.
 
 This is a working prototype. Core functionality is implemented; validation,
 polish, and performance work continue. Depth, breadth, LEX, and MEA conflict
-resolution are supported. Compatibility remains a defined subset, with exact
-characterizations for remaining differences. The COOL object system and
-`logical` truth maintenance are out of scope.
+resolution are supported. Compatibility remains a defined subset; known
+differences are characterized in the corpus or tracked as open issues. The COOL
+object system and `logical` truth maintenance are out of scope.
 
 Check [CLIPS compatibility](./compatibility/) before using an existing rule set.
 Rust, TypeScript, Python, and Swift are the primary embedding interfaces;

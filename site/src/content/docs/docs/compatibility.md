@@ -61,9 +61,11 @@ it and reorders pending activations.
 | LEX      | Fact recencies sorted newest first, then rule specificity, then older activation. |
 | MEA      | First outer condition's recency, then the full LEX comparison.                    |
 
-Absent conditions contribute recency entries older than every fact. The remaining
-activation-order differences concern specific network-sharing and
-installation-history cases, not the former LEX/MEA comparison defects. Use salience or focus when an
+Absent conditions contribute recency entries older than every fact.
+Equal-salience ties in network topologies the corpus does not cover are not
+guaranteed to match CLIPS. Known cases, including LEX/MEA specificity and basis
+cases, are tracked in [#448](https://github.com/plx/ferric-rules/issues/448), [#478](https://github.com/plx/ferric-rules/issues/478), [#479](https://github.com/plx/ferric-rules/issues/479),
+[#480](https://github.com/plx/ferric-rules/issues/480), and [#485](https://github.com/plx/ferric-rules/issues/485)–[#487](https://github.com/plx/ferric-rules/issues/487). Use salience or focus when an
 application requires explicit precedence.
 
 ## Explicit compatibility differences
@@ -78,12 +80,15 @@ The corpus retains exact observations for these boundaries:
   the [UTF-8 and format decision](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#accepted-utf-8-and-format-divergences).
 - Five equal-salience cases concern separately compiled identical negative/NCC
   joins, independent multi-pattern `exists` support ordering, or a transient
-  nested NCC refire on a shared subnetwork entry.
+  nested NCC refire on a shared subnetwork entry, tracked in
+  [#479](https://github.com/plx/ferric-rules/issues/479).
 - Four auto-focus cases retain a different focus history: three rules installed
-  after their facts, and one test CE cancelled by NCC completion.
+  after their facts, and one test CE cancelled by NCC completion, tracked in
+  [#480](https://github.com/plx/ferric-rules/issues/480).
 - Nine CLIPS-valid programs exercise the explicit conditional-element nesting or
   operand limits from [#405](https://github.com/plx/ferric-rules/issues/405)
-  and are rejected with located load errors.
+  and are rejected with located load errors; lifting them is tracked in
+  [#483](https://github.com/plx/ferric-rules/issues/483).
 - Two CLIPS-valid programs hold the located load error for the negated-constraint
   boundary below.
 
