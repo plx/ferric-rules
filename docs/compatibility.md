@@ -395,6 +395,19 @@ not automatically rewrite direct field expressions into this form. Other
 quantified operand and nesting limits still apply; this example does not
 promise support for every equivalent `not` or `exists` spelling.
 
+#### Single-pattern `exists` expressions
+
+A single-pattern `exists` has a related load boundary. Comparisons that Ferric
+lowers to join tests, as described above, and connected field disjunctions are
+supported there. Any other predicate constraint, and every return-value
+constraint, is rejected at load with a located error containing
+`complex constraints inside existential patterns`. Lifting this restriction is
+tracked in [#446](https://github.com/plx/ferric-rules/issues/446). Until then,
+add a `test` CE to the `exists`, as in
+`(exists (item ?x) (test (> (* ?x ?x) ?k)))`, or place the predicate in a
+multi-pattern `exists`, as the corpus case
+`patterns/114_complex_predicate_multi_exists` does.
+
 ### Conflict Resolution Strategies
 
 The host API supports CLIPS depth, breadth, LEX, and MEA ordering. Salience
@@ -537,7 +550,8 @@ expressions, deffunctions and methods; the find forms return a multifield of
 Queries, `if`, and `switch` also work in LHS test CEs and supported
 predicate/return-value constraints. This expression grammar does not remove the
 [direct-negation restriction](#predicate-and-return-value-constraints) or the
-restrictions on general field expressions in single-pattern `exists`. As in
+restrictions on general field expressions in
+[single-pattern `exists`](#single-pattern-exists-expressions). As in
 CLIPS, a test CE observes facts when the matching token reaches the test; a
 later change to a queried relation does not independently reevaluate an
 existing token. Queries can compare members with fact addresses bound by
