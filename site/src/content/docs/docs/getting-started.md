@@ -25,8 +25,9 @@ Commit your application's `Cargo.lock` to retain the resolved revision. Add a
 `rev` to the dependency when you need an explicit source pin. The Cargo package
 is `ferric-rules`; Rust imports use `ferric_rules`.
 
-The crates declare Rust 1.75 as their minimum version, which the repository
-checks against its committed lockfile. A new project resolves newer dependency
+The `ferric-rules` crate and its workspace dependencies declare Rust 1.75 as
+their minimum version (the unpublished Python binding needs 1.83), and CI checks
+that against the committed lockfile. A new project resolves newer dependency
 releases that may need a newer compiler. To build on an older toolchain, set
 `rust-version` in your package and generate the lockfile with Cargo 1.84 or
 newer:
