@@ -108,7 +108,9 @@ for the supported subset and workarounds.
 
 ## Exclusions and bounds
 
-The COOL object system and `logical` truth maintenance are out of scope.
+The COOL object system is out of scope. `logical` conditional elements (truth
+maintenance) are not supported; every `logical` CE is rejected at load (see
+[Logical support](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#logical-support)).
 Simplicity, complexity, and random conflict strategies are not implemented.
 
 Source patterns allow up to four combined `not`/`exists`/`forall` levels;
