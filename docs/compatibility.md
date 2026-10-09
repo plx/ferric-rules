@@ -360,11 +360,11 @@ supports a binary comparison of `str-compare` between the current field and
 an earlier pattern's variable against zero.
 
 The lowered comparisons do not yet reproduce CLIPS on mixed operand types:
-`<>` compares types strictly, `eq`/`neq` and return-value integer offsets
-compare numerically, and the lowered `str-compare` form matches only when both
-values are strings. An offset that overflows 64-bit integers fails the test
-instead of wrapping. The same lowering applies to positive patterns. These
-differences are tracked in
+`<>` compares types strictly, `eq`/`neq` with an integer offset and
+return-value integer offsets compare numerically, and the lowered
+`str-compare` form matches only when both values are strings. An offset that
+overflows 64-bit integers fails the test instead of wrapping. The same
+lowering applies to positive patterns. These differences are tracked in
 [#499](https://github.com/plx/ferric-rules/issues/499).
 
 These direct nonlinear constraints are **CLIPS-valid but unsupported**:
