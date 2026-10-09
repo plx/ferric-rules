@@ -1704,7 +1704,7 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/394"
         ],
-        "summary": "Documented divergence: CLIPS stores the byte of an escaped end of input, which is not UTF-8; Ferric strings are UTF-8 and hold U+FFFD",
+        "summary": "Accepted permanent divergence ([decision](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)): CLIPS stores the byte of an escaped end of input, which is not UTF-8; Ferric strings are UTF-8 and hold U+FFFD",
         "observed": {
           "phase": "complete",
           "output": "first:FALSE:FALSE:TRUE:FALSE:[unfinished�]\neof:FALSE:FALSE:FALSE:TRUE:[EOF]\n",
@@ -7242,7 +7242,7 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/394"
         ],
-        "summary": "Documented divergence: %.1s cuts a UTF-8 character; CLIPS emits the partial byte, Ferric U+FFFD",
+        "summary": "Accepted permanent divergence ([decision](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)): %.1s cuts a UTF-8 character; CLIPS emits the partial byte, Ferric U+FFFD",
         "observed": {
           "phase": "complete",
           "output": "[  é|é|�]\n",
@@ -7282,7 +7282,7 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/394"
         ],
-        "summary": "Documented divergence: CLIPS hands malformed directives such as %5-3d to printf, which echoes them; Ferric reports a format error",
+        "summary": "Accepted permanent divergence ([decision](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)): CLIPS adds ll and hands malformed directives such as %5-3d to printf, which on glibc prints %5-3lld; Ferric reports a format error",
         "observed": {
           "phase": "complete",
           "output": "a:[7    ]\nb:[7    ]\nc:[",
@@ -7302,7 +7302,7 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/394"
         ],
-        "summary": "Documented divergence: %c of a byte of 128 or more; CLIPS emits the raw byte, Ferric U+FFFD",
+        "summary": "Accepted permanent divergence ([decision](../../../docs/compatibility.md#accepted-utf-8-and-format-divergences)): %c of a byte of 128 or more; CLIPS emits the raw byte, Ferric U+FFFD",
         "observed": {
           "phase": "complete",
           "output": "precision:[A|A|   A|A   ]\nempty:[|   |:end]\nzero:[|   |:end]\nbytes:[�|  �|�|�]\n",

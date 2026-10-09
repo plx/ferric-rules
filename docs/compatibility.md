@@ -46,10 +46,12 @@ stamp alone is not a passed run. Main CI verifies the goldens automatically.
 
 A known difference is recorded on its case as a `gap` entry holding Ferric's
 exact current output, so the test fails if the behavior changes in either
-direction. Four cases track output/format differences in
-[#394](https://github.com/plx/ferric-rules/issues/394), and nine track network
-topology and installation-history differences: five equal-salience ties
-described with [#400](https://github.com/plx/ferric-rules/issues/400) and four
+direction. Four cases record the output/format differences accepted as
+permanent in [#394](https://github.com/plx/ferric-rules/issues/394) (see
+[Accepted UTF-8 and format divergences](#accepted-utf-8-and-format-divergences)),
+and nine track network topology and installation-history differences: five
+equal-salience ties described with
+[#400](https://github.com/plx/ferric-rules/issues/400) and four
 auto-focus histories tracked in
 [#480](https://github.com/plx/ferric-rules/issues/480), three from late
 installation and one from a queued test CE:
@@ -57,7 +59,7 @@ installation and one from a queued test CE:
 | Area | Difference from CLIPS 6.30 | Cases |
 |------|----------------------------|-------|
 | Output that is not UTF-8 | CLIPS emits raw bytes for `%c` of a byte of 128 or more, for `%.Ns` that cuts a multibyte character, and for a scanned string that ends in an escaped end of input. Ferric strings are always UTF-8 and hold U+FFFD instead. | `stdlib/121_format_character_nul_and_bytes`, `stdlib/116_format_unicode_width_and_precision`, `io/read-unterminated-terminal-backslash` |
-| Malformed `format` directives | CLIPS passes a directive such as `%5-3d` to `printf`, which echoes it; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
+| Malformed `format` directives | CLIPS adds its `ll` length modifier and passes a directive such as `%5-3d` to `printf`, which on glibc prints it back as `%5-3lld`; Ferric reports a format error. | `stdlib/120_format_repeated_and_misordered_modifiers` |
 | Identical negative/NCC joins | CLIPS shares these joins across rules; Ferric compiles them separately, changing selected equal-salience ties (under LEX/MEA, only when recency and specificity are also equal). | `patterns/400o_gap_shared_negative_assert_depth`, `patterns/400o_gap_shared_negative_retract_depth`, `patterns/400o_gap_identical_ncc_depth` |
 | Multi-pattern `exists` | Lowering a conjunction through nested NCC nodes can visit independent supports in a different order. | `patterns/400o_gap_independent_multi_exists_depth` |
 | Nested NCC on a shared subnetwork entry | CLIPS can decide a nested NCC before its shared entry join has seen the token, transiently retracting and refiring the enclosing rule; Ferric waits for the entry and does not refire it. | `patterns/400o_gap_nested_ncc_shared_entry_refire_depth` |
@@ -73,6 +75,40 @@ constraint inside a negated ordered pattern, tracked in
 [#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
 located load error for the explicit conditional-element nesting and operand
 limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
+
+### Accepted UTF-8 and format divergences
+
+The decision for [#394](https://github.com/plx/ferric-rules/issues/394) is to
+retain UTF-8 strings, symbols, and output, and to reject malformed `format`
+directives. The four output/format cases in the table above are **accepted
+permanent compatibility differences**. They remain active characterizations so
+changes to these behaviors still require review.
+
+The three byte-output cases preserve valid UTF-8 by producing U+FFFD when
+CLIPS stores or emits invalid byte sequences. Reproducing those bytes would
+require a byte-lexeme model and byte-oriented interfaces throughout the parser,
+runtime, C ABI, and language bindings. The earlier implementation is preserved
+in the `archive/compat-final-integration` tag; this project keeps its existing
+text interfaces.
+
+The same decision applies to input. Source files read by `ferric run`, `load`,
+or `Engine::load_file`, and fact files read by `load-facts`, must be valid
+UTF-8, while CLIPS reads such files byte for byte. Ferric does not load a file
+that is not: `ferric run` exits with an invalid-UTF-8 error, `Engine::load_file`
+returns an I/O error, and `load-facts` reports that it cannot open the file and
+returns FALSE. As a top-level command, `load` stops `ferric run` with the same
+invalid-UTF-8 error; as a rule action, it reports an action error and skips the
+rest of that rule's actions. Invalid UTF-8 on `ferric run` standard
+input reads as end of input (see
+[Command-line evaluation and inspection](#command-line-evaluation-and-inspection)).
+Corpus programs must be UTF-8, so Rust tests cover these cases, not corpus gap
+entries.
+
+For malformed directives such as `%5-3d`, CLIPS delegates to C `printf`, whose
+behavior depends on the libc implementation. Ferric keeps its checked format
+grammar and reports a format error. Valid supported directives retain their
+existing differential coverage. This decision changes no engine behavior or
+CLIPS goldens and does not reclassify the four cases as conformance.
 
 ---
 
@@ -1446,7 +1482,7 @@ unterminated string keeps its text; for these CLIPS writes a `[SCANNER1]`
 notice to the `wwarning` or `werror` router, and so does Ferric (`ferric run`
 prints only `t`, so it does not show them). A string that ends in a backslash
 at the end of input gives CLIPS a byte that is not UTF-8, which Ferric holds as
-U+FFFD.
+U+FFFD (an [accepted permanent difference](#accepted-utf-8-and-format-divergences)).
 
 Source text and `load-facts` share the field scanner's numeric grammar. Forms
 such as `1.`, `.5`, and `1.e3` are floats; `1st`, `0x10`, and incomplete
@@ -1719,9 +1755,12 @@ is an error), `%c`, and `%n %r %t %v %%`, with `-` and `0` flags, width and
 precision. The argument count must match the directives. Width and precision
 count bytes, as in C, so `%.Ns` that cuts a multibyte character, and `%c` of a
 byte of 128 or more, produce U+FFFD where C emits bytes that are not UTF-8.
-CLIPS hands a malformed directive such as `%5-3d` to `printf`, which echoes it;
-Ferric reports a format error. Ferric also rejects a width or precision above
-4096 (CLIPS 6.30 crashes on `%5000d`).
+CLIPS adds its `ll` length modifier and passes a malformed directive such as
+`%5-3d` to `printf`, which on glibc prints it back as `%5-3lld`; Ferric reports
+a format error. These are accepted permanent differences (see
+[Accepted UTF-8 and format divergences](#accepted-utf-8-and-format-divergences)).
+Ferric also rejects a width or precision above 4096 (CLIPS 6.30 crashes on
+`%5000d`).
 
 ### Command-line evaluation and inspection
 
@@ -1821,7 +1860,7 @@ The following features are explicitly out of scope.
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
 | `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |
 | File routers (`open` and file-backed logical-name I/O) | Not supported | `close` is a compatibility stub; use host I/O, captured output, `load-facts`, or `save-facts` |
-| Source command `load` | Compatibility stub returning FALSE | Use host `Engine::load_str` / `load_file`, or `build` for one construct |
+| Source command `load` nested in an expression | Compatibility stub returning FALSE without reading the file; top-level `load` commands and rule actions read and load the file, which must be valid UTF-8 ([decision](#accepted-utf-8-and-format-divergences)) | Use host `Engine::load_str` / `load_file`, or `build` for one construct |
 | Environment commands `load*`, `facts`, `batch*`, `exit`, `ppfact` | Not supported | Drive loading, inspection, batching, and process lifetime from the host |
 | Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
 | Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
@@ -1859,8 +1898,9 @@ of UTF-8 text, and comparisons use the bytes. Ferric strings and symbols are
 always valid UTF-8, while CLIPS can build byte strings that are not. Where
 CLIPS would produce such bytes (`%c` of a byte of 128 or more, `%.Ns` that cuts
 a multibyte character, or a scanned string that ends in an escaped end of
-input), Ferric holds U+FFFD instead; the corpus records each of these as a gap
-case (see [Granular corpus](#granular-corpus)).
+input), Ferric holds U+FFFD instead; these are accepted permanent differences,
+each still characterized as a corpus gap case (see
+[Accepted UTF-8 and format divergences](#accepted-utf-8-and-format-divergences)).
 
 ### Guidance for Unicode Users
 
