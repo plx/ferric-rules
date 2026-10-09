@@ -1,0 +1,4 @@
+[PRNTUTIL1] Unable to find deftemplate missing.
+
+ERROR:
+(defglobal MAIN ?*b* = (any-factp ((?f missing

@@ -30,6 +30,24 @@ const [mainPackage, nativePackage, targets] = await Promise.all([
 if (nativePackage.version !== mainPackage.version) {
   throw new Error(`Native package version ${nativePackage.version} differs from facade ${mainPackage.version}`);
 }
+// The consumer below installs the host addon directly, so registry installs
+// rely on these pins alone: one exact-version entry per declared target.
+const optionalDependencies = mainPackage.optionalDependencies ?? {};
+const declaredPackages = targets.map((declared) => declared.packageName).sort();
+const pinnedPackages = Object.keys(optionalDependencies).sort();
+const missingPins = declaredPackages.filter((name) => !pinnedPackages.includes(name));
+const extraPins = pinnedPackages.filter((name) => !declaredPackages.includes(name));
+if (missingPins.length > 0 || extraPins.length > 0) {
+  throw new Error(
+    "Facade optionalDependencies must list exactly the native/targets.json packages; " +
+      `missing: ${missingPins.join(", ") || "none"}; extra: ${extraPins.join(", ") || "none"}`,
+  );
+}
+for (const [name, pin] of Object.entries(optionalDependencies)) {
+  if (pin !== mainPackage.version) {
+    throw new Error(`Facade optionalDependencies pins ${name} to ${pin}, not the facade version ${mainPackage.version}`);
+  }
+}
 const target = selectDeclaredTarget(targets, detectRuntimeTarget());
 
 function runCommand(command, args, options = {}) {

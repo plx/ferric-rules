@@ -1,7 +1,11 @@
 import CFerric
 
 extension Engine {
-  /// Fire one eligible activation, or report an empty agenda or native halt.
+  /// Fire one eligible activation. Returns `.agendaEmpty` when none is eligible,
+  /// or `.halted` when none is eligible and the native halt flag is set. Step
+  /// neither honours nor clears a pending native halt: after a rule calls
+  /// `(halt)`, later steps still fire eligible activations, and `isHalted` stays
+  /// true until `run()`/`run(limit:)` (including limit 0), `reset()`, or `clear()`.
   /// Action failures accompany `.fired`; the C ABI does not provide a rule name.
   public func step() async throws -> StepResult {
     try await storage.perform { state in
@@ -17,7 +21,10 @@ extension Engine {
     }
   }
 
-  /// Remove constructs and working memory, invalidating this engine's fact IDs.
+  /// Remove all constructs (including globals and non-MAIN modules) and working
+  /// memory, invalidating this engine's fact IDs. This also discards captured
+  /// output on every channel, lines queued with `pushInput(_:)`, action
+  /// diagnostics, and the native halt flag.
   public func clear() async throws {
     try await storage.perform { state in
       let handle = try state.requireHandle()
@@ -181,7 +188,8 @@ extension Engine {
     }
   }
 
-  /// Explicit registered templates and their slots. Ordering follows the native registry.
+  /// Explicit registered templates and their slots. Template order is
+  /// unspecified; slot names keep declaration order.
   public func templates() async throws -> [TemplateInfo] {
     try await storage.perform { state in
       let handle = try state.requireHandle()

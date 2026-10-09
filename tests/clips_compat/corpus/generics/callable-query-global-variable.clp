@@ -1,0 +1,5 @@
+(defglobal ?*enabled* = TRUE)
+(defgeneric g)
+(defmethod g (?x) off)
+(defmethod g ((?x INTEGER ?*enabled*)) on)
+(defrule run => (printout t (g 1) crlf) (bind ?*enabled* FALSE) (printout t (g 1) crlf))

@@ -1,0 +1,5 @@
+(deffacts seed (blocker x) (a 1) (a 2))
+(defrule rQ (a ?n) (not (blocker ?)) => (printout t rQ " " ?n crlf))
+(defrule rX (a ?n) (not (blocker x)) => (printout t rX " " ?n crlf))
+(defrule rN (a ?n) (not (blocker ~y)) => (printout t rN " " ?n crlf))
+(defrule release (declare (salience 10)) ?f <- (blocker x) => (retract ?f))

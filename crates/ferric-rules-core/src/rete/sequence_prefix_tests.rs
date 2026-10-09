@@ -443,3 +443,108 @@ fn prefix_callback_intervals_restart_for_each_capture_choice() {
         ]
     );
 }
+
+#[test]
+fn bound_capture_prefix_tests_do_not_copy_rejected_captures() {
+    // (lst $?p ?x $? ?x) with $?p bound: every candidate $?p is compared
+    // before the same-fact test on field 3 can reject the split.
+    let plan = SequencePattern {
+        tests: vec![ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::EqualSlot(SlotIndex::Ordered(3)),
+        }],
+        ..ordered_plan(&[
+            SequenceField::Multi,
+            SequenceField::Single,
+            SequenceField::Multi,
+            SequenceField::Single,
+        ])
+    };
+    assert!(plan.validate().is_ok());
+    let tests = [equality(SlotIndex::Ordered(0), 0)];
+    for width in [64, 512] {
+        let fact = ordered(
+            std::iter::once(Value::Integer(-1))
+                .chain((0..width).map(Value::Integer))
+                .chain(std::iter::once(Value::Integer(-1))),
+        );
+        for (prefix, expected) in [(vec![], 1), (vec![Value::Integer(0)], 0)] {
+            let parent = parent([multifield(prefix)]);
+            let mut filtered = 0;
+            let mut matched = 0;
+            let _ = plan.search_with_prefix(
+                &fact,
+                &mut |split, checked, complete| {
+                    let pass =
+                        sequence_join_prefix_matches(split, checked, complete, &parent, &tests);
+                    assert!(!split.copied_capture(), "prefix filter copied a capture");
+                    filtered += 1;
+                    pass
+                },
+                &mut |event| {
+                    if matches!(event, SplitEvent::Match(_)) {
+                        matched += 1;
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            );
+            assert!(filtered > usize::try_from(width).unwrap());
+            assert_eq!(matched, expected);
+            assert_eq!(
+                assert_equivalent(&fact, &plan, &parent, &tests).len(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn capture_join_tests_match_materialized_multifield_semantics() {
+    let nested = multifield([Value::Integer(2)]);
+    let fact = ordered([
+        Value::Integer(1),
+        nested.clone(),
+        Value::Integer(1),
+        Value::Float(1.0),
+    ]);
+    let plan = ordered_plan(&[
+        SequenceField::Multi,
+        SequenceField::Single,
+        SequenceField::Multi,
+    ]);
+    let parents = [
+        multifield([]),
+        multifield([Value::Integer(1)]),
+        multifield([Value::Integer(1), nested.clone()]),
+        multifield([Value::Integer(1), nested.clone(), Value::Integer(1)]),
+        multifield([
+            Value::Integer(1),
+            nested.clone(),
+            Value::Integer(1),
+            Value::Float(1.0),
+            Value::Integer(9),
+        ]),
+        multifield([Value::Float(1.0)]),
+        multifield([Value::Integer(1), multifield([Value::Integer(3)])]),
+        multifield([multifield([Value::Integer(1)])]),
+        Value::Integer(1),
+        Value::Float(1.0),
+        Value::String(FerricString::new("a", StringEncoding::Ascii).unwrap()),
+        Value::Void,
+    ];
+    for value in parents {
+        let parent = parent([value]);
+        for test_type in all_comparisons() {
+            // The leading capture is filtered at placement; the trailing one
+            // only on the complete split.
+            for slot in [SlotIndex::Ordered(0), SlotIndex::Ordered(2)] {
+                let test = JoinTest {
+                    alpha_slot: slot,
+                    beta_var: VarId(0),
+                    test_type,
+                };
+                assert_equivalent(&fact, &plan, &parent, &[test]);
+            }
+        }
+    }
+}

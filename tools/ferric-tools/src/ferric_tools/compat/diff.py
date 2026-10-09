@@ -34,6 +34,9 @@ console = Console(stderr=True)
 DISPLAY_ORDER = list(ASSESSMENT_CATEGORIES)
 
 SCANNER_DIFF_VERSION = 1
+# Per-file detail tables are capped so the PR comment fits GitHub's limit; the
+# TSV/JSON artifacts keep every row. Regressions and improvements are never cut.
+MARKDOWN_DETAIL_ROWS = 100
 FEATURE_SCAN_VERSION = 1
 SCANNER_FIELDS = (
     "features",
@@ -485,6 +488,13 @@ def _markdown_cell(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
+def _omitted_rows_line(total: int, files: str) -> list[str]:
+    omitted = total - MARKDOWN_DETAIL_ROWS
+    if omitted <= 0:
+        return []
+    return ["", f"\u2026 {omitted} more rows in {files} in the `compat-diff-report` artifact."]
+
+
 def format_scanner_markdown(
     scanner_diff: dict,
     *,
@@ -543,7 +553,7 @@ def format_scanner_markdown(
             "|---|---|---|---|---|---|",
         ]
     )
-    for change in changes:
+    for change in changes[:MARKDOWN_DETAIL_ROWS]:
         fields = ", ".join(change["changed_fields"]) or "structured evidence"
         lines.append(
             "| "
@@ -554,6 +564,9 @@ def format_scanner_markdown(
             f"{_markdown_cell(_scanner_disposition(change['head']))} | "
             f"{_markdown_cell(_scanner_evidence_label(change['head']))} |"
         )
+    lines.extend(
+        _omitted_rows_line(len(changes), "`compat-scanner-diff.tsv`/`compat-scanner-diff.json`")
+    )
     lines.extend(
         [
             "",
@@ -663,11 +676,16 @@ def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
         if b is not None and h is not None and _diagnostic_snapshot(b) != _diagnostic_snapshot(h):
             b_reason = _reason_with_diagnostics(b_reason, b)
             h_reason = _reason_with_diagnostics(h_reason, h)
+        executed_before = b_cls in ("equivalent", "divergent")
+        if executed_before and h is None:
+            # Deleting an executed fixture loses at least as much as leaving it
+            # unassessed; only inventory without oracle results may disappear.
+            h_reason = "not present; oracle-backed fixture removed"
         entry = (path, b_cls, b_reason, h_cls, h_reason)
         if (
             h_cls == "evidence-failure"
             or (b_cls == "equivalent" and h_cls == "divergent")
-            or (b_cls in ("equivalent", "divergent") and h_cls == "unassessed")
+            or (executed_before and h_cls in ("unassessed", "absent"))
         ):
             regressions.append(entry)
         elif b_cls == "divergent" and h_cls == "equivalent":
@@ -824,8 +842,9 @@ def format_markdown(
         lines.append("")
         lines.append("| File | Classification | Before | After |")
         lines.append("|---|---|---|---|")
-        for path, b_cls, b_reason, _h_cls, h_reason in reason_changes:
+        for path, b_cls, b_reason, _h_cls, h_reason in reason_changes[:MARKDOWN_DETAIL_ROWS]:
             lines.append(f"| `{path}` | {b_cls} | {b_reason} | {h_reason} |")
+        lines.extend(_omitted_rows_line(len(reason_changes), "`compat-diff.tsv`"))
         lines.append("")
         lines.append("</details>")
 

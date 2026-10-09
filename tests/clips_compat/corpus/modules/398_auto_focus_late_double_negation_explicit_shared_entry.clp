@@ -1,0 +1,11 @@
+(defmodule MAIN (export ?ALL))
+(deftemplate MAIN::item)
+(deftemplate MAIN::blocker)
+(deftemplate MAIN::other)
+(defrule MAIN::older (item) (blocker) => (printout t older crlf))
+(defmodule WATCH (import MAIN ?ALL))
+(defrule WATCH::plain (item) => (printout t plain crlf))
+(deffacts MAIN::init (item) (blocker))
+(defrule MAIN::start (declare (salience 10)) =>
+  (build "(defrule WATCH::af (declare (auto-focus TRUE)) (item) (not (and (not (and (blocker) (other))))) => (printout t af crlf))")
+  (printout t "stack:" (get-focus-stack) crlf))

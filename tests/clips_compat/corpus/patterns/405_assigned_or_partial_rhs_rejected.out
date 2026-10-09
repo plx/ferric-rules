@@ -1,0 +1,9 @@
+
+[PRCCODE3] Undefined variable f referenced in RHS of defrule.
+
+ERROR:
+(defrule MAIN::s
+   (or  ?f <- (a ?x)
+        (b ?x))
+   =>
+   (retract ?f))
