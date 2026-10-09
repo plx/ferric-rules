@@ -361,11 +361,12 @@ an earlier pattern's variable against zero.
 
 The lowered comparisons do not yet reproduce CLIPS on mixed operand types:
 `<>` compares types strictly, `eq`/`neq` with an integer offset and
-return-value integer offsets compare numerically, and the lowered
-`str-compare` form matches only when both values are strings. An offset that
-overflows 64-bit integers fails the test instead of wrapping. The same
-lowering applies to positive patterns. These differences are tracked in
-[#499](https://github.com/plx/ferric-rules/issues/499).
+return-value integer offsets in negated patterns compare numerically, and the
+lowered `str-compare` form matches only when both values are strings. An
+offset that overflows 64-bit integers fails the test instead of wrapping. The
+predicate lowering also applies to positive patterns; positive return-value
+constraints are evaluated as an `eq` call and match CLIPS. These differences
+are tracked in [#499](https://github.com/plx/ferric-rules/issues/499).
 
 These direct nonlinear constraints are **CLIPS-valid but unsupported**:
 
