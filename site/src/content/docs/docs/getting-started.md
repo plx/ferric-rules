@@ -23,8 +23,17 @@ ferric-rules = { git = "https://github.com/plx/ferric-rules" }
 
 Commit your application's `Cargo.lock` to retain the resolved revision. Add a
 `rev` to the dependency when you need an explicit source pin. The Cargo package
-is `ferric-rules`; Rust imports use `ferric_rules`. The facade's minimum supported
-Rust version is 1.75.
+is `ferric-rules`; Rust imports use `ferric_rules`.
+
+The crates declare Rust 1.75 as their minimum version, which the repository
+checks against its committed lockfile. A new project resolves newer dependency
+releases that may need a newer compiler. To build on an older toolchain, set
+`rust-version` in your package and generate the lockfile with Cargo 1.84 or
+newer:
+
+```sh
+cargo generate-lockfile --config 'resolver.incompatible-rust-versions="fallback"'
+```
 
 ## Minimal rule set
 
