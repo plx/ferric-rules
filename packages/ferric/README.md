@@ -2,7 +2,11 @@
 
 Ferric's Node 22+ bindings provide a direct synchronous `Engine`, an asynchronous
 `EngineHandle` using one worker, and an `EnginePool` for parallel evaluation.
-The package supports CommonJS require and ESM named/dynamic import.
+The package supports CommonJS require and ESM named/dynamic import. The
+[API reference](https://github.com/plx/ferric-rules/blob/main/docs/typescript-binding-api.md)
+describes the full API; the
+[normative contract](https://github.com/plx/ferric-rules/blob/main/docs/typescript-binding-normative-contract.md)
+governs where they differ.
 
 ```typescript
 import { EngineHandle, FerricSymbol } from "@ferric-rules/node";
