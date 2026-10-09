@@ -318,17 +318,28 @@ alternatives must already be bound.
 
 Directly negated fact patterns support a restricted expression subset. General
 predicate (`:`) and return-value (`=`) expressions can be valid CLIPS yet fail
-with a located Ferric load error. This is the explicit boundary retained by
+with a located Ferric load error. This is the explicit boundary decided in
 [#300](https://github.com/plx/ferric-rules/issues/300), not a firing-time filter:
 a rejected rule is not installed and never contributes an activation.
-The restriction applies to ordered fields and template slots.
+The restriction applies to ordered fields and template slots, to the
+requirement (second operand) of `forall`, which compiles as a negated pattern,
+and to each alternative of a `|` field disjunction in those positions. The
+`forall` condition (first operand) is not restricted. Literal and
+bound-variable alternatives remain supported. Depending on where the
+expression is detected, the load error contains either
+`complex constraints inside negated patterns` or
+`predicate constraints inside negated patterns currently require` (for a
+return-value constraint, `return-value constraints inside negated patterns
+currently require`).
 
 Literal and bound-variable equality/inequality constraints remain supported.
-A direct predicate comparison must involve the constrained field's variable;
-the other operand may be a literal or a previously bound variable. Integer
-addition and subtraction may reduce each operand to one variable with
-coefficient `+1` and a checked integer offset, or an integer constant. For
-example, these conditions are supported:
+A direct predicate constraint must be one call of `eq`, `neq`, `<>`, `<`, `>`,
+`<=`, or `>=` involving the constrained field's variable; the other operand may
+be a literal or a previously bound variable. Integer addition and subtraction
+may reduce each operand to one variable with coefficient `+1` and a checked
+integer offset, or an integer constant. Numeric `=` and every other function
+fall outside the subset in direct negation; use the explicit NCC + `test`
+form shown below for them. For example, these conditions are supported:
 
 ```clp
 (anchor ?min)
@@ -347,6 +358,14 @@ arithmetic offsets, or Boolean wrappers around comparisons. A comparison
 with a plain float literal is supported. The existing lexeme join form also
 supports a binary comparison of `str-compare` between the current field and
 an earlier pattern's variable against zero.
+
+The lowered comparisons do not yet reproduce CLIPS on mixed operand types:
+`<>` compares types strictly, `eq`/`neq` and return-value integer offsets
+compare numerically, and the lowered `str-compare` form matches only when both
+values are strings. An offset that overflows 64-bit integers fails the test
+instead of wrapping. The same lowering applies to positive patterns. These
+differences are tracked in
+[#499](https://github.com/plx/ferric-rules/issues/499).
 
 These direct nonlinear constraints are **CLIPS-valid but unsupported**:
 
@@ -971,6 +990,9 @@ latter may combine `test` CEs with `and`, `or`, `not`, and `exists`. With a fact
 it means "for every fact matching P, there also exists a matching Q." With a
 test requirement, the expression must hold for every matching P. Variables
 bound by P are available to its requirement and do not escape the `forall`.
+A fact requirement is held to the
+[direct-negation expression subset](#predicate-and-return-value-constraints);
+the condition P is not.
 
 Vacuous truth: when no facts match P, the forall condition holds:
 
@@ -1920,6 +1942,7 @@ The following features are explicitly out of scope.
 | `Random` strategy | Deferred | Until fully specified |
 | General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary, shared by LEX/MEA ties whose recency and specificity are also equal |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
+| General predicate (`:`) or return-value (`=`) expressions in directly negated patterns | Explicitly rejected | Use the supported comparisons and integer offsets, or an explicit `(not (and (P) (test ...)))`; see [Predicate and return-value constraints](#predicate-and-return-value-constraints) |
 | More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
 | `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |

@@ -42,7 +42,7 @@ The blocking pinned-CLIPS policy requires equivalent observations in all 57 revi
 
 - COOL object system is intentionally out of scope.
 - Truth maintenance through the `logical` conditional element is intentionally out of scope.
-- CLIPS-valid complex negated constraints are explicitly rejected pending [#300](https://github.com/plx/ferric-rules/issues/300).
+- CLIPS-valid general predicate and return-value expressions in directly negated patterns are explicitly rejected at load, the boundary decided in [#300](https://github.com/plx/ferric-rules/issues/300); an explicit `(not (and (P) (test ...)))` evaluates such a check at match time.
 - Some I/O utilities are limited while rule execution remains the core focus.
 
 ## Validation Posture
