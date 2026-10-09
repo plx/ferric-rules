@@ -1,0 +1,14 @@
+missing:[PRNTUTIL1] Unable to find fact f-9.
+FALSE
+negative:[ARGACCES5] Function fact-slot-value expected argument #1 to be of type fact-address or fact-index
+FALSE
+wrong-type:[ARGACCES5] Function fact-slot-value expected argument #1 to be of type fact-address or fact-index
+FALSE
+predicates:[ARGACCES5] Function fact-existp expected argument #1 to be of type fact-address or fact-index
+FALSE [ARGACCES5] Function fact-relation expected argument #1 to be of type fact-address or fact-index
+FALSE [ARGACCES5] Function fact-slot-names expected argument #1 to be of type fact-address or fact-index
+FALSE
+index:[ARGACCES5] Function fact-index expected argument #1 to be of type fact-address
+-1
+stale:FALSE
+continued

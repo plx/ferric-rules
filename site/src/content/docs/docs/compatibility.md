@@ -11,8 +11,8 @@ of equivalence for every program.
 ## Validation and evidence
 
 The [granular corpus](https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/README.md)
-declares 1,095 programs: 1,075 conformance cases and 20 active characterizations
-of differences. The conformance count includes 205 cases that reproduce an
+declares 1,269 programs: 1,245 conformance cases and 24 active characterizations
+of differences. The conformance count includes 232 cases that reproduce an
 expected CLIPS load or execution error. Eligible programs also run through
 incremental rule loading and JSON/CBOR snapshot replays.
 
@@ -70,24 +70,36 @@ application requires explicit precedence.
 
 The corpus retains exact observations for these boundaries:
 
-- Four UTF-8 and malformed-`format` differences are accepted permanent behavior.
-  Ferric preserves valid UTF-8 with U+FFFD where CLIPS exposes invalid bytes,
-  and rejects malformed directives instead of delegating them to libc. See
+- Four UTF-8 and malformed-`format` differences are accepted permanent behavior,
+  decided in [#394](https://github.com/plx/ferric-rules/issues/394). Ferric
+  keeps valid UTF-8, holding U+FFFD where CLIPS emits invalid bytes, and reports
+  a format error for malformed directives such as `%5-3d`, which CLIPS passes to
+  libc. Ferric also refuses source and fact files that are not valid UTF-8. See
   the [UTF-8 and format decision](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#accepted-utf-8-and-format-divergences).
-- Four equal-salience cases concern separately compiled negative/NCC joins or
-  independent multi-pattern `exists` support ordering.
-- Two late-install auto-focus cases retain different NCC history or predicate
-  subnetwork sharing.
-- Ten CLIPS-valid programs exercise explicit conditional-element nesting or
-  operand limits and are rejected with located load errors.
+- Five equal-salience cases concern separately compiled identical negative/NCC
+  joins, independent multi-pattern `exists` support ordering, or a transient
+  nested NCC refire on a shared subnetwork entry.
+- Four auto-focus cases retain a different focus history: three rules installed
+  after their facts, and one test CE cancelled by NCC completion.
+- Nine CLIPS-valid programs exercise the explicit conditional-element nesting or
+  operand limits from [#405](https://github.com/plx/ferric-rules/issues/405)
+  and are rejected with located load errors.
+- Two CLIPS-valid programs hold the located load error for the negated-constraint
+  boundary below.
 
-Direct complex predicate and return-value constraints inside negated fact
-patterns also have an explicit supported-subset boundary. Variable comparisons
-and supported integer-offset forms work; arbitrary expressions such as
-`(not (data ?x&:(> (* ?x ?x) 10)))` are rejected at load. Such expressions are
-valid CLIPS. Ferric does not defer them to rule firing. See
+CLIPS-valid general predicate and return-value expressions in directly negated
+patterns are explicitly rejected at load, the boundary decided in
+[#300](https://github.com/plx/ferric-rules/issues/300). This covers ordered
+fields, template slots, each `|` alternative, and the `forall` requirement.
+Comparisons of the field variable against a literal or bound variable, with
+integer offsets, and `str-compare` are lowered and work (their mixed-type and
+overflow differences are tracked in [#499](https://github.com/plx/ferric-rules/issues/499));
+an arbitrary expression such as `(not (data ?x&:(> (* ?x ?x) 10)))` is rejected. An explicit
+`(not (and (P) (test ...)))` evaluates such a check at match time. A
+single-pattern `exists` has a related load boundary, tracked in
+[#446](https://github.com/plx/ferric-rules/issues/446). See
 [the constraint boundary](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#predicate-and-return-value-constraints)
-and the full compatibility contract for supported match-time forms.
+for the supported subset and workarounds.
 
 ## Exclusions and bounds
 
@@ -96,8 +108,8 @@ Simplicity, complexity, and random conflict strategies are not implemented.
 
 Source patterns allow up to four combined `not`/`exists`/`forall` levels;
 triple and four-deep negation work. Compiled condition budgets still apply.
-Single-operand `exists` around a negated fact, nested `forall`, and `forall`
-beneath `not` or `exists` remain unsupported. `forall` requires one fact
+Nested `forall` and `forall` beneath `not` or `exists` remain unsupported. `forall` requires one fact
 condition and one fact or test-only requirement. Pure-test wrappers have their
 own supported normalization; these are not blanket bans on nested expressions.
-See the [source and compiled limits](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#source-and-compiled-network-limits).
+See the [source and compiled limits](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#source-and-compiled-network-limits)
+and [pattern nesting restrictions](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#pattern-nesting-restrictions).

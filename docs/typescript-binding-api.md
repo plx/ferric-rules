@@ -340,7 +340,8 @@ and returns `LimitReached`. `step()` returns the fired rule or `null` when no ru
 fires. `reset()` reinitializes working memory from deffacts while retaining
 constructs; `clear()` removes constructs and facts. The `focusStack` array is
 ordered from bottom to top. `setFocus` replaces that stack; `pushFocus` pushes a
-module according to the runtime focus rules.
+module, except that pushing the module already at the top leaves the stack
+unchanged (a module deeper in the stack may be pushed again).
 
 Output uses raw channel names such as `"t"` and `"stderr"`. Read `diagnostics`
 after an action error before starting another run. `close()` and

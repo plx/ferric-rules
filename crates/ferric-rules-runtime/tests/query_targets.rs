@@ -183,3 +183,33 @@ fn dynamic_source_checks_query_targets_before_later_declarations() {
     assert_eq!(engine.get_output("t"), Some("TRUE\n"));
     assert_eq!(engine.fact_count(), 2);
 }
+
+#[test]
+fn queued_deffacts_protect_ordered_query_targets_from_replacement() {
+    let deffacts = "(deffacts d (holder (any-factp ((?f target)) TRUE)))";
+    let template = "(deftemplate target (slot x))";
+    let declared = || {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str("(assert (target 1))").unwrap();
+        // Reset leaves the ordered relation declared but without live facts.
+        engine.reset().unwrap();
+        engine
+    };
+    let assert_conflict = |error: String| {
+        assert!(
+            error.contains("cannot define template `target` while its ordered relation is in use"),
+            "{error}"
+        );
+    };
+
+    let mut engine = declared();
+    let error = engine
+        .load_str(&format!("{deffacts}\n{template}"))
+        .unwrap_err();
+    assert_conflict(format!("{error:?}"));
+
+    let mut engine = declared();
+    engine.load_str(deffacts).unwrap();
+    let error = engine.load_str(template).unwrap_err();
+    assert_conflict(format!("{error:?}"));
+}

@@ -294,6 +294,54 @@ def test_scanner_diff_does_not_label_a_new_file_as_legacy_structured_evidence():
     assert result["changes"][0]["structured_evidence_change"] == "added"
 
 
+LONG_DIR = "clips-official/examples/" + "nested-directory/" * 4
+
+
+def test_large_scanner_diff_markdown_is_capped_and_states_omissions(tmp_path):
+    paths = [f"{LONG_DIR}case-{index:04}.clp" for index in range(1300)]
+    base = _manifest({path: _scanner_entry() for path in paths})
+    head = _manifest(
+        {
+            path: _scanner_entry(
+                features=["deffacts", "defrule"],
+                feature_scan=_feature_scan(detections=[_detection(), _detection("deffacts")]),
+            )
+            for path in paths
+        }
+    )
+    result = compute_scanner_diff(base, head)
+    markdown = "\n".join(format_scanner_markdown(result))
+
+    assert len(markdown) < 30_000
+    assert "### Retained scanner observations (1300)" in markdown
+    assert "1200 more rows in `compat-scanner-diff.tsv`" in markdown
+    assert f"`{paths[99]}`" in markdown and f"`{paths[100]}`" not in markdown
+    tsv_path = tmp_path / "scanner.tsv"
+    write_scanner_tsv(result, str(tsv_path))
+    with tsv_path.open(newline="", encoding="utf-8") as stream:
+        assert len(list(csv.DictReader(stream, delimiter="\t"))) == 1300
+
+
+def test_large_inventory_change_list_is_capped_but_regressions_are_not():
+    removed = {
+        f"{LONG_DIR}alias-{i:04}.clp": _file_entry("unassessed", "no-oracle") for i in range(700)
+    }
+    executed = {f"{LONG_DIR}oracle-{i:04}.clp": _executed() for i in range(150)}
+    base = _manifest({**removed, **executed})
+    head = _manifest({path: _executed("divergent") for path in executed})
+    base_counts, head_counts, regressions, improvements, changes = compute_diff(base, head)
+    assert len(changes) == 700 and len(regressions) == 150
+    markdown = "\n".join(
+        format_markdown(base_counts, head_counts, regressions, improvements, changes)
+    )
+
+    assert "Coverage, removals and inventory changes (700)" in markdown
+    assert "600 more rows in `compat-diff.tsv`" in markdown
+    assert all(f"`{path}`" in markdown for path in executed)
+    assert sum(f"`{path}`" in markdown for path in removed) == 100
+    assert len(markdown) < 60_000
+
+
 def test_scanner_diff_machine_outputs_and_markdown_retain_review_evidence(tmp_path):
     base = _manifest({"changed.clp": _scanner_entry()})
     head = _manifest(
@@ -596,8 +644,32 @@ def test_additions_and_removals_are_separate_from_improvements():
     base = _manifest({"old.clp": _executed("divergent")})
     head = _manifest({"new.clp": _executed()})
     _, _, regressions, improvements, changes = compute_diff(base, head)
+    assert improvements == []
+    assert [row[0] for row in regressions] == ["old.clp"]
+    assert [row[0] for row in changes] == ["new.clp"]
+
+
+@pytest.mark.parametrize("classification", ["equivalent", "divergent"])
+def test_removed_executed_oracle_fixture_is_a_regression(classification):
+    base = _manifest({"removed.clp": _executed(classification)})
+    _, _, regressions, improvements, changes = compute_diff(base, _manifest({}))
+    assert improvements == changes == []
+    assert regressions == [
+        (
+            "removed.clp",
+            classification,
+            "oracle-match",
+            "absent",
+            "not present; oracle-backed fixture removed",
+        )
+    ]
+
+
+def test_removed_unassessed_alias_is_a_neutral_change():
+    base = _manifest({"alias.clp": _file_entry("unassessed", "no-oracle")})
+    _, _, regressions, improvements, changes = compute_diff(base, _manifest({}))
     assert regressions == improvements == []
-    assert {row[0] for row in changes} == {"old.clp", "new.clp"}
+    assert [row[0] for row in changes] == ["alias.clp"]
 
 
 @pytest.mark.parametrize(

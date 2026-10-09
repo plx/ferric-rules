@@ -10,15 +10,146 @@ use crate::evaluator::RuntimeExpr;
 use crate::fact_initializer::{PreparedFact, RuntimeExpressions};
 use crate::modules::ModuleId;
 use crate::query_targets::QueryTarget;
+use crate::templates::DynamicSlotDefault;
 use ferric_rules_core::{AlphaEntryType, Fact};
-use ferric_rules_parser::{ActionExpr, FunctionCall, Pattern, RuleConstruct};
+use ferric_rules_parser::{ActionExpr, FactBody, FactValue, FunctionCall, Pattern, RuleConstruct};
 
 impl Engine {
+    /// Whether compiled source running outside any construct (see
+    /// `active_expressions`) names a template or ordered relation: a fact
+    /// assertion or a fact query with a literal restriction. Like CLIPS's
+    /// installed top-level command, such an expression keeps those constructs
+    /// in use, so `clear` refuses. A computed restriction names nothing until
+    /// it runs.
+    pub(crate) fn active_expressions_name_facts(&self) -> bool {
+        self.active_expressions.iter().any(|(module, expression)| {
+            RuntimeExpressions::new(expression).any(|expression| match expression {
+                RuntimeExpr::QueryAction { bindings, .. } => bindings
+                    .iter()
+                    .flat_map(|binding| &binding.restrictions)
+                    .any(|restriction| {
+                        matches!(
+                            restriction,
+                            RuntimeExpr::Literal(ferric_rules_core::Value::Symbol(_))
+                        )
+                    }),
+                RuntimeExpr::EffectCall { call } => self.call_names_facts(call, *module),
+                _ => false,
+            })
+        })
+    }
+
+    /// Whether compiled source running outside any construct calls a user
+    /// deffunction or defgeneric visible from its module. CLIPS binds such a
+    /// call when it parses the expression, so the callable stays in use and
+    /// `clear` refuses rather than leave the call without a target.
+    pub(crate) fn active_expressions_name_callables(&self) -> bool {
+        self.active_expressions.iter().any(|(module, expression)| {
+            RuntimeExpressions::new(expression).any(|expression| match expression {
+                RuntimeExpr::Call { name, .. } => self.names_user_callable(name, *module),
+                RuntimeExpr::EffectCall { call } => self.effect_names_callables(call, *module),
+                _ => false,
+            })
+        })
+    }
+
+    fn effect_names_callables(&self, call: &FunctionCall, module: ModuleId) -> bool {
+        self.names_user_callable(&call.name, module)
+            || crate::effects::evaluated_arguments(self, module, call)
+                .iter()
+                .any(|expr| self.expr_names_callables(expr, module))
+    }
+
+    fn expr_names_callables(&self, expr: &ActionExpr, module: ModuleId) -> bool {
+        if let ActionExpr::FunctionCall(call) = expr {
+            return self.effect_names_callables(call, module);
+        }
+        let mut children = Vec::new();
+        expr.push_children(&mut children);
+        children
+            .into_iter()
+            .any(|child| self.expr_names_callables(child, module))
+    }
+
+    /// Whether `name`, called from `module`, names a registered deffunction or
+    /// defgeneric there or one that module can see.
+    fn names_user_callable(&self, name: &str, module: ModuleId) -> bool {
+        if let Ok(crate::QualifiedName::Qualified { module, name }) =
+            crate::parse_qualified_name(name)
+        {
+            return self
+                .module_registry
+                .get_by_name(&module)
+                .is_some_and(|owner| {
+                    self.functions.contains(owner, &name) || self.generics.contains(owner, &name)
+                });
+        }
+        let visible = |owner: &ModuleId, construct_type| {
+            self.module_registry
+                .is_construct_visible(module, *owner, construct_type, name)
+        };
+        self.functions
+            .modules_for_name(name)
+            .iter()
+            .any(|owner| visible(owner, "deffunction"))
+            || self
+                .generics
+                .modules_for_name(name)
+                .iter()
+                .any(|owner| visible(owner, "defgeneric"))
+    }
+
+    fn call_names_facts(&self, call: &FunctionCall, module: ModuleId) -> bool {
+        (call.name == "assert"
+            && call
+                .args
+                .iter()
+                .any(|expr| matches!(expr, ActionExpr::FunctionCall(_))))
+            || crate::effects::evaluated_arguments(self, module, call)
+                .iter()
+                .any(|expr| self.expr_names_facts(expr, module))
+    }
+
+    fn expr_names_facts(&self, expr: &ActionExpr, module: ModuleId) -> bool {
+        match expr {
+            ActionExpr::FunctionCall(call) => self.call_names_facts(call, module),
+            ActionExpr::QueryAction { bindings, .. }
+                if bindings
+                    .iter()
+                    .flat_map(|binding| &binding.restrictions)
+                    .any(|restriction| {
+                        matches!(restriction, ActionExpr::Literal(literal)
+                            if matches!(literal.value, ferric_rules_parser::LiteralKind::Symbol(_)))
+                    }) =>
+            {
+                true
+            }
+            _ => {
+                let mut children = Vec::new();
+                expr.push_children(&mut children);
+                children
+                    .into_iter()
+                    .any(|child| self.expr_names_facts(child, module))
+            }
+        }
+    }
+
     pub(crate) fn ordered_identity_is_live(&self, name: &str) -> bool {
         if name == "initial-fact" || self.active_query_targets.iter().any(|target| {
             matches!(target, QueryTarget::Ordered(symbol)
                 if self.resolve_core_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
         }) {
+            return true;
+        }
+        let is_relation = |relation| {
+            self.resolve_core_symbol(relation)
+                .is_some_and(|raw| Self::ordered_relation_name_is(raw, name))
+        };
+        if self
+            .active_ordered_relations
+            .iter()
+            .any(|relation| is_relation(*relation))
+        {
             return true;
         }
         let matches_fact = |fact: &Fact| matches!(fact, Fact::Ordered(fact) if self.resolve_core_symbol(fact.relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)));
@@ -31,11 +162,24 @@ impl Engine {
                     || fact.all_expressions().any(|expression| self.runtime_expression_uses_ordered_name(expression, seed.module, name))
             }))
             || self.template_defs.values().any(|template| {
-                template.dynamic_defaults.iter().flatten().any(|default| {
-                    default.expressions.iter().any(|expression| {
-                        RuntimeExpressions::new(expression).any(|expression| self.runtime_expression_uses_ordered_name(expression, default.module, name))
-                    })
-                })
+                template
+                    .dynamic_defaults
+                    .iter()
+                    .flatten()
+                    .any(|default| self.dynamic_default_uses_ordered_name(default, name))
+            })
+            || self.active_expressions.iter().any(|(module, expression)| {
+                self.runtime_expressions_use_ordered_name(
+                    std::slice::from_ref(expression.as_ref()),
+                    *module,
+                    name,
+                )
+            })
+            // A rule that removed itself keeps running its actions.
+            || self.active_rules.iter().any(|(module, info)| {
+                info.actions
+                    .iter()
+                    .any(|action| self.call_uses_ordered_name(&action.call, *module, name))
             })
         {
             return true;
@@ -75,6 +219,30 @@ impl Engine {
                         .any(|expr| self.expr_uses_ordered_name(expr, module, name))
                 })
             })
+    }
+
+    /// Whether a dynamic default asserts or queries `name` as an ordered relation.
+    pub(crate) fn dynamic_default_uses_ordered_name(
+        &self,
+        default: &DynamicSlotDefault,
+        name: &str,
+    ) -> bool {
+        self.runtime_expressions_use_ordered_name(&default.expressions, default.module, name)
+    }
+
+    /// Whether compiled expressions, including nested ones, assert or query
+    /// `name` as an ordered relation.
+    fn runtime_expressions_use_ordered_name(
+        &self,
+        expressions: &[RuntimeExpr],
+        module: ModuleId,
+        name: &str,
+    ) -> bool {
+        expressions.iter().any(|expression| {
+            RuntimeExpressions::new(expression).any(|expression| {
+                self.runtime_expression_uses_ordered_name(expression, module, name)
+            })
+        })
     }
 
     pub(crate) fn ordered_relation_name_is(raw: &str, name: &str) -> bool {
@@ -118,6 +286,33 @@ impl Engine {
                 ferric_rules_parser::interpret_action_expr(expression)
                     .is_ok_and(|expression| self.expr_uses_ordered_name(&expression, module, name))
             })
+    }
+
+    /// A deffacts body still queued in the current load uses an ordered
+    /// relation through its head or through a fact query in an initializer.
+    pub(crate) fn fact_body_uses_ordered_name(
+        &self,
+        fact: &FactBody,
+        module: ModuleId,
+        name: &str,
+    ) -> bool {
+        let initializer_uses = |value: &FactValue| matches!(value, FactValue::Expression(expr) if self.expr_uses_ordered_name(expr, module, name));
+        match fact {
+            FactBody::Ordered(fact) => {
+                self.ordered_name_is(&fact.relation, module, name)
+                    || fact.values.iter().any(initializer_uses)
+            }
+            FactBody::Template(fact) => {
+                self.ordered_name_is(&fact.template, module, name)
+                    || fact.slot_values.iter().any(|slot| {
+                        slot.values.iter().any(initializer_uses)
+                            || slot
+                                .ordered_expression
+                                .as_deref()
+                                .is_some_and(|expr| self.expr_uses_ordered_name(expr, module, name))
+                    })
+            }
+        }
     }
 
     fn call_uses_ordered_name(&self, call: &FunctionCall, module: ModuleId, name: &str) -> bool {
@@ -359,12 +554,7 @@ impl Engine {
         }
     }
 
-    pub(crate) fn declare_fact_templates(
-        &mut self,
-        fact: &ferric_rules_parser::FactBody,
-        module: ModuleId,
-    ) {
-        use ferric_rules_parser::{FactBody, FactValue};
+    pub(crate) fn declare_fact_templates(&mut self, fact: &FactBody, module: ModuleId) {
         let mut expressions = Vec::new();
         match fact {
             FactBody::Ordered(fact) => {

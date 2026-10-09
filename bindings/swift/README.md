@@ -71,8 +71,8 @@ The wrapper also exposes these native operations:
 
 | API | Result or behavior |
 | --- | --- |
-| `step()` | `.fired(diagnostics:)`, `.agendaEmpty`, or `.halted`; action errors accompany a fired step |
-| `clear()` | Remove constructs and facts, invalidating old fact IDs |
+| `step()` | `.fired(diagnostics:)`, `.agendaEmpty`, or `.halted` (no eligible activation while the native halt flag is set); action errors accompany a fired step. Step does not honour or clear a pending halt |
+| `clear()` | Remove all constructs, globals, modules, and facts, invalidating old fact IDs; also discards captured output, queued `pushInput` lines, action diagnostics, and the halt flag |
 | `isHalted`, `agendaCount` | Async throwing properties for the native halt flag and pending activation count |
 | `global(_:)` | An owned `Value`, or `nil` for the ABI's missing/ambiguous lookup result |
 | `pushInput(_:)` | Queue a complete line for `read` or `readline` |
@@ -81,7 +81,7 @@ The wrapper also exposes these native operations:
 | `slotValue(_:of:)` | An owned template slot value; foreign, stale, or invalid IDs/slots throw |
 | `currentModule`, `focus` | Async throwing properties; focus is `nil` when its stack is empty |
 | `focusStack()` | Module names from bottom to top |
-| `rules()`, `templates()`, `modules()` | Owned native metadata; rule listings include compiled disjunction branches |
+| `rules()`, `templates()`, `modules()` | Owned native metadata; rule listings include compiled disjunction branches. Rules keep registration order; template and module order is unspecified |
 
 ## Ownership and concurrency
 
@@ -92,14 +92,18 @@ cooperative executor. This uses Ferric's serialized thread-transfer contract;
 the queue is not assumed to remain on one OS thread.
 
 `run()` cooperatively checks Swift task cancellation and `engine.halt()` between
-bounded native chunks. Both stop the active logical run and return its completed
-rule count with `.haltRequested`. `halt()` is synchronous and does not wait for
-the engine queue; with no active run it does nothing. A cancellation belongs to
-one run, so canceling an older or queued task cannot stop a different run.
+bounded native chunks. Both stop the logical run and return its completed rule
+count with `.haltRequested`. `halt()` is synchronous and does not wait for the
+engine queue. It affects only a run that has started executing on the queue and
+does nothing when no run is executing, including while a run is still queued
+(for example, immediately after starting it in a new `Task`). To stop a specific
+run, including one started moments ago, cancel its task: a cancellation belongs
+to one run, is recorded even while that run waits, and canceling an older or
+queued task cannot stop a different run.
 
 ```swift
 let running = Task { try await engine.run() }
-// Later, from the task that owns this handle:
+// Later, from the task that owns this handle (works even before the run starts):
 running.cancel()
 let stopped = try await running.value
 try await engine.close()
@@ -134,7 +138,10 @@ are distinct, and nested multifields are supported up to
 `.void`, including nested instances, before allocating C values; it represents
 an absent result rather than durable fact data. Use an application symbol such
 as `.symbol("nil")` for a stored sentinel. External addresses have no Swift
-representation and are rejected explicitly. Embedded NUL text is rejected at C string/value boundaries instead
+representation and are rejected explicitly. Rule-created fact addresses (`?f`,
+including `<Dummy Fact>` slot defaults and addresses inside multifields) are
+rejected through the C ABI as well, so `facts()` throws while any fact holds
+one. Use `FactID`s and application keys instead. Embedded NUL text is rejected at C string/value boundaries instead
 of being silently truncated. `FactID` retains the full unsigned 64-bit native ID and belongs to one engine
 instance. Reset and restore invalidate old IDs; query new IDs and persist
 application keys instead of raw fact IDs. Copied symbol/string values are owned

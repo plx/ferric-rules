@@ -1,0 +1,21 @@
+
+[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.
+
+ERROR:
+(deftemplate MAIN::p
+<Fact-1>
+
+[CSTRCPSR4] Cannot redefine deftemplate p while it is in use.
+
+ERROR:
+(deftemplate MAIN::p
+<Fact-3>
+
+[CSTRCPSR4] Cannot redefine deftemplate q while it is in use.
+
+ERROR:
+(deftemplate MAIN::q
+<Fact-4>
+(x) (implied) q (1)
+p 41
+p 42

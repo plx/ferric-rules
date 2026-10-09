@@ -1,0 +1,5 @@
+(deffacts d (b) (phase 0))
+(defrule ex (declare (salience 10)) (exists (or (not (a)) (b))) => (printout t E crlf))
+(defrule drop-b ?p <- (phase 0) ?f <- (b) => (retract ?p ?f) (assert (phase 1)) (printout t "drop b" crlf))
+(defrule add-a ?p <- (phase 1) => (retract ?p) (assert (a) (phase 2)) (printout t "add a" crlf))
+(defrule drop-a ?p <- (phase 2) ?f <- (a) => (retract ?p ?f) (printout t "drop a" crlf))
