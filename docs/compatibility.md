@@ -1860,7 +1860,7 @@ The following features are explicitly out of scope.
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
 | `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |
 | File routers (`open` and file-backed logical-name I/O) | Not supported | `close` is a compatibility stub; use host I/O, captured output, `load-facts`, or `save-facts` |
-| Source command `load` | Compatibility stub returning FALSE | Use host `Engine::load_str` / `load_file`, or `build` for one construct |
+| Source command `load` nested in an expression | Compatibility stub returning FALSE without reading the file; top-level `load` commands and rule actions read and load the file, which must be valid UTF-8 ([decision](#accepted-utf-8-and-format-divergences)) | Use host `Engine::load_str` / `load_file`, or `build` for one construct |
 | Environment commands `load*`, `facts`, `batch*`, `exit`, `ppfact` | Not supported | Drive loading, inspection, batching, and process lifetime from the host |
 | Remaining `ppdef*`, `list-def*`, and `undef*` commands | Not supported | `ppdefrule`, `rules`, and single-name `undefrule` are the implemented exceptions; construct-list getters are listed in §16.10 |
 | Legacy aliases `mv-append`, `str-implode`, `wordp`, `subset` | Not supported | Use `create$`, `implode$`, `symbolp`, and `subsetp` |
