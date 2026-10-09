@@ -43,6 +43,17 @@ exercise positive nested fact bindings, negated disjunctions, nested `and`/`or`
 groups, `exists` over `or` and `not`, and quantified tests with local variables
 and vacuous truth.
 
+Two [#300](https://github.com/plx/ferric-rules/issues/300) cases preserve the
+decided boundary for general expressions in directly negated patterns, with
+successful CLIPS goldens and exact, located Ferric load errors: a
+[nonlinear predicate constraint](patterns/300_gap_negated_nonlinear_predicate.clp)
+and a
+[nonlinear return-value constraint](patterns/300_gap_negated_nonlinear_return_value.clp).
+The conforming
+[NCC + `test` alternative](patterns/300_ncc_test_alternative.clp) runs the
+documented replacement, including blocker removal, reassertion, and
+cancellation before firing.
+
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.
 

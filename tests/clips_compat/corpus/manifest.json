@@ -13154,6 +13154,71 @@
         "agenda",
         "agenda-rendering"
       ]
+    },
+    {
+      "path": "patterns/300_gap_negated_nonlinear_predicate.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "not",
+        "predicate-constraint",
+        "join",
+        "retract",
+        "salience"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/300"
+        ],
+        "summary": "Ferric rejects a nonlinear predicate inside a directly negated pattern at load, per #300.",
+        "observed": {
+          "diagnostics": [
+            "compile error: compile error: unsupported pattern form `not` at line 7, column 3: complex constraints inside negated patterns are not supported at match time"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/300_gap_negated_nonlinear_return_value.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "not",
+        "return-value-constraint",
+        "join",
+        "retract",
+        "salience"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/300"
+        ],
+        "summary": "Ferric rejects a nonlinear return-value constraint inside a directly negated pattern at load, per #300.",
+        "observed": {
+          "diagnostics": [
+            "compile error: compile error: unsupported pattern form `not` at line 6, column 3: complex constraints inside negated patterns are not supported at match time"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "patterns/300_ncc_test_alternative.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not",
+        "and",
+        "ncc",
+        "test",
+        "join",
+        "assert",
+        "retract",
+        "salience"
+      ]
     }
   ]
 }

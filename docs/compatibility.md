@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1266
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1269
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -69,13 +69,16 @@ installation and one from a queued test CE:
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
-constraint inside a negated ordered pattern, tracked in
+constraint inside a directly negated fact pattern (ordered field, template
+slot, or `forall` requirement), the boundary decided in
 [#300](https://github.com/plx/ferric-rules/issues/300) (see
 [Predicate and return-value constraints](#predicate-and-return-value-constraints)).
-Ten further `gap` cases from
-[#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
-located load error for the explicit conditional-element nesting and operand
-limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
+The `gap` cases `patterns/300_gap_negated_nonlinear_predicate` and
+`patterns/300_gap_negated_nonlinear_return_value` hold Ferric's exact, located
+load error for it. Nine further `gap` cases from
+[#405](https://github.com/plx/ferric-rules/issues/405) do the same for the
+explicit conditional-element nesting and operand limits listed under
+[Pattern Nesting Restrictions](#pattern-nesting-restrictions).
 
 ### Accepted UTF-8 and format divergences
 
