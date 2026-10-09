@@ -29,7 +29,7 @@ evidence boundary.
 ### Granular corpus
 
 The broadest evidence for the language behavior in this document is
-[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1266
+[`tests/clips_compat/corpus/`](../tests/clips_compat/corpus/README.md): 1269
 small programs, each with the exact output of CLIPS 6.30 as its golden.
 `cargo test --workspace` runs all of them. A conforming program must reproduce
 its golden byte for byte, and again after a CBOR snapshot round trip (and a
@@ -69,12 +69,16 @@ installation and one from a queued test CE:
 
 Some CLIPS-valid programs are rejected at load instead of running
 differently. The main case is a complex non-linear predicate or return-value
-constraint inside a negated ordered pattern, tracked in
+constraint inside a directly negated fact pattern (ordered field, template
+slot, or `forall` requirement), the boundary decided in
 [#300](https://github.com/plx/ferric-rules/issues/300) (see
-[Template Facts](#template-facts)). Ten further `gap` cases from
-[#405](https://github.com/plx/ferric-rules/issues/405) hold Ferric's exact,
-located load error for the explicit conditional-element nesting and operand
-limits listed under [Pattern Nesting Restrictions](#pattern-nesting-restrictions).
+[Predicate and return-value constraints](#predicate-and-return-value-constraints)).
+The `gap` cases `patterns/300_gap_negated_nonlinear_predicate` and
+`patterns/300_gap_negated_nonlinear_return_value` hold Ferric's exact, located
+load error for it. Nine further `gap` cases from
+[#405](https://github.com/plx/ferric-rules/issues/405) do the same for the
+explicit conditional-element nesting and operand limits listed under
+[Pattern Nesting Restrictions](#pattern-nesting-restrictions).
 
 ### Accepted UTF-8 and format divergences
 
@@ -209,11 +213,6 @@ Pre-1.0 migration: template metadata now records slot cardinality. Unversioned
 CBOR snapshot envelope described in [Snapshots](snapshots.md), and keep
 application facts/rule source if older data must be rebuilt.
 
-Complex non-linear predicate or return-value constraints inside negated ordered
-patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
-incorrect firing-time fallback; it did not complete that optional language
-feature. The remaining gap is tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
-
 ### Fact Identity
 
 Each successfully asserted fact receives a unique fact index. Fact addresses
@@ -314,6 +313,101 @@ including all commonly used conditional elements and RHS actions.
 Precedence is `~` > `&` > `|`, except that a leading `?x&` binds over the
 rest of the field: `?x&a|b` means `?x&(a|b)`. Variables used inside
 alternatives must already be bound.
+
+### Predicate and return-value constraints
+
+Directly negated fact patterns support a restricted expression subset. General
+predicate (`:`) and return-value (`=`) expressions can be valid CLIPS yet fail
+with a located Ferric load error. This is the explicit boundary decided in
+[#300](https://github.com/plx/ferric-rules/issues/300), not a firing-time filter:
+a rejected rule is not installed and never contributes an activation.
+The restriction applies to ordered fields and template slots, to the
+requirement (second operand) of `forall`, which compiles as a negated pattern,
+and to each alternative of a `|` field disjunction in those positions. The
+`forall` condition (first operand) is not restricted. Literal and
+bound-variable alternatives remain supported. Depending on where the
+expression is detected, the load error contains either
+`complex constraints inside negated patterns` or
+`predicate constraints inside negated patterns currently require` (for a
+return-value constraint, `return-value constraints inside negated patterns
+currently require`).
+
+Literal and bound-variable equality/inequality constraints remain supported.
+A direct predicate constraint must be one call of `eq`, `neq`, `<>`, `<`, `>`,
+`<=`, or `>=` involving the constrained field's variable; the other operand may
+be a literal or a previously bound variable. Integer addition and subtraction
+may reduce each operand to one variable with coefficient `+1` and a checked
+integer offset, or an integer constant. Numeric `=` and every other function
+fall outside the subset in direct negation; use the explicit NCC + `test`
+form shown below for them. For example, these conditions are supported:
+
+```clp
+(anchor ?min)
+(not (data ?x&:(> (+ ?x 1) (+ ?min 2))))
+```
+
+Return-value constraints accept the same variable-plus-integer-offset subset:
+
+```clp
+(anchor ?min)
+(not (data =(+ ?min 1)))
+```
+
+This does not cover all mathematically linear expressions, floating-point
+arithmetic offsets, or Boolean wrappers around comparisons. A comparison
+with a plain float literal is supported. The existing lexeme join form also
+supports a binary comparison of `str-compare` between the current field and
+an earlier pattern's variable against zero.
+
+The lowered comparisons do not yet reproduce CLIPS on mixed operand types:
+`<>` compares types strictly, `eq`/`neq` with an integer offset and
+return-value integer offsets in negated patterns compare numerically, and the
+lowered `str-compare` form matches only when both values are strings. An
+offset that overflows 64-bit integers fails the test instead of wrapping. The
+predicate lowering also applies to positive patterns; positive return-value
+constraints are evaluated as an `eq` call and match CLIPS. These differences
+are tracked in [#499](https://github.com/plx/ferric-rules/issues/499).
+
+These direct nonlinear constraints are **CLIPS-valid but unsupported**:
+
+```clp
+;; Predicate constraint: compare the squares of two bound values.
+(anchor ?min)
+(not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
+
+;; Return-value constraint: compare a field with its own square.
+(not (data ?x&=(* ?x ?x)))
+```
+
+For the first example, an explicit negated conjunction can express the check
+at match time using the already supported NCC and `test` conditional elements:
+
+```clp
+(anchor ?min)
+(not (and (data ?x)
+          (test (> (* ?x ?x) (* ?min ?min)))))
+```
+
+Here the test belongs to each candidate `data` fact inside the conjunction.
+A passing candidate blocks the outer match; removing the final blocker creates
+an activation, and a new blocker cancels it before firing. Moving the test to
+the RHS or outside the negated conjunction changes these semantics. Ferric does
+not automatically rewrite direct field expressions into this form. Other
+quantified operand and nesting limits still apply; this example does not
+promise support for every equivalent `not` or `exists` spelling.
+
+#### Single-pattern `exists` expressions
+
+A single-pattern `exists` has a related load boundary. Comparisons that Ferric
+lowers to join tests, as described above, and connected field disjunctions are
+supported there. Any other predicate constraint, and every return-value
+constraint, is rejected at load with a located error containing
+`complex constraints inside existential patterns`. Lifting this restriction is
+tracked in [#446](https://github.com/plx/ferric-rules/issues/446). Until then,
+add a `test` CE to the `exists`, as in
+`(exists (item ?x) (test (> (* ?x ?x) ?k)))`, or place the predicate in a
+multi-pattern `exists`, as the corpus case
+`patterns/114_complex_predicate_multi_exists` does.
 
 ### Conflict Resolution Strategies
 
@@ -454,18 +548,22 @@ query members. `any-factp`, `find-fact` and `find-all-facts` work in RHS
 expressions, deffunctions and methods; the find forms return a multifield of
 [fact addresses](#fact-addresses).
 
-Queries, `if`, and `switch` also work in LHS test CEs and predicate/return-value
-constraints. As in CLIPS, a test CE observes facts when the matching token
-reaches the test; a later change to a queried relation does not independently
-reevaluate an existing token. Queries can compare members with fact addresses
-bound by earlier patterns. Unbound or later-bound variable references in these
-queries are load errors. Match-time expressions cannot mutate the engine.
+Queries, `if`, and `switch` also work in LHS test CEs and supported
+predicate/return-value constraints. This expression grammar does not remove the
+[direct-negation restriction](#predicate-and-return-value-constraints) or the
+restrictions on general field expressions in
+[single-pattern `exists`](#single-pattern-exists-expressions). As in
+CLIPS, a test CE observes facts when the matching token reaches the test; a
+later change to a queried relation does not independently reevaluate an
+existing token. Queries can compare members with fact addresses bound by
+earlier patterns. Unbound or later-bound variable references in these queries
+are load errors. Match-time expressions cannot mutate the engine.
 
-Ferric evaluates predicate and return-value constraints the same way, when the
-token reaches them. CLIPS instead evaluates a constraint that references only
-its own pattern's variables once, in the pattern network, when the fact is
-asserted, so a query or global read in such a constraint can see different
-facts or values in CLIPS
+Ferric evaluates supported predicate and return-value constraints the same way,
+when the token reaches them. CLIPS instead evaluates a constraint that
+references only its own pattern's variables once, in the pattern network, when
+the fact is asserted, so a query or global read in such a constraint can see
+different facts or values in CLIPS
 ([#488](https://github.com/plx/ferric-rules/issues/488)).
 
 Each visited query member costs one iteration of the action-loop budget
@@ -907,6 +1005,9 @@ latter may combine `test` CEs with `and`, `or`, `not`, and `exists`. With a fact
 it means "for every fact matching P, there also exists a matching Q." With a
 test requirement, the expression must hold for every matching P. Variables
 bound by P are available to its requirement and do not escape the `forall`.
+A fact requirement is held to the
+[direct-negation expression subset](#predicate-and-return-value-constraints);
+the condition P is not.
 
 Vacuous truth: when no facts match P, the forall condition holds:
 
@@ -1856,6 +1957,7 @@ The following features are explicitly out of scope.
 | `Random` strategy | Deferred | Until fully specified |
 | General cross-engine tie equivalence | Partial | Depth/breadth traversal and blocker history match the covered cases; identical negative/NCC node sharing remains a documented boundary, shared by LEX/MEA ties whose recency and specificity are also equal |
 | Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
+| General predicate (`:`) or return-value (`=`) expressions in directly negated patterns | Explicitly rejected | Use the supported comparisons and integer offsets, or an explicit `(not (and (P) (test ...)))`; see [Predicate and return-value constraints](#predicate-and-return-value-constraints) |
 | More than four nested `not`/`exists`/`forall` operators | Not supported | Reduce combined source nesting depth |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
 | `forall` under `not`/`exists`, or with unsupported operands | Not supported | Use one fact condition and one fact/test requirement in a positive rule condition |

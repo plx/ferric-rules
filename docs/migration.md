@@ -399,6 +399,13 @@ Review your CLIPS codebase for features that Ferric does not support:
   every rule within the four-level source limit (each `exists` compiles to a
   double negation). See
   [the compatibility limits](compatibility.md#source-and-compiled-network-limits).
+- Directly negated predicate and return-value constraints: general expressions
+  can be CLIPS-valid but explicitly rejected during load. Supported comparisons
+  and variable-plus-integer offsets are described in the
+  [constraint boundary](compatibility.md#predicate-and-return-value-constraints)
+  decided in [#300](https://github.com/plx/ferric-rules/issues/300). Where
+  appropriate, use the documented fact-plus-`test` NCC form to evaluate a
+  predicate at match time; moving it to the RHS is not equivalent.
 
 If your rules use only `defrule`, `deftemplate`, `deffacts`, `deffunction`,
 `defglobal`, `defmodule`, `defgeneric`, and `defmethod` with standard

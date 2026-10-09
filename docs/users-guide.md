@@ -348,6 +348,20 @@ A few rules of thumb:
   intermediate "flag" fact. See
   [the nesting restrictions](compatibility.md#pattern-nesting-restrictions)
   and [reducing excessive nesting](migration.md#reduce-excessive-nesting).
+- Directly negated fields support comparisons and variable-plus-integer
+  offsets, but general predicate and return-value expressions may be
+  CLIPS-valid and still reject at load. For a nonlinear condition, an explicit
+  NCC can combine a fact with a `test` evaluated at match time:
+
+  ```clp
+  (anchor ?min)
+  (not (and (data ?x)
+            (test (> (* ?x ?x) (* ?min ?min)))))
+  ```
+
+  A candidate `data` fact whose square is larger blocks the match. Keep the
+  test inside the conjunction so assertion and retraction update the agenda
+  correctly. See [the supported constraint subset](compatibility.md#predicate-and-return-value-constraints).
 
 ### Parser nesting limit
 
