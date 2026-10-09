@@ -1,16 +1,14 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-09-06 (transferable runtime and guarded native access)
+Updated: 2026-10-04 (public API reference and host package verification)
 Status: Implemented architecture; behavior is defined by the Normative Contract.
 
 Companion documents:
+- [Public API Reference](typescript-binding-api.md)
 - [Normative Contract](typescript-binding-normative-contract.md)
 - [Conformance Matrix](typescript-binding-conformance-matrix.md)
 - [Test Specification](typescript-binding-test-spec.md)
-
-Supersedes as implementation target:
-- [Legacy API Design Draft](typescript-binding-api.md)
 
 ## Purpose
 Define the high-level architecture for Node.js/TypeScript bindings to `ferric-rules` while delegating all strict behavior to the Normative Contract.
@@ -155,7 +153,7 @@ consecutive failed sends cannot escape the dispatcher or grow the call stack.
 
 ## Package Layout
 
-Expected source layout:
+Runtime components (other source and test files omitted):
 
 ```text
 packages/ferric/
@@ -176,18 +174,24 @@ packages/ferric/
 ```
 
 `native/index.js` is a platform-neutral loader shipped in the main package.
-The release pipeline generates one optional npm package per entry in
-`native/targets.json`; each generated package contains exactly one `.node`
-addon. The main package pins every optional package to its own exact version,
-and the loader verifies both package metadata and the version embedded in the
-Rust addon before exposing it. No host-specific binary is committed to or
-packed inside the main package.
+The main package pins the optional native packages declared in
+`native/targets.json` to its exact version. The loader verifies both package
+metadata and the version embedded in the Rust addon before exposing it. A source
+checkout can load a locally built addon; the packed main package excludes that
+host binary and resolves its native payload through the matching optional package.
 
 The declared targets are macOS arm64 and x64; Linux arm64 and x64 with glibc;
-Linux arm64 and x64 with musl; and Windows x64 with MSVC. Linux runtime
-selection includes libc as well as OS and architecture. Future matrix changes
-must extend the same target metadata, loader selection, package validation, and
-per-runtime artifact-smoke contract.
+Linux arm64 and x64 with musl; and Windows x64 with MSVC. Linux runtime selection
+includes libc as well as OS and architecture. These declarations define loader
+selection, not verified release coverage for every target.
+
+CI builds the host addon and uses `scripts/test-node-package-artifact.mjs` to
+stage and pack the main package plus that host's optional package. The script
+installs those exact tarballs offline in a temporary consumer outside the
+checkout and checks CommonJS, ESM, workers, and TypeScript declarations without
+source access or a native rebuild in the consumer. Full release verification
+across all declared targets is deferred; there is no all-platform release
+artifact generation pipeline in the repository.
 
 ## Ownership Boundaries
 - Rust owns engine correctness and low-level conversion primitives.
@@ -226,7 +230,9 @@ per-runtime artifact-smoke contract.
   double settlement. A replaceable removal-hook failure cannot replace that
   outcome; synchronous-abort reconciliation retries detachment, with repeated
   hostile removal best-effort. This is not generic FR-NODE-006 cleanup after an
-  ordinary successful root dispatch.
+  ordinary successful root dispatch: a signaled request dispatched from the
+  root FIFO keeps its inert once-listener until the caller's signal aborts or
+  is collected.
 - Once a host request is registered, its pending-map entry, pool in-flight unit,
   and request-owned abort listener form one ownership unit until a response,
   terminal event, close path, abort-before-dispatch, or synchronous send
@@ -242,25 +248,17 @@ per-runtime artifact-smoke contract.
 
 Pre-Worker argument validation and a synchronous Worker-constructor throw do
 not establish `EngineHandle` ownership. Failed-create cleanup covers an
-initialization send that throws. FR-NODE-008 adds request-local rollback to
-ordinary handle sends and every pool send, including pool initialization, but
-does not change failed-create termination ownership. The shared completion
-barrier for concurrent public `close()` calls remains FR-NODE-010; unpublished
-failed-create teardown does not define that behavior.
+initialization send that throws. Ordinary sends use request-local rollback;
+unpublished failed-create teardown remains a separate ownership transaction.
 
-EnginePool terminal cleanup removes abort listeners from work discarded by a
-Worker fault, as FR-NODE-005 requires. FR-NODE-008 removes a queued listener
-when that request's dispatch itself throws. FR-NODE-009 owns only the `do`
-lifetime listener, proxy admission checks, and proxy-`run` cancellation
-listener described above; generic listener cleanup after a successful root
-dispatch remains FR-NODE-006. FR-NODE-011 owns bounded admission, structural
-queue-depth reclamation, its local overflow error, and detached metrics; it
-does not complete FR-NODE-006's successful-dispatch listener cleanup.
-FR-NODE-005 and FR-NODE-008 must wake a close waiting on bookkeeping they
-clear, but FR-NODE-009 preserves the existing admitted-callback close barrier
-and none adds the shared concurrent-close completion Promise assigned to
-FR-NODE-010. Worker-to-main response sends own no host request registration and
-are outside FR-NODE-008.
+Worker terminal cleanup removes listeners from discarded work. Owner-FIFO
+dispatch and lease admission detach the queue listener, but generic listener
+cleanup after a successful root dispatch remains FR-NODE-006. A failed send
+removes only its request-owned bookkeeping and wakes close waiters. Concurrent
+public `close()` calls share a completion Promise; an admitted pool callback
+retains its lease until it settles and its accepted proxy calls drain.
+Worker-to-main response sends own no host request registration and follow the
+Worker lifecycle.
 The `1..64` construction bound limits one pool's Worker allocation. The
 independent per-slot `queueCapacity` bounds waiting entries, not bytes retained
 by one request and not arbitrary JavaScript retained by an admitted callback.
@@ -313,12 +311,3 @@ by one request and not arbitrary JavaScript retained by an admitted callback.
     zero-capacity immediate admission, overflow precedence and error fidelity,
     exact reclamation on dequeue/abort/fault/close/send rollback, and detached
     metrics under callback, terminal, and closed states.
-
-## Delivery Model
-Reimplementation should be staged and gated:
-1. Native sync correctness and typing.
-2. EngineHandle transport and cancellation.
-3. EnginePool concurrency semantics, including exclusive callback leases.
-4. Packaging and distribution hardening.
-
-Each stage is complete only when its corresponding rows in the Conformance Matrix are `PASS` and required tests from the Test Specification are green.

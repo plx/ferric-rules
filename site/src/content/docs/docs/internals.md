@@ -1,41 +1,40 @@
 ---
 title: Internals
-description: High-level map of the ferric-rules workspace and engine architecture.
+description: The main crates and the path from source to rule execution.
 ---
 
-Ferric is a Rust workspace with a small set of core crates and several host-facing layers.
+## Crates
 
-## Core Crates
+| Crate                  | Responsibility                                               |
+| ---------------------- | ------------------------------------------------------------ |
+| `ferric-rules-parser`  | Lexer, S-expression parser, and CLIPS syntax tree.           |
+| `ferric-rules-core`    | Rete network, agenda, facts, values, and matching.           |
+| `ferric-rules-runtime` | Loading, execution, evaluation, modules, I/O, and snapshots. |
+| `ferric-rules`         | Public facade re-exporting core, parser, and runtime.        |
 
-| Crate                  | Responsibility                                                                               |
-| ---------------------- | -------------------------------------------------------------------------------------------- |
-| `ferric-rules-core`    | Rete network, pattern matching, agenda, facts, values, and low-level engine data structures. |
-| `ferric-rules-parser`  | Lexer, S-expression parser, and CLIPS construct AST.                                         |
-| `ferric-rules-runtime` | Engine, loader, execution loop, evaluator, modules, functions, routers, and serialization.   |
-| `ferric-rules`         | Public facade crate that re-exports core, parser, and runtime surfaces.                      |
+The [workspace source](https://github.com/plx/ferric-rules/tree/main/crates) also
+contains the CLI, FFI, and binding crates.
 
-## Runtime Pipeline
+## From source to execution
 
-1. Parse CLIPS source into stage-two AST structures.
-2. Register templates, modules, functions, globals, and generics.
-3. Compile rule patterns into the Rete network.
-4. Assert facts into working memory.
-5. Propagate changes through alpha and beta nodes.
-6. Schedule activations on the agenda.
-7. Execute RHS actions and update working memory or output channels.
+The parser turns CLIPS source into a syntax tree. The loader registers
+constructs such as templates and functions, then compiles rule patterns into a
+Rete network.
 
-## Validation Areas
+As facts are asserted or retracted, the network updates its matches. Alpha nodes
+test individual facts; beta nodes combine partial matches across patterns.
+Complete matches produce activations on the agenda.
 
-The test suite covers:
+`run` takes activations from the agenda and executes rule actions. Those actions
+can change facts, producing further matches, or write to output channels. The
+loop ends when the agenda empties, a firing limit is reached, a halt is requested,
+or an action fails.
 
-- CLIPS compatibility fixtures,
-- real-world example corpus work,
-- parser and runtime behavior,
-- FFI lifecycle and diagnostics,
-- language bindings,
-- scaling behavior,
-- user-guide example synchronization.
+## Tests
 
-## Scope
-
-The internals are organized for correctness first, then performance. Shared APIs should preserve deterministic behavior and independent engine ownership.
+The repository contains parser and runtime tests, the
+[granular compatibility corpus](https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/README.md),
+pinned CLIPS comparisons, FFI and binding tests, and release scaling checks. See the
+[compatibility assessment](https://github.com/plx/ferric-rules/blob/main/docs/compatibility-assessment.md)
+for how the CLIPS comparisons are evaluated, and [Performance](../performance/)
+for benchmark commands.

@@ -36,22 +36,28 @@ operations when sharing an engine. Create one per decision context (per session,
 per request, per worker) or reset and reuse. See the [host contract](host-api.md)
 for the ownership of values and fact handles.
 
-The facade crate re-exports everything you need:
+The facade crate re-exports the runtime, parser, and core APIs. The crates are
+not published to crates.io yet; use the GitHub source dependency:
 
 ```toml
 # Cargo.toml
 [dependencies]
-ferric-rules = "0.1"
+ferric-rules = { git = "https://github.com/plx/ferric-rules" }
 ```
 
 ```rust
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 ```
 
+The equivalent Cargo command is
+`cargo add --git https://github.com/plx/ferric-rules ferric-rules`. Commit your
+application's `Cargo.lock` to retain the resolved revision, or add a `rev` to
+the dependency to pin a specific commit.
+
 If you need engine serialization (see §13), turn on the `serde` feature:
 
 ```toml
-ferric-rules = { version = "0.1", features = ["serde"] }
+ferric-rules = { git = "https://github.com/plx/ferric-rules", features = ["serde"] }
 ```
 
 ---
@@ -1006,7 +1012,8 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 - **TypeScript / Node.js**: `packages/ferric` (`@ferric-rules/node`, backed by
   the `crates/ferric-rules-napi` native addon) provides a synchronous `Engine`,
   a worker-backed `EngineHandle`, and an `EnginePool` for Node 22+. See
-  [its README](../packages/ferric/README.md) and the
+  [its README](../packages/ferric/README.md), the
+  [API reference](typescript-binding-api.md), and the
   [normative contract](typescript-binding-normative-contract.md).
 - **Swift**: `bindings/swift` is a local Swift 6 package over the C ABI for
   macOS 15 and iOS 18 or newer. Runs support cooperative task cancellation and

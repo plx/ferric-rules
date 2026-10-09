@@ -5,6 +5,7 @@ Updated: 2026-09-06 (bounded rehabilitation of values, lifecycle, and package co
 Status: Implemented contract. The September 2026 scope decisions are summarized in [project history](history.md).
 
 Companion documents:
+- [Public API Reference](typescript-binding-api.md)
 - [Architecture](typescript-binding-architecture.md)
 - [Conformance Matrix](typescript-binding-conformance-matrix.md)
 - [Test Specification](typescript-binding-test-spec.md)
@@ -12,7 +13,7 @@ Companion documents:
 ## 1. Normative Language
 The keywords `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative.
 
-If this contract conflicts with legacy design docs, this contract wins.
+If this contract conflicts with the API reference or other binding documentation, this contract wins.
 
 ## 2. Public Package Contract
 
@@ -60,8 +61,10 @@ and is removed from the `Engine` prototype before addon initialization completes
 3. Enums in public package declarations `MUST` be regular TS enums, not `const enum`.
 
 ### 2.2 Public Types
-1. `ClipsValue` `MUST` include `FerricSymbol` and `FerricInstanceName` in the
-   public API type union.
+1. `ClipsValue` `MUST` accept `FerricSymbol` and `FerricInstanceName` instances
+   through its structural instance types, alongside their canonical wire forms.
+   The [API reference](typescript-binding-api.md#value-types) identifies which
+   type names are exported from the package root.
 2. Wire-only transport types `MUST NOT` replace public API value types.
 3. Public API examples from this contract `MUST` compile under `tsc --strict`.
 4. The package `MUST` export `FactId = bigint` and
@@ -93,7 +96,8 @@ and is removed from the `Engine` prototype before addon initialization completes
 5. CLIPS Integer outside safe range -> `bigint`.
 6. CLIPS Float -> `number`.
 7. CLIPS Multifield -> `ClipsValue[]` recursively.
-8. CLIPS Void -> `null`; ExternalAddress is explicitly rejected, including inside multifields.
+8. CLIPS Void -> `null`. FactAddress and ExternalAddress are explicitly rejected,
+   including inside multifields; they are not converted to `null` or to host fact IDs.
 
 ### 3.3 Fact Identifiers
 1. Every fact ID returned by `assertString`, `assertFact`, or `assertTemplate`,
@@ -505,7 +509,10 @@ The following classes `MUST` exist and be constructible in JS:
 - `FerricModuleNotFoundError`
 - `FerricEncodingError`
 - `FerricSerializationError`
+- `FerricIOError`
 - `EnginePoolQueueFullError`
+
+`FerricIOError` `MUST` use code `FERRIC_IO_ERROR` for filesystem failures.
 
 `EnginePoolQueueFullError` `MUST` extend `FerricError`, set `name` to
 `EnginePoolQueueFullError`, set `code` to `FERRIC_POOL_QUEUE_FULL`, and use the

@@ -1,60 +1,92 @@
 ---
-title: Getting Started
-description: Load CLIPS rules into ferric-rules, assert facts, run the engine, and inspect results.
+title: Getting started
+description: Run a small Rust program with one rule and one fact.
 ---
 
-Ferric is built around an `Engine`. Load CLIPS source once, assert facts that describe the current situation, run the engine, and read the resulting facts or captured output.
+This example loads a rule, asserts a temperature reading, and checks the output.
 
 ## Install
 
+The crates are not published to crates.io yet. In a Rust binary project, add
+the public facade from GitHub:
+
 ```sh
-cargo add ferric-rules
+cargo add --git https://github.com/plx/ferric-rules ferric-rules
 ```
 
-The public facade package is `ferric-rules`, imported in Rust as `ferric_rules`.
+Or use the equivalent dependency declaration:
 
-## Minimal Rule Set
+```toml
+[dependencies]
+ferric-rules = { git = "https://github.com/plx/ferric-rules" }
+```
+
+Commit your application's `Cargo.lock` to retain the resolved revision. Add a
+`rev` to the dependency when you need an explicit source pin. The Cargo package
+is `ferric-rules`; Rust imports use `ferric_rules`.
+
+The `ferric-rules` crate and its workspace dependencies declare Rust 1.75 as
+their minimum version (the unpublished Python binding needs 1.83), and CI checks
+that against the committed lockfile. A new project resolves newer dependency
+releases that may need a newer compiler. To build on an older toolchain, set
+`rust-version` in your package and generate the lockfile with Cargo 1.84 or
+newer:
+
+```sh
+cargo generate-lockfile --config 'resolver.incompatible-rust-versions="fallback"'
+```
+
+## Minimal rule set
+
+Save this as `src/rules.clp`:
 
 ```text
-(defrule show-paywall
-  (user-tier free)
-  (accessed-premium-feature)
+(defrule high-temperature
+  (temperature ?t)
+  (test (> ?t 75))
   =>
-  (assert (show paywall))
-  (printout t "ACTION: paywall" crlf))
+  (printout t "High temperature" crlf))
 ```
 
-## Rust Host Code
+`(temperature ?t)` matches an ordered fact with one field. The `test` condition
+checks its value. Everything after `=>` runs when the rule fires.
+
+## Rust host code
+
+Save this as `src/main.rs`:
 
 ```rust
-use ferric_rules::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, HaltReason, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut engine = Engine::with_rules(r#"
-      (defrule show-paywall
-        (user-tier free)
-        (accessed-premium-feature)
-        =>
-        (assert (show paywall))
-        (printout t "ACTION: paywall" crlf))
-    "#)?;
-
-    engine.assert_ordered_symbol("user-tier", "free")?;
-    engine.assert_ordered_symbol("accessed-premium-feature", "yes")?;
+    let mut engine = Engine::with_rules(include_str!("rules.clp"))?;
+    engine.assert_ordered("temperature", 80_i64)?;
 
     let result = engine.run(RunLimit::Count(100))?;
     assert_eq!(result.rules_fired, 1);
-
+    assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+    assert_eq!(engine.get_output("t"), Some("High temperature\n"));
     Ok(())
 }
 ```
 
-## Engine Lifecycle
+Run it with `cargo run`. The program exits without printing anything:
+`printout` writes to an engine buffer, which the host reads with `get_output`.
+Change `80_i64` to `70_i64` and the rule no longer matches, so the assertions fail.
 
-1. Create an engine with rules loaded from a string or file.
-2. Reset when you want `initial-fact` and `deffacts` groups asserted.
-3. Assert runtime facts from the host application.
-4. Run with a limit.
-5. Read facts, output channels, and run results.
+## Engine lifecycle
 
-Use independent `Engine` instances for independent application contexts.
+1. `Engine::with_rules` parses and compiles the source, then resets the engine
+   to assert `initial-fact` and any `deffacts`.
+2. Assert the facts for the current input.
+3. Call `run` and check `halt_reason`. Reaching a firing limit is different from
+   completing the work available on the focus stack.
+4. Read the resulting facts or output. `find_facts` selects ordered facts by
+   relation; `facts()` iterates user facts, including template facts.
+5. Call the host `reset()` method to reuse the compiled rules with new input.
+   It clears current facts and channel buffers, restores globals, and reasserts
+   the initial facts. An enabled output-event journal retains pending deliveries.
+
+See [Embedding API](../embedding/) for thread ownership and error handling, or the
+[worked examples](https://github.com/plx/ferric-rules/tree/main/examples/users-guide)
+for templates, priorities, modules, and snapshots.

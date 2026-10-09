@@ -1,21 +1,21 @@
 # TypeScript Binding API for Ferric
 
-> [!WARNING]
-> This document is a legacy design draft and is **not** the normative implementation target.
-> Use the revised specification suite instead:
-> - [TypeScript Binding Architecture (Revised)](typescript-binding-architecture.md)
-> - [TypeScript Binding Normative Contract (Revised)](typescript-binding-normative-contract.md)
-> - [TypeScript Binding Conformance Matrix](typescript-binding-conformance-matrix.md)
-> - [TypeScript Binding Test Specification (Revised)](typescript-binding-test-spec.md)
+> [!NOTE]
+> This is the public API reference for `@ferric-rules/node`.
+> The [Normative Contract](typescript-binding-normative-contract.md) governs behavior
+> and takes precedence if the documents conflict. See also the
+> [Architecture](typescript-binding-architecture.md),
+> [Conformance Matrix](typescript-binding-conformance-matrix.md), and
+> [Test Specification](typescript-binding-test-spec.md).
 
 ## Purpose
 
-Define a TypeScript-native API for ferric-rules that:
+The package provides a TypeScript API for ferric-rules that:
 
-1. Feels natural in Node.js and TypeScript (Promises, `AbortSignal`, `using`, iterators).
+1. Uses Node.js and TypeScript conventions: Promises, `AbortSignal`, and explicit resource management.
 2. Keeps long-running engine work off the Node.js event loop. (The Rust engine is `Send + Sync`; workers exist for event-loop responsiveness, not thread affinity.)
 3. Provides both a synchronous low-level API and an async worker-backed API for non-blocking use.
-4. Implements via [napi-rs](https://napi.rs), linking directly to Rust — no C FFI hop.
+4. Links directly to Rust through napi-rs.
 
 ## Execution in Node.js
 
@@ -46,75 +46,69 @@ indirection. napi-rs handles the JS ↔ Rust boundary.
 
 ### Layer 2: `EngineHandle` / `EnginePool` (pure TypeScript)
 
-Async wrappers that run `Engine` instances inside dedicated `Worker` threads. Communication is via structured-clone `postMessage`. These are shipped as TypeScript alongside the native addon.
+Async wrappers that run `Engine` instances inside dedicated `Worker` threads. Communication is via structured-clone `postMessage`. The package ships compiled JavaScript and TypeScript declarations alongside its native loader.
 
 This separation means:
 
-- The native addon is simple and stateless beyond the Engine itself.
+- The native addon owns engine state and value conversion.
 - Async orchestration, cancellation, and pooling are in TypeScript where they're easy to test, debug, and extend.
 - Each worker thread owns its own `Engine`, so long-running engine work never blocks the main event loop.
-
-## Crate Structure
-
-```
-crates/ferric-rules-napi/
-├── Cargo.toml          # depends on ferric, napi, napi-derive
-├── src/
-│   ├── lib.rs          # #[napi] module registration
-│   ├── engine.rs       # Engine class
-│   ├── fact.rs         # Fact, FactType
-│   ├── value.rs        # FerricSymbol, value conversion
-│   ├── result.rs       # RunResult, HaltReason, FiredRule, RuleInfo
-│   ├── config.rs       # Strategy, Encoding, Format enums
-│   └── error.rs        # Error types
-└── npm/                # platform-specific npm packages (napi-rs convention)
-```
-
-The published npm package (`@ferric-rules/node` or `ferric`) includes:
-
-- Platform-specific native binaries (via napi-rs's `@ferric-rules/node-{platform}-{arch}` packages).
-- TypeScript source and declarations for `EngineHandle`, `EnginePool`, wire types.
-- A re-export barrel that exposes both the native `Engine` and the async wrappers.
 
 ## Public API
 
 ### Value Types
 
+`FerricSymbol` and `FerricInstanceName` are concrete constructor exports. Their
+instance and constructor types are exported under the `Native*` names below.
+A symbol's spelling is distinct from a quoted string; an instance name represents
+CLIPS `[widget]`, with `value` containing `widget` without brackets.
+
 ```typescript
-/**
- * CLIPS symbol — a distinct value type from string.
- * Symbols are unquoted identifiers (e.g., TRUE, FALSE, foo).
- */
-export class FerricSymbol {
-  constructor(value: string);
+export interface NativeFerricSymbolConstructor {
+  new (value: string): NativeFerricSymbol;
+}
+export interface NativeFerricSymbol {
   readonly value: string;
   toString(): string;
-  /** Symbols with the same value are equal. */
   valueOf(): string;
 }
+export interface NativeFerricInstanceNameConstructor {
+  new (value: string): NativeFerricInstanceName;
+}
+export interface NativeFerricInstanceName {
+  readonly value: string;
+  toString(): string;
+  valueOf(): string;
+}
+export declare const FerricSymbol: NativeFerricSymbolConstructor;
+export declare const FerricInstanceName: NativeFerricInstanceNameConstructor;
 
-/**
- * Union of all value types that can appear in CLIPS facts and expressions.
- *
- * Conversion rules (JS → CLIPS):
- *   FerricSymbol    → CLIPS symbol
- *   string          → CLIPS string (quoted)
- *   number          → CLIPS integer (safe integers only) or float
- *   boolean         → CLIPS symbol TRUE / FALSE
- *   bigint          → CLIPS integer (for values outside safe-integer range)
- *   ClipsValue[]    → CLIPS multifield
- *   null/undefined  → CLIPS void
- *
- * Conversion rules (CLIPS → JS):
- *   CLIPS symbol    → FerricSymbol
- *   CLIPS string    → string
- *   CLIPS integer   → number (if within safe-integer range) or bigint
- *   CLIPS float     → number
- *   CLIPS multifield → ClipsValue[]
- *   CLIPS void      → null
- */
+export interface WireSymbolObject {
+  __type: "FerricSymbol";
+  value: string;
+}
+
+// Structural helpers used by ClipsValue; these three names are not root exports.
+interface FerricSymbolInstance {
+  readonly value: string;
+  toString(): string;
+  valueOf(): string;
+}
+interface FerricInstanceNameInstance {
+  readonly value: string;
+  toString(): string;
+  valueOf(): string;
+}
+interface WireInstanceNameObject {
+  __type: "FerricInstanceName";
+  value: string;
+}
+
 export type ClipsValue =
-  | FerricSymbol
+  | FerricSymbolInstance
+  | WireSymbolObject
+  | FerricInstanceNameInstance
+  | WireInstanceNameObject
   | string
   | number
   | bigint
@@ -123,7 +117,25 @@ export type ClipsValue =
   | null;
 ```
 
-Plain `string` maps to a CLIPS string literal, matching Python and Go. Construct symbols explicitly with `new FerricSymbol("foo")`. Booleans map to the symbols `TRUE`/`FALSE`.
+Plain strings become CLIPS strings. Use `new FerricSymbol("foo")` for a symbol
+and `new FerricInstanceName("widget")` for an instance name. Booleans become the
+symbols `TRUE` and `FALSE`. Compare wrapper spellings with `.value`; separate
+wrapper objects do not become equal under JavaScript `===`.
+
+`null` is in `ClipsValue` to represent returned CLIPS Void. Both `null` and
+`undefined` are rejected as fact inputs, including inside nested multifields.
+The union is therefore broader than the accepted fact-input domain. Arbitrary
+objects that merely satisfy a structural interface are not a replacement for
+the constructors or canonical tagged wire objects. The package also exports
+`WireSymbol` and `WireInstanceName` with those tagged transport shapes; the
+worker-backed APIs handle their conversion automatically.
+
+CLIPS fact addresses and external addresses have no `ClipsValue`
+representation. Rule-created fact addresses (`?f`, including `<Dummy Fact>`
+slot defaults and addresses inside multifields) are rejected instead of
+becoming `null`: reading a global or fact holding one throws, and `facts()`
+fails as a whole while any fact holds one (`findFacts()` when one of its facts
+does). Use fact IDs and application keys instead.
 
 ### Enums
 
@@ -186,7 +198,7 @@ export interface RuleInfo {
   readonly salience: number;
 }
 
-/** Canonical, lossless 64-bit generational fact identifier. */
+/** Opaque, engine-scoped unsigned 64-bit fact handle. */
 export type FactId = bigint;
 
 /**
@@ -217,27 +229,33 @@ export interface EngineOptions {
   strategy?: Strategy;
   /** String encoding mode. Default: Utf8. */
   encoding?: Encoding;
-  /** Maximum function call depth. Default: 64. */
+  /** Requested call depth. Default: 64; effective runtime ceiling: 32. */
   maxCallDepth?: number;
 }
 ```
+
+`maxCallDepth` accepts integers in `0..=4294967295`; zero disallows user-function
+calls. Strategy, encoding, and format selectors must be exact enum members even
+where the native declarations below use `number`.
 
 ### Error Hierarchy
 
 ```typescript
 export class FerricError extends Error {
   readonly code: string;
+  constructor(message: string, code: string);
 }
 
-export class FerricParseError extends FerricError {}
-export class FerricCompileError extends FerricError {}
-export class FerricRuntimeError extends FerricError {}
-export class FerricFactNotFoundError extends FerricError {}
-export class FerricTemplateNotFoundError extends FerricError {}
-export class FerricSlotNotFoundError extends FerricError {}
-export class FerricModuleNotFoundError extends FerricError {}
-export class FerricEncodingError extends FerricError {}
-export class FerricSerializationError extends FerricError {}
+export class FerricParseError extends FerricError { constructor(message: string); }
+export class FerricCompileError extends FerricError { constructor(message: string); }
+export class FerricRuntimeError extends FerricError { constructor(message: string); }
+export class FerricFactNotFoundError extends FerricError { constructor(message: string); }
+export class FerricTemplateNotFoundError extends FerricError { constructor(message: string); }
+export class FerricSlotNotFoundError extends FerricError { constructor(message: string); }
+export class FerricModuleNotFoundError extends FerricError { constructor(message: string); }
+export class FerricEncodingError extends FerricError { constructor(message: string); }
+export class FerricSerializationError extends FerricError { constructor(message: string); }
+export class FerricIOError extends FerricError { constructor(message: string); }
 
 /** Host-side EnginePool admission failure; never crosses the Worker wire. */
 export class EnginePoolQueueFullError extends FerricError {
@@ -249,215 +267,97 @@ export class EnginePoolQueueFullError extends FerricError {
 }
 ```
 
+`FerricIOError` reports filesystem failures. Native and worker errors preserve
+the Ferric class and its `code`. `ERROR_REGISTRY` is exported as
+`Readonly<Record<string, (message: string) => FerricError>>`; its entries are
+factories, not constructors. The host-only `EnginePoolQueueFullError` is not in
+that registry.
+
 ### Engine (synchronous, native)
 
 The synchronous `Engine` is the core building block. All methods are synchronous and execute on the calling thread. It is suitable for scripts, CLI tools, short-lived evaluations, and as the backing implementation inside worker threads.
 
+`Engine` is a constructor value typed as `NativeEngineConstructor`; annotate an
+instance as `NativeEngine` (or `InstanceType<typeof Engine>`). The following are
+the current public declarations. Native field inputs and some return values use
+`unknown`, while selectors and the native halt reason use `number`; runtime
+validation still enforces the value and enum contracts described here.
+
 ```typescript
-export class Engine {
-  /**
-   * Create a new engine.
-   * @throws {FerricError} if engine creation fails.
-   */
-  constructor(options?: EngineOptions);
+export interface NativeEngineConstructor {
+  new (options?: { strategy?: number; encoding?: number; maxCallDepth?: number }): NativeEngine;
+  fromSource(source: string, options?: { strategy?: number; encoding?: number; maxCallDepth?: number }): NativeEngine;
+  fromSnapshot(data: Buffer, format?: number): NativeEngine;
+  fromSnapshotFile(path: string, format?: number): NativeEngine;
+}
 
-  /**
-   * Create an engine with CLIPS source pre-loaded and reset.
-   * Equivalent to: new Engine(options) → load(source) → reset().
-   */
-  static fromSource(source: string, options?: EngineOptions): Engine;
-
-  /**
-   * Restore an engine from a serialized snapshot.
-   * Skips parsing and compilation for fast instantiation.
-   */
-  static fromSnapshot(data: Buffer, format?: Format): Engine;
-
-  /**
-   * Restore an engine from a snapshot file.
-   */
-  static fromSnapshotFile(path: string, format?: Format): Engine;
-
-  // --- Loading ---
-
-  /** Parse and compile CLIPS source into the engine. */
+/** Shape of a native Engine instance. */
+export interface NativeEngine {
   load(source: string): void;
-
-  /** Parse and compile CLIPS source from a file. */
   loadFile(path: string): void;
-
-  // --- Fact Operations ---
-
-  /**
-   * Assert one or more facts from a CLIPS source string.
-   * @returns Array of fact IDs for the asserted facts.
-   * @example engine.assertString("(color red) (color blue)")
-   */
   assertString(source: string): FactId[];
-
-  /**
-   * Assert an ordered fact.
-   * @returns The fact ID.
-   * @example engine.assertFact("color", new FerricSymbol("red"))
-   */
-  assertFact(relation: string, ...fields: ClipsValue[]): FactId;
-
-  /**
-   * Assert a template fact with named slots.
-   * @returns The fact ID.
-   * @example engine.assertTemplate("person", { name: "Alice", age: 30 })
-   */
-  assertTemplate(
-    templateName: string,
-    slots: Record<string, ClipsValue>,
-  ): FactId;
-
-  /** Retract a fact by ID. */
+  assertFact(relation: string, ...fields: unknown[]): FactId;
+  assertTemplate(templateName: string, slots: Record<string, unknown>): FactId;
   retract(factId: FactIdInput): void;
-
-  /** Get a snapshot of a single fact, or null if not found. */
   getFact(factId: FactIdInput): Fact | null;
-
-  /** Get snapshots of all user-visible facts. */
   facts(): Fact[];
-
-  /** Get snapshots of facts matching a relation name. */
   findFacts(relation: string): Fact[];
-
-  /** Get a template fact's slot value by name. */
-  getFactSlot(factId: FactIdInput, slotName: string): ClipsValue;
-
-  // --- Execution ---
-
-  /**
-   * Run the engine to completion or until the limit is reached.
-   * Every call starts a fresh logical run, clearing any previous halt request
-   * and action diagnostics. A limit of 0 still starts that fresh run, but fires
-   * no rules and returns LimitReached.
-   * @param limit Maximum rule firings. Omit or pass undefined for unlimited.
-   * @returns Result with number of rules fired and halt reason.
-   */
-  run(limit?: number): RunResult;
-
-  /**
-   * Execute a single rule firing.
-   * @returns The fired rule, or null if the agenda is empty.
-   */
-  step(): FiredRule | null;
-
-  /** Request the engine to halt. Idempotent. */
+  getFactSlot(factId: FactIdInput, slotName: string): unknown;
+  run(limit?: number): { rulesFired: number; haltReason: number };
+  step(): { ruleName: string } | null;
   halt(): void;
-
-  /** Reset to initial state: clear facts, keep rules, re-assert deffacts. */
   reset(): void;
-
-  /** Remove all rules, facts, templates, and other constructs. */
   clear(): void;
-
-  // --- Introspection ---
-
-  /** Number of user-visible facts. */
-  get factCount(): number;
-
-  /** Whether the engine is in a halted state. */
-  get isHalted(): boolean;
-
-  /** Number of activations on the agenda. */
-  get agendaSize(): number;
-
-  /** Name of the current module. */
-  get currentModule(): string;
-
-  /** Module at the top of the focus stack, or null if empty. */
-  get focus(): string | null;
-
-  /** Focus stack entries from bottom to top. */
-  get focusStack(): string[];
-
-  /** All registered rules with their salience values. */
-  rules(): RuleInfo[];
-
-  /** Names of all registered templates. */
+  readonly factCount: number;
+  readonly isHalted: boolean;
+  readonly agendaSize: number;
+  readonly currentModule: string;
+  readonly focus: string | null;
+  readonly focusStack: string[];
+  rules(): Array<{ name: string; salience: number }>;
   templates(): string[];
-
-  /** All known module names. */
   modules(): string[];
-
-  /**
-   * Get a global variable's value.
-   * @param name Variable name without the ?* prefix/suffix.
-   * @returns The value, or null if not found/visible in current module context.
-   */
-  getGlobal(name: string): ClipsValue | null;
-
-  // --- Focus Stack ---
-
-  /** Replace the entire focus stack with a single module. */
+  getGlobal(name: string): unknown | null;
   setFocus(moduleName: string): void;
-
-  /**
-   * Push a module onto the focus stack. Pushing the module already at the
-   * top leaves the stack unchanged; a module deeper in the stack may be
-   * pushed again.
-   */
   pushFocus(moduleName: string): void;
-
-  // --- I/O ---
-
-  /**
-   * Get captured output for a named channel (for example, "t" or "stderr").
-   * @returns The output string, or null if no output.
-   */
   getOutput(channel: string): string | null;
-
-  /** Clear a specific output channel. */
   clearOutput(channel: string): void;
-
-  /** Push an input line for read/readline functions. */
   pushInput(line: string): void;
-
-  // --- Diagnostics ---
-
-  /** Non-fatal action error messages from recent execution. */
-  get diagnostics(): string[];
-
-  /** Clear stored action diagnostics. */
+  readonly diagnostics: string[];
   clearDiagnostics(): void;
-
-  // --- Serialization ---
-
-  /**
-   * Serialize the engine's current state.
-   * @param format Serialization format. Default: Cbor (recommended).
-   */
-  serialize(format?: Format): Buffer;
-
-  /**
-   * Save a serialized snapshot to a file.
-   */
-  saveSnapshot(path: string, format?: Format): void;
-
-  // --- Lifecycle ---
-
-  /**
-   * Explicitly release the engine's resources.
-   * After calling, all other methods will throw.
-   * Idempotent — safe to call multiple times.
-   */
+  serialize(format?: number): Buffer;
+  saveSnapshot(path: string, format?: number): void;
   close(): void;
-
-  /**
-   * Support for TC39 Explicit Resource Management.
-   * Allows: `using engine = new Engine()`
-   * Requires TypeScript 5.2+ / Node.js 22+.
-   */
   [Symbol.dispose](): void;
 }
+export declare const Engine: NativeEngineConstructor;
 ```
+
+`fromSource` performs construction, `load`, then `reset`. Snapshot factories
+restore the saved state; omitted snapshot formats use CBOR. `assertString`
+accepts one or more source facts, and all assertion methods return opaque fact
+handles. `getGlobal` takes the name without the `?*` / `*` delimiters and returns
+`null` if the global is not found or visible in the current module. `findFacts`
+selects ordered facts by relation; use `facts()` and filter `templateName` for
+template facts. This applies to the async wrappers as well.
+
+`run()` starts a fresh logical run, clearing prior halt requests and action
+diagnostics. Omitting `limit` runs without a firing limit; zero fires no rules
+and returns `LimitReached`. `step()` returns the fired rule or `null` when no rule
+fires. `reset()` reinitializes working memory from deffacts while retaining
+constructs; `clear()` removes constructs and facts. The `focusStack` array is
+ordered from bottom to top. `setFocus` replaces that stack; `pushFocus` pushes a
+module, except that pushing the module already at the top leaves the stack
+unchanged (a module deeper in the stack may be pushed again).
+
+Output uses raw channel names such as `"t"` and `"stderr"`. Read `diagnostics`
+after an action error before starting another run. `close()` and
+`[Symbol.dispose]()` release the native engine; close is idempotent, and later
+operational calls fail. TypeScript 5.2 or newer supports `using` declarations.
 
 ### EngineHandle (async, worker-backed)
 
-`EngineHandle` wraps a synchronous `Engine` running on a dedicated Worker thread. All methods return Promises. The handle is safe to use from the main thread (or any thread) without blocking.
+`EngineHandle` wraps a synchronous `Engine` running on a dedicated Worker thread. Its operations return Promises and offload native work from the owning JavaScript thread. The handle itself is not transferable to another Worker.
 
 This is the recommended API for servers and applications where blocking the event loop is unacceptable.
 
@@ -495,6 +395,7 @@ export interface EngineHandleOptions extends EngineOptions {
 }
 
 export class EngineHandle {
+  private constructor(); // Obtain instances through create().
   /**
    * Create an EngineHandle backed by a dedicated Worker thread.
    * The Engine is created and owned by the worker thread.
@@ -583,6 +484,12 @@ export class EngineHandle {
 }
 ```
 
+`EngineHandle` exposes only the methods listed above: it has no `getFactSlot`,
+focus mutation, diagnostics, or `saveSnapshot` method. To save asynchronously,
+await `serialize()` and pass its Buffer to `node:fs/promises.writeFile`. Individual
+calls are serialized by the worker; a sequence of calls is not a transaction or
+an exclusive request session. Use a pool `do()` lease for that isolation.
+
 ### EnginePool (concurrent evaluation)
 
 `EnginePool` manages multiple Worker threads for concurrent, stateless evaluation.
@@ -668,6 +575,7 @@ export interface EnginePoolMetrics {
 }
 
 export class EnginePool {
+  private constructor(); // Obtain instances through create().
   /**
    * Create a pool with the given engine specs and pool options.
    * @param specs Named engine configurations.
@@ -722,7 +630,7 @@ export class EnginePool {
   metrics(): EnginePoolMetrics;
 
   /**
-   * Shut down all workers. Blocks until in-flight requests and callbacks that
+   * Shut down all workers. Resolves after in-flight requests and callbacks that
    * already acquired a worker-slot lease complete.
    */
   close(): Promise<void>;
@@ -732,8 +640,7 @@ export class EnginePool {
 
 /**
  * Proxy object passed to EnginePool.do() callbacks.
- * Has the same shape as EngineHandle but operations are
- * dispatched to a specific worker's engine. Calls are serialized in invocation
+ * Exposes the subset below, dispatched to a specific worker's engine. Calls are serialized in invocation
  * order. New calls reject deterministically after cancellation or callback
  * settlement without reaching the Worker.
  */
@@ -874,7 +781,11 @@ independently of the outer cancellation outcome.
   reconciliation retries a synchronous-abort detachment if a replaceable
   removal hook throws, without replacing the owned outcome; persistently
   hostile removal remains best-effort. It does not implement FR-NODE-006's
-  general successful-root-dispatch listener cleanup.
+  general successful-root-dispatch listener cleanup: a signaled request that
+  waited in the root FIFO and was then dispatched keeps its inert once-listener
+  on the caller's signal until that signal aborts or is collected. Owner-FIFO
+  dispatch, lease admission, send rollback, abort while queued, and Worker
+  terminal or close cleanup do detach it.
 - A queue unit is reclaimed when its entry is removed or dequeued. Abort frees
   a queued root request or not-yet-admitted lease; it does not dequeue a proxy
   call already accepted under the callback-cancellation contract. Dispatch
@@ -925,12 +836,8 @@ An ordinary response error or synchronous request-side `postMessage` failure
 from a live Worker rejects only its matching request and does not poison the
 pool. A failed send restores the selected slot's in-flight capacity and
 continues its root or lease-private FIFO without replaying the request on
-another Worker. An exit caused after `close()` deliberately starts Worker
-termination is also expected, not a fault. FR-NODE-009 owns the `do` outer
-listener and proxy-`run` listener described here. General root-queue listener
-cleanup after a successful queued dispatch is FR-NODE-006, and the Promise
-shared by concurrent close callers is FR-NODE-010. FR-NODE-011 owns only the
-bounded admission and metrics contract above.
+another Worker. An exit after `close()` deliberately starts Worker termination
+is expected. Concurrent `close()` calls share the cleanup completion barrier.
 
 ## Value Conversion Details
 
@@ -938,15 +845,17 @@ bounded admission and metrics contract above.
 
 | JS type | CLIPS type | Notes |
 |---------|-----------|-------|
-| `FerricSymbol` | Symbol | Explicit marker type |
-| `FerricInstanceName` | Instance name | `new FerricInstanceName("widget")` is `[widget]` |
+| `FerricSymbol` or its canonical wire object | Symbol | Explicit symbol spelling |
+| `FerricInstanceName` or its canonical wire object | Instance name | `new FerricInstanceName("widget")` is `[widget]` |
 | `string` | String | Quoted CLIPS string |
 | `number` (safe integer) | Integer | `Number.isSafeInteger(n)`; unsafe integers rejected |
 | `number` (float) | Float | |
-| `bigint` | Integer | For values outside `Number.MAX_SAFE_INTEGER` |
+| `bigint` | Integer | Must fit signed 64-bit range |
 | `boolean` | Symbol | `true` → `TRUE`, `false` → `FALSE` |
 | `Array` | Multifield | Recursive conversion |
-| `null` / `undefined` | Void | |
+| `null` / `undefined` | Rejected as fact input | Also rejected inside nested multifields |
+
+Fact inputs allow at most 32 multifield levels and one million values per assertion.
 
 ### CLIPS → JS
 
@@ -959,7 +868,7 @@ bounded admission and metrics contract above.
 | Float | `number` | |
 | Multifield | `ClipsValue[]` | Recursive |
 | Void | `null` | |
-| ExternalAddress | `null` | Not representable in JS |
+| FactAddress / ExternalAddress | Rejected | Explicit unsupported-value error, including inside multifields |
 
 ### Integer Representation
 
@@ -973,12 +882,16 @@ This avoids silent precision loss while keeping the common case (small integers)
 
 ### Fact Identifier Representation and Migration
 
-Fact identifiers are not CLIPS integer values. They are unsigned 64-bit,
-generational engine handles, so Ferric exposes every returned ID as the
+Fact identifiers are not CLIPS integer values. They are opaque unsigned 64-bit,
+engine-scoped handles, so Ferric exposes every returned ID as the
 canonical `FactId = bigint` representation even when its current value would
 fit in a JavaScript safe integer. This applies to `assertString`, `assertFact`,
 `assertTemplate`, and the `id` property returned by `getFact`, `facts`, and
 `findFacts`.
+
+These handles belong to the engine that returned them. Reset, clear, or restore
+requires fresh handles queried from durable application fields. They are not
+CLIPS fact-address values and cannot be substituted for those values in facts.
 
 ID-accepting APIs use `FactIdInput = FactId | number` as a deliberate migration
 bridge. A `number` is accepted only when it is finite, integral, non-negative,
@@ -993,10 +906,10 @@ Existing callers should migrate as follows:
   updated.
 - Treat returned IDs as `bigint` and update type assertions from `number` to
   `FactId`.
-- Use bigint literals such as `123n` for new ID inputs. Existing safe numeric
-  inputs remain accepted during migration.
+- Pass a handle returned by the same engine. Do not invent or reconstruct handles
+  from CLIPS fact indices. Existing safe numeric inputs remain accepted during migration.
 - Never convert a returned ID with `Number(id)`, because doing so can discard
-  its generation bits.
+  its identity.
 - `bigint` is supported by Node's structured-clone algorithm, so IDs pass
   unchanged through `EngineHandle` and `EnginePool`. For JSON, encode an ID as
   decimal text with `id.toString()` and reconstruct it with `BigInt(text)`;
@@ -1012,25 +925,65 @@ run limits and fired counts.
 
 ```typescript
 // Main → Worker
-interface WorkerRequest {
+export interface WorkerRequest {
   id: number;             // monotonic request ID
   method: string;         // engine method name
   args: unknown[];        // structured-clonable arguments
 }
 
 // Worker → Main
-interface WorkerResponse {
+export interface WorkerResponse {
   id: number;             // matches request ID
   result?: unknown;       // return value (if success)
-  error?: {               // error info (if failure)
-    code: string;
-    message: string;
-    name: string;         // error class name for reconstruction
-  };
+  error?: WorkerErrorPayload; // error info (if failure)
 }
 ```
 
-Values like `FerricSymbol` and `Fact` are serialized as plain objects for `postMessage` and reconstructed on the receiving side. `Buffer` arguments (snapshots) use `ArrayBuffer` transfer for zero-copy.
+Symbols and instance names use canonical tagged wire objects, and returned
+values are reconstructed as native wrappers. Fact IDs remain `bigint` through
+structured clone. Snapshot transport copies the Buffer's byte range into an
+`ArrayBuffer` and transfers that buffer; it does not detach the caller's Buffer.
+
+The package exports the request and response types above, plus these transport
+types and helpers. Applications normally use `EngineHandle` or `EnginePool`
+directly. `ABORT_BUFFER_SIZE` counts Int32 elements, not bytes.
+
+```typescript
+export interface WorkerErrorPayload {
+  name: string;
+  message: string;
+  code: string;
+}
+export interface WorkerInit {
+  options?: { strategy?: number; encoding?: number; maxCallDepth?: number };
+  source?: string;
+  snapshot?: { data: ArrayBuffer; format?: number };
+}
+export interface PoolWorkerInit {
+  specs: Array<{
+    name: string;
+    options?: { strategy?: number; encoding?: number; maxCallDepth?: number };
+    source?: string;
+  }>;
+}
+export interface WireSymbol { __type: "FerricSymbol"; value: string }
+export interface WireInstanceName { __type: "FerricInstanceName"; value: string }
+export function isWireSymbol(value: unknown): value is WireSymbol;
+export function isWireInstanceName(value: unknown): value is WireInstanceName;
+export function toWire(value: unknown): unknown;
+export function fromWire(
+  value: unknown,
+  FerricSymbolCtor?: new (value: string) => unknown,
+  FerricInstanceNameCtor?: new (value: string) => unknown,
+): unknown;
+export const ABORT_FLAG_INDEX = 0;
+export const ABORT_BUFFER_SIZE = 1; // Int32 elements
+export const RUN_BATCH_SIZE = 100; // Rule firings per cancellation check
+```
+
+`toWire` recursively converts name wrappers to tagged objects. `fromWire`
+reconstructs the corresponding wrappers when given their constructors; without
+a constructor it retains the tagged representation.
 
 ### Synchronous request-send failures
 
@@ -1077,27 +1030,11 @@ and the existing failed-create transaction terminates every unpublished Worker
 it constructed.
 
 This rule covers main-to-Worker sends that own host request bookkeeping.
-Worker-to-main response sends create no such registration and remain governed
-by the response protocol and Worker error/exit lifecycle. It also does not add
-generic cleanup after a *successful* queued root dispatch (FR-NODE-006), alter
-the callback cancellation boundary above, or make concurrent close calls share
-a Promise (FR-NODE-010). For FR-NODE-011, a queued unit is already reclaimed
-when the entry is removed for dispatch; send rollback must not reclaim it a
-second time and continues the same FIFO as described above.
-
-The worker script:
-
-```typescript
-// Internal worker entry point (not part of public API)
-import { parentPort } from "node:worker_threads";
-import { Engine } from "./native.js";
-
-let engine: Engine | null = null;
-
-parentPort!.on("message", (req: WorkerRequest) => {
-  // ... dispatch req.method to engine, post response
-});
-```
+Worker-to-main response sends create no such registration and follow the Worker
+error/exit lifecycle. A queued unit is reclaimed when removed for dispatch;
+send rollback must not reclaim it a second time. It does not add generic
+listener cleanup after a *successful* queued root dispatch (FR-NODE-006).
+Concurrent close callers share the cleanup completion barrier.
 
 ## Cancellation Semantics
 
@@ -1146,7 +1083,7 @@ resolves its partial result even though the independently returned outer
 ### Quick Script (synchronous)
 
 ```typescript
-import { Engine } from "ferric";
+import { Engine } from "@ferric-rules/node";
 
 const engine = new Engine();
 engine.load(`
@@ -1169,7 +1106,7 @@ engine.close();
 ### With Explicit Resource Management
 
 ```typescript
-import { Engine } from "ferric";
+import { Engine } from "@ferric-rules/node";
 
 {
   using engine = Engine.fromSource(`
@@ -1180,10 +1117,10 @@ import { Engine } from "ferric";
 } // engine.close() called automatically
 ```
 
-### Non-blocking Server
+### Non-blocking Evaluation
 
 ```typescript
-import { EngineHandle } from "ferric";
+import { EngineHandle } from "@ferric-rules/node";
 
 const handle = await EngineHandle.create({
   source: `
@@ -1195,7 +1132,8 @@ const handle = await EngineHandle.create({
   `,
 });
 
-// In a request handler:
+// Run this sequence without concurrent callers sharing the handle.
+// For concurrent server requests, use EnginePool.evaluate() or do().
 async function handleRequest(orderId: string, total: number) {
   await handle.reset();
   await handle.assertTemplate("order", {
@@ -1204,11 +1142,14 @@ async function handleRequest(orderId: string, total: number) {
   });
 
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 5000); // 5s timeout
-
-  const result = await handle.run({ signal: controller.signal });
-  const output = await handle.getOutput("t");
-  return { rulesFired: result.rulesFired, output };
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const result = await handle.run({ signal: controller.signal });
+    const output = await handle.getOutput("t");
+    return { rulesFired: result.rulesFired, output };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // On shutdown:
@@ -1219,7 +1160,7 @@ await handle.close();
 
 ```typescript
 import fs from "node:fs";
-import { EnginePool, FerricSymbol } from "ferric";
+import { EnginePool, FerricSymbol } from "@ferric-rules/node";
 
 const pool = await EnginePool.create(
   [
@@ -1256,139 +1197,42 @@ await pool.close();
 ### EnginePool.do() for Stateful Operations
 
 ```typescript
-// When you need more control than evaluate() provides:
-const score = await pool.do("pricing", async (engine) => {
-  await engine.reset();
-  await engine.assertTemplate("customer", {
-    tier: new FerricSymbol("gold"),
-    years: 5,
+import { EnginePool, FerricSymbol } from "@ferric-rules/node";
+
+const pool = await EnginePool.create([{
+  name: "pricing",
+  source: `
+    (deftemplate customer (slot tier) (slot years))
+    (deftemplate item (slot sku) (slot basePrice))
+    (defrule price
+      (customer (tier gold) (years ?years))
+      (item (basePrice ?base))
+      => (assert (final-price (- ?base ?years))))
+  `,
+}]);
+
+try {
+  const score = await pool.do("pricing", async (engine) => {
+    await engine.reset();
+    await engine.assertTemplate("customer", {
+      tier: new FerricSymbol("gold"),
+      years: 5,
+    });
+    await engine.assertTemplate("item", {
+      sku: "WIDGET-42",
+      basePrice: 29.99,
+    });
+    await engine.run();
+    const facts = await engine.findFacts("final-price");
+    return facts[0]?.fields[0];
   });
-  await engine.assertTemplate("item", {
-    sku: "WIDGET-42",
-    basePrice: 29.99,
-  });
-  await engine.run();
-  const facts = await engine.findFacts("final-price");
-  return facts[0]?.fields[0] as number;
-});
-```
-
-## Implementation Notes
-
-### napi-rs Specifics
-
-- Use `#[napi(object)]` for plain data types (`RunResult`, `RuleInfo`, etc.) — these become plain JS objects.
-- Use `#[napi]` on the `Engine` struct for the class binding.
-- `Buffer` in napi-rs maps to Node.js `Buffer` (zero-copy when possible).
-- Enums: use `#[napi]` on Rust enums with explicit discriminants. Expose regular TypeScript `enum` declarations in the public package (avoid `const enum` in library-facing API for toolchain compatibility).
-- Error mapping: napi-rs's `napi::Error` supports custom `status` codes. Implement `From<EngineError>` for `napi::Error` with the appropriate error class.
-- `Symbol.dispose` / `Symbol.asyncDispose`: implement via `#[napi(ts_return_type = "void")]` methods named `[Symbol.dispose]` — or more practically, add `close()` in Rust and wire `Symbol.dispose` in the TypeScript wrapper.
-
-### Engine Ownership in napi-rs
-
-The napi-rs `Engine` class wraps a Rust `Option<ferric_rules::Engine>`:
-
-```rust
-#[napi]
-pub struct Engine {
-    inner: Option<ferric_rules::Engine>,
+  console.log(score);
+} finally {
+  await pool.close();
 }
 ```
 
-- `close()` takes the engine out of the `Option`, dropping it.
-- All methods check `self.inner.is_some()` and throw if closed.
-- `Drop` for the napi-rs struct drops the inner engine if still present (handles GC without explicit close).
-- No thread checks in the napi-rs layer: the Rust `Engine` is `Send + Sync` and is used directly, and each native object stays within the V8 isolate that created it.
-
-### Worker Thread Bootstrap
-
-The worker thread script needs access to the native addon. napi-rs addons work in Worker threads — Node.js loads a separate instance of the addon per thread. The worker entry point:
-
-1. Receives an `init` message with engine options.
-2. Creates a synchronous `Engine` (which creates the Rust engine on the worker's OS thread).
-3. Enters a request loop, dispatching method calls and posting responses.
-4. On `close` message, drops the engine and exits.
-
-### Serialization Across Workers
-
-Values passed via `postMessage` must be structured-clonable. The binding provides transparent serialization for:
-
-- `FerricSymbol` → `{ __type: "FerricSymbol", value: string }` (tagged for reconstruction).
-- `FerricInstanceName` → `{ __type: "FerricInstanceName", value: string }`, the
-  name without brackets.
-- `Fact` → plain object whose `bigint` ID is preserved by structured clone.
-- `Buffer` (snapshots) → transferred as `ArrayBuffer` (zero-copy).
-
-An uncloneable main-to-Worker request rejects under the synchronous send rule
-above without retaining request bookkeeping or disabling the Worker.
-
-This is handled in the TypeScript layer, not in Rust.
-
-### Batch Size for Cooperative Cancellation
-
-The `run()` implementation in workers uses a batch size of 100 rule firings
-(matching Go). The first batch starts a fresh native logical run; later batches
-continue it without clearing its halt request or diagnostics. After a chunk
-returns `LimitReached`, the worker applies this order:
-
-1. If the caller's total limit is exhausted, return `LimitReached`.
-2. If the `SharedArrayBuffer` abort flag is set, stop and return the existing
-   partial `HaltRequested` API result without calling native `halt()`.
-3. If the engine halt latch is set, return `HaltRequested`.
-4. Otherwise submit a continuation chunk.
-
-Native terminal reasons are returned immediately. This ordering preserves
-synchronous behavior when an explicit limit, host abort, or rule-side halt
-coincides with a batch boundary. The main thread sets the abort flag when the
-`AbortSignal` fires, giving cancellation latency of at most one batch.
-
-### Package Layout
-
-```
-packages/ferric/
-├── package.json
-├── src/
-│   ├── index.ts              # barrel re-export
-│   ├── native.ts             # re-export from native addon
-│   ├── engine-handle.ts      # EngineHandle (async wrapper)
-│   ├── engine-pool.ts        # EnginePool (concurrent wrapper)
-│   ├── worker.ts             # worker thread entry point
-│   ├── types.ts              # shared TypeScript types
-│   └── wire.ts               # wire types for postMessage
-├── native/                   # napi-rs generated bindings
-│   ├── index.js
-│   └── index.d.ts
-└── npm/                      # platform packages
-    ├── darwin-arm64/
-    ├── darwin-x64/
-    ├── linux-x64-gnu/
-    └── win32-x64-msvc/
-```
-
-## Comparison with Other Bindings
-
-| Aspect | Python | Go | TypeScript |
-|--------|--------|----|------------|
-| Thread safety | Any thread; calls are serialized and selected native work releases the GIL | Operations serialized per `Engine` | Worker threads |
-| Sync API | All methods sync | All methods sync | `Engine` (sync) |
-| Async API | N/A | `context.Context` on Run | `EngineHandle` (Promise + AbortSignal) |
-| Concurrency | No cross-thread queue | One `Engine` per goroutine | `EnginePool` |
-| Cancellation | Active-run halt / close | `context.Context` | `AbortSignal` |
-| Resource cleanup | Any-thread `close()` / context exit + final-reference drop | `Close()` (io.Closer) | `close()` + `Symbol.dispose` |
-| Value distinction | `Symbol` class / `ClipsString` class | `Symbol` type alias | `FerricSymbol` class |
-| String default | str → Symbol | string → String | string → String |
-| Integer overflow | Python int is arbitrary | int64 native | `number` / `bigint` adaptive |
-| FFI layer | PyO3 (Rust direct) | CGo → C FFI | napi-rs (Rust direct) |
-
-## Non-Goals
-
-1. Browser/Wasm support (napi-rs is Node.js only; Wasm would be a separate binding).
-2. Streaming or event-based rule firing callbacks (can be added later via napi-rs `ThreadsafeFunction`).
-3. Exposing the Rete network internals or providing custom node types.
-4. Supporting Deno or Bun out of the box (likely works but not a test target initially).
-
-## Future Extensions
-
-- **Event callbacks**: Use napi-rs `ThreadsafeFunction` to invoke a JS callback on each rule firing, enabling streaming observation of engine execution.
-- **Snapshot transfer**: Allow `EnginePool` to pre-serialize a snapshot and distribute it to workers for fast warm-start.
-- **Custom functions**: Register JS functions callable from CLIPS RHS actions. Requires `ThreadsafeFunction` for the worker-backed APIs.
+For native ownership, worker implementation, and package loading, see the
+[Architecture](typescript-binding-architecture.md). The package targets Node.js;
+browser/Wasm, Deno/Bun compatibility, user-defined JavaScript RHS callbacks, and
+rule-firing event streams are not public API features.

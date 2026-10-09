@@ -11,44 +11,44 @@ type DocsPage = {
 const origin = "http://127.0.0.1:4321";
 const projectTitle = "ferric-rules";
 const projectDescription =
-  "A mostly CLIPS-compatible forward-chaining rules engine written in Rust. Designed for embedding as independent engine instances in modern applications.";
+  "A mostly CLIPS-compatible forward-chaining rules engine for embedding in applications. Each engine instance owns its state.";
 const basePath: string = "/ferric-rules";
 const normalizedBasePath = basePath === "/" ? "" : basePath;
 // prettier-ignore
 const docsPages: DocsPage[] = [
     {
       "title": "Overview",
-      "description": "A mostly CLIPS-compatible forward-chaining rules engine in Rust.",
+      "description": "How the engine works and where to start.",
       "slug": "docs",
       "href": "docs/"
     },
     {
       "title": "Getting started",
-      "description": "Install ferric-rules, load rules, assert facts, and fire rules.",
+      "description": "Run a small Rust program with one rule and one fact.",
       "slug": "docs/getting-started",
       "href": "docs/getting-started/"
     },
     {
       "title": "CLIPS compatibility",
-      "description": "Supported language features, known differences, and migration notes.",
+      "description": "Implemented features, exclusions, and known differences from CLIPS.",
       "slug": "docs/compatibility",
       "href": "docs/compatibility/"
     },
     {
       "title": "Embedding API",
-      "description": "Runtime architecture, engine lifecycle, configuration, and host integration.",
+      "description": "Engine lifecycle, thread ownership, output, and language bindings.",
       "slug": "docs/embedding",
       "href": "docs/embedding/"
     },
     {
       "title": "Performance",
-      "description": "Benchmark policy, scaling behavior, and tuning guidance.",
+      "description": "Run the benchmarks and scaling checks.",
       "slug": "docs/performance",
       "href": "docs/performance/"
     },
     {
       "title": "Internals",
-      "description": "Architecture, Rete network implementation notes, and validation baseline.",
+      "description": "The main crates and the path from source to rule execution.",
       "slug": "docs/internals",
       "href": "docs/internals/"
     }
@@ -87,6 +87,39 @@ test.describe("rendered site", () => {
       page.getByRole("heading", { level: 1, name: projectTitle }),
     ).toBeVisible();
     await expect(page.locator(".skip-link")).toHaveAttribute("href", "#main");
+  });
+
+  test("links source installation, Swift, and corpus evidence", async ({
+    page,
+  }) => {
+    const installCommand =
+      "cargo add --git https://github.com/plx/ferric-rules ferric-rules";
+    await page.goto(sitePath("/"));
+    await expect(page.locator("[data-copy-text]")).toHaveAttribute(
+      "data-copy-text",
+      installCommand,
+    );
+    const codeExamples = page.locator(".code-panel__body");
+    await expect(codeExamples.nth(0)).toContainText("(test (> ?t 75))");
+    await expect(codeExamples.nth(1)).toContainText(
+      "use ferric_rules::runtime::{Engine, RunLimit};",
+    );
+    await page.goto(sitePath("docs/getting-started/"));
+    await expect(page.getByRole("main")).toContainText(installCommand);
+    await page.goto(sitePath("docs/embedding/"));
+    await expect(
+      page.getByRole("link", { name: "Swift package and build guide" }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/plx/ferric-rules/blob/main/bindings/swift/README.md",
+    );
+    await page.goto(sitePath("docs/compatibility/"));
+    await expect(
+      page.getByRole("link", { name: "granular corpus" }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/README.md",
+    );
   });
 
   test("keeps primary pages inside the viewport", async ({ page }) => {

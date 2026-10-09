@@ -156,8 +156,7 @@ TypeScript binding:
 [`typescript-binding-architecture.md`](typescript-binding-architecture.md),
 [`typescript-binding-conformance-matrix.md`](typescript-binding-conformance-matrix.md),
 [`typescript-binding-test-spec.md`](typescript-binding-test-spec.md), and the
-superseded design draft
-[`typescript-binding-api.md`](typescript-binding-api.md).
+[public API reference](typescript-binding-api.md).
 
 Maintainers:
 
