@@ -4778,5 +4778,880 @@ pub proof fn theorem_neg_node_sequences(
     lemma_neg_valid_implies_validate(nf.mem);
 }
 
+// =====================================================================
+// Section 5. Exists node protocol (crates/ferric-rules-core/src/rete.rs)
+// =====================================================================
+pub struct ExNode {
+    pub mem: ExMem,
+    /// live parent tokens in the upstream beta memory
+    pub parents: Set<TokenId>,
+    /// facts in the node's alpha memory
+    pub facts: Set<FactId>,
+}
+
+pub open spec fn ex_node_inv(n: ExNode, m: JoinRel) -> bool {
+    &&& ex_wf(n.mem)
+    &&& forall|p: TokenId, f: FactId| #[trigger]
+        in_rel(n.mem.support, p, f) <==> (n.parents.contains(p) && n.facts.contains(f) && m(p, f))
+    &&& forall|p: TokenId| #[trigger]
+        n.mem.satisfied.contains_key(p) <==> n.mem.support.contains_key(p)
+}
+
+/// Ground-truth "supported": live, and some fact of the alpha memory matches.
+pub open spec fn ex_gt_supported(n: ExNode, m: JoinRel, p: TokenId) -> bool {
+    n.parents.contains(p) && !gt_matches(n.facts, m, p).is_empty()
+}
+
+pub open spec fn ex_signals_exact(n: ExNode, n2: ExNode, m: JoinRel, sig: Seq<Signal>) -> bool {
+    &&& one_per_parent(sig)
+    &&& forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(p, x)) <==> (!ex_gt_supported(n, m, p) && ex_gt_supported(
+            n2,
+            m,
+            p,
+        ) && n2.mem.satisfied[p] == x)
+    &&& forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(p, x)) <==> (ex_gt_supported(n, m, p) && !ex_gt_supported(
+            n2,
+            m,
+            p,
+        ) && n2.parents.contains(p) && n.mem.satisfied[p] == x)
+}
+
+/// A parent's stored support set is exactly its from-scratch match set.
+pub proof fn lemma_ex_node_support_set(
+    support: Map<TokenId, Set<FactId>>,
+    parents: Set<TokenId>,
+    facts: Set<FactId>,
+    m: JoinRel,
+    p: TokenId,
+)
+    requires
+        no_empty_sets(support),
+        forall|q: TokenId, f: FactId| #[trigger]
+            in_rel(support, q, f) <==> (parents.contains(q) && facts.contains(f) && m(q, f)),
+    ensures
+        support.contains_key(p) ==> support[p] == gt_matches(facts, m, p),
+        support.contains_key(p) <==> (parents.contains(p) && !gt_matches(facts, m, p).is_empty()),
+{
+    let g = gt_matches(facts, m, p);
+    if support.contains_key(p) {
+        let sp = support[p];
+        assert(!sp.is_empty());
+        let f0 = sp.choose();
+        assert(sp.contains(f0));
+        assert(in_rel(support, p, f0));
+        assert forall|f: FactId| sp.contains(f) <==> g.contains(f) by {
+            assert(in_rel(support, p, f) <==> (parents.contains(p) && facts.contains(f) && m(p, f)));
+        }
+        assert(sp =~= g);
+        assert(g.contains(f0));
+    } else if parents.contains(p) {
+        assert forall|f: FactId| !g.contains(f) by {
+            assert(!in_rel(support, p, f));
+            assert(in_rel(support, p, f) <==> (parents.contains(p) && facts.contains(f) && m(p, f)));
+        }
+        assert(g =~= Set::empty());
+    }
+}
+
+/// THEOREM (pass-through iff supported; incremental = from scratch).
+pub proof fn lemma_ex_node_passthrough(n: ExNode, m: JoinRel, p: TokenId)
+    requires
+        ex_node_inv(n, m),
+    ensures
+        n.mem.satisfied.contains_key(p) <==> ex_gt_supported(n, m, p),
+        n.mem.support.contains_key(p) ==> n.mem.support[p] == gt_matches(n.facts, m, p),
+        ex_support_count(n.mem, p) == if n.parents.contains(p) {
+            gt_matches(n.facts, m, p).len()
+        } else {
+            0
+        },
+        ex_validate_consistency(n.mem),
+{
+    lemma_ex_node_support_set(n.mem.support, n.parents, n.facts, m, p);
+    let g = gt_matches(n.facts, m, p);
+    if n.parents.contains(p) && !n.mem.support.contains_key(p) {
+        assert(g =~= Set::empty());
+    }
+    assert(n.mem.satisfied.contains_key(p) <==> n.mem.support.contains_key(p));
+    lemma_ex_valid_implies_validate(n.mem);
+}
+
+pub proof fn lemma_ex_signals_from_concrete(n: ExNode, n2: ExNode, m: JoinRel, sig: Seq<Signal>)
+    requires
+        ex_node_inv(n, m),
+        ex_node_inv(n2, m),
+        one_per_parent(sig),
+        forall|p: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Propagate(p, x)) <==> (!n.mem.satisfied.contains_key(p)
+                && n2.mem.satisfied.contains_key(p) && n2.mem.satisfied[p] == x),
+        forall|p: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Retract(p, x)) <==> (n.mem.satisfied.contains_key(p)
+                && !n2.mem.satisfied.contains_key(p) && n2.parents.contains(p)
+                && n.mem.satisfied[p] == x),
+    ensures
+        ex_signals_exact(n, n2, m, sig),
+{
+    assert forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(p, x)) <==> (!ex_gt_supported(n, m, p) && ex_gt_supported(
+            n2,
+            m,
+            p,
+        ) && n2.mem.satisfied[p] == x) by {
+        lemma_ex_node_passthrough(n, m, p);
+        lemma_ex_node_passthrough(n2, m, p);
+    }
+    assert forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(p, x)) <==> (ex_gt_supported(n, m, p) && !ex_gt_supported(
+            n2,
+            m,
+            p,
+        ) && n2.parents.contains(p) && n.mem.satisfied[p] == x) by {
+        lemma_ex_node_passthrough(n, m, p);
+        lemma_ex_node_passthrough(n2, m, p);
+    }
+}
+
+// ----------------------------- left activation -------------------------
+/// rete.rs:2112-2116 `for &fact_id in &supporting_facts { add_support(p, fact_id) }`
+pub open spec fn ex_add_supports(s: ExMem, p: TokenId, fs: Seq<FactId>) -> ExMem
+    decreases fs.len(),
+{
+    if fs.len() == 0 {
+        s
+    } else {
+        ex_add_support(ex_add_supports(s, p, fs.drop_last()), p, fs.last()).0
+    }
+}
+
+/// rete.rs:2043 `exists_left_activate`
+pub open spec fn ex_left_activate(n: ExNode, p: TokenId, sfs: Seq<FactId>, pt: TokenId) -> (
+    ExNode,
+    Seq<Signal>,
+) {
+    let s1 = ex_add_supports(n.mem, p, sfs);
+    let parents = n.parents.insert(p);
+    if sfs.len() > 0 {
+        // 2118-2141
+        (ExNode { mem: ex_set_satisfied(s1, p, pt), parents, ..n }, seq![Signal::Propagate(p, pt)])
+    } else {
+        (ExNode { mem: s1, parents, ..n }, Seq::empty())
+    }
+}
+
+pub open spec fn ex_left_ok(n: ExNode, m: JoinRel, p: TokenId, sfs: Seq<FactId>) -> bool {
+    &&& !n.parents.contains(p)
+    &&& forall|f: FactId| #[trigger] sfs.contains(f) <==> (n.facts.contains(f) && m(p, f))
+}
+
+pub proof fn lemma_ex_add_supports(s: ExMem, p: TokenId, fs: Seq<FactId>)
+    requires
+        ex_wf(s),
+    ensures
+        ({
+            let t = ex_add_supports(s, p, fs);
+            &&& ex_wf(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) || (q == p && fs.contains(
+                    g,
+                )))
+            &&& t.satisfied == s.satisfied
+        }),
+    decreases fs.len(),
+{
+    if fs.len() > 0 {
+        let prev = ex_add_supports(s, p, fs.drop_last());
+        lemma_ex_add_supports(s, p, fs.drop_last());
+        lemma_ex_add_support(prev, p, fs.last());
+        let t = ex_add_supports(s, p, fs);
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) || (q == p && fs.contains(g))) by {
+            lemma_seq_contains_drop_last(fs, g);
+        }
+    }
+}
+
+pub proof fn lemma_ex_node_left(n: ExNode, m: JoinRel, p: TokenId, sfs: Seq<FactId>, pt: TokenId)
+    requires
+        ex_node_inv(n, m),
+        ex_left_ok(n, m, p, sfs),
+    ensures
+        ex_node_inv(ex_left_activate(n, p, sfs, pt).0, m),
+        ex_signals_exact(n, ex_left_activate(n, p, sfs, pt).0, m, ex_left_activate(n, p, sfs, pt).1),
+{
+    let (n2, sig) = ex_left_activate(n, p, sfs, pt);
+    lemma_ex_add_supports(n.mem, p, sfs);
+    let s1 = ex_add_supports(n.mem, p, sfs);
+    assert(!n.mem.support.contains_key(p)) by {
+        lemma_dom_has(n.mem.support, p);
+    }
+    assert forall|q: TokenId, g: FactId| #[trigger]
+        in_rel(n2.mem.support, q, g) <==> (n2.parents.contains(q) && n2.facts.contains(g) && m(q, g)) by {
+        assert(in_rel(n.mem.support, q, g) <==> (n.parents.contains(q) && n.facts.contains(g) && m(
+            q,
+            g,
+        )));
+    }
+    assert(n2.mem.support == s1.support);
+    assert forall|q: TokenId| #[trigger]
+        n2.mem.satisfied.contains_key(q) <==> n2.mem.support.contains_key(q) by {
+        assert(n.mem.satisfied.contains_key(q) <==> n.mem.support.contains_key(q));
+        assert(n2.mem.satisfied.contains_key(q) <==> (n.mem.satisfied.contains_key(q) || (q == p
+            && sfs.len() > 0)));
+        if q == p && sfs.len() > 0 {
+            assert(sfs.contains(sfs[0]));
+            assert(in_rel(s1.support, p, sfs[0]));
+        }
+        if n.mem.support.contains_key(q) {
+            assert(!n.mem.support[q].is_empty());
+            let g = n.mem.support[q].choose();
+            assert(in_rel(n.mem.support, q, g));
+            assert(in_rel(s1.support, q, g));
+        }
+        if s1.support.contains_key(q) {
+            assert(!s1.support[q].is_empty());
+            let g = s1.support[q].choose();
+            assert(in_rel(s1.support, q, g));
+            if !(q == p && sfs.contains(g)) {
+                assert(in_rel(n.mem.support, q, g));
+            } else {
+                assert(sfs.len() > 0);
+            }
+        }
+    }
+    if sfs.len() > 0 {
+        assert(sig[0] == Signal::Propagate(p, pt));
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!n.mem.satisfied.contains_key(q)
+            && n2.mem.satisfied.contains_key(q) && n2.mem.satisfied[q] == x) by {
+        if sig.contains(Signal::Propagate(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Propagate(q, x);
+            assert(i == 0);
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (n.mem.satisfied.contains_key(q)
+            && !n2.mem.satisfied.contains_key(q) && n2.parents.contains(q) && n.mem.satisfied[q]
+            == x) by {
+        if sig.contains(Signal::Retract(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Retract(q, x);
+            assert(i == 0);
+        }
+    }
+    lemma_ex_signals_from_concrete(n, n2, m, sig);
+}
+
+// ----------------------------- right activation ------------------------
+/// rete.rs:2202-2247: each matching parent gains `f`; a 0 -> 1 support
+/// transition creates and propagates a pass-through `pts(p)`.
+pub open spec fn ex_ra(s: ExMem, f: FactId, ps: Seq<TokenId>, pts: spec_fn(TokenId) -> TokenId) -> (
+    ExMem,
+    Seq<Signal>,
+)
+    decreases ps.len(),
+{
+    if ps.len() == 0 {
+        (s, Seq::empty())
+    } else {
+        let (s1, sig) = ex_ra(s, f, ps.drop_last(), pts);
+        let p = ps.last();
+        let old_count = ex_support_count(s1, p);  // 2214
+        let (s2, new_count) = ex_add_support(s1, p, f);  // 2215
+        if old_count == 0 && new_count > 0 {
+            // 2217-2245
+            (ex_set_satisfied(s2, p, pts(p)), sig.push(Signal::Propagate(p, pts(p))))
+        } else {
+            (s2, sig)
+        }
+    }
+}
+
+/// rete.rs:2152 `exists_right_activate`: `ps` are the parent tokens the new
+/// fact matches (`collect_candidate_parent_tokens` + `evaluate_pattern`).
+pub open spec fn ex_right_activate(
+    n: ExNode,
+    f: FactId,
+    ps: Seq<TokenId>,
+    pts: spec_fn(TokenId) -> TokenId,
+) -> (ExNode, Seq<Signal>) {
+    let (s, sig) = ex_ra(n.mem, f, ps, pts);
+    (ExNode { mem: s, facts: n.facts.insert(f), ..n }, sig)
+}
+
+pub open spec fn ex_right_ok(n: ExNode, m: JoinRel, f: FactId, ps: Seq<TokenId>) -> bool {
+    &&& !n.facts.contains(f)
+    &&& ps.no_duplicates()
+    &&& forall|p: TokenId| #[trigger] ps.contains(p) <==> (n.parents.contains(p) && m(p, f))
+}
+
+pub proof fn lemma_ex_ra(s: ExMem, f: FactId, ps: Seq<TokenId>, pts: spec_fn(TokenId) -> TokenId)
+    requires
+        ex_wf(s),
+        ps.no_duplicates(),
+    ensures
+        ({
+            let (t, sig) = ex_ra(s, f, ps, pts);
+            &&& ex_wf(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) || (g == f && ps.contains(q)))
+            &&& forall|q: TokenId| #[trigger]
+                t.satisfied.contains_key(q) <==> (s.satisfied.contains_key(q) || (ps.contains(q)
+                    && !s.support.contains_key(q)))
+            &&& forall|q: TokenId| #[trigger]
+                t.satisfied.contains_key(q) ==> t.satisfied[q] == if ps.contains(q)
+                    && !s.support.contains_key(q) {
+                    pts(q)
+                } else {
+                    s.satisfied[q]
+                }
+            &&& one_per_parent(sig)
+            &&& forall|q: TokenId, x: TokenId| #[trigger]
+                sig.contains(Signal::Propagate(q, x)) <==> (ps.contains(q)
+                    && !s.support.contains_key(q) && x == pts(q))
+            &&& forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(Signal::Retract(q, x)))
+            &&& forall|i: int| 0 <= i < sig.len() ==> ps.contains(sig_parent(#[trigger] sig[i]))
+        }),
+    decreases ps.len(),
+{
+    if ps.len() > 0 {
+        let pl = ps.drop_last();
+        let p = ps.last();
+        assert(pl.no_duplicates());
+        lemma_ex_ra(s, f, pl, pts);
+        let (s1, sig1) = ex_ra(s, f, pl, pts);
+        assert(!pl.contains(p)) by {
+            if pl.contains(p) {
+                let i = choose|i: int| 0 <= i < pl.len() && pl[i] == p;
+                assert(ps[i] == ps[ps.len() - 1]);
+            }
+        }
+        assert forall|q: TokenId| #[trigger] ps.contains(q) <==> (pl.contains(q) || q == p) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+        // `p`'s support is untouched by the earlier parents
+        lemma_ex_count(s1, p);
+        lemma_ex_count(s, p);
+        assert(s1.support.contains_key(p) == s.support.contains_key(p)) by {
+            lemma_dom_has(s1.support, p);
+            lemma_dom_has(s.support, p);
+            if s.support.contains_key(p) {
+                let g = choose|g: FactId| in_rel(s.support, p, g);
+                assert(in_rel(s1.support, p, g));
+            }
+            if s1.support.contains_key(p) {
+                let g = choose|g: FactId| in_rel(s1.support, p, g);
+                assert(in_rel(s.support, p, g));
+            }
+        }
+        lemma_ex_add_support(s1, p, f);
+        let (s2, c) = ex_add_support(s1, p, f);
+        let (t, sig) = ex_ra(s, f, ps, pts);
+        assert(forall|x: TokenId| #[trigger] sig1.contains(Signal::Propagate(p, x)) ==> false) by {
+            assert forall|x: TokenId| #[trigger] sig1.contains(Signal::Propagate(p, x)) implies false by {
+                let i = choose|i: int| 0 <= i < sig1.len() && sig1[i] == Signal::Propagate(p, x);
+                assert(pl.contains(sig_parent(sig1[i])));
+            }
+        }
+        if ex_support_count(s1, p) == 0 && c > 0 {
+            assert(sig == sig1.push(Signal::Propagate(p, pts(p))));
+            assert(sig.drop_last() == sig1);
+            assert forall|q: TokenId, x: TokenId| #[trigger]
+                sig.contains(Signal::Propagate(q, x)) <==> (ps.contains(q)
+                    && !s.support.contains_key(q) && x == pts(q)) by {
+                lemma_seq_contains_drop_last(sig, Signal::Propagate(q, x));
+            }
+            assert forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(Signal::Retract(q, x))) by {
+                lemma_seq_contains_drop_last(sig, Signal::Retract(q, x));
+            }
+            assert forall|i: int, j: int|
+                0 <= i < sig.len() && 0 <= j < sig.len() && i != j implies sig_parent(
+                #[trigger] sig[i],
+            ) != sig_parent(#[trigger] sig[j]) by {
+                if i == sig.len() - 1 {
+                    assert(pl.contains(sig_parent(sig1[j])));
+                } else if j == sig.len() - 1 {
+                    assert(pl.contains(sig_parent(sig1[i])));
+                } else {
+                    assert(sig[i] == sig1[i] && sig[j] == sig1[j]);
+                }
+            }
+            assert forall|i: int| 0 <= i < sig.len() implies ps.contains(
+                sig_parent(#[trigger] sig[i]),
+            ) by {
+                if i < sig.len() - 1 {
+                    assert(sig[i] == sig1[i]);
+                }
+            }
+        } else {
+            assert(t == s2 && sig == sig1);
+        }
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) || (g == f && ps.contains(q))) by {}
+    }
+}
+
+pub proof fn lemma_ex_node_right(
+    n: ExNode,
+    m: JoinRel,
+    f: FactId,
+    ps: Seq<TokenId>,
+    pts: spec_fn(TokenId) -> TokenId,
+)
+    requires
+        ex_node_inv(n, m),
+        ex_right_ok(n, m, f, ps),
+    ensures
+        ex_node_inv(ex_right_activate(n, f, ps, pts).0, m),
+        ex_signals_exact(
+            n,
+            ex_right_activate(n, f, ps, pts).0,
+            m,
+            ex_right_activate(n, f, ps, pts).1,
+        ),
+{
+    lemma_ex_ra(n.mem, f, ps, pts);
+    let (n2, sig) = ex_right_activate(n, f, ps, pts);
+    assert forall|q: TokenId, g: FactId| #[trigger]
+        in_rel(n2.mem.support, q, g) <==> (n2.parents.contains(q) && n2.facts.contains(g) && m(q, g)) by {
+        assert(in_rel(n.mem.support, q, g) <==> (n.parents.contains(q) && n.facts.contains(g) && m(
+            q,
+            g,
+        )));
+    }
+    assert forall|q: TokenId| #[trigger]
+        n2.mem.satisfied.contains_key(q) <==> n2.mem.support.contains_key(q) by {
+        assert(n.mem.satisfied.contains_key(q) <==> n.mem.support.contains_key(q));
+        if ps.contains(q) {
+            assert(in_rel(n2.mem.support, q, f));
+        }
+        if n.mem.support.contains_key(q) {
+            assert(!n.mem.support[q].is_empty());
+            let g = n.mem.support[q].choose();
+            assert(in_rel(n.mem.support, q, g));
+            assert(in_rel(n2.mem.support, q, g));
+        }
+        if n2.mem.support.contains_key(q) && !n.mem.support.contains_key(q) {
+            assert(!n2.mem.support[q].is_empty());
+            let g = n2.mem.support[q].choose();
+            assert(in_rel(n2.mem.support, q, g));
+            assert(!in_rel(n.mem.support, q, g));
+            assert(ps.contains(q));
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!n.mem.satisfied.contains_key(q)
+            && n2.mem.satisfied.contains_key(q) && n2.mem.satisfied[q] == x) by {}
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (n.mem.satisfied.contains_key(q)
+            && !n2.mem.satisfied.contains_key(q) && n2.parents.contains(q) && n.mem.satisfied[q]
+            == x) by {}
+    lemma_ex_signals_from_concrete(n, n2, m, sig);
+}
+
+// ----------------------------- fact retraction -------------------------
+/// rete.rs:432-441: `remove_parent_token` for parent tokens removed by the
+/// same retraction, which runs before `exists_handle_retraction` (457).
+pub open spec fn ex_drop_parents(s: ExMem, dead: Seq<TokenId>) -> ExMem
+    decreases dead.len(),
+{
+    if dead.len() == 0 {
+        s
+    } else {
+        ex_remove_parent_token(ex_drop_parents(s, dead.drop_last()), dead.last())
+    }
+}
+
+/// rete.rs:2286-2305: drop `f`'s support; an N -> 0 transition retracts the
+/// pass-through.
+pub open spec fn ex_rf(s: ExMem, f: FactId, ps: Seq<TokenId>) -> (ExMem, Seq<Signal>)
+    decreases ps.len(),
+{
+    if ps.len() == 0 {
+        (s, Seq::empty())
+    } else {
+        let (s1, sig) = ex_rf(s, f, ps.drop_last());
+        let p = ps.last();
+        let (s2, (new_count, was_removed)) = ex_remove_support(s1, p, f);  // 2291-2292
+        if was_removed && new_count == 0 {
+            // 2294-2303
+            let (s3, pt) = ex_remove_satisfied(s2, p);
+            match pt {
+                Some(x) => (s3, sig.push(Signal::Retract(p, x))),
+                None => (s3, sig),
+            }
+        } else {
+            (s2, sig)
+        }
+    }
+}
+
+/// rete.rs:361 `retract_fact` restricted to one exists node: dead parents
+/// are cleaned up first, then `ps` enumerates `parents_supported_by(f)`.
+pub open spec fn ex_retract_fact(n: ExNode, f: FactId, dead: Seq<TokenId>, ps: Seq<TokenId>) -> (
+    ExNode,
+    Seq<Signal>,
+) {
+    let s1 = ex_drop_parents(n.mem, dead);
+    let (s2, sig) = ex_rf(s1, f, ps);
+    (
+        ExNode { mem: s2, parents: n.parents.difference(dead.to_set()), facts: n.facts.remove(f) },
+        sig,
+    )
+}
+
+pub open spec fn ex_retract_ok(n: ExNode, f: FactId, dead: Seq<TokenId>, ps: Seq<TokenId>) -> bool {
+    &&& n.facts.contains(f)
+    &&& ps.no_duplicates()
+    &&& forall|p: TokenId| #[trigger]
+        ps.contains(p) <==> ex_parents_supported_by(ex_drop_parents(n.mem, dead), f).contains(p)
+}
+
+pub proof fn lemma_ex_drop_parents(s: ExMem, dead: Seq<TokenId>)
+    requires
+        ex_wf(s),
+    ensures
+        ({
+            let t = ex_drop_parents(s, dead);
+            &&& ex_wf(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) && !dead.contains(q))
+            &&& forall|q: TokenId| #[trigger]
+                t.satisfied.contains_key(q) <==> (s.satisfied.contains_key(q) && !dead.contains(q))
+            &&& forall|q: TokenId| #[trigger]
+                t.satisfied.contains_key(q) ==> t.satisfied[q] == s.satisfied[q]
+        }),
+    decreases dead.len(),
+{
+    if dead.len() > 0 {
+        let prev = ex_drop_parents(s, dead.drop_last());
+        lemma_ex_drop_parents(s, dead.drop_last());
+        lemma_ex_remove_parent_token(prev, dead.last());
+        let t = ex_drop_parents(s, dead);
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) && !dead.contains(q)) by {
+            lemma_seq_contains_drop_last(dead, q);
+        }
+        assert forall|q: TokenId| #[trigger]
+            t.satisfied.contains_key(q) <==> (s.satisfied.contains_key(q) && !dead.contains(q)) by {
+            lemma_seq_contains_drop_last(dead, q);
+        }
+    }
+}
+
+pub proof fn lemma_ex_rf(s: ExMem, f: FactId, ps: Seq<TokenId>)
+    requires
+        ex_wf(s),
+        ps.no_duplicates(),
+        forall|q: TokenId| #[trigger] s.satisfied.contains_key(q) <==> s.support.contains_key(q),
+    ensures
+        ({
+            let (t, sig) = ex_rf(s, f, ps);
+            &&& ex_wf(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) && !(g == f && ps.contains(
+                    q,
+                )))
+            &&& forall|q: TokenId| #[trigger]
+                t.satisfied.contains_key(q) <==> t.support.contains_key(q)
+            &&& forall|q: TokenId| #[trigger]
+                t.satisfied.contains_key(q) ==> t.satisfied[q] == s.satisfied[q]
+            &&& forall|q: TokenId| #[trigger] t.support.contains_key(q) ==> s.support.contains_key(q)
+            &&& one_per_parent(sig)
+            &&& forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(Signal::Propagate(q, x)))
+            &&& forall|q: TokenId, x: TokenId| #[trigger]
+                sig.contains(Signal::Retract(q, x)) <==> (s.support.contains_key(q)
+                    && !t.support.contains_key(q) && x == s.satisfied[q])
+            &&& forall|i: int| 0 <= i < sig.len() ==> ps.contains(sig_parent(#[trigger] sig[i]))
+        }),
+    decreases ps.len(),
+{
+    if ps.len() > 0 {
+        let pl = ps.drop_last();
+        let p = ps.last();
+        assert(pl.no_duplicates());
+        lemma_ex_rf(s, f, pl);
+        let (s1, sig1) = ex_rf(s, f, pl);
+        assert(!pl.contains(p)) by {
+            if pl.contains(p) {
+                let i = choose|i: int| 0 <= i < pl.len() && pl[i] == p;
+                assert(ps[i] == ps[ps.len() - 1]);
+            }
+        }
+        assert forall|q: TokenId| #[trigger] ps.contains(q) <==> (pl.contains(q) || q == p) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+        lemma_ex_remove_support(s1, p, f);
+        let (s2, (c, removed)) = ex_remove_support(s1, p, f);
+        lemma_ex_count(s2, p);
+        lemma_dom_has(s1.support, p);
+        lemma_dom_has(s2.support, p);
+        lemma_dom_has(s.support, p);
+        // `p`'s support set was untouched by the earlier parents
+        assert(s1.support.contains_key(p) == s.support.contains_key(p)) by {
+            if s.support.contains_key(p) {
+                let g = choose|g: FactId| in_rel(s.support, p, g);
+                assert(in_rel(s1.support, p, g));
+            }
+        }
+        assert((removed && c == 0) <==> (s1.support.contains_key(p) && !s2.support.contains_key(p)))
+            by {
+            if s1.support.contains_key(p) && !s2.support.contains_key(p) {
+                let g = choose|g: FactId| in_rel(s1.support, p, g);
+                assert(!in_rel(s2.support, p, g));
+            }
+        }
+        assert(forall|x: TokenId| #[trigger] sig1.contains(Signal::Retract(p, x)) ==> false) by {
+            assert forall|x: TokenId| #[trigger] sig1.contains(Signal::Retract(p, x)) implies false by {
+                let i = choose|i: int| 0 <= i < sig1.len() && sig1[i] == Signal::Retract(p, x);
+                assert(pl.contains(sig_parent(sig1[i])));
+            }
+        }
+        let (t, sig) = ex_rf(s, f, ps);
+        if removed && c == 0 {
+            assert(s1.satisfied.contains_key(p));
+            assert(s1.satisfied[p] == s.satisfied[p]);
+            assert(sig == sig1.push(Signal::Retract(p, s.satisfied[p])));
+            assert(sig.drop_last() == sig1);
+            assert forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(
+                Signal::Propagate(q, x),
+            )) by {
+                lemma_seq_contains_drop_last(sig, Signal::Propagate(q, x));
+            }
+            assert forall|q: TokenId, x: TokenId| #[trigger]
+                sig.contains(Signal::Retract(q, x)) <==> (s.support.contains_key(q)
+                    && !t.support.contains_key(q) && x == s.satisfied[q]) by {
+                lemma_seq_contains_drop_last(sig, Signal::Retract(q, x));
+            }
+            assert forall|i: int, j: int|
+                0 <= i < sig.len() && 0 <= j < sig.len() && i != j implies sig_parent(
+                #[trigger] sig[i],
+            ) != sig_parent(#[trigger] sig[j]) by {
+                if i == sig.len() - 1 {
+                    assert(pl.contains(sig_parent(sig1[j])));
+                } else if j == sig.len() - 1 {
+                    assert(pl.contains(sig_parent(sig1[i])));
+                } else {
+                    assert(sig[i] == sig1[i] && sig[j] == sig1[j]);
+                }
+            }
+            assert forall|i: int| 0 <= i < sig.len() implies ps.contains(
+                sig_parent(#[trigger] sig[i]),
+            ) by {
+                if i < sig.len() - 1 {
+                    assert(sig[i] == sig1[i]);
+                }
+            }
+        } else {
+            assert(t == s2 && sig == sig1);
+        }
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            in_rel(t.support, q, g) <==> (in_rel(s.support, q, g) && !(g == f && ps.contains(q))) by {}
+        assert forall|q: TokenId| #[trigger] t.support.contains_key(q) implies s.support.contains_key(
+            q,
+        ) by {}
+    }
+}
+
+pub proof fn lemma_ex_node_retract_fact(
+    n: ExNode,
+    m: JoinRel,
+    f: FactId,
+    dead: Seq<TokenId>,
+    ps: Seq<TokenId>,
+)
+    requires
+        ex_node_inv(n, m),
+        ex_retract_ok(n, f, dead, ps),
+    ensures
+        ex_node_inv(ex_retract_fact(n, f, dead, ps).0, m),
+        ex_signals_exact(n, ex_retract_fact(n, f, dead, ps).0, m, ex_retract_fact(n, f, dead, ps).1),
+{
+    let s1 = ex_drop_parents(n.mem, dead);
+    lemma_ex_drop_parents(n.mem, dead);
+    assert forall|q: TokenId| #[trigger] s1.satisfied.contains_key(q) <==> s1.support.contains_key(q)
+        by {
+        lemma_dom_has(s1.support, q);
+        lemma_dom_has(n.mem.support, q);
+        if n.mem.support.contains_key(q) && !dead.contains(q) {
+            let g = choose|g: FactId| in_rel(n.mem.support, q, g);
+            assert(in_rel(s1.support, q, g));
+        }
+    }
+    lemma_ex_rf(s1, f, ps);
+    let (n2, sig) = ex_retract_fact(n, f, dead, ps);
+    let t = n2.mem;
+    assert forall|q: TokenId| #[trigger] ps.contains(q) <==> in_rel(s1.support, q, f) by {
+        assert(in_rel(s1.support, q, f) <==> in_rel(s1.fact_to_parents, f, q));
+    }
+    assert forall|q: TokenId, g: FactId| #[trigger]
+        in_rel(t.support, q, g) <==> (n2.parents.contains(q) && n2.facts.contains(g) && m(q, g)) by {
+        assert(in_rel(n.mem.support, q, g) <==> (n.parents.contains(q) && n.facts.contains(g) && m(
+            q,
+            g,
+        )));
+    }
+    assert forall|q: TokenId| #[trigger] s1.support.contains_key(q) <==> (
+    n.mem.support.contains_key(q) && !dead.contains(q)) by {
+        assert(s1.satisfied.contains_key(q) <==> s1.support.contains_key(q));
+        assert(n.mem.satisfied.contains_key(q) <==> n.mem.support.contains_key(q));
+        assert(s1.satisfied.contains_key(q) <==> (n.mem.satisfied.contains_key(q) && !dead.contains(
+            q,
+        )));
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!n.mem.satisfied.contains_key(q)
+            && t.satisfied.contains_key(q) && t.satisfied[q] == x) by {
+        assert(!sig.contains(Signal::Propagate(q, x)));
+        if t.satisfied.contains_key(q) {
+            assert(t.support.contains_key(q));
+            assert(s1.support.contains_key(q));
+            assert(n.mem.support.contains_key(q));
+            assert(n.mem.satisfied.contains_key(q));
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (n.mem.satisfied.contains_key(q)
+            && !t.satisfied.contains_key(q) && n2.parents.contains(q) && n.mem.satisfied[q] == x) by {
+        assert(sig.contains(Signal::Retract(q, x)) <==> (s1.support.contains_key(q)
+            && !t.support.contains_key(q) && x == s1.satisfied[q]));
+        assert(t.satisfied.contains_key(q) <==> t.support.contains_key(q));
+        assert(n.mem.satisfied.contains_key(q) <==> n.mem.support.contains_key(q));
+        assert(n2.parents.contains(q) <==> (n.parents.contains(q) && !dead.contains(q)));
+        if n.mem.support.contains_key(q) {
+            assert(!n.mem.support[q].is_empty());
+            let g = n.mem.support[q].choose();
+            assert(in_rel(n.mem.support, q, g));
+            assert(n.parents.contains(q));
+        }
+        if s1.support.contains_key(q) {
+            assert(s1.satisfied.contains_key(q));
+            assert(s1.satisfied[q] == n.mem.satisfied[q]);
+        }
+    }
+    lemma_ex_signals_from_concrete(n, n2, m, sig);
+}
+
+/// rete.rs:1581-1586 cleanup for a removed parent token (its pass-through
+/// is a descendant removed by the same cascade).
+pub open spec fn ex_retract_parent(n: ExNode, p: TokenId) -> ExNode {
+    ExNode { mem: ex_remove_parent_token(n.mem, p), parents: n.parents.remove(p), ..n }
+}
+
+pub proof fn lemma_ex_node_retract_parent(n: ExNode, m: JoinRel, p: TokenId)
+    requires
+        ex_node_inv(n, m),
+    ensures
+        ex_node_inv(ex_retract_parent(n, p), m),
+        ex_signals_exact(n, ex_retract_parent(n, p), m, Seq::empty()),
+{
+    let n2 = ex_retract_parent(n, p);
+    lemma_ex_remove_parent_token(n.mem, p);
+    assert forall|q: TokenId, g: FactId| #[trigger]
+        in_rel(n2.mem.support, q, g) <==> (n2.parents.contains(q) && n2.facts.contains(g) && m(q, g)) by {
+        assert(in_rel(n.mem.support, q, g) <==> (n.parents.contains(q) && n.facts.contains(g) && m(
+            q,
+            g,
+        )));
+    }
+    lemma_ex_signals_from_concrete(n, n2, m, Seq::empty());
+}
+
+pub enum ExNodeOp {
+    Left(TokenId, Seq<FactId>, TokenId),
+    Right(FactId, Seq<TokenId>, spec_fn(TokenId) -> TokenId),
+    RetractFact(FactId, Seq<TokenId>, Seq<TokenId>),
+    RetractParent(TokenId),
+}
+
+pub open spec fn ex_node_step(n: ExNode, op: ExNodeOp) -> (ExNode, Seq<Signal>) {
+    match op {
+        ExNodeOp::Left(p, sfs, pt) => ex_left_activate(n, p, sfs, pt),
+        ExNodeOp::Right(f, ps, pts) => ex_right_activate(n, f, ps, pts),
+        ExNodeOp::RetractFact(f, dead, ps) => ex_retract_fact(n, f, dead, ps),
+        ExNodeOp::RetractParent(p) => (ex_retract_parent(n, p), Seq::empty()),
+    }
+}
+
+pub open spec fn ex_node_ok(n: ExNode, m: JoinRel, op: ExNodeOp) -> bool {
+    match op {
+        ExNodeOp::Left(p, sfs, _) => ex_left_ok(n, m, p, sfs),
+        ExNodeOp::Right(f, ps, _) => ex_right_ok(n, m, f, ps),
+        ExNodeOp::RetractFact(f, dead, ps) => ex_retract_ok(n, f, dead, ps),
+        ExNodeOp::RetractParent(_) => true,
+    }
+}
+
+pub open spec fn ex_node_init(facts: Set<FactId>) -> ExNode {
+    ExNode { mem: ex_new(), parents: Set::empty(), facts }
+}
+
+pub open spec fn ex_node_run(n0: ExNode, ops: Seq<ExNodeOp>) -> ExNode
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        n0
+    } else {
+        ex_node_step(ex_node_run(n0, ops.drop_last()), ops.last()).0
+    }
+}
+
+pub open spec fn ex_node_admissible(n0: ExNode, m: JoinRel, ops: Seq<ExNodeOp>) -> bool
+    decreases ops.len(),
+{
+    ops.len() == 0 || (ex_node_admissible(n0, m, ops.drop_last()) && ex_node_ok(
+        ex_node_run(n0, ops.drop_last()),
+        m,
+        ops.last(),
+    ))
+}
+
+/// THEOREM (exists node, arbitrary finite sequences): the support sets equal
+/// the from-scratch matches, support counts are the from-scratch match
+/// counts, the pass-through exists iff the parent is supported,
+/// `validate_consistency` passes (including check 2), and every step's
+/// signals are exactly the ground-truth unsupported <-> supported
+/// transitions.
+pub proof fn theorem_ex_node_sequences(facts: Set<FactId>, m: JoinRel, ops: Seq<ExNodeOp>)
+    requires
+        ex_node_admissible(ex_node_init(facts), m, ops),
+    ensures
+        ex_node_inv(ex_node_run(ex_node_init(facts), ops), m),
+        forall|p: TokenId|
+            #![trigger ex_node_run(ex_node_init(facts), ops).mem.satisfied.contains_key(p)]
+            ex_node_run(ex_node_init(facts), ops).mem.satisfied.contains_key(p)
+                <==> ex_gt_supported(ex_node_run(ex_node_init(facts), ops), m, p),
+        ex_validate_consistency(ex_node_run(ex_node_init(facts), ops).mem),
+        ops.len() > 0 ==> ex_signals_exact(
+            ex_node_run(ex_node_init(facts), ops.drop_last()),
+            ex_node_run(ex_node_init(facts), ops),
+            m,
+            ex_node_step(ex_node_run(ex_node_init(facts), ops.drop_last()), ops.last()).1,
+        ),
+    decreases ops.len(),
+{
+    let n0 = ex_node_init(facts);
+    if ops.len() == 0 {
+        lemma_ex_new();
+    } else {
+        theorem_ex_node_sequences(facts, m, ops.drop_last());
+        let n = ex_node_run(n0, ops.drop_last());
+        match ops.last() {
+            ExNodeOp::Left(p, sfs, pt) => lemma_ex_node_left(n, m, p, sfs, pt),
+            ExNodeOp::Right(f, ps, pts) => lemma_ex_node_right(n, m, f, ps, pts),
+            ExNodeOp::RetractFact(f, dead, ps) => lemma_ex_node_retract_fact(n, m, f, dead, ps),
+            ExNodeOp::RetractParent(p) => lemma_ex_node_retract_parent(n, m, p),
+        }
+    }
+    let nf = ex_node_run(n0, ops);
+    assert forall|p: TokenId| #[trigger]
+        nf.mem.satisfied.contains_key(p) <==> ex_gt_supported(nf, m, p) by {
+        lemma_ex_node_passthrough(nf, m, p);
+    }
+    assert(ex_valid(nf.mem));
+    lemma_ex_valid_implies_validate(nf.mem);
+}
+
 } // verus!
 
