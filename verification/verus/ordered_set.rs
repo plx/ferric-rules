@@ -23,8 +23,8 @@
 //!     inserts) and the linked branch.
 //!   - `remove(k)` returns `old@.contains(k)`; the view becomes
 //!     `old@.remove(old@.index_of(k))` (the unique position) if it returns
-//!     true and is unchanged otherwise. `lemma_remove_is_filter` shows this
-//!     equals `old@.filter(|x| x != k)`.
+//!     true and is unchanged otherwise. `lemma_remove_contract_is_filter`
+//!     shows that either way the new view is `old@.filter(|x| x != k)`.
 //!   - `contains`, `len`, `is_empty` agree with the view; `clear` empties it.
 //!   - `iter`: `next`/`next_back` return the front/back of the unvisited
 //!     window `view[lo..hi]` and shrink it, and return `None` exactly when it
@@ -38,12 +38,12 @@
 //!   - `decode` (snapshot `Deserialize`): accepts exactly the duplicate-free
 //!     sequences, and then the view equals the decoded sequence.
 //! * Panic freedom of the modeled control flow: every production `unwrap()`
-//!   (ordered_set.rs:49, 50, 84, 113, 118) is applied to `Some`; the `?`
-//!   early returns of `next`/`next_back` (lines 174, 185, 188, 203, 212,
-//!   215) are never taken while `remaining > 0`; `remaining -= 1` never
-//!   underflows; the `debug_assert_eq!(capacity(), 0)` at lines 182 and 209
-//!   never fires (a table miss on a remaining member happens only in the
-//!   header-only representation); `reserve(3)` never overflows.
+//!   (crates/ferric-rules-core/src/ordered_set.rs:49, 50, 84, 113, 118) is applied to
+//!   `Some`; the `?` early returns of `next`/`next_back` (lines 174, 185, 188, 203, 212,
+//!   215) are never taken while `remaining > 0`; `remaining -= 1` never underflows; the
+//!   `debug_assert_eq!(capacity(), 0)` at lines 182 and 209 never fires (a table miss on
+//!   a remaining member happens only in the header-only representation); `reserve(3)`
+//!   never overflows.
 //! * Shape of the linked structure (`lemma_linked_walks`): following `next`
 //!   from `first` visits `v[0], ..., v[len-1]` (pairwise distinct, and
 //!   exactly the table keys) and then reaches `None`; following `previous`
@@ -187,9 +187,10 @@ pub struct Caps {
     pub c3: usize,
 }
 
-/// Models `entries: HashMap<K, Links<K>>` (ordered_set.rs:16) together with
-/// the value its `capacity()` reports. `cap` is only changed by mutating
-/// calls, so repeated `capacity()` calls on an unchanged table agree.
+/// Models `entries: HashMap<K, Links<K>>`
+/// (crates/ferric-rules-core/src/ordered_set.rs:16) together with the value its
+/// `capacity()` reports. `cap` is only changed by mutating calls, so repeated
+/// `capacity()` calls on an unchanged table agree.
 pub struct Table {
     pub map: HashMapWithView<u64, Links>,
     pub cap: usize,
@@ -372,8 +373,9 @@ impl Table {
 // ---------------------------------------------------------------------------
 // The ordered set.
 // ---------------------------------------------------------------------------
-/// Models `struct OrderedSet<K>` (ordered_set.rs:15) with `K = u64`, plus a
-/// ghost abstract view `elems`: the members in insertion order.
+/// Models `struct OrderedSet<K>` (crates/ferric-rules-core/src/ordered_set.rs:15)
+/// with `K = u64`, plus a ghost abstract view `elems`: the members in insertion
+/// order.
 pub struct OrderedSet {
     pub entries: Table,
     pub first: Option<u64>,
@@ -395,7 +397,8 @@ impl OrderedSet {
         &&& rep(self.entries@, self.entries.cap as nat, self.first, self.last, self@)
     }
 
-    /// Models `impl Default for OrderedSet` (ordered_set.rs:22 fn default).
+    /// Models `impl Default for OrderedSet`
+    /// (crates/ferric-rules-core/src/ordered_set.rs:22 fn default).
     pub fn new(caps: Caps) -> (s: OrderedSet)
         ensures
             s.inv(),
@@ -411,7 +414,7 @@ impl OrderedSet {
         s
     }
 
-    /// Models `OrderedSet::contains` (ordered_set.rs:125 fn contains).
+    /// Models `OrderedSet::contains` (crates/ferric-rules-core/src/ordered_set.rs:125 fn contains).
     pub fn contains(&self, key: &u64) -> (r: bool)
         requires
             self.inv(),
@@ -437,8 +440,8 @@ impl OrderedSet {
         }
     }
 
-    /// Models `OrderedSet::len` (ordered_set.rs:133 fn len). `usize::from(b)`
-    /// is written as `if b { 1 } else { 0 }`.
+    /// Models `OrderedSet::len` (crates/ferric-rules-core/src/ordered_set.rs:133 fn len).
+    /// `usize::from(b)` is written as `if b { 1 } else { 0 }`.
     pub fn len(&self) -> (r: usize)
         requires
             self.inv(),
@@ -463,7 +466,7 @@ impl OrderedSet {
         }
     }
 
-    /// Models `OrderedSet::is_empty` (ordered_set.rs:141 fn is_empty).
+    /// Models `OrderedSet::is_empty` (crates/ferric-rules-core/src/ordered_set.rs:141 fn is_empty).
     pub fn is_empty(&self) -> (r: bool)
         requires
             self.inv(),
@@ -473,7 +476,7 @@ impl OrderedSet {
         self.first.is_none()
     }
 
-    /// Models `OrderedSet::clear` (ordered_set.rs:145 fn clear).
+    /// Models `OrderedSet::clear` (crates/ferric-rules-core/src/ordered_set.rs:145 fn clear).
     pub fn clear(&mut self, caps: Caps)
         requires
             old(self).inv(),
@@ -487,7 +490,7 @@ impl OrderedSet {
         self.elems = Ghost(Seq::empty());
     }
 
-    /// Models `OrderedSet::insert` (ordered_set.rs:32 fn insert).
+    /// Models `OrderedSet::insert` (crates/ferric-rules-core/src/ordered_set.rs:32 fn insert).
     pub fn insert(&mut self, key: u64, caps: Caps) -> (r: bool)
         requires
             old(self).inv(),
@@ -589,9 +592,9 @@ impl OrderedSet {
                     assert(w[j] == k);
                 }
             }
-            assert forall|i: int| #![trigger w[i]] 0 <= i < w.len() implies self.entries@.contains_key(
-                w[i],
-            ) && self.entries@[w[i]] == links_at(w, i) by {
+            assert forall|i: int| #![trigger w[i]]
+                0 <= i < w.len() implies self.entries@.contains_key(w[i])
+                    && self.entries@[w[i]] == links_at(w, i) by {
                 if i < n {
                     assert(w[i] == v[i]);
                     assert(v[i] != key);
@@ -605,7 +608,7 @@ impl OrderedSet {
         true
     }
 
-    /// Models `OrderedSet::remove` (ordered_set.rs:92 fn remove).
+    /// Models `OrderedSet::remove` (crates/ferric-rules-core/src/ordered_set.rs:92 fn remove).
     pub fn remove(&mut self, key: &u64, caps: Caps) -> (r: bool)
         requires
             old(self).inv(),
@@ -721,7 +724,7 @@ impl OrderedSet {
 // ---------------------------------------------------------------------------
 // Iteration.
 // ---------------------------------------------------------------------------
-/// Models `struct Iter<'a, K>` (ordered_set.rs:161). The ghost cursors
+/// Models `struct Iter<'a, K>` (crates/ferric-rules-core/src/ordered_set.rs:161). The ghost cursors
 /// `lo`/`hi` delimit the still-unvisited window `set@[lo..hi]` of the view.
 pub struct Iter<'a> {
     pub set: &'a OrderedSet,
@@ -743,7 +746,8 @@ impl<'a> Iter<'a> {
         }
     }
 
-    /// Models `Iterator::next` for `Iter` (ordered_set.rs:170 fn next).
+    /// Models `Iterator::next` for `Iter`
+    /// (crates/ferric-rules-core/src/ordered_set.rs:170 fn next).
     pub fn next(&mut self) -> (r: Option<u64>)
         requires
             old(self).inv(),
@@ -814,7 +818,7 @@ impl<'a> Iter<'a> {
     }
 
     /// Models `DoubleEndedIterator::next_back` for `Iter`
-    /// (ordered_set.rs:199 fn next_back).
+    /// (crates/ferric-rules-core/src/ordered_set.rs:199 fn next_back).
     pub fn next_back(&mut self) -> (r: Option<u64>)
         requires
             old(self).inv(),
@@ -883,8 +887,9 @@ impl<'a> Iter<'a> {
         Some(key)
     }
 
-    /// Models `Iterator::size_hint` for `Iter` (ordered_set.rs:193); the
-    /// `ExactSizeIterator::len` of ordered_set.rs:221 is its lower bound.
+    /// Models `Iterator::size_hint` for `Iter`
+    /// (crates/ferric-rules-core/src/ordered_set.rs:193); the `ExactSizeIterator::len`
+    /// (ordered_set.rs:221) is its lower bound.
     pub fn size_hint(&self) -> (r: (usize, Option<usize>))
         requires
             self.inv(),
@@ -897,7 +902,7 @@ impl<'a> Iter<'a> {
 }
 
 impl OrderedSet {
-    /// Models `OrderedSet::iter` (ordered_set.rs:151 fn iter).
+    /// Models `OrderedSet::iter` (crates/ferric-rules-core/src/ordered_set.rs:151 fn iter).
     pub fn iter<'a>(&'a self) -> (it: Iter<'a>)
         requires
             self.inv(),
@@ -920,7 +925,7 @@ impl OrderedSet {
 }
 
 /// `set.iter().copied().collect::<Vec<_>>()` (also what `Serialize` emits,
-/// ordered_set.rs:234) yields exactly the view.
+/// crates/ferric-rules-core/src/ordered_set.rs:234) yields exactly the view.
 pub fn collect_forward(set: &OrderedSet) -> (out: Vec<u64>)
     requires
         set.inv(),
@@ -986,7 +991,7 @@ pub fn collect_backward(set: &OrderedSet) -> (out: Vec<u64>)
 }
 
 /// The table after `remove` deleted member `v[i]` and the predecessor's
-/// `next` link was redirected (ordered_set.rs:109-116).
+/// `next` link was redirected (crates/ferric-rules-core/src/ordered_set.rs:109-116).
 pub open spec fn unlink_previous(m0: Map<u64, Links>, v: Seq<u64>, i: int) -> Map<u64, Links> {
     let m1 = m0.remove(v[i]);
     if i > 0 {
@@ -997,7 +1002,7 @@ pub open spec fn unlink_previous(m0: Map<u64, Links>, v: Seq<u64>, i: int) -> Ma
 }
 
 /// ... and the successor's `previous` link was redirected
-/// (ordered_set.rs:117-121).
+/// (crates/ferric-rules-core/src/ordered_set.rs:117-121).
 pub open spec fn unlink(m0: Map<u64, Links>, v: Seq<u64>, i: int) -> Map<u64, Links> {
     let m2 = unlink_previous(m0, v, i);
     if i + 1 < v.len() {
@@ -1259,7 +1264,10 @@ pub proof fn lemma_linked_walks(
             m.contains_key(k) <==> exists|n: nat| n < v.len() && #[trigger] walk_next(m, first, n)
                 == Some(k),
 {
-    assert forall|n: nat| n <= v.len() implies #[trigger] walk_next(m, first, n) == at(v, n as int) by {
+    assert forall|n: nat| n <= v.len() implies #[trigger] walk_next(m, first, n) == at(
+        v,
+        n as int,
+    ) by {
         lemma_walk_next_from(m, first, last, v, 0, n);
     }
     assert forall|n: nat| n <= v.len() implies #[trigger] walk_previous(m, last, n) == at(
@@ -1405,8 +1413,9 @@ pub proof fn lemma_remove_is_filter(v: Seq<u64>, i: int)
         lemma_filter_keeps_all(front, k);
         assert(v.remove(i) =~= front);
     } else {
-        assert forall|a: int, b: int| 0 <= a < front.len() && 0 <= b < front.len() && a != b implies front[a]
-            != front[b] by {
+        assert forall|a: int, b: int|
+            0 <= a < front.len() && 0 <= b < front.len() && a != b implies front[a]
+                != front[b] by {
             assert(front[a] == v[a] && front[b] == v[b]);
         }
         lemma_remove_is_filter(front, i);
@@ -1523,11 +1532,11 @@ pub fn run_trace(ops: &Vec<Op>, caps: &Vec<Caps>) -> (out: (OrderedSet, Vec<bool
 // ---------------------------------------------------------------------------
 // Snapshot decoding.
 // ---------------------------------------------------------------------------
-/// Models `Deserialize for OrderedSet` (ordered_set.rs:240 fn deserialize)
-/// after the `Vec<K>` has been decoded: `None` stands for the
-/// "duplicate ordered membership" error. `caps[i]` are the free capacity
-/// inputs for the `i`-th `insert`. Decoding accepts exactly the duplicate-free
-/// sequences and then reproduces them as the view.
+/// Models `Deserialize for OrderedSet` (crates/ferric-rules-core/src/ordered_set.rs:240
+/// fn deserialize) after the `Vec<K>` has been decoded: `None` stands for the "duplicate
+/// ordered membership" error. `caps[i]` are the free capacity inputs for the `i`-th
+/// `insert`. Decoding accepts exactly the duplicate-free sequences and then reproduces
+/// them as the view.
 pub fn decode(values: &Vec<u64>, caps: &Vec<Caps>) -> (r: Option<OrderedSet>)
     requires
         caps.len() == values.len(),
@@ -1548,13 +1557,16 @@ pub fn decode(values: &Vec<u64>, caps: &Vec<Caps>) -> (r: Option<OrderedSet>)
     {
         if !set.insert(values[i], caps[i]) {
             proof {
-                let j = choose|j: int| 0 <= j < i && values@.subrange(0, i as int)[j] == values@[i as int];
+                let prefix = values@.subrange(0, i as int);
+                let j = choose|j: int| 0 <= j < i && prefix[j] == values@[i as int];
                 assert(values@[j] == values@[i as int]);
             }
             return None;
         }
         proof {
-            assert(values@.subrange(0, i + 1) =~= values@.subrange(0, i as int).push(values@[i as int]));
+            assert(values@.subrange(0, i + 1) =~= values@.subrange(0, i as int).push(
+                values@[i as int],
+            ));
         }
         i = i + 1;
     }
