@@ -1,3 +1,108 @@
+//! Verus models and unbounded proofs for the support-tracking memories of
+//! ferric-rules-core -- `NegativeMemory` (negative.rs), `ExistsMemory`
+//! (exists.rs), `NccMemory` (ncc.rs) -- and for the rete.rs call sites that
+//! drive them and own their pass-through tokens.
+//!
+//! Check: `verus --crate-type=lib verification/verus/support_counting.rs`
+//! (127 functions verified, 0 errors, about 8 s).
+//!
+//! # What is modelled
+//! Sections 1-3: every operation of the three memories (including
+//! `validate_consistency`) is a spec function that follows the production
+//! code branch by branch; each cites `file:line`.  Sections 4-6: the rete.rs
+//! callers that keep pass-through tokens and propagate/retract downstream
+//! ("signals"): `negative_left_activate`, `negative_right_activate`,
+//! `retract_fact` (`collect_negative_retractions`, parent cleanup,
+//! `apply_negative_retraction`), `exists_left_activate`,
+//! `exists_right_activate`, `exists_handle_retraction`,
+//! `ncc_left_activate_now`, `ncc_partner_apply_result`, and the two-phase NCC
+//! cascade (`collect_ncc_result_retractions`, parent cleanup,
+//! `apply_ncc_result_retraction`, then `ncc_left_activate`).
+//!
+//! # What is proved (arbitrary finite operation sequences, by induction)
+//! Memory level (`theorem_neg_sequences`, `theorem_ex_sequences`,
+//! `theorem_ncc_sequences`, `theorem_ncc_cascade`):
+//! * From scratch: forward and reverse indexes equal `scratch_fwd`/`scratch_rev`
+//!   of the ground-truth set of (parent, blocker | support | result) pairs;
+//!   exists support counts and NCC result counts equal the from-scratch
+//!   cardinalities (`scratch_count`).
+//! * Order: negative blocker lists and NCC result lists are ordered by first
+//!   insertion; the primary blocker / primary result is the oldest survivor.
+//! * Return values are exact transitions: `remove_blocker`'s `now_unblocked`,
+//!   the caller tests on `add_support` (rete.rs:2217), `remove_support`
+//!   (rete.rs:2294) and `add_result` (rete.rs:1901) hold exactly when the
+//!   parent's ground-truth set goes non-empty <-> empty.
+//! * Counts: NCC `*count += 1` stays <= `usize::MAX` given the bound on
+//!   tracked results (see `ncc_pre`); the `*count > 0` guard of
+//!   `decrement_results` is always taken.  Exists counts are `HashSet::len`
+//!   (no arithmetic); the negative memory has no counter.
+//! * `remove_parent_token` deletes every entry of that parent in every map
+//!   and leaves all other parents' entries unchanged.
+//! * The NCC two-phase cascade passes through states with dangling primaries
+//!   (`ncc_core` only) and restores the settled invariant; the parents it
+//!   reports as unblocked are exactly the surviving parents whose result set
+//!   became empty, each once.
+//! * Per-memory block-list positions stay unique given fresh orders; the
+//!   dummy `0` orders passed by callers (rete.rs:1373, 1442, 1892, 2024) are
+//!   provably unused.  The `expect` at rete.rs:1436 and the index at
+//!   rete.rs:1980 cannot fail (chronology domain = blocked / primary domain).
+//! * The model of `validate_consistency` holds: for NegativeMemory at memory
+//!   level (given the caller obligations in `neg_pre`); for ExistsMemory and
+//!   NccMemory the cross-checks (satisfied => supported; unblocked =>
+//!   unblocked count) are caller protocol and are proved at node level.
+//!
+//! Node level (`theorem_neg_node_sequences`, `theorem_ex_node_sequences`,
+//! `theorem_ncc_node_sequences`):
+//! * A parent has a pass-through iff it is live (admitted, for NCC) and its
+//!   ground-truth blocker set is empty (negative, NCC) / its ground-truth
+//!   support set is non-empty (exists); stored sets equal the from-scratch
+//!   matches against the alpha memory (or live subnetwork results).
+//! * Every step emits `Propagate(p, pt)` exactly when p becomes unblocked /
+//!   supported and `Retract(p, pt)` exactly when a parent that stays live
+//!   becomes blocked / unsupported, with the recorded pass-through, and at
+//!   most one signal per parent.  `validate_consistency` holds after every step.
+//!
+//! Section 7 replays production unit tests (negative.rs:408; ncc.rs tests),
+//! proves the dummy-order and chronology-lookup facts above, and shows on
+//! concrete scenarios that the node theorems have satisfiable preconditions
+//! and emit the expected signals: negative (Propagate, Retract, Propagate),
+//! exists (none, Propagate, Retract), NCC (Propagate, Retract).  The NCC
+//! retraction cascade is not exercised by a concrete scenario.
+//!
+//! # Abstractions
+//! * `HashMap`/`HashSet` -> vstd `Map`/`Set`; a loop over a `HashSet` uses an
+//!   arbitrary enumeration (`to_seq`), and every lemma holds for any order.
+//! * `OrderedSet<K>` -> its abstract value, an insertion-ordered duplicate-free
+//!   `Seq` (`os_insert`/`os_remove`/`os_first`).  That the endpoint/linked-table
+//!   implementation in ordered_set.rs refines this is NOT proved here.
+//! * `TokenId`/`FactId` -> `int`; `usize` counts -> `nat` with explicit overflow
+//!   obligations; `u64` orders stay `u64`; the memories' `id` fields are omitted.
+//! * Join tests (`evaluate_pattern`, `collect_candidate_facts`,
+//!   `collect_candidate_parent_tokens`) are a fixed relation `m: JoinRel`;
+//!   `find_ncc_owner_parent_token` is the owner passed in.  Node operations
+//!   take the sequences these produce and require that they enumerate exactly
+//!   the matching facts / parents (trusted).
+//! * `allocate_block_order` is a counter (`next_order`); its renumbering path
+//!   at `u64::MAX` is excluded by preconditions.  Pass-through ids are inputs.
+//! * Signals stand for `propagate_token` / `retract_token_cascade` calls; their
+//!   downstream effects are assumed not to touch the same node's memory within
+//!   one operation (true for an acyclic beta network).
+//!
+//! # Trusted base
+//! Verus 0.2026.11.02, vstd and Z3.  No `assume`, `admit`, `external_body`,
+//! `external`, `assume_specification` or `exec_allows_no_decreases_clause`.
+//!
+//! # Known gaps
+//! * Not modelled: the NCC batch path (`pending_ncc_results`,
+//!   `drain_ncc_results` with reserved orders, `deferred_left`) and the
+//!   `pending_events` deferral of `ncc_left_activate`; only the immediate path.
+//! * Network-wide uniqueness of block orders across memories
+//!   (`validate_block_orders`) and the renumbering in `allocate_block_order`.
+//! * Node-level ordering (blockers in fact-assertion order, snapshot.rs:1582-1601);
+//!   only insertion order is proved, at memory level.
+//! * Node-level `clear`, serde snapshots, and the beta-memory / token-store side
+//!   of pass-through tokens.
+//! * These are models: nothing here is checked against the compiled Rust.
 use vstd::prelude::*;
 
 verus! {
@@ -7,7 +112,7 @@ verus! {
 // =====================================================================
 
 /// Opaque identifiers.  Production `TokenId`/`FactId` are slotmap keys
-/// (crates/ferric-rules-core/src/token.rs:18, fact.rs); only equality matters.
+/// (crates/ferric-rules-core/src/token.rs:18, fact.rs:172); only equality matters.
 pub type TokenId = int;
 
 pub type FactId = int;
@@ -297,7 +402,7 @@ pub proof fn lemma_unlink_all<K, T>(m: Map<K, Set<T>>, ks: Seq<K>, t: T)
         let prev = unlink_all(m, ks.drop_last(), t);
         lemma_unlink_all(m, ks.drop_last(), t);
         lemma_unlink(prev, ks.last(), t);
-        assert forall|k2: K| ks.contains(k2) <==> (ks.drop_last().contains(k2) || k2 == ks.last()) by {
+        assert forall|k2: K| #[trigger] ks.contains(k2) <==> (ks.drop_last().contains(k2) || k2 == ks.last()) by {
             if ks.contains(k2) {
                 let i = choose|i: int| 0 <= i < ks.len() && ks[i] == k2;
                 if i < ks.len() - 1 {
@@ -2014,7 +2119,7 @@ pub proof fn lemma_remove_all_keys<K, V>(m: Map<K, V>, ks: Seq<K>)
         let prev = remove_all_keys(m, ks.drop_last());
         lemma_remove_all_keys(m, ks.drop_last());
         assert(remove_all_keys(m, ks) == prev.remove(ks.last()));
-        assert forall|k: K| ks.contains(k) <==> (ks.drop_last().contains(k) || k == ks.last()) by {
+        assert forall|k: K| #[trigger] ks.contains(k) <==> (ks.drop_last().contains(k) || k == ks.last()) by {
             if ks.contains(k) {
                 let i = choose|i: int| 0 <= i < ks.len() && ks[i] == k;
                 if i < ks.len() - 1 {
@@ -2126,7 +2231,7 @@ pub proof fn lemma_ncc_tracked(s: NccMem, p: TokenId)
         ncc_tracked(s, p) == s.result_count[p],
 {
     let fs = ncc_owned_set(s, p);
-    assert forall|r: TokenId| fs.contains(r) <==> s.parent_results[p].to_set().contains(r) by {
+    assert forall|r: TokenId| #[trigger] fs.contains(r) <==> s.parent_results[p].to_set().contains(r) by {
         assert(ncc_fwd(s, p, r) <==> ncc_owns(s, p, r));
     }
     assert(fs =~= s.parent_results[p].to_set());
@@ -3655,7 +3760,7 @@ pub proof fn lemma_neg_node_passthrough(n: NegNode, m: JoinRel, p: TokenId)
         assert(neg_fwd(n.mem, p, f0));
         assert(g.contains(f0));
         assert(n.mem.blocked[p].to_set() =~= g) by {
-            assert forall|f: FactId| n.mem.blocked[p].to_set().contains(f) <==> g.contains(f) by {
+            assert forall|f: FactId| #[trigger] n.mem.blocked[p].to_set().contains(f) <==> g.contains(f) by {
                 assert(neg_fwd(n.mem, p, f) <==> (n.parents.contains(p) && n.facts.contains(f) && m(
                     p,
                     f,
@@ -6432,6 +6537,42 @@ pub proof fn example_ncc_counts() {
     }
 }
 
+/// The NCC call sites pass a dummy order 0 where it cannot be stored:
+/// rete.rs:1892 (`add_result` for a parent that already has results) and
+/// rete.rs:2024 (`reassign_primary` for a parent with no results left).
+pub proof fn lemma_ncc_order_irrelevant(s: NccMem, p: TokenId, r: TokenId, o1: u64, o2: u64)
+    requires
+        ncc_core(s),
+    ensures
+        ncc_result_count(s, p) != 0 ==> ncc_add_result(s, p, r, o1) == ncc_add_result(s, p, r, o2),
+        ncc_result_count(s, p) == 0 ==> ncc_reassign_primary(s, p, o1) == ncc_reassign_primary(
+            s,
+            p,
+            o2,
+        ),
+{
+}
+
+/// The chronology lookups made by the retraction collectors cannot panic in
+/// any state satisfying the (cascade-tolerant) invariants: rete.rs:1436
+/// `block_order(parent).expect(..)` after `primary_blocker(parent) ==
+/// Some(fact)`, and rete.rs:1980 `ncc.block_order[&parent]` after
+/// `primary_result.get(&parent) == Some(result)`.
+pub proof fn lemma_chronology_lookups_total(sn: NegMem, sc: NccMem, p: TokenId, f: FactId, r: TokenId)
+    requires
+        neg_wf(sn),
+        ncc_core(sc),
+    ensures
+        neg_primary_blocker(sn, p) == Some(f) ==> neg_block_order_of(sn, p) is Some,
+        sc.primary_result.get(p) == Some(r) ==> sc.block_order.contains_key(p),
+{
+}
+
+/// negative.rs:155 `block_order`
+pub open spec fn neg_block_order_of(s: NegMem, p: TokenId) -> Option<u64> {
+    s.block_order.get(p)
+}
+
 /// Negative-node scenario: a parent arrives with no blocker (propagates), a
 /// matching fact is asserted (its pass-through is retracted), the fact is
 /// retracted (a fresh pass-through propagates).  The three-step sequence is
@@ -6509,6 +6650,108 @@ pub proof fn example_neg_node_scenario() {
     assert(neg_node_admissible(n0, m, seq![op1, op2]));
     assert(neg_node_admissible(n0, m, ops));
     theorem_neg_node_sequences(Set::empty(), 0, m, ops);
+}
+
+/// NCC-node scenario: an admitted parent without results propagates; its
+/// first subnetwork result retracts that pass-through.  The sequence is
+/// admissible, so `theorem_ncc_node_sequences` applies to it.
+pub proof fn example_ncc_node_scenario() {
+    let (p, r, pt1) = (1int, 2int, 100int);
+    let n0 = ncc_node_init(0);
+    let op1 = NccNodeOp::Left(p, pt1);
+    let op2 = NccNodeOp::Result(p, r);
+    theorem_ncc_node_sequences(0, Seq::empty());
+    assert(ncc_node_run(n0, Seq::empty()) == n0);
+    // 1. admission without results: Propagate(p, pt1)
+    let (n1, sig1) = ncc_node_step(n0, op1);
+    lemma_ncc_node_left(n0, p, pt1);
+    assert(sig1 == seq![Signal::Propagate(p, pt1)]);
+    // 2. first subnetwork result: Retract(p, pt1)
+    assert(n1.mem.result_owner.dom() =~= Set::empty());
+    assert(ncc_node_ok(n1, op2));
+    let (n2, sig2) = ncc_node_step(n1, op2);
+    lemma_ncc_node_partner(n1, p, r);
+    lemma_ncc_add_result(n1.mem, p, r, 0);
+    assert(sig2 == seq![Signal::Retract(p, pt1)]);
+    assert(!n2.mem.unblocked.contains_key(p));
+    // the sequence is admissible
+    let ops = seq![op1, op2];
+    assert(ops.drop_last() =~= seq![op1]);
+    assert(seq![op1].drop_last() =~= Seq::<NccNodeOp>::empty());
+    assert(ncc_node_run(n0, seq![op1]) == n1);
+    assert(seq![op1].last() == op1 && ops.last() == op2);
+    assert(ncc_node_admissible(n0, Seq::<NccNodeOp>::empty()));
+    assert(ncc_node_admissible(n0, seq![op1]));
+    assert(ncc_node_admissible(n0, ops));
+    theorem_ncc_node_sequences(0, ops);
+}
+
+/// Exists-node scenario: a parent arrives without support (no signal), a
+/// matching fact is asserted (Propagate), the fact is retracted (Retract).
+/// The sequence is admissible, so `theorem_ex_node_sequences` applies to it.
+pub proof fn example_ex_node_scenario() {
+    let m: JoinRel = |q: TokenId, g: FactId| true;
+    let (p, f, pt) = (1int, 7int, 100int);
+    let pts = |q: TokenId| pt;
+    let n0 = ex_node_init(Set::empty());
+    let op1 = ExNodeOp::Left(p, Seq::empty(), pt);
+    let op2 = ExNodeOp::Right(f, seq![p], pts);
+    let op3 = ExNodeOp::RetractFact(f, Seq::empty(), seq![p]);
+    theorem_ex_node_sequences(Set::empty(), m, Seq::empty());
+    assert(ex_node_run(n0, Seq::empty()) == n0);
+    assert forall|q: TokenId| #[trigger] seq![p].contains(q) <==> q == p by {
+        if q == p {
+            assert(seq![p][0] == p);
+        }
+    }
+    // 1. no supporting fact: no signal
+    assert(ex_node_ok(n0, m, op1));
+    let (n1, sig1) = ex_node_step(n0, op1);
+    lemma_ex_node_left(n0, m, p, Seq::empty(), pt);
+    assert(sig1 == Seq::<Signal>::empty());
+    // 2. a matching fact is asserted: Propagate(p, pt)
+    assert(n1.parents.contains(p));
+    assert(ex_node_ok(n1, m, op2));
+    let (n2, sig2) = ex_node_step(n1, op2);
+    lemma_ex_node_right(n1, m, f, seq![p], pts);
+    lemma_ex_ra(n1.mem, f, seq![p], pts);
+    assert(!n1.mem.support.contains_key(p)) by {
+        assert(n1.mem.satisfied.dom() =~= Set::empty());
+    }
+    assert(sig2.contains(Signal::Propagate(p, pt)));
+    // 3. the fact is retracted: Retract(p, pt)
+    assert(ex_drop_parents(n2.mem, Seq::empty()) == n2.mem);
+    assert forall|q: TokenId| #[trigger]
+        seq![p].contains(q) <==> ex_parents_supported_by(n2.mem, f).contains(q) by {
+        assert(in_rel(n2.mem.support, q, f) <==> in_rel(n2.mem.fact_to_parents, f, q));
+    }
+    assert(ex_node_ok(n2, m, op3));
+    let (n3, sig3) = ex_node_step(n2, op3);
+    lemma_ex_node_retract_fact(n2, m, f, Seq::empty(), seq![p]);
+    lemma_ex_node_passthrough(n2, m, p);
+    lemma_ex_node_passthrough(n3, m, p);
+    assert(ex_gt_supported(n2, m, p)) by {
+        assert(gt_matches(n2.facts, m, p).contains(f));
+    }
+    assert(!ex_gt_supported(n3, m, p)) by {
+        assert(gt_matches(n3.facts, m, p) =~= Set::empty());
+    }
+    assert(n3.parents.contains(p));
+    assert(n2.mem.satisfied[p] == pt);
+    assert(sig3.contains(Signal::Retract(p, pt)));
+    // the sequence is admissible
+    let ops = seq![op1, op2, op3];
+    assert(ops.drop_last() =~= seq![op1, op2]);
+    assert(seq![op1, op2].drop_last() =~= seq![op1]);
+    assert(seq![op1].drop_last() =~= Seq::<ExNodeOp>::empty());
+    assert(ex_node_run(n0, seq![op1]) == n1);
+    assert(ex_node_run(n0, seq![op1, op2]) == n2);
+    assert(seq![op1].last() == op1 && seq![op1, op2].last() == op2 && ops.last() == op3);
+    assert(ex_node_admissible(n0, m, Seq::<ExNodeOp>::empty()));
+    assert(ex_node_admissible(n0, m, seq![op1]));
+    assert(ex_node_admissible(n0, m, seq![op1, op2]));
+    assert(ex_node_admissible(n0, m, ops));
+    theorem_ex_node_sequences(Set::empty(), m, ops);
 }
 
 } // verus!
