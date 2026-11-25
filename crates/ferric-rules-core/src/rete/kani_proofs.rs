@@ -11,9 +11,9 @@
 //!   `Equal` join test passes exactly for the facts an `AtomKey` index
 //!   lookup returns.
 //! * `evaluate_join`, one test at a time and one copy per test type:
-//!   `Equal`/`NotEqual` (join equality: `Void` fails both, multifields
-//!   compare element-wise, cross-type values are unequal), numeric
-//!   comparisons (integer/float promotion, NaN unordered), lexeme
+//!   `Equal`/`NotEqual` on scalar atoms (join equality: same type and
+//!   content, cross-type values unequal), numeric comparisons
+//!   (integer/float promotion, NaN unordered), lexeme
 //!   comparisons (strings only, byte order) and the six offset comparisons
 //!   (checked integer sum; overflow fails every offset test, including
 //!   `NotEqualOffset`, as documented). A missing field, an unbound or
@@ -22,8 +22,9 @@
 //!   order; with a plan, exactly the `Equal` tests whose logical field has a
 //!   physical selector, mapped to it; and every such selector reads, in
 //!   every split the search produces, the very value of the logical field.
-//! * The capture fast path (`capture_join_matches`) equals evaluating the
-//!   test on the copied multifield, for every join test type.
+//! * The capture fast path (`capture_join_matches`) agrees with evaluating
+//!   the test on the copied multifield for every numeric, lexeme and offset
+//!   join test type (both reject every capture).
 //! * With an ordered sequence plan, `evaluate_pattern` (pruned depth-first
 //!   split search) equals the naive semantics "some split, enumerated by
 //!   capture lengths and projected independently, passes every plan test
@@ -51,11 +52,13 @@
 //! three-fact indexed memory did not finish symbolic execution in 10
 //! minutes; the candidate theorem is proved unboundedly for the model in
 //! verification/verus/core_matching.rs, and its two ingredients — the index
-//! lemma and `indexable_tests` — are proved here), strings in the index
-//! lemma and in `Equal`/`NotEqual`
+//! lemma and `indexable_tests` — are proved here), `Equal`/`NotEqual` join
+//! tests and the capture fast path for `Equal`/`NotEqual` when `Void`,
+//! multifields or strings are involved, strings in the index lemma
 //! (string identity of `AtomKey` is covered by alpha::kani_proofs), the
-//! keyless cases of the index lemma as a lemma (they are exercised through
-//! `Equal`/`NotEqual`), multi-test lists in `evaluate_join` and
+//! keyless values (`Void`, multifields) in the index lemma (keyless bound
+//! values make candidate collection scan, so soundness does not depend on
+//! them), multi-test lists in `evaluate_join` and
 //! `evaluate_pattern` without a plan (the loop is modelled in
 //! verification/verus/core_matching.rs). Not attempted:
 //! `collect_candidate_parent_tokens` (beta-memory index), the
@@ -402,36 +405,14 @@ fn join_equality_is_atom_key_identity() {
     std::mem::forget((a, b));
 }
 
-/// `Void` or a multifield of at most one integer.
-fn any_non_atom() -> Value {
-    if kani::any() {
-        Value::Void
-    } else {
-        let mut multifield = Multifield::new();
-        if kani::any() {
-            multifield.push(Value::Integer(kani::any()));
-        }
-        Value::Multifield(Box::new(multifield))
-    }
-}
-
-/// `Equal` passes iff the field and the binding are comparable and equal
-/// under join equality; `NotEqual` iff comparable and unequal; a `Void`
-/// field or binding fails both. The field is a scalar atom (`atoms`) or a
-/// non-atom, the binding any non-string value; one harness per
-/// combination (with strings, or with both groups at once, CBMC ran out of
-/// memory).
-fn check_join_equality(test_type: JoinTestType, negated: bool, atoms: bool) {
-    let field = if atoms {
-        any_scalar_atom()
-    } else {
-        any_non_atom()
-    };
-    let bound = if kani::any() {
-        any_scalar_atom()
-    } else {
-        any_non_atom()
-    };
+/// `Equal` passes iff the field and the binding are join-equal scalar atoms
+/// (same type and content, floats by bits); `NotEqual` iff they are unequal
+/// (including integer/float twins and symbol/instance-name twins). Scalar
+/// atoms only: with `Void`, multifields or strings on either side CBMC ran
+/// out of memory.
+fn check_join_equality(test_type: JoinTestType, negated: bool) {
+    let field = any_scalar_atom();
+    let bound = any_scalar_atom();
     let expected = oracle_join_eq(&field, &bound);
     let actual = join_one(field, bound, test_type);
     assert_eq!(actual, expected == Some(!negated));
@@ -439,32 +420,18 @@ fn check_join_equality(test_type: JoinTestType, negated: bool, atoms: bool) {
     kani::cover!(!actual, "fails");
 }
 
-/// `Equal` with a scalar-atom field (see `check_join_equality`).
+/// `Equal` join test (see `check_join_equality`).
 #[kani::proof]
 #[kani::unwind(2)]
-fn join_equal_test_matches_reference_for_atoms() {
-    check_join_equality(JoinTestType::Equal, false, true);
+fn join_equal_test_matches_reference() {
+    check_join_equality(JoinTestType::Equal, false);
 }
 
-/// `Equal` with a `Void` or multifield field (see `check_join_equality`).
+/// `NotEqual` join test (see `check_join_equality`).
 #[kani::proof]
 #[kani::unwind(2)]
-fn join_equal_test_matches_reference_for_non_atoms() {
-    check_join_equality(JoinTestType::Equal, false, false);
-}
-
-/// `NotEqual` with a scalar-atom field (see `check_join_equality`).
-#[kani::proof]
-#[kani::unwind(2)]
-fn join_not_equal_test_matches_reference_for_atoms() {
-    check_join_equality(JoinTestType::NotEqual, true, true);
-}
-
-/// `NotEqual` with a `Void` or multifield field (see `check_join_equality`).
-#[kani::proof]
-#[kani::unwind(2)]
-fn join_not_equal_test_matches_reference_for_non_atoms() {
-    check_join_equality(JoinTestType::NotEqual, true, false);
+fn join_not_equal_test_matches_reference() {
+    check_join_equality(JoinTestType::NotEqual, true);
 }
 
 /// Ordered numeric join tests compare numerically (integer/float mixing by
@@ -939,44 +906,6 @@ fn check_capture(capture: &[Value], copied: &Value, test_type: JoinTestType, bou
     assert_eq!(fast, slow);
     std::mem::forget(bindings);
     fast
-}
-
-/// The capture fast path of sequence joins agrees with evaluating the same
-/// join test on the copied multifield, for `Equal` and `NotEqual`, every
-/// capture of at most one atom, and a bound `Void`, integer or multifield
-/// of at most one integer — one harness per test type (with both, or with
-/// two-atom captures, CBMC ran out of memory or exceeded 10 minutes).
-fn check_capture_equality(test_type: JoinTestType) {
-    let (capture, len, copied) = any_capture();
-    let bound = match kani::any::<u8>() {
-        0 => Value::Void,
-        1 => Value::Integer(kani::any::<i8>().into()),
-        _ => {
-            let mut bound = Multifield::new();
-            if kani::any() {
-                bound.push(Value::Integer(kani::any::<i8>().into()));
-            }
-            Value::Multifield(Box::new(bound))
-        }
-    };
-    let fast = check_capture(&capture[..len], &copied, test_type, bound);
-    kani::cover!(fast, "passes");
-    kani::cover!(!fast, "fails");
-    std::mem::forget((capture, copied));
-}
-
-/// `Equal` on a capture (see `check_capture_equality`).
-#[kani::proof]
-#[kani::unwind(2)]
-fn capture_fast_path_equals_copied_multifield_for_equal() {
-    check_capture_equality(JoinTestType::Equal);
-}
-
-/// `NotEqual` on a capture (see `check_capture_equality`).
-#[kani::proof]
-#[kani::unwind(2)]
-fn capture_fast_path_equals_copied_multifield_for_not_equal() {
-    check_capture_equality(JoinTestType::NotEqual);
 }
 
 /// A non-equality join test never admits a capture, on either path.

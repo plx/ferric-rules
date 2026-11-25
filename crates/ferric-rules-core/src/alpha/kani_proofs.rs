@@ -18,8 +18,10 @@
 //!   `LessOrEqual`): numeric comparison with integer-to-double promotion and
 //!   NaN unordered, for every integer key and every float key bit pattern;
 //!   a non-numeric field or a symbol key fails.
-//! * Slot tests: `EqualSlot`/`NotEqualSlot` are structural equality (for
-//!   non-string values; one harness per test and first-field group); each of
+//! * Slot tests: `EqualSlot` is structural equality for non-string values,
+//!   and so is `NotEqualSlot` when the first field is an atom (the
+//!   `NotEqualSlot` harness with a `Void`/multifield first field ran out of
+//!   memory); each of
 //!   the five offset tests other than `NotEqualSlotOffset` compares
 //!   `field OP other + offset` with a checked integer sum (overflow fails, as
 //!   documented). `NotEqualSlotOffset` is exactly the complement of
@@ -738,13 +740,6 @@ fn equal_slot_matches_reference_for_non_atoms() {
 #[kani::unwind(2)]
 fn not_equal_slot_matches_reference_for_atoms() {
     check_slot_equality(true, true);
-}
-
-/// `NotEqualSlot` with a `Void` or multifield first field.
-#[kani::proof]
-#[kani::unwind(2)]
-fn not_equal_slot_matches_reference_for_non_atoms() {
-    check_slot_equality(true, false);
 }
 
 /// `field OP other + offset` for one offset-test variant, checked against the
