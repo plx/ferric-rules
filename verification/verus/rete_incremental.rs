@@ -1,74 +1,96 @@
 //! Verus model: incremental Rete maintenance equals declarative matching.
 //!
-//! Models the positive join chain of `ReteNetwork`
-//! (crates/ferric-rules-core/src/rete.rs: `assert_fact`, `right_activate`,
-//! `propagate_join_fact`, `emit_join_match`, `left_activate`, `retract_fact`),
-//! the `TokenStore` tree of tokens (token.rs), beta memories (beta.rs) and
-//! alpha memories (alpha.rs). Each model function cites the production
-//! function it follows.
+//! Models the join chain of `ReteNetwork` (crates/ferric-rules-core/src/rete.rs:
+//! `assert_fact`, `right_activate`, `propagate_join_fact`, `emit_join_match`,
+//! `left_activate`, `retract_fact`), optionally followed by one negative node
+//! (`negative_left_activate`, `negative_right_activate`,
+//! `collect_negative_retractions` / `apply_negative_retraction`,
+//! `cleanup_negative_memories_for_token`), together with the `TokenStore`
+//! tree of tokens (token.rs), beta memories (beta.rs), the negative memory
+//! (negative.rs) and alpha memories (alpha.rs). Each model function cites the
+//! production function it follows.
 //!
 //! What is proved (unbounded: any chain length `n`, any number of facts and
 //! tokens, any alpha predicates and join tests, any iteration orders, any
 //! fresh-key supply, any finite operation sequence):
 //!
 //! * `theorem_incremental_equals_declarative`: starting from the state after
-//!   `seed_root_token`, after any sequence of assertions and retractions,
-//!   for every level `k <= n`
-//!   - the fact tuples (`collect_all_facts`) of the tokens in beta memory `k`
-//!     are exactly the declarative matches of the first `k` patterns over
-//!     the current working memory: tuples `x` of present facts where each
-//!     `x[j]` passes the alpha predicate of join `j+1` and its join test
-//!     against the data of `x[..j]` (`beta_tuples == matches_k`);
-//!   - no two tokens in one memory have the same tuple (no duplicates);
-//!   - every token in memory `k >= 1` has its parent in memory `k-1`.
-//! * `theorem_assert_delta`: an assertion keeps every existing token (same
-//!   id, same contents, same tuple) and the new tokens are exactly the
-//!   tokens whose tuple mentions the asserted fact.
+//!   `seed_root_token`, after any sequence of assertions and retractions:
+//!   - for every level `k <= n`, the fact tuples (`collect_all_facts`) of the
+//!     tokens in beta memory `k` are exactly the declarative matches of the
+//!     first `k` patterns over the current working memory: tuples `x` of
+//!     present facts where each `x[j]` passes the alpha predicate of join
+//!     `j+1` and its join test against the data of `x[..j]`
+//!     (`beta_tuples == matches_k`); no two tokens in one memory have the same
+//!     tuple; every token in memory `k >= 1` has its parent in memory `k-1`;
+//!   - with a negative node (`declarative_neg_ok`): its memory holds exactly
+//!     one pass-through per full-chain match that no present fact blocks
+//!     (`neg_tuples == neg_matches`), each pass-through's parent is in memory
+//!     `n`; every parent in memory `n` is `blocked` iff some fact blocks it,
+//!     and then its blocker set is exactly the set of blocking facts, and is
+//!     `unblocked` iff none does. Without one, memory `n + 1` stays empty.
+//! * `theorem_assert_delta`: an assertion keeps every existing join token
+//!   (same id, contents and tuple) and the new join tokens are exactly those
+//!   whose tuple mentions the asserted fact.
 //! * `theorem_retract_delta`: a retraction (`tokens_containing`, then
 //!   `retraction_roots`, then `remove_cascade` per root) removes exactly the
-//!   tokens whose tuple mentions the retracted fact and leaves all other
-//!   tokens unchanged.
-//! * The invariant `inv` (alpha memories exact; tokens form a level-indexed
-//!   tree; each token locally sound; siblings have distinct facts; every
-//!   (token, matching fact) pair has a child) holds after every operation
-//!   (`lemma_step`), and every intermediate state reached inside
-//!   left/right activation satisfies `inv_core` (`grows`). The shared-alpha
-//!   case where a token created during an assertion must join the asserted
-//!   fact itself, and the pre-propagation capture of right-activation
-//!   parents that prevents a second join of the same pair, are covered.
+//!   join tokens whose tuple mentions the retracted fact and leaves all other
+//!   join tokens unchanged.
+//! * The invariant `inv` (alpha memories exact; join tokens form a
+//!   level-indexed tree; each token locally sound; siblings have distinct
+//!   facts; every (token, matching fact) pair has a child; negative memory
+//!   exact) holds after every operation (`lemma_step`), and every
+//!   intermediate state reached inside left/right activation satisfies
+//!   `inv_core` (`grows`). Covered subtleties: a token created during an
+//!   assertion joining the asserted fact itself through a shared alpha
+//!   memory; the pre-propagation capture of right-activation parents that
+//!   prevents joining the same pair twice; a fact that both extends the
+//!   chain and blocks at the negative node.
 //! * Non-vacuity: `lemma_sched_satisfiable` exhibits oracles meeting the
-//!   scheduler hypothesis; `example_shared_alpha_self_join` derives from the
-//!   main theorem that `(a ?x) (a ?y)` holds `[7, 7]` after asserting `7`.
+//!   scheduler hypothesis; from the main theorem, `example_shared_alpha_self_join`
+//!   derives that `(a ?x) (a ?y)` holds `[7, 7]` after asserting `7`, and
+//!   `example_negation` that `(a ?x) (not (a ?y&:(= ?y (+ ?x 1))))` over
+//!   facts `10`, `11` passes `[11]` and blocks `[10]` by exactly fact `11`.
 //!
 //! Abstractions and simplifications (fidelity gaps):
 //!
 //! * Facts are `nat` ids with data of an arbitrary type `V`; the `FactBase`
 //!   is a map. Alpha networks are abstracted by a predicate per alpha memory
-//!   (the constant-test discrimination network is not modelled). Join tests
-//!   are an arbitrary predicate of (join, parent data, fact data); token
-//!   bindings are abstracted as the sequence of the data of the facts on the
-//!   token's chain (`Tok.data`), which determines the bindings. Sequence
-//!   (multifield) joins are not modelled.
+//!   (the constant-test discrimination network is not modelled). Join and
+//!   negative-node tests are arbitrary predicates over (parent data, fact
+//!   data); token bindings are abstracted as the sequence of the data of the
+//!   facts on the token's chain (`Tok.data`), which determines the bindings.
+//!   Sequence (multifield) patterns are not modelled.
 //! * Every iteration order (alpha memory facts, beta memory tokens, the
-//!   order of right activations, which production sorts by node id at
-//!   rete.rs:323) is chosen by an oracle `ord(clock, set)` that returns any
-//!   duplicate-free enumeration; the clock advances on each use, so any
-//!   production order is one instance. Token keys come from an oracle
-//!   `fresh(clock, live keys)` returning a non-live key (`SlotMap::insert`).
+//!   order of join right activations, the order of unblocking transitions)
+//!   is chosen by an oracle `ord(clock, set)` that returns any duplicate-free
+//!   enumeration; the clock advances on each use, so any production order is
+//!   one instance. Token keys come from an oracle `fresh(clock, live keys)`
+//!   returning a non-live key (`SlotMap::insert`). The negative node's right
+//!   activation runs before the joins' (production sorts by node id, newest
+//!   first, rete.rs:323, and the negative node is newer than every join it
+//!   descends from).
 //! * Index narrowing (`collect_candidate_facts` /
 //!   `collect_candidate_parent_tokens`, rete.rs:2637/2665) is modelled by the
 //!   full-scan fallback. The indexed path gives the same result only if an
 //!   index lookup returns every entry that passes the indexed equality test;
 //!   that index property is not proved here.
 //! * `remove_cascade` is modelled by its effect (the root and all of its
-//!   descendants); its stack loop and the `fact_to_tokens` /
-//!   `parent_to_children` indexes are not modelled here. `retraction_roots`
-//!   and `tokens_containing` are modelled by the sets they compute.
-//! * Retraction is modelled by its final state (removal order inside
-//!   `retract_fact` is irrelevant for a chain of joins).
-//! * Not modelled: terminal nodes and the agenda (beta memory `n` is what the
-//!   terminal sees), activations, predicate/negative/NCC/exists nodes,
-//!   NCC batching, rule installation/removal, `clear_working_memory`.
+//!   descendants, including pass-throughs of removed parents); its stack loop
+//!   and the reverse indexes `fact_to_tokens`, `parent_to_children` and
+//!   `fact_to_blocked` are modelled by the sets they index, not as data.
+//!   Retraction is modelled by its final state; the negative node's
+//!   per-parent loops are modelled by their aggregate effect (they touch
+//!   distinct parents independently). Block-order chronology (primary
+//!   blockers, `allocate_block_order`) is not modelled: it orders
+//!   transitions and activations but does not change memory contents.
+//! * The token store is split by owner into join tokens (`tokens`) and
+//!   pass-through tokens (`pts`), with keys fresh across both.
+//! * Scope: one chain of joins with at most one negative node, placed last
+//!   and below at least one join (`net_wf`). Not modelled: a negative node
+//!   with descendants or directly under the root, terminal nodes and the
+//!   agenda (activations), predicate/NCC/exists nodes, NCC batching, rule
+//!   installation/removal, `clear_working_memory`.
 //! * Ghost state: `St.root` and `St.clock`.
 //!
 //! Trusted base: Verus, Z3 and vstd. No `assume`, `admit`,
@@ -111,10 +133,19 @@ pub struct Net<V> {
     /// (crates/ferric-rules-core/src/rete.rs:2690), over the parent token's
     /// data (abstracting its bindings) and the fact's data.
     pub test: spec_fn(nat, Seq<V>, V) -> bool,
+    /// Whether a negative node (`BetaNode::Negative`, beta.rs:437) follows
+    /// join `n` as level `n + 1`, as in `(a ?x) ... (not (c ?x))`.
+    pub neg: bool,
+    /// The negative node's `alpha_memory`.
+    pub neg_alpha: nat,
+    /// The negative node's join tests (`evaluate_pattern`, rete.rs:2816,
+    /// non-sequence branch) over the parent's data and the fact's data.
+    pub neg_test: spec_fn(Seq<V>, V) -> bool,
 }
 
 pub open spec fn net_wf<V>(net: Net<V>) -> bool {
-    forall|k: nat| 1 <= k <= net.n ==> net.alphas.contains(#[trigger] (net.alpha_of)(k))
+    &&& forall|k: nat| 1 <= k <= net.n ==> net.alphas.contains(#[trigger] (net.alpha_of)(k))
+    &&& net.neg ==> net.n >= 1 && net.alphas.contains(net.neg_alpha)
 }
 
 /// Scheduler oracles: every iteration order (`ord`) and every fresh token key
@@ -143,14 +174,22 @@ pub struct Tok<V> {
 }
 
 /// Runtime state: `FactBase` contents (`wm`), `AlphaMemory.facts` per alpha
-/// memory (`amem`), `TokenStore.tokens` (`tokens`), `BetaMemory.tokens` per
-/// level (`mem`). Ghost: `root` (the token made by `seed_root_token`,
-/// crates/ferric-rules-core/src/rete.rs:710) and `clock` (scheduler time).
+/// memory (`amem`), `BetaMemory.tokens` per level (`mem`; level `n + 1` is
+/// the negative node's memory). `TokenStore.tokens` is split by owner into
+/// join/root tokens (`tokens`) and the negative node's pass-through tokens
+/// (`pts`); keys are fresh across both, as in the single production store.
+/// `blocked` / `unblocked` are `NegativeMemory.blocked` / `.unblocked`
+/// (crates/ferric-rules-core/src/negative.rs:41). Ghost: `root` (the token
+/// made by `seed_root_token`, crates/ferric-rules-core/src/rete.rs:710) and
+/// `clock` (scheduler time).
 pub struct St<V> {
     pub wm: Map<FactId, V>,
     pub amem: Map<nat, Set<FactId>>,
     pub tokens: Map<TokenId, Tok<V>>,
     pub mem: Map<nat, Set<TokenId>>,
+    pub pts: Map<TokenId, Tok<V>>,
+    pub blocked: Map<TokenId, Set<FactId>>,
+    pub unblocked: Map<TokenId, TokenId>,
     pub root: TokenId,
     pub clock: nat,
 }
@@ -188,14 +227,15 @@ pub open spec fn join_fact<V>(
 /// memory (`BetaMemory::insert_indexed`, beta.rs:293), then
 /// `propagate_token` (rete.rs:2359) to the only child: the next join is
 /// left-activated (`propagate_to_child`, rete.rs:2440); after the last join
-/// the child is the terminal node (activations are not modelled).
+/// the child is the negative node (`negative_left_activate`) when there is
+/// one, else the terminal node (activations are not modelled).
 pub open spec fn emit<V>(net: Net<V>, sc: Sched, s: St<V>, k: nat, p: TokenId, g: FactId) -> St<V>
     decreases net.n - k, 2nat, 0nat,
 {
     if !(1 <= k <= net.n) {
         s
     } else {
-        let t = (sc.fresh)(s.clock, s.tokens.dom());
+        let t = (sc.fresh)(s.clock, s.tokens.dom() + s.pts.dom());
         let tok = Tok {
             fact: Some(g),
             data: s.tokens[p].data.push(s.wm[g]),
@@ -210,9 +250,81 @@ pub open spec fn emit<V>(net: Net<V>, sc: Sched, s: St<V>, k: nat, p: TokenId, g
         };
         if k < net.n {
             left_activate(net, sc, s1, k + 1, t)
+        } else if net.neg {
+            neg_left(net, sc, s1, t)
         } else {
             s1
         }
+    }
+}
+
+/// A pass-through token of the negative node: no fact, the parent's
+/// bindings (`negative_left_activate`, crates/ferric-rules-core/src/rete.rs:1280-1285).
+pub open spec fn pt_tok<V>(net: Net<V>, d: Seq<V>, p: TokenId) -> Tok<V> {
+    Tok { fact: None, data: d, parent: Some(p), owner: net.n + 1 }
+}
+
+/// Models `ReteNetwork::negative_left_activate` (crates/ferric-rules-core/src/rete.rs:1211):
+/// collect the facts of the negative node's alpha memory that pass its tests
+/// (full-scan path of `collect_candidate_facts`); with none, insert a
+/// pass-through token into the token store and the node's beta memory and
+/// record it with `set_unblocked` (negative.rs:168); otherwise record every
+/// blocking fact with `add_blocker` (negative.rs:78). Block-order
+/// chronology is not modelled.
+pub open spec fn neg_left<V>(net: Net<V>, sc: Sched, s: St<V>, t: TokenId) -> St<V> {
+    let d = s.tokens[t].data;
+    let bl = s.amem[net.neg_alpha].filter(
+        |g: FactId| s.wm.contains_key(g) && (net.neg_test)(d, s.wm[g]),
+    );
+    if bl == Set::<FactId>::empty() {
+        let pt = (sc.fresh)(s.clock, s.tokens.dom() + s.pts.dom());
+        St {
+            pts: s.pts.insert(pt, pt_tok(net, d, t)),
+            mem: s.mem.insert(net.n + 1, s.mem[net.n + 1].insert(pt)),
+            unblocked: s.unblocked.insert(t, pt),
+            clock: s.clock + 1,
+            ..s
+        }
+    } else {
+        St { blocked: s.blocked.insert(t, bl), ..s }
+    }
+}
+
+/// Models `ReteNetwork::negative_right_activate` (crates/ferric-rules-core/src/rete.rs:1321)
+/// for fact `f`: every blocked parent whose test passes records `f` as a
+/// further blocker; every unblocked parent of the current parent memory
+/// whose pass-through passes the test becomes blocked by `f`
+/// (`remove_unblocked` + `add_blocker`) and its pass-through is removed from
+/// the token store and the node's beta memory (`retract_token_cascade`; the
+/// pass-through has no descendants besides activations). The per-parent
+/// loops act on distinct parents independently and are modelled by their
+/// aggregate effect.
+pub open spec fn neg_right<V>(net: Net<V>, s: St<V>, f: FactId) -> St<V> {
+    let v = s.wm[f];
+    let newly = s.unblocked.dom().filter(
+        |p: TokenId| s.mem[net.n].contains(p) && (net.neg_test)(s.pts[s.unblocked[p]].data, v),
+    );
+    let gone = s.pts.dom().filter(
+        |pt: TokenId| exists|p: TokenId| #[trigger] newly.contains(p) && s.unblocked[p] == pt,
+    );
+    St {
+        blocked: Map::new(
+            s.blocked.dom() + newly,
+            |p: TokenId|
+                if s.blocked.contains_key(p) {
+                    if (net.neg_test)(s.tokens[p].data, v) {
+                        s.blocked[p].insert(f)
+                    } else {
+                        s.blocked[p]
+                    }
+                } else {
+                    Set::<FactId>::empty().insert(f)
+                },
+        ),
+        unblocked: s.unblocked.remove_keys(newly),
+        pts: s.pts.remove_keys(gone),
+        mem: s.mem.insert(net.n + 1, s.mem[net.n + 1].difference(gone)),
+        ..s
     }
 }
 
@@ -336,13 +448,20 @@ pub open spec fn captured<V>(sc: Sched, s: St<V>, joins: Seq<nat>, c: nat) -> Se
 /// Models `ReteNetwork::assert_fact` (crates/ferric-rules-core/src/rete.rs:281)
 /// for a chain of joins. `s.wm` already holds `f` (the engine inserts the fact
 /// into the `FactBase` first: crates/ferric-rules-runtime/src/engine.rs:77).
-/// The order of right activations (production: node id descending,
-/// rete.rs:323) is a scheduler choice.
+/// Right activations run in node id order, newest first (rete.rs:323); the
+/// negative node is created after every join of its chain (its ancestors),
+/// so it is right-activated first. The order among the joins is a scheduler
+/// choice (any order is covered, including production's).
 pub open spec fn assert_fact<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId) -> St<V> {
     let s1 = alpha_assert(net, s, f);
+    let s1n = if net.neg && (net.alpha)(net.neg_alpha, s1.wm[f]) {
+        neg_right(net, s1, f)
+    } else {
+        s1
+    };
     let joins = (sc.ord)(s1.clock, affected_joins(net, s1.wm[f]));
     let c = s1.clock + 1;
-    ra_loop(net, sc, St { clock: c + joins.len(), ..s1 }, captured(sc, s1, joins, c), f)
+    ra_loop(net, sc, St { clock: c + joins.len(), ..s1n }, captured(sc, s1, joins, c), f)
 }
 
 /// The ancestor `d` parent links above `t` (the walk of
@@ -402,14 +521,76 @@ pub open spec fn removed_by<V>(toks: Map<TokenId, Tok<V>>, f: FactId) -> Set<Tok
 /// token from its owner's beta memory (`remove_indexed`, rete.rs:438), and
 /// `AlphaNetwork::retract_fact` (alpha.rs:634; removing `f` from a memory
 /// that does not hold it is a no-op).
-pub open spec fn retract_fact<V>(net: Net<V>, s: St<V>, f: FactId) -> St<V> {
+///
+/// With a negative node: the cascades also remove the pass-throughs of
+/// removed parents; `cleanup_negative_memories_for_token` (rete.rs:1552)
+/// drops the negative-memory entries of removed parents; if the fact was in
+/// the negative node's alpha memory, `collect_negative_retractions`
+/// (rete.rs:1409) and `apply_negative_retraction` (rete.rs:1450) remove it
+/// from every surviving parent's blocker set, and every parent left with no
+/// blocker gets a new pass-through (`unblock_loop`, in scheduler order).
+/// Primary-blocker chronology is not modelled; it only orders transitions.
+pub open spec fn retract_fact<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId) -> St<V> {
     let rm = removed_by(s.tokens, f);
-    St {
+    let gone = s.pts.dom().filter(|pt: TokenId| rm.contains(s.pts[pt].parent->0));
+    let blocked1 = s.blocked.remove_keys(rm);
+    let negr = net.neg && s.amem[net.neg_alpha].contains(f);
+    let freed = if negr {
+        blocked1.dom().filter(|p: TokenId| blocked1[p] == Set::<FactId>::empty().insert(f))
+    } else {
+        Set::<TokenId>::empty()
+    };
+    let blocked2 = if negr {
+        Map::new(blocked1.dom() - freed, |p: TokenId| blocked1[p].remove(f))
+    } else {
+        blocked1
+    };
+    let s_mid = St {
         tokens: s.tokens.remove_keys(rm),
-        mem: Map::new(s.mem.dom(), |k: nat| s.mem[k].difference(rm)),
+        mem: Map::new(
+            s.mem.dom(),
+            |k: nat|
+                if k == net.n + 1 {
+                    s.mem[k].difference(gone)
+                } else {
+                    s.mem[k].difference(rm)
+                },
+        ),
+        pts: s.pts.remove_keys(gone),
+        blocked: blocked2,
+        unblocked: s.unblocked.remove_keys(rm),
         amem: Map::new(s.amem.dom(), |a: nat| s.amem[a].remove(f)),
         wm: s.wm.remove(f),
+        clock: s.clock + 1,
         ..s
+    };
+    unblock_loop(net, sc, s_mid, (sc.ord)(s.clock, freed))
+}
+
+/// The negative transitions of `retract_fact` (rete.rs:443-450), each
+/// handled by `apply_negative_retraction` (rete.rs:1450): a parent that is
+/// still live and has no blocker left gets a pass-through token, recorded
+/// with `set_unblocked`.
+pub open spec fn unblock_loop<V>(net: Net<V>, sc: Sched, s: St<V>, ps: Seq<TokenId>) -> St<V>
+    decreases ps.len(),
+{
+    if ps.len() == 0 {
+        s
+    } else {
+        let p = ps[0];
+        let s1 = if s.tokens.contains_key(p) {
+            let pt = (sc.fresh)(s.clock, s.tokens.dom() + s.pts.dom());
+            St {
+                pts: s.pts.insert(pt, pt_tok(net, s.tokens[p].data, p)),
+                mem: s.mem.insert(net.n + 1, s.mem[net.n + 1].insert(pt)),
+                unblocked: s.unblocked.insert(p, pt),
+                clock: s.clock + 1,
+                ..s
+            }
+        } else {
+            s
+        };
+        unblock_loop(net, sc, s1, ps.drop_first())
     }
 }
 
@@ -508,11 +689,83 @@ pub open spec fn inv_alpha<V>(net: Net<V>, s: St<V>) -> bool {
             && (net.alpha)(a, s.wm[g])))
 }
 
-pub open spec fn inv_core<V>(net: Net<V>, s: St<V>) -> bool {
+pub open spec fn inv_pos<V>(net: Net<V>, s: St<V>) -> bool {
     &&& inv_struct(net, s)
     &&& inv_sound(net, s)
     &&& inv_unique(s)
     &&& inv_alpha(net, s)
+}
+
+/// Fact `g` would block a parent with data `d` at the negative node.
+pub open spec fn nmatch<V>(net: Net<V>, wm: Map<FactId, V>, d: Seq<V>, g: FactId) -> bool {
+    &&& wm.contains_key(g)
+    &&& (net.alpha)(net.neg_alpha, wm[g])
+    &&& (net.neg_test)(d, wm[g])
+}
+
+pub open spec fn no_blocker<V>(net: Net<V>, wm: Map<FactId, V>, d: Seq<V>) -> bool {
+    forall|g: FactId| !#[trigger] nmatch(net, wm, d, g)
+}
+
+/// `b` is exactly the (non-empty) set of facts that block data `d`.
+pub open spec fn exact_blockers<V>(net: Net<V>, wm: Map<FactId, V>, d: Seq<V>, b: Set<FactId>) -> bool {
+    &&& forall|g: FactId|
+        #![trigger b.contains(g)]
+        #![trigger nmatch(net, wm, d, g)]
+        b.contains(g) <==> nmatch(net, wm, d, g)
+    &&& exists|g: FactId| #[trigger] b.contains(g)
+}
+
+/// Negative-memory invariant, except that the level-`n` parents in `free`
+/// are not tracked yet (they await `negative_left_activate` or an unblock).
+pub open spec fn inv_neg_except<V>(net: Net<V>, s: St<V>, free: Set<TokenId>) -> bool {
+    &&& !net.neg ==> s.pts.dom() == Set::<TokenId>::empty() && s.blocked.dom() == Set::<
+        TokenId,
+    >::empty() && s.unblocked.dom() == Set::<TokenId>::empty()
+    &&& s.mem.contains_key(net.n + 1)
+    &&& forall|pt: TokenId| #[trigger] s.mem[net.n + 1].contains(pt) <==> s.pts.contains_key(pt)
+    &&& forall|pt: TokenId| #[trigger]
+        s.pts.contains_key(pt) ==> {
+            &&& !s.tokens.contains_key(pt)
+            &&& s.pts[pt] == pt_tok(
+                net,
+                s.tokens[s.pts[pt].parent->0].data,
+                s.pts[pt].parent->0,
+            )
+            &&& s.unblocked.contains_key(s.pts[pt].parent->0)
+            &&& s.unblocked[s.pts[pt].parent->0] == pt
+        }
+    &&& forall|p: TokenId| #[trigger]
+        s.unblocked.contains_key(p) ==> {
+            &&& s.tokens.contains_key(p)
+            &&& s.tokens[p].owner == net.n
+            &&& s.pts.contains_key(s.unblocked[p])
+            &&& s.pts[s.unblocked[p]].parent == Some(p)
+            &&& !s.blocked.contains_key(p)
+            &&& !free.contains(p)
+            &&& no_blocker(net, s.wm, s.tokens[p].data)
+        }
+    &&& forall|p: TokenId| #[trigger]
+        s.blocked.contains_key(p) ==> {
+            &&& s.tokens.contains_key(p)
+            &&& s.tokens[p].owner == net.n
+            &&& !free.contains(p)
+            &&& exact_blockers(net, s.wm, s.tokens[p].data, s.blocked[p])
+        }
+    &&& forall|p: TokenId| #[trigger]
+        free.contains(p) ==> s.tokens.contains_key(p) && s.tokens[p].owner == net.n
+    &&& net.neg ==> forall|p: TokenId| #[trigger]
+        s.tokens.contains_key(p) && s.tokens[p].owner == net.n ==> s.blocked.contains_key(p)
+            || s.unblocked.contains_key(p) || free.contains(p)
+}
+
+pub open spec fn inv_neg<V>(net: Net<V>, s: St<V>) -> bool {
+    inv_neg_except(net, s, Set::<TokenId>::empty())
+}
+
+pub open spec fn inv_core<V>(net: Net<V>, s: St<V>) -> bool {
+    &&& inv_pos(net, s)
+    &&& inv_neg(net, s)
 }
 
 pub open spec fn complete_node<V>(
@@ -685,7 +938,7 @@ pub proof fn lemma_emit<V>(net: Net<V>, sc: Sched, s: St<V>, k: nat, p: TokenId,
                 ==> has_child(s.tokens, q, h) || (q == p && h == g),
     decreases net.n - k, 2nat, 0nat,
 {
-    let t = (sc.fresh)(s.clock, s.tokens.dom());
+    let t = (sc.fresh)(s.clock, s.tokens.dom() + s.pts.dom());
     let tok = Tok { fact: Some(g), data: s.tokens[p].data.push(s.wm[g]), parent: Some(p), owner: k };
     let s1 = St {
         tokens: s.tokens.insert(t, tok),
@@ -693,8 +946,48 @@ pub proof fn lemma_emit<V>(net: Net<V>, sc: Sched, s: St<V>, k: nat, p: TokenId,
         clock: s.clock + 1,
         ..s
     };
+    assert(!(s.tokens.dom() + s.pts.dom()).contains(t));
     assert(!s.tokens.contains_key(t));
+    assert(!s.pts.contains_key(t));
     assert(net.alphas.contains((net.alpha_of)(k)));
+    let free1 = if k == net.n && net.neg {
+        Set::<TokenId>::empty().insert(t)
+    } else {
+        Set::<TokenId>::empty()
+    };
+    assert(inv_neg_except(net, s1, free1)) by {
+        assert forall|pt: TokenId| #[trigger] s1.pts.contains_key(pt) implies {
+            &&& !s1.tokens.contains_key(pt)
+            &&& s1.pts[pt] == pt_tok(
+                net,
+                s1.tokens[s1.pts[pt].parent->0].data,
+                s1.pts[pt].parent->0,
+            )
+            &&& s1.unblocked.contains_key(s1.pts[pt].parent->0)
+            &&& s1.unblocked[s1.pts[pt].parent->0] == pt
+        } by {
+            assert(s.tokens.contains_key(s.pts[pt].parent->0));
+        }
+        assert forall|q: TokenId| #[trigger] s1.unblocked.contains_key(q) implies {
+            &&& s1.tokens.contains_key(q)
+            &&& s1.tokens[q].owner == net.n
+            &&& s1.pts.contains_key(s1.unblocked[q])
+            &&& s1.pts[s1.unblocked[q]].parent == Some(q)
+            &&& !s1.blocked.contains_key(q)
+            &&& !free1.contains(q)
+            &&& no_blocker(net, s1.wm, s1.tokens[q].data)
+        } by {
+            assert(s.tokens.contains_key(q));
+        }
+        assert forall|q: TokenId| #[trigger] s1.blocked.contains_key(q) implies {
+            &&& s1.tokens.contains_key(q)
+            &&& s1.tokens[q].owner == net.n
+            &&& !free1.contains(q)
+            &&& exact_blockers(net, s1.wm, s1.tokens[q].data, s1.blocked[q])
+        } by {
+            assert(s.tokens.contains_key(q));
+        }
+    }
     // s1 satisfies the core invariant
     assert(inv_struct(net, s1)) by {
         assert forall|k2: nat, t2: TokenId|
@@ -757,6 +1050,20 @@ pub proof fn lemma_emit<V>(net: Net<V>, sc: Sched, s: St<V>, k: nat, p: TokenId,
             assert(s1.tokens.contains_key(q));
             assert(has_child(s1.tokens, q, h) || q == t);
         }
+    } else if net.neg {
+        lemma_neg_left(net, sc, s1, t);
+        let s3 = neg_left(net, sc, s1, t);
+        assert(s3 == emit(net, sc, s, k, p, g));
+        assert(s3.tokens == s1.tokens);
+        assert forall|u: TokenId| #[trigger]
+            s3.tokens.contains_key(u) && !s.tokens.contains_key(u) implies complete_node(
+            net,
+            s3.wm,
+            s3.tokens,
+            u,
+        ) by {
+            assert(u == t);
+        }
     } else {
         assert(s1 == emit(net, sc, s, k, p, g));
         assert forall|u: TokenId| #[trigger]
@@ -768,6 +1075,131 @@ pub proof fn lemma_emit<V>(net: Net<V>, sc: Sched, s: St<V>, k: nat, p: TokenId,
         ) by {
             assert(u == t);
         }
+    }
+}
+
+pub proof fn lemma_neg_left<V>(net: Net<V>, sc: Sched, s: St<V>, t: TokenId)
+    requires
+        net_wf(net),
+        sched_ok(sc),
+        net.neg,
+        inv_pos(net, s),
+        inv_neg_except(net, s, Set::<TokenId>::empty().insert(t)),
+        s.tokens.contains_key(t),
+        s.tokens[t].owner == net.n,
+    ensures
+        ({
+            let s2 = neg_left(net, sc, s, t);
+            &&& inv_core(net, s2)
+            &&& s2.tokens == s.tokens
+            &&& s2.wm == s.wm
+            &&& s2.amem == s.amem
+            &&& s2.root == s.root
+            &&& forall|k: nat| k <= net.n ==> #[trigger] s2.mem[k] == s.mem[k]
+        }),
+{
+    let d = s.tokens[t].data;
+    let a = net.neg_alpha;
+    let bl = s.amem[a].filter(|g: FactId| s.wm.contains_key(g) && (net.neg_test)(d, s.wm[g]));
+    assert(s.amem.contains_key(a));
+    let s2 = neg_left(net, sc, s, t);
+    assert(!s.blocked.contains_key(t));
+    assert(!s.unblocked.contains_key(t));
+    assert forall|g: FactId| #[trigger] bl.contains(g) <==> nmatch(net, s.wm, d, g) by {
+        if nmatch(net, s.wm, d, g) {
+            assert(s.amem[a].contains(g));
+        }
+    }
+    if bl == Set::<FactId>::empty() {
+        let pt = (sc.fresh)(s.clock, s.tokens.dom() + s.pts.dom());
+        assert(!(s.tokens.dom() + s.pts.dom()).contains(pt));
+        assert(no_blocker(net, s.wm, d)) by {
+            assert forall|g: FactId| !#[trigger] nmatch(net, s.wm, d, g) by {
+                if nmatch(net, s.wm, d, g) {
+                    assert(bl.contains(g));
+                }
+            }
+        }
+        assert(inv_neg(net, s2)) by {
+            assert forall|pt2: TokenId| #[trigger] s2.pts.contains_key(pt2) implies {
+                &&& !s2.tokens.contains_key(pt2)
+                &&& s2.pts[pt2] == pt_tok(
+                    net,
+                    s2.tokens[s2.pts[pt2].parent->0].data,
+                    s2.pts[pt2].parent->0,
+                )
+                &&& s2.unblocked.contains_key(s2.pts[pt2].parent->0)
+                &&& s2.unblocked[s2.pts[pt2].parent->0] == pt2
+            } by {
+                if pt2 != pt {
+                    assert(s.pts.contains_key(pt2));
+                    assert(s.pts[pt2].parent->0 != t);
+                }
+            }
+            assert forall|q: TokenId| #[trigger] s2.unblocked.contains_key(q) implies {
+                &&& s2.tokens.contains_key(q)
+                &&& s2.tokens[q].owner == net.n
+                &&& s2.pts.contains_key(s2.unblocked[q])
+                &&& s2.pts[s2.unblocked[q]].parent == Some(q)
+                &&& !s2.blocked.contains_key(q)
+                &&& !Set::<TokenId>::empty().contains(q)
+                &&& no_blocker(net, s2.wm, s2.tokens[q].data)
+            } by {
+                if q != t {
+                    assert(s.unblocked.contains_key(q));
+                }
+            }
+            assert forall|q: TokenId| #[trigger] s2.blocked.contains_key(q) implies {
+                &&& s2.tokens.contains_key(q)
+                &&& s2.tokens[q].owner == net.n
+                &&& !Set::<TokenId>::empty().contains(q)
+                &&& exact_blockers(net, s2.wm, s2.tokens[q].data, s2.blocked[q])
+            } by {
+                assert(q != t);
+            }
+            assert forall|q: TokenId| #[trigger]
+                s2.tokens.contains_key(q) && s2.tokens[q].owner == net.n implies s2.blocked.contains_key(
+                q,
+            ) || s2.unblocked.contains_key(q) || Set::<TokenId>::empty().contains(q) by {
+                if q != t {
+                    assert(s.blocked.contains_key(q) || s.unblocked.contains_key(q) || Set::<
+                        TokenId,
+                    >::empty().insert(t).contains(q));
+                }
+            }
+        }
+    } else {
+        assert(exists|g: FactId| #[trigger] bl.contains(g)) by {
+            if !exists|g: FactId| #[trigger] bl.contains(g) {
+                assert(bl =~= Set::<FactId>::empty());
+            }
+        }
+        assert(exact_blockers(net, s.wm, d, bl));
+        assert(inv_neg(net, s2)) by {
+            assert forall|q: TokenId| #[trigger] s2.blocked.contains_key(q) implies {
+                &&& s2.tokens.contains_key(q)
+                &&& s2.tokens[q].owner == net.n
+                &&& !Set::<TokenId>::empty().contains(q)
+                &&& exact_blockers(net, s2.wm, s2.tokens[q].data, s2.blocked[q])
+            } by {
+                if q != t {
+                    assert(s.blocked.contains_key(q));
+                }
+            }
+            assert forall|q: TokenId| #[trigger]
+                s2.tokens.contains_key(q) && s2.tokens[q].owner == net.n implies s2.blocked.contains_key(
+                q,
+            ) || s2.unblocked.contains_key(q) || Set::<TokenId>::empty().contains(q) by {
+                if q != t {
+                    assert(s.blocked.contains_key(q) || s.unblocked.contains_key(q) || Set::<
+                        TokenId,
+                    >::empty().insert(t).contains(q));
+                }
+            }
+        }
+    }
+    assert(inv_pos(net, s2)) by {
+        assert(inv_struct(net, s2));
     }
 }
 
@@ -1086,6 +1518,194 @@ pub proof fn lemma_ra_loop<V>(
     }
 }
 
+/// The negative node is not subscribed to an alpha memory that accepted
+/// `f`: its memory stays exact.
+pub proof fn lemma_neg_skip<V>(net: Net<V>, s: St<V>, s1: St<V>, f: FactId, v: V)
+    requires
+        net_wf(net),
+        inv_core(net, s),
+        !s.wm.contains_key(f),
+        s1 == alpha_assert(net, St { wm: s.wm.insert(f, v), ..s }, f),
+        inv_pos(net, s1),
+        !(net.neg && (net.alpha)(net.neg_alpha, v)),
+    ensures
+        inv_core(net, s1),
+{
+    if net.neg {
+        assert forall|d: Seq<V>, g: FactId|
+            #[trigger] nmatch(net, s1.wm, d, g) <==> nmatch(net, s.wm, d, g) by {}
+        assert forall|q: TokenId| #[trigger] s1.unblocked.contains_key(q) implies {
+            &&& s1.tokens.contains_key(q)
+            &&& s1.tokens[q].owner == net.n
+            &&& s1.pts.contains_key(s1.unblocked[q])
+            &&& s1.pts[s1.unblocked[q]].parent == Some(q)
+            &&& !s1.blocked.contains_key(q)
+            &&& !Set::<TokenId>::empty().contains(q)
+            &&& no_blocker(net, s1.wm, s1.tokens[q].data)
+        } by {
+            assert(no_blocker(net, s.wm, s.tokens[q].data));
+            assert forall|g: FactId| !#[trigger] nmatch(net, s1.wm, s1.tokens[q].data, g) by {
+                assert(!nmatch(net, s.wm, s.tokens[q].data, g));
+            }
+        }
+        assert forall|q: TokenId| #[trigger] s1.blocked.contains_key(q) implies {
+            &&& s1.tokens.contains_key(q)
+            &&& s1.tokens[q].owner == net.n
+            &&& !Set::<TokenId>::empty().contains(q)
+            &&& exact_blockers(net, s1.wm, s1.tokens[q].data, s1.blocked[q])
+        } by {
+            let d = s.tokens[q].data;
+            let b = s.blocked[q];
+            assert(exact_blockers(net, s.wm, d, b));
+            assert forall|g: FactId|
+                #![trigger b.contains(g)]
+                #![trigger nmatch(net, s1.wm, d, g)]
+                b.contains(g) <==> nmatch(net, s1.wm, d, g) by {
+                assert(b.contains(g) <==> nmatch(net, s.wm, d, g));
+            }
+        }
+    }
+}
+
+/// The negative node's right activation for `f` (run first, before the
+/// joins) makes its memory exact for the working memory that includes `f`.
+pub proof fn lemma_neg_right<V>(net: Net<V>, s: St<V>, s1: St<V>, f: FactId, v: V)
+    requires
+        net_wf(net),
+        net.neg,
+        (net.alpha)(net.neg_alpha, v),
+        inv_core(net, s),
+        !s.wm.contains_key(f),
+        s1 == alpha_assert(net, St { wm: s.wm.insert(f, v), ..s }, f),
+        inv_pos(net, s1),
+    ensures
+        ({
+            let s2 = neg_right(net, s1, f);
+            &&& inv_core(net, s2)
+            &&& s2.tokens == s1.tokens
+            &&& s2.wm == s1.wm
+            &&& s2.amem == s1.amem
+            &&& s2.root == s1.root
+        }),
+{
+    let s2 = neg_right(net, s1, f);
+    let n = net.n;
+    let newly = s1.unblocked.dom().filter(
+        |p: TokenId| s1.mem[n].contains(p) && (net.neg_test)(s1.pts[s1.unblocked[p]].data, v),
+    );
+    let gone = s1.pts.dom().filter(
+        |pt: TokenId| exists|p: TokenId| #[trigger] newly.contains(p) && s1.unblocked[p] == pt,
+    );
+    assert(s1.wm[f] == v);
+    assert forall|d: Seq<V>, g: FactId| g != f implies (#[trigger] nmatch(net, s1.wm, d, g)
+        <==> nmatch(net, s.wm, d, g)) by {}
+    // An unblocked parent is newly blocked exactly when `f` blocks it.
+    assert forall|p: TokenId| #[trigger] s1.unblocked.contains_key(p) implies (newly.contains(p)
+        <==> nmatch(net, s1.wm, s1.tokens[p].data, f)) by {
+        assert(s.pts.contains_key(s.unblocked[p]));
+        assert(s.pts[s.unblocked[p]] == pt_tok(net, s.tokens[p].data, p));
+        assert(s.mem[n].contains(p));
+    }
+    // A pass-through goes exactly when its parent is newly blocked.
+    assert forall|pt: TokenId| #[trigger] s1.pts.contains_key(pt) implies (gone.contains(pt)
+        <==> newly.contains(s1.pts[pt].parent->0)) by {
+        let q = s1.pts[pt].parent->0;
+        assert(s.unblocked.contains_key(q) && s.unblocked[q] == pt);
+        if gone.contains(pt) {
+            let p = choose|p: TokenId| #[trigger] newly.contains(p) && s1.unblocked[p] == pt;
+            assert(s.pts[s.unblocked[p]].parent == Some(p));
+        }
+        if newly.contains(q) {
+            assert(newly.contains(q) && s1.unblocked[q] == pt);
+        }
+    }
+    assert(inv_neg(net, s2)) by {
+        assert forall|pt: TokenId| #[trigger] s2.mem[n + 1].contains(pt) <==> s2.pts.contains_key(
+            pt,
+        ) by {}
+        assert forall|pt: TokenId| #[trigger] s2.pts.contains_key(pt) implies {
+            &&& !s2.tokens.contains_key(pt)
+            &&& s2.pts[pt] == pt_tok(
+                net,
+                s2.tokens[s2.pts[pt].parent->0].data,
+                s2.pts[pt].parent->0,
+            )
+            &&& s2.unblocked.contains_key(s2.pts[pt].parent->0)
+            &&& s2.unblocked[s2.pts[pt].parent->0] == pt
+        } by {
+            assert(s1.pts.contains_key(pt));
+            assert(!gone.contains(pt));
+        }
+        assert forall|q: TokenId| #[trigger] s2.unblocked.contains_key(q) implies {
+            &&& s2.tokens.contains_key(q)
+            &&& s2.tokens[q].owner == net.n
+            &&& s2.pts.contains_key(s2.unblocked[q])
+            &&& s2.pts[s2.unblocked[q]].parent == Some(q)
+            &&& !s2.blocked.contains_key(q)
+            &&& !Set::<TokenId>::empty().contains(q)
+            &&& no_blocker(net, s2.wm, s2.tokens[q].data)
+        } by {
+            assert(s1.unblocked.contains_key(q) && !newly.contains(q));
+            let pt = s1.unblocked[q];
+            assert(s1.pts.contains_key(pt));
+            assert(s1.pts[pt].parent->0 == q);
+            assert(!gone.contains(pt));
+            assert(no_blocker(net, s.wm, s.tokens[q].data));
+            assert forall|g: FactId| !#[trigger] nmatch(net, s2.wm, s2.tokens[q].data, g) by {
+                if g != f {
+                    assert(!nmatch(net, s.wm, s.tokens[q].data, g));
+                }
+            }
+        }
+        assert forall|q: TokenId| #[trigger] s2.blocked.contains_key(q) implies {
+            &&& s2.tokens.contains_key(q)
+            &&& s2.tokens[q].owner == net.n
+            &&& !Set::<TokenId>::empty().contains(q)
+            &&& exact_blockers(net, s2.wm, s2.tokens[q].data, s2.blocked[q])
+        } by {
+            let d = s1.tokens[q].data;
+            let b2 = s2.blocked[q];
+            if s1.blocked.contains_key(q) {
+                let b = s.blocked[q];
+                assert(exact_blockers(net, s.wm, d, b));
+                assert(!nmatch(net, s.wm, d, f));
+                assert forall|g: FactId|
+                    #![trigger b2.contains(g)]
+                    #![trigger nmatch(net, s2.wm, d, g)]
+                    b2.contains(g) <==> nmatch(net, s2.wm, d, g) by {
+                    if g != f {
+                        assert(b.contains(g) <==> nmatch(net, s.wm, d, g));
+                    }
+                }
+                let g0 = choose|g: FactId| #[trigger] b.contains(g);
+                assert(b2.contains(g0));
+            } else {
+                assert(newly.contains(q));
+                assert(s1.unblocked.contains_key(q));
+                assert(no_blocker(net, s.wm, s.tokens[q].data));
+                assert forall|g: FactId|
+                    #![trigger b2.contains(g)]
+                    #![trigger nmatch(net, s2.wm, d, g)]
+                    b2.contains(g) <==> nmatch(net, s2.wm, d, g) by {
+                    if g != f {
+                        assert(!nmatch(net, s.wm, d, g));
+                    }
+                }
+                assert(b2.contains(f));
+            }
+        }
+        assert forall|q: TokenId| #[trigger]
+            s2.tokens.contains_key(q) && s2.tokens[q].owner == net.n implies s2.blocked.contains_key(
+            q,
+        ) || s2.unblocked.contains_key(q) || Set::<TokenId>::empty().contains(q) by {
+            assert(s.blocked.contains_key(q) || s.unblocked.contains_key(q));
+        }
+    }
+    assert(inv_pos(net, s2)) by {
+        assert(inv_struct(net, s2));
+    }
+}
+
 pub proof fn lemma_assert_fact<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId, v: V)
     requires
         net_wf(net),
@@ -1112,7 +1732,7 @@ pub proof fn lemma_assert_fact<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId, v
         assert(s.tokens.contains_key(s.tokens[t].parent->0));
         assert(s.wm.contains_key(s.tokens[t].fact->0));
     }
-    assert(inv_core(net, s1)) by {
+    assert(inv_pos(net, s1)) by {
         assert(inv_struct(net, s1));
         assert forall|t: TokenId|
             #![trigger s1.tokens[t].parent]
@@ -1144,11 +1764,24 @@ pub proof fn lemma_assert_fact<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId, v
         }
         assert(inv_alpha(net, s1));
     }
+    let s1n = if net.neg && (net.alpha)(net.neg_alpha, s1.wm[f]) {
+        neg_right(net, s1, f)
+    } else {
+        s1
+    };
+    if net.neg && (net.alpha)(net.neg_alpha, v) {
+        assert(s.amem.contains_key(net.neg_alpha));
+        lemma_neg_right(net, s, s1, f, v);
+    } else {
+        lemma_neg_skip(net, s, s1, f, v);
+    }
+    assert(inv_core(net, s1n));
     let joins = (sc.ord)(s1.clock, affected_joins(net, v));
     let c = s1.clock + 1;
     let ras = captured(sc, s1, joins, c);
-    let s1c = St { clock: c + joins.len(), ..s1 };
+    let s1c = St { clock: c + joins.len(), ..s1n };
     assert(inv_core(net, s1c));
+    assert(s1c.tokens == s1.tokens && s1c.wm == s1.wm && s1c.amem == s1.amem);
     assert(ra_ok(net, s1c, ras, f)) by {
         assert forall|i: int| 0 <= i < ras.len() implies 1 <= #[trigger] ras[i].0 <= net.n
             && ras[i].1.no_duplicates() && s1c.amem[(net.alpha_of)(ras[i].0)].contains(f) by {
@@ -1345,14 +1978,15 @@ pub proof fn lemma_removed_iff<V>(net: Net<V>, s: St<V>, f: FactId, t: TokenId)
     }
 }
 
-pub proof fn lemma_retract_fact<V>(net: Net<V>, s: St<V>, f: FactId)
+pub proof fn lemma_retract_fact<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId)
     requires
         net_wf(net),
+        sched_ok(sc),
         inv(net, s),
         s.wm.contains_key(f),
     ensures
         ({
-            let s2 = retract_fact(net, s, f);
+            let s2 = retract_fact(net, sc, s, f);
             &&& inv(net, s2)
             &&& s2.wm == s.wm.remove(f)
             &&& s2.root == s.root
@@ -1365,14 +1999,49 @@ pub proof fn lemma_retract_fact<V>(net: Net<V>, s: St<V>, f: FactId)
                 s2.tokens.contains_key(t) ==> s2.tokens[t] == s.tokens[t]
         }),
 {
+    let n = net.n;
     let rm = removed_by(s.tokens, f);
-    let s2 = retract_fact(net, s, f);
+    let gone = s.pts.dom().filter(|pt: TokenId| rm.contains(s.pts[pt].parent->0));
+    let blocked1 = s.blocked.remove_keys(rm);
+    let negr = net.neg && s.amem[net.neg_alpha].contains(f);
+    let freed = if negr {
+        blocked1.dom().filter(|p: TokenId| blocked1[p] == Set::<FactId>::empty().insert(f))
+    } else {
+        Set::<TokenId>::empty()
+    };
+    let blocked2 = if negr {
+        Map::new(blocked1.dom() - freed, |p: TokenId| blocked1[p].remove(f))
+    } else {
+        blocked1
+    };
+    let sm = St {
+        tokens: s.tokens.remove_keys(rm),
+        mem: Map::new(
+            s.mem.dom(),
+            |k: nat|
+                if k == net.n + 1 {
+                    s.mem[k].difference(gone)
+                } else {
+                    s.mem[k].difference(rm)
+                },
+        ),
+        pts: s.pts.remove_keys(gone),
+        blocked: blocked2,
+        unblocked: s.unblocked.remove_keys(rm),
+        amem: Map::new(s.amem.dom(), |a: nat| s.amem[a].remove(f)),
+        wm: s.wm.remove(f),
+        clock: s.clock + 1,
+        ..s
+    };
+    let ps = (sc.ord)(s.clock, freed);
+    let s2 = unblock_loop(net, sc, sm, ps);
+    assert(s2 == retract_fact(net, sc, s, f));
     assert forall|t: TokenId| #[trigger] s.tokens.contains_key(t) implies (rm.contains(t)
         <==> tuple(s.tokens, t).contains(f)) by {
         lemma_removed_iff(net, s, f, t);
     }
     assert forall|t: TokenId| #[trigger]
-        s2.tokens.contains_key(t) <==> (s.tokens.contains_key(t) && !tuple(s.tokens, t).contains(
+        sm.tokens.contains_key(t) <==> (s.tokens.contains_key(t) && !tuple(s.tokens, t).contains(
             f,
         )) by {
         if s.tokens.contains_key(t) {
@@ -1381,53 +2050,53 @@ pub proof fn lemma_retract_fact<V>(net: Net<V>, s: St<V>, f: FactId)
     }
     // A surviving token's parent survives and its own fact is not `f`.
     assert forall|t: TokenId| #[trigger]
-        s2.tokens.contains_key(t) && s2.tokens[t].owner > 0 implies s2.tokens.contains_key(
+        sm.tokens.contains_key(t) && sm.tokens[t].owner > 0 implies sm.tokens.contains_key(
         s.tokens[t].parent->0,
     ) && s.tokens[t].fact->0 != f by {
         lemma_parent(net, s, t);
         let p = s.tokens[t].parent->0;
         assert(s.tokens.contains_key(p));
     }
-    assert(inv_struct(net, s2)) by {
+    assert(inv_struct(net, sm)) by {
         assert(tuple(s.tokens, s.root) =~= Seq::<FactId>::empty());
-        assert(s2.tokens.contains_key(s.root));
+        assert(sm.tokens.contains_key(s.root));
         assert forall|k: nat, t: TokenId|
-            k <= net.n && #[trigger] s2.mem[k].contains(t) implies s2.tokens.contains_key(t)
-            && s2.tokens[t].owner == k by {
+            k <= net.n && #[trigger] sm.mem[k].contains(t) implies sm.tokens.contains_key(t)
+            && sm.tokens[t].owner == k by {
             assert(s.mem[k].contains(t));
         }
         assert forall|t: TokenId|
-            #![trigger s2.tokens[t].parent]
-            s2.tokens.contains_key(t) && s2.tokens[t].owner > 0 implies {
-            &&& s2.tokens[t].parent is Some
-            &&& s2.tokens.contains_key(s2.tokens[t].parent->0)
-            &&& s2.tokens[s2.tokens[t].parent->0].owner + 1 == s2.tokens[t].owner
+            #![trigger sm.tokens[t].parent]
+            sm.tokens.contains_key(t) && sm.tokens[t].owner > 0 implies {
+            &&& sm.tokens[t].parent is Some
+            &&& sm.tokens.contains_key(sm.tokens[t].parent->0)
+            &&& sm.tokens[sm.tokens[t].parent->0].owner + 1 == sm.tokens[t].owner
         } by {
             lemma_parent(net, s, t);
         }
     }
-    assert(inv_sound(net, s2)) by {
+    assert(inv_sound(net, sm)) by {
         assert forall|t: TokenId|
-            #![trigger s2.tokens[t].parent]
-            s2.tokens.contains_key(t) && s2.tokens[t].owner > 0 implies {
+            #![trigger sm.tokens[t].parent]
+            sm.tokens.contains_key(t) && sm.tokens[t].owner > 0 implies {
             &&& jmatch(
                 net,
-                s2.wm,
-                s2.tokens[t].owner,
-                s2.tokens[s2.tokens[t].parent->0].data,
-                s2.tokens[t].fact->0,
+                sm.wm,
+                sm.tokens[t].owner,
+                sm.tokens[sm.tokens[t].parent->0].data,
+                sm.tokens[t].fact->0,
             )
-            &&& s2.tokens[t].data == s2.tokens[s2.tokens[t].parent->0].data.push(
-                s2.wm[s2.tokens[t].fact->0],
+            &&& sm.tokens[t].data == sm.tokens[sm.tokens[t].parent->0].data.push(
+                sm.wm[sm.tokens[t].fact->0],
             )
         } by {
             lemma_parent(net, s, t);
         }
     }
-    assert(inv_unique(s2)) by {
+    assert(inv_unique(sm)) by {
         assert forall|c1: TokenId, c2: TokenId, p: TokenId, g: FactId|
-            #[trigger] is_child(s2.tokens, c1, p, g) && #[trigger] is_child(
-                s2.tokens,
+            #[trigger] is_child(sm.tokens, c1, p, g) && #[trigger] is_child(
+                sm.tokens,
                 c2,
                 p,
                 g,
@@ -1436,29 +2105,29 @@ pub proof fn lemma_retract_fact<V>(net: Net<V>, s: St<V>, f: FactId)
             assert(is_child(s.tokens, c2, p, g));
         }
     }
-    assert(inv_alpha(net, s2)) by {
-        assert forall|a: nat, g: FactId| s2.amem.contains_key(a) implies (
-        #[trigger] s2.amem[a].contains(g) <==> (s2.wm.contains_key(g) && (net.alpha)(
+    assert(inv_alpha(net, sm)) by {
+        assert forall|a: nat, g: FactId| sm.amem.contains_key(a) implies (
+        #[trigger] sm.amem[a].contains(g) <==> (sm.wm.contains_key(g) && (net.alpha)(
             a,
-            s2.wm[g],
+            sm.wm[g],
         ))) by {
             assert(s.amem.contains_key(a));
             if g != f {
-                assert(s.amem[a].contains(g) <==> s2.amem[a].contains(g));
+                assert(s.amem[a].contains(g) <==> sm.amem[a].contains(g));
             }
         }
     }
-    assert forall|u: TokenId| #[trigger] s2.tokens.contains_key(u) implies complete_node(
+    assert forall|u: TokenId| #[trigger] sm.tokens.contains_key(u) implies complete_node(
         net,
-        s2.wm,
-        s2.tokens,
+        sm.wm,
+        sm.tokens,
         u,
     ) by {
-        if s2.tokens[u].owner < net.n {
+        if sm.tokens[u].owner < net.n {
             assert forall|g: FactId|
-                #![trigger has_child(s2.tokens, u, g)]
-                jmatch(net, s2.wm, s2.tokens[u].owner + 1, s2.tokens[u].data, g) implies has_child(
-                s2.tokens,
+                #![trigger has_child(sm.tokens, u, g)]
+                jmatch(net, sm.wm, sm.tokens[u].owner + 1, sm.tokens[u].data, g) implies has_child(
+                sm.tokens,
                 u,
                 g,
             ) by {
@@ -1472,9 +2141,259 @@ pub proof fn lemma_retract_fact<V>(net: Net<V>, s: St<V>, f: FactId)
                 }
                 lemma_parent(net, s, c);
                 assert(!tuple(s.tokens, c).contains(f));
-                assert(is_child(s2.tokens, c, u, g));
+                assert(is_child(sm.tokens, c, u, g));
             }
         }
+    }
+    // Negative memory after cleanup and blocker removal, before unblocking.
+    assert forall|d: Seq<V>, g: FactId| #[trigger] nmatch(net, sm.wm, d, g) <==> (g != f
+        && nmatch(net, s.wm, d, g)) by {}
+    if net.neg {
+        assert(s.amem.contains_key(net.neg_alpha));
+    }
+    assert(inv_neg_except(net, sm, freed)) by {
+        assert forall|pt: TokenId| #[trigger] sm.mem[n + 1].contains(pt) <==> sm.pts.contains_key(
+            pt,
+        ) by {}
+        assert forall|pt: TokenId| #[trigger] sm.pts.contains_key(pt) implies {
+            &&& !sm.tokens.contains_key(pt)
+            &&& sm.pts[pt] == pt_tok(
+                net,
+                sm.tokens[sm.pts[pt].parent->0].data,
+                sm.pts[pt].parent->0,
+            )
+            &&& sm.unblocked.contains_key(sm.pts[pt].parent->0)
+            &&& sm.unblocked[sm.pts[pt].parent->0] == pt
+        } by {
+            let q = s.pts[pt].parent->0;
+            assert(s.unblocked.contains_key(q));
+            assert(!rm.contains(q));
+        }
+        assert forall|q: TokenId| #[trigger] sm.unblocked.contains_key(q) implies {
+            &&& sm.tokens.contains_key(q)
+            &&& sm.tokens[q].owner == net.n
+            &&& sm.pts.contains_key(sm.unblocked[q])
+            &&& sm.pts[sm.unblocked[q]].parent == Some(q)
+            &&& !sm.blocked.contains_key(q)
+            &&& !freed.contains(q)
+            &&& no_blocker(net, sm.wm, sm.tokens[q].data)
+        } by {
+            assert(s.unblocked.contains_key(q));
+            let pt = s.unblocked[q];
+            assert(s.pts.contains_key(pt));
+            assert(!gone.contains(pt));
+            assert(no_blocker(net, s.wm, s.tokens[q].data));
+            assert forall|g: FactId| !#[trigger] nmatch(net, sm.wm, sm.tokens[q].data, g) by {
+                assert(!nmatch(net, s.wm, s.tokens[q].data, g));
+            }
+        }
+        assert forall|q: TokenId| #[trigger] sm.blocked.contains_key(q) implies {
+            &&& sm.tokens.contains_key(q)
+            &&& sm.tokens[q].owner == net.n
+            &&& !freed.contains(q)
+            &&& exact_blockers(net, sm.wm, sm.tokens[q].data, sm.blocked[q])
+        } by {
+            assert(blocked1.contains_key(q));
+            assert(s.blocked.contains_key(q) && !rm.contains(q));
+            let d = s.tokens[q].data;
+            let b = s.blocked[q];
+            let b2 = sm.blocked[q];
+            assert(exact_blockers(net, s.wm, d, b));
+            assert forall|g: FactId|
+                #![trigger b2.contains(g)]
+                #![trigger nmatch(net, sm.wm, d, g)]
+                b2.contains(g) <==> nmatch(net, sm.wm, d, g) by {
+                assert(b.contains(g) <==> nmatch(net, s.wm, d, g));
+                if g == f && !negr {
+                    assert(!s.amem[net.neg_alpha].contains(f));
+                }
+            }
+            if negr {
+                assert(!freed.contains(q));
+                assert(b != Set::<FactId>::empty().insert(f));
+                let g0 = choose|g: FactId| #[trigger] b.contains(g);
+                if forall|g: FactId| #[trigger] b.contains(g) ==> g == f {
+                    assert(b =~= Set::<FactId>::empty().insert(f));
+                }
+                let g1 = choose|g: FactId| #[trigger] b.contains(g) && g != f;
+                assert(b2.contains(g1));
+            } else {
+                let g0 = choose|g: FactId| #[trigger] b.contains(g);
+                assert(b2.contains(g0));
+            }
+        }
+        assert forall|q: TokenId| #[trigger] freed.contains(q) implies sm.tokens.contains_key(q)
+            && sm.tokens[q].owner == net.n by {
+            assert(negr);
+            assert(blocked1.contains_key(q));
+            assert(s.blocked.contains_key(q) && !rm.contains(q));
+        }
+        if net.neg {
+            assert forall|q: TokenId| #[trigger]
+                sm.tokens.contains_key(q) && sm.tokens[q].owner == net.n implies sm.blocked.contains_key(
+                q,
+            ) || sm.unblocked.contains_key(q) || freed.contains(q) by {
+                assert(s.tokens.contains_key(q) && !rm.contains(q));
+                if s.blocked.contains_key(q) {
+                    assert(blocked1.contains_key(q));
+                    if negr && blocked1[q] == Set::<FactId>::empty().insert(f) {
+                        assert(freed.contains(q));
+                    } else {
+                        assert(sm.blocked.contains_key(q));
+                    }
+                } else {
+                    assert(s.unblocked.contains_key(q));
+                    assert(sm.unblocked.contains_key(q));
+                }
+            }
+        } else {
+            assert(sm.pts.dom() =~= Set::<TokenId>::empty());
+            assert(sm.blocked.dom() =~= Set::<TokenId>::empty());
+            assert(sm.unblocked.dom() =~= Set::<TokenId>::empty());
+        }
+    }
+    assert forall|q: TokenId| #[trigger] freed.contains(q) implies no_blocker(
+        net,
+        sm.wm,
+        sm.tokens[q].data,
+    ) by {
+        assert(negr);
+        assert(blocked1.contains_key(q));
+        let d = s.tokens[q].data;
+        let b = s.blocked[q];
+        assert(exact_blockers(net, s.wm, d, b));
+        assert(b == Set::<FactId>::empty().insert(f));
+        assert forall|g: FactId| !#[trigger] nmatch(net, sm.wm, sm.tokens[q].data, g) by {
+            if g != f {
+                assert(!b.contains(g));
+            }
+        }
+    }
+    assert(inv_pos(net, sm));
+    lemma_unblock_loop(net, sc, sm, ps, freed);
+    assert(s2.tokens == sm.tokens && s2.wm == sm.wm);
+}
+
+pub proof fn lemma_unblock_loop<V>(
+    net: Net<V>,
+    sc: Sched,
+    s: St<V>,
+    ps: Seq<TokenId>,
+    free: Set<TokenId>,
+)
+    requires
+        net_wf(net),
+        sched_ok(sc),
+        inv_pos(net, s),
+        inv_neg_except(net, s, free),
+        ps.no_duplicates(),
+        forall|p: TokenId| #[trigger] ps.contains(p) <==> free.contains(p),
+        forall|p: TokenId| #[trigger]
+            free.contains(p) ==> no_blocker(net, s.wm, s.tokens[p].data),
+        !net.neg ==> free == Set::<TokenId>::empty(),
+    ensures
+        ({
+            let s2 = unblock_loop(net, sc, s, ps);
+            &&& inv_core(net, s2)
+            &&& s2.tokens == s.tokens
+            &&& s2.wm == s.wm
+            &&& s2.amem == s.amem
+            &&& s2.root == s.root
+        }),
+    decreases ps.len(),
+{
+    if ps.len() == 0 {
+        assert forall|q: TokenId| !#[trigger] free.contains(q) by {
+            if free.contains(q) {
+                assert(ps.contains(q));
+            }
+        }
+        assert(free =~= Set::<TokenId>::empty());
+    } else {
+        let p = ps[0];
+        let rest = ps.drop_first();
+        assert(ps.contains(p));
+        assert(free.contains(p));
+        assert(net.neg);
+        let pt = (sc.fresh)(s.clock, s.tokens.dom() + s.pts.dom());
+        assert(!(s.tokens.dom() + s.pts.dom()).contains(pt));
+        let s1 = St {
+            pts: s.pts.insert(pt, pt_tok(net, s.tokens[p].data, p)),
+            mem: s.mem.insert(net.n + 1, s.mem[net.n + 1].insert(pt)),
+            unblocked: s.unblocked.insert(p, pt),
+            clock: s.clock + 1,
+            ..s
+        };
+        let free1 = free.remove(p);
+        assert(!s.unblocked.contains_key(p) && !s.blocked.contains_key(p));
+        assert(inv_neg_except(net, s1, free1)) by {
+            assert forall|pt2: TokenId| #[trigger] s1.pts.contains_key(pt2) implies {
+                &&& !s1.tokens.contains_key(pt2)
+                &&& s1.pts[pt2] == pt_tok(
+                    net,
+                    s1.tokens[s1.pts[pt2].parent->0].data,
+                    s1.pts[pt2].parent->0,
+                )
+                &&& s1.unblocked.contains_key(s1.pts[pt2].parent->0)
+                &&& s1.unblocked[s1.pts[pt2].parent->0] == pt2
+            } by {
+                if pt2 != pt {
+                    assert(s.pts.contains_key(pt2));
+                    assert(s.pts[pt2].parent->0 != p);
+                }
+            }
+            assert forall|q: TokenId| #[trigger] s1.unblocked.contains_key(q) implies {
+                &&& s1.tokens.contains_key(q)
+                &&& s1.tokens[q].owner == net.n
+                &&& s1.pts.contains_key(s1.unblocked[q])
+                &&& s1.pts[s1.unblocked[q]].parent == Some(q)
+                &&& !s1.blocked.contains_key(q)
+                &&& !free1.contains(q)
+                &&& no_blocker(net, s1.wm, s1.tokens[q].data)
+            } by {
+                if q != p {
+                    assert(s.unblocked.contains_key(q));
+                }
+            }
+            assert forall|q: TokenId| #[trigger] s1.blocked.contains_key(q) implies {
+                &&& s1.tokens.contains_key(q)
+                &&& s1.tokens[q].owner == net.n
+                &&& !free1.contains(q)
+                &&& exact_blockers(net, s1.wm, s1.tokens[q].data, s1.blocked[q])
+            } by {}
+            assert forall|q: TokenId| #[trigger]
+                s1.tokens.contains_key(q) && s1.tokens[q].owner == net.n implies s1.blocked.contains_key(
+                q,
+            ) || s1.unblocked.contains_key(q) || free1.contains(q) by {
+                assert(s.blocked.contains_key(q) || s.unblocked.contains_key(q) || free.contains(
+                    q,
+                ));
+            }
+        }
+        assert(inv_pos(net, s1)) by {
+            assert(inv_struct(net, s1));
+        }
+        assert(rest.no_duplicates()) by {
+            assert forall|i: int, j: int|
+                0 <= i < rest.len() && 0 <= j < rest.len() && i != j implies rest[i] != rest[j] by {
+                assert(ps[i + 1] != ps[j + 1]);
+            }
+        }
+        assert forall|q: TokenId| #[trigger] rest.contains(q) <==> free1.contains(q) by {
+            if rest.contains(q) {
+                let i = choose|i: int| 0 <= i < rest.len() && rest[i] == q;
+                assert(ps[i + 1] == q);
+                assert(ps.contains(q));
+            }
+            if free1.contains(q) {
+                assert(ps.contains(q));
+                let i = choose|i: int| 0 <= i < ps.len() && ps[i] == q;
+                assert(i != 0);
+                assert(rest[i - 1] == q);
+            }
+        }
+        lemma_unblock_loop(net, sc, s1, rest, free1);
+        assert(unblock_loop(net, sc, s, ps) == unblock_loop(net, sc, s1, rest));
     }
 }
 
@@ -1694,7 +2613,7 @@ pub open spec fn init<V>(net: Net<V>, root: TokenId) -> St<V> {
         amem: Map::new(net.alphas, |a: nat| Set::<FactId>::empty()),
         tokens: Map::empty().insert(root, root_tok()),
         mem: Map::new(
-            Set::<nat>::range(0, net.n + 1),
+            Set::<nat>::range(0, net.n + 2),
             |k: nat|
                 if k == 0 {
                     Set::<TokenId>::empty().insert(root)
@@ -1702,6 +2621,9 @@ pub open spec fn init<V>(net: Net<V>, root: TokenId) -> St<V> {
                     Set::<TokenId>::empty()
                 },
         ),
+        pts: Map::empty(),
+        blocked: Map::empty(),
+        unblocked: Map::empty(),
         root,
         clock: 0,
     }
@@ -1725,7 +2647,7 @@ pub open spec fn step<V>(net: Net<V>, sc: Sched, s: St<V>, op: Op<V>) -> St<V> {
             assert_fact(net, sc, St { wm: s.wm.insert(f, v), ..s }, f)
         },
         Op::Retract(f) => if s.wm.contains_key(f) {
-            retract_fact(net, s, f)
+            retract_fact(net, sc, s, f)
         } else {
             s
         },
@@ -1783,7 +2705,7 @@ pub proof fn lemma_step<V>(net: Net<V>, sc: Sched, s: St<V>, op: Op<V>)
         },
         Op::Retract(f) => {
             if s.wm.contains_key(f) {
-                lemma_retract_fact(net, s, f);
+                lemma_retract_fact(net, sc, s, f);
             }
         },
     }
@@ -1818,10 +2740,123 @@ pub proof fn theorem_incremental_equals_declarative<V>(
         sched_ok(sc),
     ensures
         declarative_ok(net, run(net, sc, init(net, root), ops)),
+        declarative_neg_ok(net, run(net, sc, init(net, root), ops)),
 {
     lemma_init(net, root);
     lemma_run(net, sc, init(net, root), ops);
     lemma_declarative(net, run(net, sc, init(net, root), ops));
+    lemma_declarative_neg(net, run(net, sc, init(net, root), ops));
+}
+
+// ---------------------------------------------------------------------------
+// Declarative semantics of the negative node
+// ---------------------------------------------------------------------------
+/// Matches of the whole join chain that no current fact blocks.
+pub open spec fn neg_matches<V>(net: Net<V>, wm: Map<FactId, V>) -> ISet<Seq<FactId>> {
+    ISet::new(
+        |x: Seq<FactId>|
+            x.len() == net.n && is_match(net, wm, x) && no_blocker(net, wm, data_of(wm, x)),
+    )
+}
+
+/// The parent tuples of the pass-through tokens in the negative node's memory.
+pub open spec fn neg_tuples<V>(net: Net<V>, s: St<V>) -> ISet<Seq<FactId>> {
+    ISet::new(
+        |x: Seq<FactId>|
+            exists|pt: TokenId| #[trigger]
+                s.mem[net.n + 1].contains(pt) && tuple(s.tokens, s.pts[pt].parent->0) == x,
+    )
+}
+
+pub open spec fn declarative_neg_ok<V>(net: Net<V>, s: St<V>) -> bool {
+    &&& !net.neg ==> forall|pt: TokenId| !#[trigger] s.mem[net.n + 1].contains(pt)
+    &&& net.neg ==> {
+        // memory n + 1 holds exactly the unblocked matches ...
+        &&& neg_tuples(net, s) == neg_matches(net, s.wm)
+        // ... once each, as pass-throughs of live parents in memory n
+        &&& forall|pt1: TokenId, pt2: TokenId|
+            #[trigger] s.mem[net.n + 1].contains(pt1) && #[trigger] s.mem[net.n + 1].contains(pt2)
+                && tuple(s.tokens, s.pts[pt1].parent->0) == tuple(s.tokens, s.pts[pt2].parent->0)
+                ==> pt1 == pt2
+        &&& forall|pt: TokenId| #[trigger]
+            s.mem[net.n + 1].contains(pt) ==> s.pts[pt].fact is None && s.pts[pt].parent is Some
+                && s.mem[net.n].contains(s.pts[pt].parent->0)
+        // every parent's blocker set is exactly the set of facts blocking it
+        &&& forall|p: TokenId| #[trigger]
+            s.mem[net.n].contains(p) ==> {
+                let d = data_of(s.wm, tuple(s.tokens, p));
+                &&& s.blocked.contains_key(p) <==> !no_blocker(net, s.wm, d)
+                &&& s.unblocked.contains_key(p) <==> no_blocker(net, s.wm, d)
+                &&& s.blocked.contains_key(p) ==> forall|g: FactId|
+                    #[trigger] s.blocked[p].contains(g) <==> nmatch(net, s.wm, d, g)
+            }
+    }
+}
+
+pub proof fn lemma_declarative_neg<V>(net: Net<V>, s: St<V>)
+    requires
+        inv(net, s),
+    ensures
+        declarative_neg_ok(net, s),
+{
+    let n = net.n;
+    if net.neg {
+        assert forall|x: Seq<FactId>| #[trigger]
+            neg_tuples(net, s).contains(x) <==> neg_matches(net, s.wm).contains(x) by {
+            if neg_tuples(net, s).contains(x) {
+                let pt = choose|pt: TokenId| #[trigger]
+                    s.mem[n + 1].contains(pt) && tuple(s.tokens, s.pts[pt].parent->0) == x;
+                let p = s.pts[pt].parent->0;
+                assert(s.unblocked.contains_key(p));
+                lemma_sound(net, s, p);
+            }
+            if neg_matches(net, s.wm).contains(x) {
+                let p = lemma_complete(net, s, x);
+                lemma_sound(net, s, p);
+                if s.blocked.contains_key(p) {
+                    let g = choose|g: FactId| #[trigger] s.blocked[p].contains(g);
+                    assert(nmatch(net, s.wm, s.tokens[p].data, g));
+                }
+                assert(s.unblocked.contains_key(p));
+                let pt = s.unblocked[p];
+                assert(s.mem[n + 1].contains(pt));
+            }
+        }
+        assert(neg_tuples(net, s) =~= neg_matches(net, s.wm));
+        assert forall|pt1: TokenId, pt2: TokenId|
+            #[trigger] s.mem[n + 1].contains(pt1) && #[trigger] s.mem[n + 1].contains(pt2)
+                && tuple(s.tokens, s.pts[pt1].parent->0) == tuple(s.tokens, s.pts[pt2].parent->0)
+                implies pt1 == pt2 by {
+            let p1 = s.pts[pt1].parent->0;
+            let p2 = s.pts[pt2].parent->0;
+            assert(s.unblocked.contains_key(p1) && s.unblocked.contains_key(p2));
+            lemma_unique(net, s, p1, p2);
+        }
+        assert forall|pt: TokenId| #[trigger] s.mem[n + 1].contains(pt) implies s.pts[pt].fact is None
+            && s.pts[pt].parent is Some && s.mem[n].contains(s.pts[pt].parent->0) by {
+            assert(s.unblocked.contains_key(s.pts[pt].parent->0));
+        }
+        assert forall|p: TokenId| #[trigger] s.mem[n].contains(p) implies {
+            let d = data_of(s.wm, tuple(s.tokens, p));
+            &&& s.blocked.contains_key(p) <==> !no_blocker(net, s.wm, d)
+            &&& s.unblocked.contains_key(p) <==> no_blocker(net, s.wm, d)
+            &&& s.blocked.contains_key(p) ==> forall|g: FactId|
+                #[trigger] s.blocked[p].contains(g) <==> nmatch(net, s.wm, d, g)
+        } by {
+            lemma_sound(net, s, p);
+            let d = s.tokens[p].data;
+            if s.blocked.contains_key(p) {
+                let g = choose|g: FactId| #[trigger] s.blocked[p].contains(g);
+                assert(nmatch(net, s.wm, d, g));
+            }
+        }
+    } else {
+        assert forall|pt: TokenId| !#[trigger] s.mem[n + 1].contains(pt) by {
+            if s.mem[n + 1].contains(pt) {
+                assert(s.pts.contains_key(pt));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1923,6 +2958,7 @@ pub proof fn theorem_assert_delta<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId
 pub proof fn theorem_retract_delta<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactId)
     requires
         net_wf(net),
+        sched_ok(sc),
         inv(net, s),
         s.wm.contains_key(f),
     ensures
@@ -1939,7 +2975,7 @@ pub proof fn theorem_retract_delta<V>(net: Net<V>, sc: Sched, s: St<V>, f: FactI
                 s2.tokens.contains_key(t) ==> s2.tokens[t] == s.tokens[t]
         }),
 {
-    lemma_retract_fact(net, s, f);
+    lemma_retract_fact(net, sc, s, f);
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,16 +3022,17 @@ pub proof fn lemma_sched_satisfiable() -> (sc: Sched)
 /// the self-join tuple `[7, 7]` (exactly once). This exercises the subtle
 /// path in `assert_fact` where the new fact must be joined with a token that
 /// was itself created by this assertion.
-pub proof fn example_shared_alpha_self_join<V>(sc: Sched, root: TokenId, v: V)
-    requires
-        sched_ok(sc),
-{
+pub proof fn example_shared_alpha_self_join<V>(root: TokenId, v: V) {
+    let sc = lemma_sched_satisfiable();
     let net = Net::<V> {
         n: 2,
         alphas: Set::<nat>::empty().insert(0),
         alpha_of: |k: nat| 0nat,
         alpha: |a: nat, d: V| true,
         test: |k: nat, d: Seq<V>, e: V| true,
+        neg: false,
+        neg_alpha: 0,
+        neg_test: |d: Seq<V>, e: V| true,
     };
     let ops = seq![Op::Assert(7nat, v)];
     lemma_init(net, root);
@@ -2014,6 +3051,66 @@ pub proof fn example_shared_alpha_self_join<V>(sc: Sched, root: TokenId, v: V)
     assert(beta_tuples(s, 2).contains(x));
     let t = choose|t: TokenId| #[trigger] s.mem[2].contains(t) && tuple(s.tokens, t) == x;
     assert(s.mem[2].contains(t) && tuple(s.tokens, t) == x);
+}
+
+/// `(a ?x) (not (a ?y&:(= ?y (+ ?x 1))))` after asserting facts `1 -> 10`
+/// and `2 -> 11`: the negative node's memory holds the match `[2]` but not
+/// `[1]`, and the token for `[1]` is blocked by exactly fact `2`.
+pub proof fn example_negation(root: TokenId) {
+    let sc = lemma_sched_satisfiable();
+    let net = Net::<int> {
+        n: 1,
+        alphas: Set::<nat>::empty().insert(0),
+        alpha_of: |k: nat| 0nat,
+        alpha: |a: nat, d: int| true,
+        test: |k: nat, d: Seq<int>, e: int| true,
+        neg: true,
+        neg_alpha: 0,
+        neg_test: |d: Seq<int>, e: int| e == d[0] + 1,
+    };
+    let ops = seq![Op::Assert(1nat, 10int), Op::Assert(2nat, 11int)];
+    lemma_init(net, root);
+    let s0 = init(net, root);
+    lemma_assert_fact(net, sc, s0, 1, 10);
+    let s1 = step(net, sc, s0, ops[0]);
+    lemma_assert_fact(net, sc, s1, 2, 11);
+    let s = step(net, sc, s1, ops[1]);
+    assert(ops.drop_first().drop_first() =~= Seq::<Op<int>>::empty());
+    reveal_with_fuel(run, 3);
+    assert(s == run(net, sc, s0, ops));
+    let wm = Map::<FactId, int>::empty().insert(1nat, 10int).insert(2nat, 11int);
+    assert(s.wm == wm);
+    theorem_incremental_equals_declarative(net, sc, root, ops);
+    let x1 = seq![1nat];
+    let x2 = seq![2nat];
+    assert(x1.take(0) =~= Seq::<FactId>::empty());
+    assert(x2.take(0) =~= Seq::<FactId>::empty());
+    assert(data_of(wm, x1) =~= seq![10int]);
+    assert(data_of(wm, x2) =~= seq![11int]);
+    assert(is_match(net, wm, x1));
+    assert(is_match(net, wm, x2));
+    assert(no_blocker(net, wm, data_of(wm, x2))) by {
+        assert forall|g: FactId| !#[trigger] nmatch(net, wm, data_of(wm, x2), g) by {
+            if wm.contains_key(g) {
+                assert(g == 1 || g == 2);
+            }
+        }
+    }
+    assert(nmatch(net, wm, data_of(wm, x1), 2));
+    assert(neg_matches(net, wm).contains(x2));
+    assert(!neg_matches(net, wm).contains(x1));
+    assert(neg_tuples(net, s).contains(x2));
+    assert(!neg_tuples(net, s).contains(x1));
+    assert(matches_k(net, wm, 1).contains(x1));
+    assert(beta_tuples(s, 1).contains(x1));
+    let t = choose|t: TokenId| #[trigger] s.mem[1].contains(t) && tuple(s.tokens, t) == x1;
+    assert(s.blocked.contains_key(t));
+    assert forall|g: FactId| #[trigger] s.blocked[t].contains(g) <==> g == 2 by {
+        assert(s.blocked[t].contains(g) <==> nmatch(net, wm, data_of(wm, x1), g));
+        if nmatch(net, wm, data_of(wm, x1), g) {
+            assert(g == 1 || g == 2);
+        }
+    }
 }
 
 } // verus!
