@@ -1147,3 +1147,9 @@ mod tests {
         assert!(plan.validate().is_err());
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;
+
+#[cfg(kani)]
+mod kani_refinement;

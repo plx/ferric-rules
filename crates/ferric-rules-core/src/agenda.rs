@@ -2598,3 +2598,9 @@ mod clips_ordering_tests {
         agenda.debug_assert_consistency();
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;
+
+#[cfg(kani)]
+mod kani_refinement;

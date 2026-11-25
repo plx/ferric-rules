@@ -191,3 +191,6 @@ fn check(
     }
     Ok(())
 }
+
+#[cfg(kani)]
+mod kani_proofs;

@@ -303,3 +303,6 @@ pub(crate) unsafe fn copy_error_to_buffer(
         FerricError::BufferTooSmall
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

@@ -57,3 +57,6 @@ mod tests {
         assert_eq!(s1, s2);
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

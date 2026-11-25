@@ -7538,3 +7538,9 @@ mod activation_basis_tests {
         assert_eq!(rete.agenda.pop().unwrap().rule, RuleId(1));
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;
+
+#[cfg(kani)]
+mod kani_e2e_proofs;

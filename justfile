@@ -210,6 +210,41 @@ check-examples:
 check-examples-sync:
     cargo run --quiet -p users-guide-sync -- check
 
+# ── Formal verification ─────────────────────────────────────────────────────
+# See docs/verification.md. Install the pinned tools with
+# `scripts/install-verification-tools.sh`.
+
+# Run every Kani harness and every Verus proof
+verify: verify-kani verify-verus
+
+# Run the Kani bounded model-checking harnesses (all crates, or one crate)
+verify-kani crate="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "{{crate}}" ]]; then
+        cargo kani -p "{{crate}}"
+        exit 0
+    fi
+    for pkg in ferric-rules-core ferric-rules-parser ferric-rules-runtime ferric-rules-ffi; do
+        cargo kani -p "$pkg"
+    done
+
+# Run a single Kani harness by name (e.g. `just verify-kani-harness ferric-rules-core ordered_set_refines_sequence`)
+verify-kani-harness crate harness:
+    cargo kani -p {{crate}} --harness {{harness}}
+
+# Check the Verus proofs under verification/verus/
+verify-verus:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    verus="${VERUS:-$(command -v verus || echo "$HOME/.verus/verus-x86-linux/verus")}"
+    status=0
+    for proof in verification/verus/*.rs; do
+        echo "── $proof"
+        "$verus" --crate-type=lib "$proof" || status=1
+    done
+    exit "$status"
+
 # ── Tracing / profiling ────────────────────────────────────────────────────
 
 # Check that tracing feature compiles and passes clippy + tests

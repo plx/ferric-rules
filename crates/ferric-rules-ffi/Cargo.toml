@@ -34,6 +34,7 @@ proptest = { workspace = true }
 # FFI crate must allow unsafe code for C-ABI exports
 [lints.rust]
 unsafe_code = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

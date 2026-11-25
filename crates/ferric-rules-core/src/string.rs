@@ -212,3 +212,6 @@ mod tests {
         assert_eq!(hash(&ascii), hash(&utf8));
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

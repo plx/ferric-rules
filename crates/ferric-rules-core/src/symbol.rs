@@ -601,3 +601,6 @@ mod tests {
         assert_eq!(table.resolve_symbol(sym), b"hello");
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

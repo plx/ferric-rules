@@ -83,3 +83,6 @@ mod tests {
         assert_eq!(RandomState::seeded(0).next(), RandomState::seeded(1).next());
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

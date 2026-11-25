@@ -92,6 +92,9 @@ ferric-rules-runtime = { version = "=0.1.0", path = "crates/ferric-rules-runtime
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+# `cfg(kani)` gates the bounded model-checking harnesses run by `cargo kani`
+# (see docs/verification.md); declaring it keeps ordinary builds warning-free.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

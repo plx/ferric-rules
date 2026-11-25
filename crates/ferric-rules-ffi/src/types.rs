@@ -1114,3 +1114,6 @@ unsafe fn free_value_resources(val: &FerricValue) -> Result<(), String> {
         )),
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

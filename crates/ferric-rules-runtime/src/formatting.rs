@@ -572,3 +572,6 @@ mod tests {
         assert_eq!(character(200, Spec::default()), "\u{fffd}");
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

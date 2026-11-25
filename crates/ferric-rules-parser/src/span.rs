@@ -317,3 +317,6 @@ mod tests {
         assert_eq!(merged.end.offset, 15);
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

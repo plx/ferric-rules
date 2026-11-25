@@ -255,3 +255,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;

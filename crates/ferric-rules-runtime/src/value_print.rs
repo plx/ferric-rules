@@ -121,3 +121,6 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
         Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs;
