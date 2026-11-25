@@ -2467,6 +2467,15 @@ pub proof fn lemma_ncc_remove_parent_token(s: NccMem, p: TokenId)
         #![trigger ncc_owns(t, q, x)]
         ncc_fwd(t, q, x) <==> ncc_owns(t, q, x) by {
         assert(ncc_fwd(s, q, x) <==> ncc_owns(s, q, x));
+        assert(ncc_fwd(t, q, x) <==> (ncc_fwd(s, q, x) && q != p));
+        assert(t.result_owner.contains_key(x) <==> (s.result_owner.contains_key(x)
+            && s.result_owner[x] != p));
+        if t.result_owner.contains_key(x) {
+            if s.parent_results.contains_key(p) {
+                assert(t.result_owner[x] == s.result_owner[x]);
+            }
+        }
+        assert(ncc_owns(t, q, x) <==> (ncc_owns(s, q, x) && q != p));
     }
 }
 
@@ -3493,6 +3502,593 @@ pub proof fn theorem_ncc_sequences(ops: Seq<NccOp>)
         lemma_ncc_step(ncc_run(ops.drop_last()), ncc_abs_run(ops.drop_last()), ops.last());
     }
     lemma_ncc_from_scratch(ncc_run(ops), ncc_abs_run(ops));
+}
+
+// =====================================================================
+// Section 4. Negative node protocol (crates/ferric-rules-core/src/rete.rs)
+// =====================================================================
+/// What a node operation does to downstream matches.
+pub enum Signal {
+    /// a pass-through token `pt` for `parent` is created and propagated
+    Propagate(TokenId, TokenId),
+    /// the pass-through token `pt` of `parent` is cascade-retracted
+    Retract(TokenId, TokenId),
+}
+
+pub open spec fn sig_parent(x: Signal) -> TokenId {
+    match x {
+        Signal::Propagate(p, _) => p,
+        Signal::Retract(p, _) => p,
+    }
+}
+
+/// No parent is signalled twice by one operation.
+pub open spec fn one_per_parent(sig: Seq<Signal>) -> bool {
+    forall|i: int, j: int|
+        0 <= i < sig.len() && 0 <= j < sig.len() && i != j ==> sig_parent(#[trigger] sig[i])
+            != sig_parent(#[trigger] sig[j])
+}
+
+/// The join tests of a node, as a fixed relation between (immutable) parent
+/// tokens and facts.  Abstracts `evaluate_pattern` (rete.rs:1273, 1371,
+/// 1386, 2106, 2206).
+pub type JoinRel = spec_fn(TokenId, FactId) -> bool;
+
+/// Ground truth: the facts of the alpha memory that match `p`.
+pub open spec fn gt_matches(facts: Set<FactId>, m: JoinRel, p: TokenId) -> Set<FactId> {
+    facts.filter(|f: FactId| m(p, f))
+}
+
+/// A negative node: its memory plus the world it summarises.
+pub struct NegNode {
+    pub mem: NegMem,
+    /// live parent tokens in the upstream beta memory
+    pub parents: Set<TokenId>,
+    /// facts in the node's alpha memory
+    pub facts: Set<FactId>,
+    /// `ReteNetwork::next_block_order` (rete.rs:152)
+    pub next_order: nat,
+}
+
+pub open spec fn neg_node_inv(n: NegNode, m: JoinRel) -> bool {
+    &&& neg_valid(n.mem)
+    &&& forall|p: TokenId, f: FactId| #[trigger]
+        neg_fwd(n.mem, p, f) <==> (n.parents.contains(p) && n.facts.contains(f) && m(p, f))
+    &&& forall|p: TokenId| #[trigger]
+        n.mem.unblocked.contains_key(p) <==> (n.parents.contains(p) && !n.mem.blocked.contains_key(
+            p,
+        ))
+    &&& forall|p: TokenId| #[trigger] n.mem.blocked.contains_key(p) ==> n.parents.contains(p)
+    &&& neg_orders_below(n.mem, n.next_order as int)
+}
+
+pub open spec fn neg_orders_below(s: NegMem, n: int) -> bool {
+    forall|q: TokenId| #[trigger] s.block_order.contains_key(q) ==> s.block_order[q] < n
+}
+
+/// Ground-truth "unblocked": live, and no fact of the alpha memory matches.
+pub open spec fn neg_gt_unblocked(n: NegNode, m: JoinRel, p: TokenId) -> bool {
+    n.parents.contains(p) && gt_matches(n.facts, m, p).is_empty()
+}
+
+/// Signals are exactly the ground-truth blocked <-> unblocked transitions of
+/// live parents, carrying the pass-through token concerned.
+pub open spec fn neg_signals_exact(n: NegNode, n2: NegNode, m: JoinRel, sig: Seq<Signal>) -> bool {
+    &&& one_per_parent(sig)
+    &&& forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(p, x)) <==> (!neg_gt_unblocked(n, m, p) && neg_gt_unblocked(
+            n2,
+            m,
+            p,
+        ) && n2.mem.unblocked[p] == x)
+    &&& forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(p, x)) <==> (neg_gt_unblocked(n, m, p) && !neg_gt_unblocked(
+            n2,
+            m,
+            p,
+        ) && n2.parents.contains(p) && n.mem.unblocked[p] == x)
+}
+
+pub proof fn lemma_neg_blocked_iff_fwd(s: NegMem, p: TokenId)
+    requires
+        neg_wf(s),
+    ensures
+        s.blocked.contains_key(p) <==> exists|f: FactId| neg_fwd(s, p, f),
+{
+    if s.blocked.contains_key(p) {
+        assert(neg_fwd(s, p, s.blocked[p][0]));
+    }
+}
+
+/// THEOREM (pass-through iff unblocked; incremental = from scratch): in every
+/// node state satisfying the invariant, a parent has a pass-through token
+/// iff it is live and no fact of the alpha memory matches it, its blocker
+/// list holds exactly the matching facts, and `validate_consistency` holds.
+pub proof fn lemma_neg_node_passthrough(n: NegNode, m: JoinRel, p: TokenId)
+    requires
+        neg_node_inv(n, m),
+    ensures
+        n.mem.unblocked.contains_key(p) <==> neg_gt_unblocked(n, m, p),
+        n.mem.blocked.contains_key(p) <==> (n.parents.contains(p) && !gt_matches(
+            n.facts,
+            m,
+            p,
+        ).is_empty()),
+        n.mem.blocked.contains_key(p) ==> n.mem.blocked[p].to_set() == gt_matches(n.facts, m, p),
+        neg_validate_consistency(n.mem),
+{
+    let g = gt_matches(n.facts, m, p);
+    lemma_neg_blocked_iff_fwd(n.mem, p);
+    if n.mem.blocked.contains_key(p) {
+        let f0 = n.mem.blocked[p][0];
+        assert(neg_fwd(n.mem, p, f0));
+        assert(g.contains(f0));
+        assert(n.mem.blocked[p].to_set() =~= g) by {
+            assert forall|f: FactId| n.mem.blocked[p].to_set().contains(f) <==> g.contains(f) by {
+                assert(neg_fwd(n.mem, p, f) <==> (n.parents.contains(p) && n.facts.contains(f) && m(
+                    p,
+                    f,
+                )));
+            }
+        }
+    } else if n.parents.contains(p) && !g.is_empty() {
+        let f = g.choose();
+        assert(g.contains(f));
+        assert(neg_fwd(n.mem, p, f));
+    }
+    lemma_neg_valid_implies_validate(n.mem);
+}
+
+/// Signals stated on the concrete memory imply the ground-truth statement.
+pub proof fn lemma_neg_signals_from_concrete(n: NegNode, n2: NegNode, m: JoinRel, sig: Seq<Signal>)
+    requires
+        neg_node_inv(n, m),
+        neg_node_inv(n2, m),
+        one_per_parent(sig),
+        forall|p: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Propagate(p, x)) <==> (!n.mem.unblocked.contains_key(p)
+                && n2.mem.unblocked.contains_key(p) && n2.mem.unblocked[p] == x),
+        forall|p: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Retract(p, x)) <==> (n.mem.unblocked.contains_key(p)
+                && !n2.mem.unblocked.contains_key(p) && n2.parents.contains(p)
+                && n.mem.unblocked[p] == x),
+    ensures
+        neg_signals_exact(n, n2, m, sig),
+{
+    assert forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(p, x)) <==> (!neg_gt_unblocked(n, m, p) && neg_gt_unblocked(
+            n2,
+            m,
+            p,
+        ) && n2.mem.unblocked[p] == x) by {
+        lemma_neg_node_passthrough(n, m, p);
+        lemma_neg_node_passthrough(n2, m, p);
+    }
+    assert forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(p, x)) <==> (neg_gt_unblocked(n, m, p) && !neg_gt_unblocked(
+            n2,
+            m,
+            p,
+        ) && n2.parents.contains(p) && n.mem.unblocked[p] == x) by {
+        lemma_neg_node_passthrough(n, m, p);
+        lemma_neg_node_passthrough(n2, m, p);
+    }
+}
+
+// ----------------------------- left activation -------------------------
+/// rete.rs:1307-1309 `for fact_id in blocking_facts { add_blocker(p, fact_id, order) }`
+pub open spec fn neg_add_blockers(s: NegMem, p: TokenId, fs: Seq<FactId>, order: u64) -> NegMem
+    decreases fs.len(),
+{
+    if fs.len() == 0 {
+        s
+    } else {
+        neg_add_blocker(neg_add_blockers(s, p, fs.drop_last(), order), p, fs.last(), order)
+    }
+}
+
+/// rete.rs:1211 `negative_left_activate`: `bfs` are the blocking facts found
+/// by `collect_candidate_facts` + `evaluate_pattern`; `pt` is the
+/// pass-through token inserted into the token store (1287).
+pub open spec fn neg_left_activate(n: NegNode, p: TokenId, bfs: Seq<FactId>, pt: TokenId) -> (
+    NegNode,
+    Seq<Signal>,
+) {
+    let parents = n.parents.insert(p);
+    if bfs.len() == 0 {
+        // 1278-1301
+        (
+            NegNode { mem: neg_set_unblocked(n.mem, p, pt), parents, ..n },
+            seq![Signal::Propagate(p, pt)],
+        )
+    } else {
+        // 1305-1310
+        let order = n.next_order as u64;
+        (
+            NegNode {
+                mem: neg_add_blockers(n.mem, p, bfs, order),
+                parents,
+                next_order: n.next_order + 1,
+                ..n
+            },
+            Seq::empty(),
+        )
+    }
+}
+
+/// Preconditions: a new parent token; `bfs` lists exactly the matching facts
+/// (the candidate index and join tests are trusted); no order wrap-around.
+pub open spec fn neg_left_ok(n: NegNode, m: JoinRel, p: TokenId, bfs: Seq<FactId>) -> bool {
+    &&& !n.parents.contains(p)
+    &&& bfs.no_duplicates()
+    &&& forall|f: FactId| #[trigger] bfs.contains(f) <==> (n.facts.contains(f) && m(p, f))
+    &&& n.next_order < u64::MAX
+}
+
+pub proof fn lemma_neg_add_blockers(s: NegMem, p: TokenId, fs: Seq<FactId>, order: u64)
+    requires
+        neg_wf(s),
+        !s.blocked.contains_key(p) ==> fresh_order(s.block_order, order),
+    ensures
+        ({
+            let t = neg_add_blockers(s, p, fs, order);
+            &&& neg_wf(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                neg_fwd(t, q, g) <==> (neg_fwd(s, q, g) || (q == p && fs.contains(g)))
+            &&& t.unblocked == s.unblocked
+            &&& forall|q: TokenId| #[trigger]
+                t.blocked.contains_key(q) <==> (s.blocked.contains_key(q) || (q == p && fs.len()
+                    > 0))
+            &&& forall|q: TokenId| #[trigger]
+                t.block_order.contains_key(q) && q != p ==> t.block_order[q] == s.block_order[q]
+            &&& t.block_order.contains_key(p) ==> t.block_order[p] == if s.blocked.contains_key(p) {
+                s.block_order[p]
+            } else {
+                order
+            }
+        }),
+    decreases fs.len(),
+{
+    if fs.len() > 0 {
+        let prev = neg_add_blockers(s, p, fs.drop_last(), order);
+        lemma_neg_add_blockers(s, p, fs.drop_last(), order);
+        if !prev.blocked.contains_key(p) {
+            assert(fs.drop_last().len() == 0);
+            assert(prev == s);
+        }
+        lemma_neg_add_blocker(prev, p, fs.last(), order);
+        let t = neg_add_blockers(s, p, fs, order);
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            neg_fwd(t, q, g) <==> (neg_fwd(s, q, g) || (q == p && fs.contains(g))) by {
+            if fs.contains(g) && g != fs.last() {
+                let i = choose|i: int| 0 <= i < fs.len() && fs[i] == g;
+                assert(fs.drop_last()[i] == g);
+            }
+            if fs.drop_last().contains(g) {
+                let i = choose|i: int| 0 <= i < fs.drop_last().len() && fs.drop_last()[i] == g;
+                assert(fs[i] == g);
+            }
+            assert(fs[fs.len() - 1] == fs.last());
+        }
+    }
+}
+
+pub proof fn lemma_neg_node_left(n: NegNode, m: JoinRel, p: TokenId, bfs: Seq<FactId>, pt: TokenId)
+    requires
+        neg_node_inv(n, m),
+        neg_left_ok(n, m, p, bfs),
+    ensures
+        neg_node_inv(neg_left_activate(n, p, bfs, pt).0, m),
+        neg_signals_exact(n, neg_left_activate(n, p, bfs, pt).0, m, neg_left_activate(n, p, bfs, pt).1),
+{
+    let (n2, sig) = neg_left_activate(n, p, bfs, pt);
+    assert(!n.mem.blocked.contains_key(p) && !n.mem.unblocked.contains_key(p));
+    if bfs.len() == 0 {
+        assert forall|q: TokenId, f: FactId| #[trigger]
+            neg_fwd(n2.mem, q, f) <==> (n2.parents.contains(q) && n2.facts.contains(f) && m(q, f)) by {
+            assert(neg_fwd(n2.mem, q, f) == neg_fwd(n.mem, q, f));
+            if q == p && n.facts.contains(f) && m(p, f) {
+                assert(bfs.contains(f));
+            }
+        }
+        assert(sig[0] == Signal::Propagate(p, pt));
+        assert forall|q: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Propagate(q, x)) <==> (!n.mem.unblocked.contains_key(q)
+                && n2.mem.unblocked.contains_key(q) && n2.mem.unblocked[q] == x) by {
+            if sig.contains(Signal::Propagate(q, x)) {
+                let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Propagate(q, x);
+                assert(i == 0);
+            }
+        }
+        assert forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(Signal::Retract(q, x))) by {
+            if sig.contains(Signal::Retract(q, x)) {
+                let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Retract(q, x);
+                assert(i == 0);
+            }
+        }
+    } else {
+        lemma_neg_add_blockers(n.mem, p, bfs, n.next_order as u64);
+        assert forall|q: TokenId, f: FactId| #[trigger]
+            neg_fwd(n2.mem, q, f) <==> (n2.parents.contains(q) && n2.facts.contains(f) && m(q, f)) by {
+            assert(neg_fwd(n.mem, q, f) <==> (n.parents.contains(q) && n.facts.contains(f) && m(
+                q,
+                f,
+            )));
+        }
+        assert forall|q: TokenId| #[trigger] n2.mem.unblocked.contains_key(q) implies !n2.mem.blocked.contains_key(
+            q,
+        ) by {}
+    }
+    lemma_neg_signals_from_concrete(n, n2, m, sig);
+}
+
+// ----------------------------- right activation ------------------------
+/// rete.rs:1367-1376: already blocked parents record the new fact too.
+pub open spec fn neg_ra_blocked(s: NegMem, f: FactId, ps: Seq<TokenId>) -> NegMem
+    decreases ps.len(),
+{
+    if ps.len() == 0 {
+        s
+    } else {
+        neg_add_blocker(neg_ra_blocked(s, f, ps.drop_last()), ps.last(), f, 0)
+    }
+}
+
+/// rete.rs:1392-1404: newly blocked parents leave `unblocked`, attach to the
+/// fact's block list at a fresh order, and their pass-through is retracted.
+pub open spec fn neg_ra_unblocked(s: NegMem, f: FactId, ps: Seq<TokenId>, next: nat) -> (
+    NegMem,
+    Seq<Signal>,
+)
+    decreases ps.len(),
+{
+    if ps.len() == 0 {
+        (s, Seq::empty())
+    } else {
+        let (s1, sig) = neg_ra_unblocked(s, f, ps.drop_last(), next);
+        let p = ps.last();
+        let order = (next + ps.len() - 1) as u64;  // 1394
+        let pt = s1.unblocked[p];  // captured with the parent (1355-1361)
+        let s2 = neg_remove_unblocked(s1, p).0;  // 1396
+        (neg_add_blocker(s2, p, f, order), sig.push(Signal::Retract(p, pt)))  // 1397, 1403
+
+    }
+}
+
+/// rete.rs:1321 `negative_right_activate` for a newly asserted fact `f`:
+/// `bps` are the blocked parents it matches, `ups` the unblocked ones.
+pub open spec fn neg_right_activate(
+    n: NegNode,
+    f: FactId,
+    bps: Seq<TokenId>,
+    ups: Seq<TokenId>,
+) -> (NegNode, Seq<Signal>) {
+    let s1 = neg_ra_blocked(n.mem, f, bps);
+    let (s2, sig) = neg_ra_unblocked(s1, f, ups, n.next_order);
+    (NegNode { mem: s2, facts: n.facts.insert(f), next_order: n.next_order + ups.len(), ..n }, sig)
+}
+
+pub open spec fn neg_right_ok(
+    n: NegNode,
+    m: JoinRel,
+    f: FactId,
+    bps: Seq<TokenId>,
+    ups: Seq<TokenId>,
+) -> bool {
+    &&& !n.facts.contains(f)
+    &&& bps.no_duplicates()
+    &&& forall|p: TokenId| #[trigger]
+        bps.contains(p) <==> (n.mem.blocked.contains_key(p) && m(p, f))
+    &&& ups.no_duplicates()
+    &&& forall|p: TokenId| #[trigger]
+        ups.contains(p) <==> (n.mem.unblocked.contains_key(p) && m(p, f))
+    &&& n.next_order + ups.len() <= u64::MAX
+}
+
+pub proof fn lemma_seq_contains_drop_last<A>(s: Seq<A>, x: A)
+    requires
+        s.len() > 0,
+    ensures
+        s.contains(x) <==> (s.drop_last().contains(x) || x == s.last()),
+{
+    if s.contains(x) {
+        let i = choose|i: int| 0 <= i < s.len() && s[i] == x;
+        if i < s.len() - 1 {
+            assert(s.drop_last()[i] == x);
+        }
+    }
+    if s.drop_last().contains(x) {
+        let i = choose|i: int| 0 <= i < s.drop_last().len() && s.drop_last()[i] == x;
+        assert(s[i] == x);
+    }
+    if x == s.last() {
+        assert(s[s.len() - 1] == x);
+    }
+}
+
+pub proof fn lemma_neg_ra_blocked(s: NegMem, f: FactId, ps: Seq<TokenId>)
+    requires
+        neg_wf(s),
+        forall|p: TokenId| #[trigger] ps.contains(p) ==> s.blocked.contains_key(p),
+    ensures
+        ({
+            let t = neg_ra_blocked(s, f, ps);
+            &&& neg_wf(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                neg_fwd(t, q, g) <==> (neg_fwd(s, q, g) || (g == f && ps.contains(q)))
+            &&& t.unblocked == s.unblocked
+            &&& t.blocked.dom() == s.blocked.dom()
+            &&& t.block_order == s.block_order
+        }),
+    decreases ps.len(),
+{
+    if ps.len() > 0 {
+        let prev = neg_ra_blocked(s, f, ps.drop_last());
+        assert forall|p: TokenId| #[trigger] ps.drop_last().contains(p) implies s.blocked.contains_key(
+            p,
+        ) by {
+            lemma_seq_contains_drop_last(ps, p);
+        }
+        lemma_neg_ra_blocked(s, f, ps.drop_last());
+        lemma_seq_contains_drop_last(ps, ps.last());
+        lemma_neg_add_blocker(prev, ps.last(), f, 0);
+        let t = neg_ra_blocked(s, f, ps);
+        assert(t.blocked.dom() =~= s.blocked.dom());
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            neg_fwd(t, q, g) <==> (neg_fwd(s, q, g) || (g == f && ps.contains(q))) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+    }
+}
+
+pub proof fn lemma_neg_ra_unblocked(s: NegMem, f: FactId, ps: Seq<TokenId>, next: nat)
+    requires
+        neg_valid(s),
+        ps.no_duplicates(),
+        forall|p: TokenId| #[trigger] ps.contains(p) ==> s.unblocked.contains_key(p),
+        neg_orders_below(s, next as int),
+        next + ps.len() <= u64::MAX + 1,
+    ensures
+        ({
+            let (t, sig) = neg_ra_unblocked(s, f, ps, next);
+            &&& neg_valid(t)
+            &&& forall|q: TokenId, g: FactId| #[trigger]
+                neg_fwd(t, q, g) <==> (neg_fwd(s, q, g) || (g == f && ps.contains(q)))
+            &&& forall|q: TokenId| #[trigger]
+                t.unblocked.contains_key(q) <==> (s.unblocked.contains_key(q) && !ps.contains(q))
+            &&& forall|q: TokenId| #[trigger]
+                t.unblocked.contains_key(q) ==> t.unblocked[q] == s.unblocked[q]
+            &&& forall|q: TokenId| #[trigger]
+                t.blocked.contains_key(q) <==> (s.blocked.contains_key(q) || ps.contains(q))
+            &&& neg_orders_below(t, next + ps.len() as int)
+            &&& sig.len() == ps.len()
+            &&& forall|i: int|
+                0 <= i < ps.len() ==> #[trigger] sig[i] == Signal::Retract(
+                    ps[i],
+                    s.unblocked[ps[i]],
+                )
+        }),
+    decreases ps.len(),
+{
+    if ps.len() > 0 {
+        let pl = ps.drop_last();
+        let p = ps.last();
+        assert(pl.no_duplicates());
+        assert forall|q: TokenId| #[trigger] pl.contains(q) implies s.unblocked.contains_key(q) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+        lemma_neg_ra_unblocked(s, f, pl, next);
+        let (s1, sig1) = neg_ra_unblocked(s, f, pl, next);
+        lemma_seq_contains_drop_last(ps, p);
+        assert(!pl.contains(p)) by {
+            if pl.contains(p) {
+                let i = choose|i: int| 0 <= i < pl.len() && pl[i] == p;
+                assert(ps[i] == ps[ps.len() - 1]);
+            }
+        }
+        assert(s1.unblocked.contains_key(p));
+        assert(!s1.blocked.contains_key(p));
+        let order = (next + ps.len() - 1) as u64;
+        let s2 = neg_remove_unblocked(s1, p).0;
+        assert(forall|q: TokenId, g: FactId| #[trigger] neg_fwd(s2, q, g) == neg_fwd(s1, q, g));
+        assert(fresh_order(s2.block_order, order));
+        lemma_neg_add_blocker(s2, p, f, order);
+        let (t, sig) = neg_ra_unblocked(s, f, ps, next);
+        assert forall|q: TokenId, g: FactId| #[trigger]
+            neg_fwd(t, q, g) <==> (neg_fwd(s, q, g) || (g == f && ps.contains(q))) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+        assert forall|q: TokenId| #[trigger]
+            t.unblocked.contains_key(q) <==> (s.unblocked.contains_key(q) && !ps.contains(q)) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+        assert forall|q: TokenId| #[trigger]
+            t.blocked.contains_key(q) <==> (s.blocked.contains_key(q) || ps.contains(q)) by {
+            lemma_seq_contains_drop_last(ps, q);
+        }
+        assert forall|i: int|
+            0 <= i < ps.len() implies #[trigger] sig[i] == Signal::Retract(
+            ps[i],
+            s.unblocked[ps[i]],
+        ) by {
+            if i < ps.len() - 1 {
+                assert(sig[i] == sig1[i]);
+                assert(pl[i] == ps[i]);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_neg_node_right(
+    n: NegNode,
+    m: JoinRel,
+    f: FactId,
+    bps: Seq<TokenId>,
+    ups: Seq<TokenId>,
+)
+    requires
+        neg_node_inv(n, m),
+        neg_right_ok(n, m, f, bps, ups),
+    ensures
+        neg_node_inv(neg_right_activate(n, f, bps, ups).0, m),
+        neg_signals_exact(
+            n,
+            neg_right_activate(n, f, bps, ups).0,
+            m,
+            neg_right_activate(n, f, bps, ups).1,
+        ),
+{
+    let s1 = neg_ra_blocked(n.mem, f, bps);
+    lemma_neg_ra_blocked(n.mem, f, bps);
+    assert(neg_disjoint(s1));
+    assert forall|p: TokenId| #[trigger] ups.contains(p) implies s1.unblocked.contains_key(p) by {}
+    assert(neg_orders_below(s1, n.next_order as int));
+    lemma_neg_ra_unblocked(s1, f, ups, n.next_order);
+    let (n2, sig) = neg_right_activate(n, f, bps, ups);
+    assert forall|q: TokenId, g: FactId| #[trigger]
+        neg_fwd(n2.mem, q, g) <==> (n2.parents.contains(q) && n2.facts.contains(g) && m(q, g)) by {
+        assert(neg_fwd(n.mem, q, g) <==> (n.parents.contains(q) && n.facts.contains(g) && m(q, g)));
+        if g == f && n.parents.contains(q) && m(q, f) {
+            assert(n.mem.blocked.contains_key(q) || n.mem.unblocked.contains_key(q));
+        }
+        if neg_fwd(n.mem, q, g) {
+            assert(g != f);
+        }
+    }
+    assert forall|q: TokenId| #[trigger]
+        n2.mem.unblocked.contains_key(q) <==> (n2.parents.contains(q)
+            && !n2.mem.blocked.contains_key(q)) by {}
+    // signals
+    assert forall|i: int, j: int|
+        0 <= i < sig.len() && 0 <= j < sig.len() && i != j implies sig_parent(#[trigger] sig[i])
+        != sig_parent(#[trigger] sig[j]) by {
+        assert(sig[i] == Signal::Retract(ups[i], s1.unblocked[ups[i]]));
+        assert(sig[j] == Signal::Retract(ups[j], s1.unblocked[ups[j]]));
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!n.mem.unblocked.contains_key(q)
+            && n2.mem.unblocked.contains_key(q) && n2.mem.unblocked[q] == x) by {
+        if sig.contains(Signal::Propagate(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Propagate(q, x);
+            assert(sig[i] == Signal::Retract(ups[i], s1.unblocked[ups[i]]));
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (n.mem.unblocked.contains_key(q)
+            && !n2.mem.unblocked.contains_key(q) && n2.parents.contains(q) && n.mem.unblocked[q]
+            == x) by {
+        if sig.contains(Signal::Retract(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Retract(q, x);
+            assert(sig[i] == Signal::Retract(ups[i], s1.unblocked[ups[i]]));
+            assert(ups.contains(ups[i]));
+        }
+        if n.mem.unblocked.contains_key(q) && !n2.mem.unblocked.contains_key(q) {
+            assert(ups.contains(q));
+            let i = choose|i: int| 0 <= i < ups.len() && ups[i] == q;
+            assert(sig[i] == Signal::Retract(q, s1.unblocked[q]));
+        }
+    }
+    lemma_neg_signals_from_concrete(n, n2, m, sig);
 }
 
 } // verus!
