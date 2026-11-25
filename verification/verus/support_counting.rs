@@ -6291,5 +6291,225 @@ pub proof fn theorem_ncc_node_sequences(next_order: nat, ops: Seq<NccNodeOp>)
     lemma_ncc_valid_implies_validate(nf.mem);
 }
 
+// =====================================================================
+// Section 7. Fidelity checks: production unit tests replayed on the model
+// (these also show that the theorems' preconditions are satisfiable)
+// =====================================================================
+/// negative.rs:408 `oldest_blocker_migration_uses_a_new_position_and_retains_support_order`
+pub proof fn example_neg_oldest_blocker_migration() {
+    let (p, f0, f1, f2) = (1int, 10int, 11int, 12int);
+    let s0 = neg_new();
+    lemma_neg_new();
+    assert(s0.blocked.dom() =~= Set::empty());
+    let s1 = neg_add_blocker(s0, p, f0, 10);
+    assert(s1.blocked[p] =~= seq![f0]);
+    let s2 = neg_add_blocker(s1, p, f1, 20);
+    assert(!seq![f0].contains(f1));
+    assert(s2.blocked[p] =~= seq![f0, f1]);
+    let s3 = neg_add_blocker(s2, p, f2, 30);
+    assert(!seq![f0, f1].contains(f2));
+    assert(s3.blocked[p] =~= seq![f0, f1, f2]);
+    // assert_eq!(primary_blocker(parent), Some(facts[0])); block_order == 10
+    assert(neg_primary_blocker(s3, p) == Some(f0));
+    assert(s3.block_order[p] == 10);
+    lemma_neg_add_blocker(s0, p, f0, 10);
+    lemma_neg_add_blocker(s1, p, f1, 20);
+    lemma_neg_add_blocker(s2, p, f2, 30);
+    assert(s3.block_order.dom() =~= set![p]);
+    // remove_blocker(parent, facts[0], 40) == false; primary facts[1]; order 40
+    let (s4, r4) = neg_remove_blocker(s3, p, f0, 40);
+    lemma_neg_remove_blocker(s3, p, f0, 40);
+    lemma_os_remove(s3.blocked[p], f0);
+    assert(!r4);
+    assert(neg_primary_blocker(s4, p) == Some(f1));
+    assert(s4.block_order[p] == 40);
+    assert(neg_tokens_blocked_by(s4, f0).is_empty()) by {
+        assert(!neg_fwd(s4, p, f0));
+        assert forall|q: TokenId| !neg_tokens_blocked_by(s4, f0).contains(q) by {
+            assert(!neg_fwd(s4, q, f0) <==> !in_rel(s4.fact_to_blocked, f0, q));
+        }
+    }
+    assert(s4.blocked[p] =~= seq![f1, f2]) by {
+        assert(s3.blocked[p].index_of(f0) == 0);
+    }
+    assert(s4.block_order.dom() =~= set![p]);
+    // remove_blocker(parent, facts[1], 50) == false; primary facts[2]; order 50
+    let (s5, r5) = neg_remove_blocker(s4, p, f1, 50);
+    lemma_neg_remove_blocker(s4, p, f1, 50);
+    lemma_os_remove(s4.blocked[p], f1);
+    assert(!r5);
+    assert(neg_primary_blocker(s5, p) == Some(f2));
+    assert(s5.block_order[p] == 50);
+    assert(s5.blocked[p] =~= seq![f2]) by {
+        assert(s4.blocked[p].index_of(f1) == 0);
+    }
+    // remove_blocker(parent, facts[2], 60) == true; no primary, no order, empty
+    let (s6, r6) = neg_remove_blocker(s5, p, f2, 60);
+    lemma_neg_remove_blocker(s5, p, f2, 60);
+    lemma_os_remove(s5.blocked[p], f2);
+    assert(r6);
+    assert(neg_primary_blocker(s6, p) == None::<FactId>);
+    assert(!s6.block_order.contains_key(p));
+    assert(neg_is_empty(s6)) by {
+        assert(s6.blocked.dom() =~= Set::empty()) by {
+            assert forall|q: TokenId| !s6.blocked.contains_key(q) by {
+                if s6.blocked.contains_key(q) {
+                    assert(s5.blocked.contains_key(q));
+                }
+            }
+        }
+        assert(s6.fact_to_blocked.dom() =~= Set::empty()) by {
+            assert forall|g: FactId| !s6.fact_to_blocked.contains_key(g) by {
+                lemma_dom_has(s6.fact_to_blocked, g);
+                if s6.fact_to_blocked.contains_key(g) {
+                    let q = choose|q: TokenId| in_rel(s6.fact_to_blocked, g, q);
+                    assert(neg_fwd(s6, q, g));
+                }
+            }
+        }
+        assert(s6.unblocked.dom() =~= Set::empty());
+    }
+    lemma_neg_valid_implies_validate(s6);
+}
+
+/// ncc.rs tests `increment_from_one_returns_two`, `decrement_from_two_returns_one`,
+/// `decrement_from_one_returns_zero` and `remove_parent_token_cleans_everything`.
+pub proof fn example_ncc_counts() {
+    let (p, r1, r2) = (1int, 2int, 3int);
+    let s0 = ncc_new();
+    lemma_ncc_new();
+    // (0, 1) then (1, 2)
+    let (s1, c1) = ncc_add_result(s0, p, r1, 0);
+    lemma_ncc_add_result(s0, p, r1, 0);
+    assert(c1 == (0nat, 1nat));
+    let (s2, c2) = ncc_add_result(s1, p, r2, 1);
+    lemma_ncc_add_result(s1, p, r2, 1);
+    assert(c2 == (1nat, 2nat));
+    assert(ncc_result_count(s2, p) == 2);
+    assert(ncc_is_blocked(s2, p));
+    assert(s2.primary_result[p] == r1);
+    lemma_ncc_valid_implies_validate(s2);
+    // remove_test_result(r2) == Some((p, 1)), still blocked
+    let (s3, res3) = ncc_remove_result(s2, r2, 2);
+    lemma_ncc_remove_result(s2, r2, 2);
+    assert(res3 == Some((p, 1nat)));
+    assert(ncc_is_blocked(s3, p));
+    // remove_test_result(r1) == Some((p, 0)), unblocked
+    let (s4, res4) = ncc_remove_result(s3, r1, 3);
+    assert(ncc_settled(s3, p));
+    assert(s3.primary_result.get(p) == Some(r1));
+    lemma_ncc_remove_result(s3, r1, 3);
+    assert(res4 == Some((p, 0nat)));
+    assert(!ncc_is_blocked(s4, p));
+    lemma_ncc_valid_implies_validate(s4);
+    // remove_parent_token on a blocked parent cleans everything
+    let s5 = ncc_remove_parent_token(s2, p);
+    lemma_ncc_remove_parent_token(s2, p);
+    assert(ncc_result_count(s5, p) == 0);
+    assert(ncc_is_empty(s5)) by {
+        assert forall|q: TokenId| !s5.result_count.contains_key(q) by {
+            if s5.result_count.contains_key(q) {
+                assert(s2.result_count.contains_key(q));
+            }
+        }
+        assert(s5.result_count.dom() =~= Set::empty());
+        assert(s5.parent_results.dom() =~= Set::empty());
+        assert forall|q: TokenId| !s5.primary_result.contains_key(q) by {
+            if s5.primary_result.contains_key(q) {
+                assert(ncc_settled(s5, q));
+            }
+        }
+        assert(s5.primary_result.dom() =~= Set::empty());
+        assert(s5.block_order.dom() =~= Set::empty());
+        assert forall|x: TokenId| !s5.result_owner.contains_key(x) by {
+            if s5.result_owner.contains_key(x) {
+                assert(ncc_owns(s2, s2.result_owner[x], x));
+                assert(ncc_fwd(s2, s2.result_owner[x], x));
+            }
+        }
+        assert(s5.result_owner.dom() =~= Set::empty());
+        assert(s5.unblocked.dom() =~= Set::empty());
+    }
+}
+
+/// Negative-node scenario: a parent arrives with no blocker (propagates), a
+/// matching fact is asserted (its pass-through is retracted), the fact is
+/// retracted (a fresh pass-through propagates).  The three-step sequence is
+/// admissible, so `theorem_neg_node_sequences` applies to it.
+pub proof fn example_neg_node_scenario() {
+    let m: JoinRel = |q: TokenId, g: FactId| true;
+    let (p, f, pt1, pt2) = (1int, 7int, 100int, 200int);
+    let pts = |q: TokenId| pt2;
+    let n0 = neg_node_init(Set::empty(), 0);
+    let op1 = NegNodeOp::Left(p, Seq::empty(), pt1);
+    let op2 = NegNodeOp::Right(f, Seq::empty(), seq![p]);
+    let op3 = NegNodeOp::RetractFact(f, seq![p], Seq::empty(), seq![p], pts);
+    theorem_neg_node_sequences(Set::empty(), 0, m, Seq::empty());
+    assert(neg_node_run(n0, Seq::empty()) == n0);
+    // 1. left activation without blockers: Propagate(p, pt1)
+    assert(neg_node_ok(n0, m, op1));
+    let (n1, sig1) = neg_node_step(n0, op1);
+    lemma_neg_node_left(n0, m, p, Seq::empty(), pt1);
+    assert(sig1 == seq![Signal::Propagate(p, pt1)]);
+    assert(n1.mem.unblocked[p] == pt1);
+    // 2. a matching fact is asserted: Retract(p, pt1)
+    assert(n1.mem.blocked.dom() =~= Set::empty());
+    assert forall|q: TokenId| #[trigger] seq![p].contains(q) <==> q == p by {
+        if q == p {
+            assert(seq![p][0] == p);
+        }
+    }
+    assert(neg_node_ok(n1, m, op2));
+    let (n2, sig2) = neg_node_step(n1, op2);
+    lemma_neg_node_right(n1, m, f, Seq::empty(), seq![p]);
+    lemma_neg_ra_blocked(n1.mem, f, Seq::empty());
+    lemma_neg_ra_unblocked(neg_ra_blocked(n1.mem, f, Seq::empty()), f, seq![p], 0);
+    assert(sig2 =~= seq![Signal::Retract(p, pt1)]);
+    // 3. the fact is retracted: Propagate(p, pt2)
+    assert forall|q: TokenId| #[trigger]
+        seq![p].contains(q) <==> neg_tokens_blocked_by(n2.mem, f).contains(q) by {
+        assert(neg_fwd(n2.mem, q, f) <==> in_rel(n2.mem.fact_to_blocked, f, q));
+    }
+    lemma_neg_rf_collect(n2.mem, f, seq![p]);
+    assert(neg_primary_blocker(n2.mem, p) == Some(f)) by {
+        let b = n2.mem.blocked[p];
+        assert(neg_fwd(n2.mem, p, f));
+        assert(neg_fwd(n2.mem, p, b[0]));
+    }
+    assert(neg_node_ok(n2, m, op3));
+    let (n3, sig3) = neg_node_step(n2, op3);
+    lemma_neg_node_retract_fact(n2, m, f, seq![p], Seq::empty(), seq![p], pts);
+    assert(!neg_gt_unblocked(n2, m, p)) by {
+        assert(gt_matches(n2.facts, m, p).contains(f));
+    }
+    assert(neg_gt_unblocked(n3, m, p)) by {
+        assert(gt_matches(n3.facts, m, p) =~= Set::empty());
+    }
+    lemma_neg_node_passthrough(n3, m, p);
+    lemma_neg_rf_apply(
+        neg_drop_parents(neg_rf_collect(n2.mem, f, seq![p]).0, Seq::empty()),
+        f,
+        seq![p],
+        n2.parents.difference(Seq::<TokenId>::empty().to_set()),
+        n2.next_order,
+        pts,
+    );
+    assert(n3.mem.unblocked[p] == pt2);
+    assert(sig3.contains(Signal::Propagate(p, pt2)));
+    // the whole sequence is admissible, so the theorem covers it
+    let ops = seq![op1, op2, op3];
+    assert(ops.drop_last() =~= seq![op1, op2]);
+    assert(seq![op1, op2].drop_last() =~= seq![op1]);
+    assert(seq![op1].drop_last() =~= Seq::<NegNodeOp>::empty());
+    assert(neg_node_run(n0, seq![op1]) == n1);
+    assert(neg_node_run(n0, seq![op1, op2]) == n2);
+    assert(seq![op1].last() == op1 && seq![op1, op2].last() == op2 && ops.last() == op3);
+    assert(neg_node_admissible(n0, m, Seq::<NegNodeOp>::empty()));
+    assert(neg_node_admissible(n0, m, seq![op1]));
+    assert(neg_node_admissible(n0, m, seq![op1, op2]));
+    assert(neg_node_admissible(n0, m, ops));
+    theorem_neg_node_sequences(Set::empty(), 0, m, ops);
+}
+
 } // verus!
 
