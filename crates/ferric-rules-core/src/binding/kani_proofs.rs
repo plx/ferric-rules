@@ -36,7 +36,6 @@
 
 use super::*;
 use crate::symbol::SymbolId;
-use crate::value::Multifield;
 
 /// Number of variables the bounded harnesses address. Queries also probe
 /// out-of-range ids up to `u16::MAX`.
@@ -55,11 +54,6 @@ impl Model {
         values: [None; VARS],
         capacity: 0,
     };
-
-    fn set(&mut self, var: usize, value: i64) {
-        self.values[var] = Some(value);
-        self.capacity = self.capacity.max(var + 1);
-    }
 
     fn get(&self, var: usize) -> Option<i64> {
         self.values.get(var).copied().flatten()

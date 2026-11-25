@@ -31,10 +31,15 @@
 //!   split search) equals the naive semantics "some split, enumerated by
 //!   capture lengths and projected independently, passes every plan test
 //!   and join test", and `split_matches` agrees per split.
-//! * Alpha `*SlotOffset` tests and join `*Offset` tests (the two
-//!   compilations of one predicate) agree for `=`, `>`, `<`, `>=`, `<=`; for
-//!   `neq`/`<>` they disagree exactly when the comparison is undefined
-//!   (non-numeric operand, NaN or overflowing sum) — see the defect report.
+//! * Corollary for the two compilations of one predicate (alpha
+//!   `*SlotOffset` tests, join `*Offset` tests): the join offset harnesses
+//!   here and the alpha slot-offset harnesses match the same reference, so
+//!   the forms agree for `=`, `>`, `<`, `>=`, `<=`; for `neq`/`<>` the join
+//!   form is "defined and unequal" while the alpha form is the complement of
+//!   `EqualSlotOffset` (alpha::kani_proofs), so they disagree exactly when
+//!   the comparison is undefined (non-numeric operand, NaN or overflowing
+//!   sum) — see the defect report. (Harnesses evaluating both forms at once
+//!   ran out of memory.)
 //!
 //! Bounds: scalar atoms and numbers range over all payloads; strings have
 //! at most one byte and appear only in the lexeme harness; multifields and
@@ -59,7 +64,7 @@
 //! drop glue is not checked.
 
 use super::*;
-use crate::alpha::{evaluate_test, ConstantTest, ConstantTestType};
+use crate::alpha::{ConstantTest, ConstantTestType};
 use crate::fact::{OrderedFact, TemplateFact, TemplateId};
 use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
 use crate::string::FerricString;
@@ -1195,99 +1200,6 @@ fn evaluate_pattern_with_sequence_matches_naive_enumeration() {
     std::mem::forget(fact);
     std::mem::forget(token);
     std::mem::forget(sequence);
-}
-
-// ---------------------------------------------------------------------------
-// Alpha slot-offset tests versus join offset tests
-// ---------------------------------------------------------------------------
-
-/// The same comparison is compiled to an alpha `*SlotOffset` test when both
-/// variables come from one pattern and to a join `*Offset` test otherwise
-/// (ferric-rules-runtime loader.rs `to_slot_offset_test` /
-/// `to_join_test_with_offset`). For `=`, `>`, `<`, `>=`, `<=` both forms give
-/// the same verdict on every pair of values.
-#[kani::proof]
-#[kani::unwind(2)]
-fn alpha_and_join_offset_tests_agree_except_not_equal() {
-    let check = |alpha: fn(SlotIndex, i64) -> ConstantTestType, joined: fn(i64) -> JoinTestType| {
-        split_number_or_other(&|other: Value| {
-            let field = any_number_or_other();
-            let offset: i64 = kani::any();
-            let fact = ordered_fact(smallvec::smallvec![field, other.clone()]);
-            let token = token_binding(other);
-            let alpha_verdict = evaluate_test(
-                &fact,
-                &ConstantTest {
-                    slot: FIRST,
-                    test_type: alpha(SECOND, offset),
-                },
-            );
-            let join_verdict =
-                evaluate_join(&fact, Some(&token), &[join(FIRST, 0, joined(offset))]);
-            assert_eq!(alpha_verdict, join_verdict);
-            kani::cover!(alpha_verdict, "both pass");
-            std::mem::forget(fact);
-            std::mem::forget(token);
-        });
-    };
-    match kani::any::<u8>() {
-        0 => check(ConstantTestType::EqualSlotOffset, JoinTestType::EqualOffset),
-        1 => check(
-            ConstantTestType::GreaterThanSlotOffset,
-            JoinTestType::GreaterThanOffset,
-        ),
-        2 => check(
-            ConstantTestType::LessThanSlotOffset,
-            JoinTestType::LessThanOffset,
-        ),
-        3 => check(
-            ConstantTestType::GreaterOrEqualSlotOffset,
-            JoinTestType::GreaterOrEqualOffset,
-        ),
-        _ => check(
-            ConstantTestType::LessOrEqualSlotOffset,
-            JoinTestType::LessOrEqualOffset,
-        ),
-    }
-}
-
-/// Exact characterization of the `neq`/`<>` divergence between the two
-/// compiled forms: the alpha `NotEqualSlotOffset` passes iff the join
-/// `NotEqualOffset` passes or the numeric comparison is undefined (a
-/// non-numeric operand, a NaN, or an overflowing integer sum). See the
-/// defect report: the join form follows docs/compatibility.md.
-#[kani::proof]
-#[kani::unwind(2)]
-fn alpha_not_equal_offset_diverges_exactly_when_comparison_undefined() {
-    split_number_or_other(&|other: Value| {
-        let field = any_number_or_other();
-        let offset: i64 = kani::any();
-        let undefined = match (oracle_num(&field), oracle_add_offset(&other, offset)) {
-            (Some(lhs), Some(rhs)) => {
-                !(oracle_cmp(Cmp::Eq, lhs, rhs) || oracle_cmp(Cmp::Ne, lhs, rhs))
-            }
-            _ => true,
-        };
-        let fact = ordered_fact(smallvec::smallvec![field, other.clone()]);
-        let token = token_binding(other);
-        let alpha_verdict = evaluate_test(
-            &fact,
-            &ConstantTest {
-                slot: FIRST,
-                test_type: ConstantTestType::NotEqualSlotOffset(SECOND, offset),
-            },
-        );
-        let join_verdict = evaluate_join(
-            &fact,
-            Some(&token),
-            &[join(FIRST, 0, JoinTestType::NotEqualOffset(offset))],
-        );
-        assert_eq!(alpha_verdict, join_verdict || undefined);
-        kani::cover!(alpha_verdict && !join_verdict, "the forms disagree");
-        kani::cover!(alpha_verdict && join_verdict, "both pass");
-        std::mem::forget(fact);
-        std::mem::forget(token);
-    });
 }
 
 // ---------------------------------------------------------------------------
