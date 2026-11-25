@@ -1,6 +1,55 @@
-//! Kani proof harnesses for `rete` (see docs/verification.md).
+//! Kani proof harnesses for `rete` pure matching functions (see
+//! docs/verification.md).
 //!
-//! Placeholder header; rewritten once the harness set is final.
+//! What is proved, on the production code, against reference semantics
+//! written from the documented contracts (`values_join_eq` doc, string.rs,
+//! docs/compatibility.md "Predicate and return-value constraints"):
+//!
+//! * Index lemma (`join_equality_is_atom_key_identity`, also for fact
+//!   addresses): for any two atoms, `values_join_eq` is `Some(key_a ==
+//!   key_b)` of their `AtomKey`s — the `Equal` join test passes exactly for
+//!   the facts an `AtomKey` index lookup returns. Non-atoms have no key:
+//!   `Void` is incomparable, multifields compare element-wise.
+//! * `evaluate_join` per test family: `Equal`/`NotEqual` (join equality,
+//!   `Void` fails both), numeric comparisons (integer/float promotion, NaN
+//!   unordered), lexeme comparisons (strings only, byte order) and offset
+//!   comparisons (checked integer sum; overflow fails every offset test,
+//!   including `NotEqualOffset`, as documented). A missing field, an unbound
+//!   or out-of-range variable, or a missing token fails; the test list is a
+//!   conjunction (order-independent); `evaluate_pattern` without a sequence
+//!   plan is `evaluate_join`.
+//! * `indexable_tests`: without a plan, exactly the plain `Equal` tests in
+//!   order; with a plan, exactly the `Equal` tests whose logical field has a
+//!   physical selector, mapped to it; and every such selector reads, in
+//!   every split the search produces, the very value of the logical field.
+//! * `collect_candidate_facts` (real indexed `AlphaMemory` above the
+//!   threshold) followed by the residual `evaluate_join` filter keeps
+//!   exactly the facts, in order, that a full scan keeps.
+//! * The capture fast path (`capture_join_matches`) equals evaluating the
+//!   test on the copied multifield, for every join test type.
+//! * With an ordered sequence plan, `evaluate_pattern` (pruned depth-first
+//!   split search) equals the naive semantics "some split, enumerated by
+//!   capture lengths and projected independently, passes every plan test
+//!   and join test", and `split_matches` agrees per split.
+//! * Alpha `*SlotOffset` tests and join `*Offset` tests (the two
+//!   compilations of one predicate) agree for `=`, `>`, `<`, `>=`, `<=`; for
+//!   `neq`/`<>` they disagree exactly when the comparison is undefined
+//!   (non-numeric operand, NaN or overflowing sum) — see the defect report.
+//!
+//! Bounds: values as in alpha::kani_proofs (no fact addresses except in the
+//! dedicated harness); at most two join tests per list; sequence plans of at
+//! most three ordered fields or two template segments, facts of at most
+//! three fields with values in {0, 1}; captures of at most two atoms; the
+//! candidate harness has 17 facts with fixed slot-0 values and symbolic
+//! bindings.
+//!
+//! Known gaps: `collect_candidate_parent_tokens` (beta-memory index), the
+//! `sequence_matches` binding extraction, plan tests other than `Equal` in
+//! the sequence harness, and template sequence plans in the naive
+//! comparison. Unbounded versions of the candidate theorem and of selector
+//! soundness are in verification/verus/core_matching.rs. Harness-built
+//! values are `mem::forget`-ed instead of dropped, so drop glue is not
+//! checked.
 
 use super::*;
 use crate::alpha::{evaluate_test, ConstantTest, ConstantTestType};
@@ -110,16 +159,25 @@ fn ordered1(a: Value) -> Fact {
     ordered_fact(smallvec::smallvec![a])
 }
 
-/// A token whose bindings bind `VarId(0)` to `value`.
-fn token_binding(value: Value) -> Token {
-    let mut bindings = BindingSet::new();
-    bindings.set(VarId(0), ValueRef::new(value));
+/// A binding set built directly from its vector (`BindingSet::set` is
+/// verified in binding::kani_proofs; going through it here would make CBMC
+/// explore the `Value` clone and drop glue in `SmallVec::resize`).
+fn bindings_of(values: SmallVec<[Option<ValueRef>; 4]>) -> BindingSet {
+    BindingSet { bindings: values }
+}
+
+fn token_of(bindings: BindingSet) -> Token {
     Token {
         fact: None,
         bindings,
         parent: None,
         owner_node: NodeId(0),
     }
+}
+
+/// A token whose bindings bind `VarId(0)` to `value`.
+fn token_binding(value: Value) -> Token {
+    token_of(bindings_of(smallvec::smallvec![Some(ValueRef::new(value))]))
 }
 
 fn join(alpha_slot: SlotIndex, beta_var: u16, test_type: JoinTestType) -> JoinTest {
@@ -451,7 +509,7 @@ fn join_offset_tests_match_reference() {
 /// vector), and every non-empty test list fails without a token. An empty
 /// test list always passes.
 #[kani::proof]
-#[kani::unwind(4)]
+#[kani::unwind(3)]
 fn join_tests_require_field_and_binding() {
     let ordered: bool = kani::any();
     let fact = if ordered {
@@ -459,17 +517,14 @@ fn join_tests_require_field_and_binding() {
     } else {
         template_fact(Box::new([Value::Integer(1)]))
     };
-    let mut bindings = BindingSet::new();
-    let bound_var: u16 = kani::any_where(|var: &u16| *var <= 1);
-    if kani::any() {
-        bindings.set(VarId(bound_var), ValueRef::new(Value::Integer(1)));
-    }
-    let token = Token {
-        fact: None,
-        bindings,
-        parent: None,
-        owner_node: NodeId(0),
-    };
+    // Variable 0, variable 1 or neither bound (a vector of width 0, 1 or 2).
+    let choice: u8 = kani::any_where(|choice: &u8| *choice < 3);
+    let bound_var: Option<u16> = [None, Some(0), Some(1)][usize::from(choice)];
+    let token = token_of(bindings_of(match choice {
+        0 => SmallVec::new(),
+        1 => smallvec::smallvec![Some(ValueRef::new(Value::Integer(1)))],
+        _ => smallvec::smallvec![None, Some(ValueRef::new(Value::Integer(1)))],
+    }));
     let index: usize = kani::any_where(|index: &usize| *index <= 1);
     let slot = if kani::any() {
         SlotIndex::Ordered(index)
@@ -479,7 +534,7 @@ fn join_tests_require_field_and_binding() {
     let var: u16 = kani::any();
     let test = join(slot, var, JoinTestType::Equal);
     let field_exists = index == 0 && (ordered == matches!(slot, SlotIndex::Ordered(_)));
-    let var_bound = token.bindings.get(VarId(var)).is_some();
+    let var_bound = bound_var == Some(var);
     let actual = evaluate_join(&fact, Some(&token), std::slice::from_ref(&test));
     assert_eq!(actual, field_exists && var_bound);
     assert!(!evaluate_join(&fact, None, std::slice::from_ref(&test)));
@@ -509,21 +564,14 @@ fn any_cheap_join_test() -> JoinTest {
 
 /// A token binding variables 0 and 1 (each optionally) to small integers.
 fn any_integer_token() -> Token {
-    let mut bindings = BindingSet::new();
-    for var in 0..2_u16 {
+    let binding = || {
         if kani::any() {
-            bindings.set(
-                VarId(var),
-                ValueRef::new(Value::Integer(kani::any::<i8>().into())),
-            );
+            Some(ValueRef::new(Value::Integer(kani::any::<i8>().into())))
+        } else {
+            None
         }
-    }
-    Token {
-        fact: None,
-        bindings,
-        parent: None,
-        owner_node: NodeId(0),
-    }
+    };
+    token_of(bindings_of(smallvec::smallvec![binding(), binding()]))
 }
 
 /// `evaluate_join` is the conjunction of its tests: a list passes iff every
@@ -619,18 +667,17 @@ fn any_join_test() -> JoinTest {
 #[kani::unwind(5)]
 fn indexable_tests_selects_exactly_plain_equality() {
     let tests = [any_join_test(), any_join_test(), any_join_test()];
-    let count: usize = kani::any_where(|count: &usize| *count <= 3);
-    let tests = &tests[..count];
-    let mut expected: SmallVec<[(SlotIndex, VarId); 3]> = SmallVec::new();
-    for test in tests {
+    let mut actual = indexable_tests(&tests, None);
+    let mut selected = 0;
+    for test in &tests {
         if matches!(test.test_type, JoinTestType::Equal) {
-            expected.push((test.alpha_slot, test.beta_var));
+            assert_eq!(actual.next(), Some((test.alpha_slot, test.beta_var)));
+            selected += 1;
         }
     }
-    let actual: SmallVec<[(SlotIndex, VarId); 3]> = indexable_tests(tests, None).collect();
-    assert_eq!(actual, expected);
-    kani::cover!(actual.len() == 2 && count == 3, "two of three selected");
-    kani::cover!(actual.is_empty() && count == 3, "none selected");
+    assert_eq!(actual.next(), None);
+    kani::cover!(selected == 2, "two of three selected");
+    kani::cover!(selected == 0, "none selected");
 }
 
 // ---------------------------------------------------------------------------
@@ -813,30 +860,28 @@ fn indexable_tests_maps_sequence_fields_to_physical_selectors() {
         join(slot, kani::any(), test_type)
     };
     let tests = [test(), test()];
-    let mut expected: SmallVec<[(SlotIndex, VarId); 2]> = SmallVec::new();
+    let mut actual = indexable_tests(&tests, Some(&sequence));
+    let mut remapped = false;
+    let mut skipped = false;
     for test in &tests {
         if test.test_type == JoinTestType::Equal {
-            if let Some(physical) = sequence.physical_selector(test.alpha_slot) {
-                expected.push((physical, test.beta_var));
+            match sequence.physical_selector(test.alpha_slot) {
+                Some(physical) => {
+                    assert_eq!(actual.next(), Some((physical, test.beta_var)));
+                    remapped |= physical != test.alpha_slot;
+                }
+                None => skipped = true,
             }
         }
     }
-    let actual: SmallVec<[(SlotIndex, VarId); 2]> =
-        indexable_tests(&tests, Some(&sequence)).collect();
-    assert_eq!(actual, expected);
+    assert_eq!(actual.next(), None);
+    drop(actual);
     kani::cover!(
-        !ordered
-            && actual
-                .iter()
-                .any(|(physical, _)| *physical != tests[0].alpha_slot),
+        !ordered && remapped,
         "template field remapped to its physical slot"
     );
     kani::cover!(
-        actual.len()
-            < tests
-                .iter()
-                .filter(|t| t.test_type == JoinTestType::Equal)
-                .count(),
+        skipped,
         "an equality on a capture or shifted field is not indexed"
     );
     std::mem::forget(sequence);
@@ -875,8 +920,7 @@ fn capture_fast_path_equals_copied_multifield() {
     let test_type = any_join_test_type();
     let check = |bound: Value| {
         let fast = capture_join_matches(&capture[..len], &bound, test_type);
-        let mut bindings = BindingSet::new();
-        bindings.set(VarId(0), ValueRef::new(bound));
+        let bindings = bindings_of(smallvec::smallvec![Some(ValueRef::new(bound))]);
         let slow = evaluate_join_fields(
             |_| Some(&copied),
             Some(&bindings),
@@ -1215,18 +1259,10 @@ fn indexed_candidates_then_join_tests_equal_full_scan() {
     let fact_of = |id: FactId| &facts[(slotmap::Key::data(&id).as_ffi() & 0xffff_ffff) as usize];
 
     let check = |bound: Value| {
-        let mut bindings = BindingSet::new();
-        bindings.set(VarId(0), ValueRef::new(bound));
-        bindings.set(
-            VarId(1),
-            ValueRef::new(Value::Integer(kani::any::<i8>().into())),
-        );
-        let token = Token {
-            fact: None,
-            bindings,
-            parent: None,
-            owner_node: NodeId(0),
-        };
+        let token = token_of(bindings_of(smallvec::smallvec![
+            Some(ValueRef::new(bound)),
+            Some(ValueRef::new(Value::Integer(kani::any::<i8>().into()))),
+        ]));
         let residual = join(
             SECOND,
             1,

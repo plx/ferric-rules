@@ -1,6 +1,58 @@
 //! Kani proof harnesses for `alpha` (see docs/verification.md).
 //!
-//! Placeholder header; rewritten once the harness set is final.
+//! What is proved, on the production code, against reference semantics
+//! written from the documented contracts (value.rs `AtomKey` and
+//! `structural_eq` docs, string.rs, docs/compatibility.md "Structural
+//! equality" and "Predicate and return-value constraints"):
+//!
+//! * Field selection: `get_slot_value` returns exactly the selected field and
+//!   `None` for a wrong fact kind or any out-of-range `usize` index, without
+//!   panicking; every field test, with any parameters, fails without its own
+//!   field, and every slot-pair test fails without its other field.
+//! * Literal tests: `Equal`/`NotEqual`/`EqualAny` are type-sensitive literal
+//!   identity (floats by bit pattern, so `-0.0 != +0.0` and a NaN equals its
+//!   own bits; integers never equal floats; strings by bytes across both
+//!   representations; fact addresses ignore the public index); `Void` and
+//!   multifields pass none of them; the empty `EqualAny` never matches.
+//! * Ordered key tests (`GreaterThan`, `LessThan`, `GreaterOrEqual`,
+//!   `LessOrEqual`): numeric comparison with integer-to-double promotion and
+//!   NaN unordered, for every integer key and every float key bit pattern;
+//!   a non-numeric field or a symbol key fails.
+//! * Slot tests: `EqualSlot`/`NotEqualSlot` are structural equality; each of
+//!   the five offset tests other than `NotEqualSlotOffset` compares
+//!   `field OP other + offset` with a checked integer sum (overflow fails, as
+//!   documented). `NotEqualSlotOffset` is exactly the complement of
+//!   `EqualSlotOffset` (`not_equal_slot_offset_is_complement_of_equal`),
+//!   which contradicts the documented overflow rule:
+//!   `not_equal_slot_offset_overflow_fails_test` FAILS by design and
+//!   documents that defect.
+//! * `OrderedFieldCount` is exact; `Any` is a disjunction of conjunctions
+//!   guarded by its own field (fixed shape `[[Equal, NotEqual], [Equal]]`,
+//!   plus the empty-disjunction and empty-branch cases); entry-type
+//!   discrimination is exact.
+//! * `AlphaMemory`: after an index request on an empty memory or a backfill,
+//!   with or without a later removal, `lookup_by_slot` equals the naive
+//!   filter of the memory (same facts, same order), emptied buckets are
+//!   pruned and every indexed fact is a member.
+//!
+//! Bounds: field values are any atom (symbol, instance name, string of at
+//! most two ASCII bytes or one of four fixed UTF-8 texts, any float bit
+//! pattern, any integer, external address), `Void`, or a multifield of at
+//! most one integer; fact addresses have u8-ranged components; facts have
+//! at most three fields; the alpha-memory harness has three facts whose
+//! keys are `(0, 0)` or `(0, 1)` (concrete per case: symbolic hash keys did
+//! not finish symbolic execution in 13 minutes).
+//!
+//! Known gaps: the whole-fact `Sequence` test (sequence proofs), longer
+//! alpha-memory operation sequences (the unbounded index invariant is proved
+//! in verification/verus/core_matching.rs), and the whole `AlphaNetwork`:
+//! `AlphaNetwork::new` builds a `SparseSecondaryMap` with std `RandomState`,
+//! whose seeding calls `getrandom`/`syscall`, which Kani does not support
+//! (every harness creating a network fails on those checks), so
+//! propagation and the `fact_to_memories` reverse index are proved only in
+//! the Verus model; `retain_memories` and `backfill_memory` are not covered.
+//! Harness-built values are `mem::forget`-ed instead of dropped (see the cost
+//! notes), so drop glue is not checked.
 
 use super::*;
 use crate::fact::{OrderedFact, TemplateFact};
@@ -782,64 +834,71 @@ fn ordered_field_count_is_exact() {
 }
 
 /// `Any(branches)` is a disjunction of conjunctions of field tests guarded by
-/// the existence of its own field: an empty branch accepts any existing
-/// field and an empty disjunction never matches.
+/// the existence of its own field. Fixed shape `[[t1, t2], [t3]]` with
+/// `t1 = Equal`, `t2 = NotEqual`, `t3 = Equal` (literal semantics proved
+/// above); their keys, the two fields and every selector (including a
+/// missing third field) are symbolic. The shape is fixed because a symbolic
+/// shape makes every nested test variant unknown to CBMC.
 #[kani::proof]
 #[kani::unwind(3)]
 fn any_test_is_disjunction_of_conjunctions() {
-    let a: i64 = kani::any::<i8>().into();
-    let b: i64 = kani::any::<i8>().into();
-    let leaf = || {
-        let index: usize = kani::any_where(|index: &usize| *index <= 2);
+    let fields = [kani::any::<i8>().into(), kani::any::<i8>().into()];
+    let index = || kani::any_where(|index: &usize| *index <= 2);
+    let leaf = |equal: bool| {
+        let slot: usize = index();
         let key: i64 = kani::any::<i8>().into();
-        let negated: bool = kani::any();
-        let field = [Some(a), Some(b), None][index];
-        let passes = field.is_some_and(|field| (field == key) != negated);
-        let test_type = if negated {
-            ConstantTestType::NotEqual(AtomKey::Integer(key))
-        } else {
+        let passes = slot < 2 && ((fields[slot] == key) == equal);
+        let test_type = if equal {
             ConstantTestType::Equal(AtomKey::Integer(key))
+        } else {
+            ConstantTestType::NotEqual(AtomKey::Integer(key))
         };
-        (test_on(SlotIndex::Ordered(index), test_type), passes)
+        (test_on(SlotIndex::Ordered(slot), test_type), passes)
     };
-    let branch = || {
-        let size: usize = kani::any_where(|size: &usize| *size <= 2);
-        let mut tests = Vec::new();
-        let mut all = true;
-        for _ in 0..size {
-            let (test, passes) = leaf();
-            all &= passes;
-            tests.push(test);
-        }
-        (tests, all)
-    };
-    let count: usize = kani::any_where(|count: &usize| *count <= 2);
-    let mut branches = Vec::new();
-    let mut any = false;
-    let mut empty_branch = false;
-    for _ in 0..count {
-        let (tests, all) = branch();
-        empty_branch |= tests.is_empty();
-        any |= all;
-        branches.push(tests);
-    }
-    let own: usize = kani::any_where(|index: &usize| *index <= 2);
-    let own_exists = own < 2;
+    let (t1, p1) = leaf(true);
+    let (t2, p2) = leaf(false);
+    let (t3, p3) = leaf(true);
+    let own: usize = index();
+    let expected = own < 2 && ((p1 && p2) || p3);
     let actual = evaluate_and_forget(
-        ordered2(Value::Integer(a), Value::Integer(b)),
-        test_on(SlotIndex::Ordered(own), ConstantTestType::Any(branches)),
+        ordered2(Value::Integer(fields[0]), Value::Integer(fields[1])),
+        test_on(
+            SlotIndex::Ordered(own),
+            ConstantTestType::Any(vec![vec![t1, t2], vec![t3]]),
+        ),
     );
-    assert_eq!(actual, own_exists && any);
-    kani::cover!(actual && empty_branch, "empty branch accepts");
+    assert_eq!(actual, expected);
+    kani::cover!(actual && p1 && p2 && !p3, "first branch alone passes");
+    kani::cover!(actual && !(p1 && p2), "second branch alone passes");
     kani::cover!(
-        !actual && own_exists && count == 0,
-        "empty disjunction rejects"
+        !actual && p1 && !p2 && !p3,
+        "a failing conjunct sinks its branch"
     );
-    kani::cover!(
-        actual && count == 2 && !empty_branch,
-        "two non-empty branches"
+    kani::cover!(!actual && p3, "missing own field rejects");
+}
+
+/// `Any` edge cases: an empty disjunction never matches; an empty branch
+/// matches exactly when the test's own field exists.
+#[kani::proof]
+#[kani::unwind(3)]
+fn any_test_edge_cases() {
+    let own: usize = kani::any_where(|index: &usize| *index <= 2);
+    let field: i64 = kani::any();
+    let empty = evaluate_and_forget(
+        ordered2(Value::Integer(field), Value::Integer(field)),
+        test_on(SlotIndex::Ordered(own), ConstantTestType::Any(Vec::new())),
     );
-    kani::cover!(!actual && any, "missing own field rejects");
+    let empty_branch = evaluate_and_forget(
+        ordered2(Value::Integer(field), Value::Integer(field)),
+        test_on(
+            SlotIndex::Ordered(own),
+            ConstantTestType::Any(vec![Vec::new()]),
+        ),
+    );
+    assert!(!empty);
+    assert_eq!(empty_branch, own < 2);
+    kani::cover!(empty_branch, "empty branch accepts");
+    kani::cover!(!empty_branch, "missing own field rejects");
 }
 
 /// `get_slot_value` returns exactly the selected field: the selector kind must
@@ -941,132 +1000,70 @@ fn naive(memory: &AlphaMemory, facts: &FactBase, key: i64) -> Vec<FactId> {
 }
 
 /// Index lookups on a real `AlphaMemory` return exactly what a naive filter
-/// of the memory returns — same facts, same (insertion) order — after the
-/// index is requested on an empty memory or backfilled on a populated one,
-/// and after a removal; an entry whose bucket empties is pruned, and every
-/// indexed fact is a member of the memory (alpha.rs `validate_consistency`
-/// check 4). Bounds: three facts, slot-0 keys symbolic in {0, 1} plus a
-/// `Void` field that is never indexed.
+/// of the memory returns — same facts, same (insertion) order — whether the
+/// index was requested on the empty memory or backfilled afterwards, and
+/// whether or not the first fact was then removed; a bucket emptied by the
+/// removal is pruned (`lookup_by_slot` gives `None`) and every indexed fact
+/// is a member of the memory (alpha.rs `validate_consistency` check 4).
+/// Bounds: three facts whose slot-0 keys are `(0, 0)` or `(0, 1)` (shared or
+/// separate buckets) plus a `Void` field that is never indexed. The keys are
+/// concrete per case: symbolic hash keys made this harness exceed 13 minutes
+/// without finishing symbolic execution.
 #[kani::proof]
 #[kani::unwind(5)]
 fn alpha_memory_index_matches_naive_filter() {
-    let mut facts = FactBase::new();
-    let first_key: bool = kani::any();
-    let second_key: bool = kani::any();
-    let ids = [
-        facts.assert_ordered(
-            relation(0),
-            smallvec::smallvec![Value::Integer(first_key.into())],
-        ),
-        facts.assert_ordered(
-            relation(0),
-            smallvec::smallvec![Value::Integer(second_key.into())],
-        ),
-        facts.assert_ordered(relation(0), smallvec::smallvec![Value::Void]),
-    ];
-    let mut memory = AlphaMemory::new(AlphaMemoryId(0));
-    let early: bool = kani::any();
-    if early {
-        memory.request_index_empty(FIRST);
-    }
-    for id in ids {
-        memory.insert(id, &facts.get(id).unwrap().fact);
-    }
-    if !early {
-        memory.request_index(FIRST, &facts);
-    }
-    let removed: bool = kani::any();
-    if removed {
-        memory.remove(ids[0], &facts.get(ids[0]).unwrap().fact);
-    }
-    assert_eq!(memory.len(), if removed { 2 } else { 3 });
-    assert_eq!(memory.contains(ids[0]), !removed);
-    for key in 0..2 {
-        let found = indexed(&memory, key);
-        assert_eq!(found, naive(&memory, &facts, key));
-        if found.is_empty() {
-            assert!(memory
-                .lookup_by_slot(FIRST, &AtomKey::Integer(key))
-                .is_none());
+    let check = |second_key: i64| {
+        let mut facts = FactBase::new();
+        let ids = [
+            facts.assert_ordered(relation(0), smallvec::smallvec![Value::Integer(0)]),
+            facts.assert_ordered(relation(0), smallvec::smallvec![Value::Integer(second_key)]),
+            facts.assert_ordered(relation(0), smallvec::smallvec![Value::Void]),
+        ];
+        let mut memory = AlphaMemory::new(AlphaMemoryId(0));
+        let early: bool = kani::any();
+        if early {
+            memory.request_index_empty(FIRST);
         }
-    }
-    for key_map in memory.slot_indices.values() {
-        for fact_set in key_map.values() {
-            assert!(!fact_set.is_empty());
-            for id in fact_set.iter() {
-                assert!(memory.contains(*id));
+        for id in ids {
+            memory.insert(id, &facts.get(id).unwrap().fact);
+        }
+        if !early {
+            memory.request_index(FIRST, &facts);
+        }
+        let removed: bool = kani::any();
+        if removed {
+            memory.remove(ids[0], &facts.get(ids[0]).unwrap().fact);
+        }
+        assert_eq!(memory.len(), if removed { 2 } else { 3 });
+        assert_eq!(memory.contains(ids[0]), !removed);
+        for key in 0..2 {
+            let found = indexed(&memory, key);
+            assert_eq!(found, naive(&memory, &facts, key));
+            if found.is_empty() {
+                assert!(memory
+                    .lookup_by_slot(FIRST, &AtomKey::Integer(key))
+                    .is_none());
             }
         }
-    }
-    kani::cover!(
-        removed && first_key == second_key,
-        "removal from a shared bucket"
-    );
-    kani::cover!(
-        removed && first_key != second_key && !early,
-        "removal empties a backfilled bucket"
-    );
-    std::mem::forget(memory);
-    std::mem::forget(facts);
-}
-
-/// `AlphaNetwork` propagation through an entry node and a constant-test node:
-/// a fact reaches the entry memory always and the test memory exactly when
-/// it passes the test; the reverse index records exactly the accepting
-/// memories; retraction removes the fact from every memory and the reverse
-/// index; `validate_consistency` holds throughout; a fact of another
-/// relation reaches nothing.
-#[kani::proof]
-#[kani::unwind(4)]
-fn alpha_network_assert_retract_is_consistent() {
-    let mut network = AlphaNetwork::new();
-    let entry = network.create_entry_node(AlphaEntryType::OrderedRelation(relation(0)));
-    assert_eq!(
-        network.create_entry_node(AlphaEntryType::OrderedRelation(relation(0))),
-        entry
-    );
-    let entry_memory = network.create_memory(entry);
-    let constant: i64 = kani::any::<i8>().into();
-    let test_node = network.create_constant_test_node(
-        entry,
-        test_on(FIRST, ConstantTestType::Equal(AtomKey::Integer(constant))),
-    );
-    let test_memory = network.create_memory(test_node);
-    assert!(network.validate_consistency().is_ok());
-
-    let value: i64 = kani::any::<i8>().into();
-    let other_relation: bool = kani::any();
-    let fact = Fact::Ordered(OrderedFact {
-        relation: relation(u32::from(other_relation)),
-        fields: smallvec::smallvec![Value::Integer(value)],
-    });
-    let id = fact_id(1);
-    let accepted = network.assert_fact(id, &fact);
-    let expected: Vec<AlphaMemoryId> = if other_relation {
-        Vec::new()
-    } else if value == constant {
-        vec![entry_memory, test_memory]
-    } else {
-        vec![entry_memory]
-    };
-    assert_eq!(accepted, expected);
-    assert_eq!(network.memories_containing_fact(id), expected);
-    for memory in [entry_memory, test_memory] {
-        assert_eq!(
-            network.get_memory(memory).unwrap().contains(id),
-            expected.contains(&memory)
+        for key_map in memory.slot_indices.values() {
+            for fact_set in key_map.values() {
+                assert!(!fact_set.is_empty());
+                for id in fact_set.iter() {
+                    assert!(memory.contains(*id));
+                }
+            }
+        }
+        kani::cover!(removed && second_key == 0, "removal from a shared bucket");
+        kani::cover!(
+            removed && second_key == 1 && !early,
+            "removal empties a backfilled bucket"
         );
+        std::mem::forget(memory);
+        std::mem::forget(facts);
+    };
+    if kani::any() {
+        check(0);
+    } else {
+        check(1);
     }
-    assert!(network.validate_consistency().is_ok());
-
-    network.retract_fact(id, &fact);
-    for memory in [entry_memory, test_memory] {
-        assert!(!network.get_memory(memory).unwrap().contains(id));
-    }
-    assert!(network.memories_containing_fact(id).is_empty());
-    assert!(network.validate_consistency().is_ok());
-    kani::cover!(!other_relation && value == constant, "both memories");
-    kani::cover!(!other_relation && value != constant, "entry memory only");
-    std::mem::forget(network);
-    std::mem::forget(fact);
 }

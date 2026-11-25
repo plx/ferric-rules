@@ -21,6 +21,15 @@
 //!   (index path or scan, threshold 16) followed by `evaluate_join` keeps
 //!   exactly the facts, in the same order, that `evaluate_join` keeps from a
 //!   full scan.
+//! * `AlphaNetwork` (`theorem_assert_fact_keeps_reverse_index_exact`,
+//!   `theorem_retract_fact_removes_everywhere`): the `fact_to_memories`
+//!   reverse index stays exact — a memory holds a fact iff the index records
+//!   that memory for the fact — across `assert_fact` (which inserts the fact
+//!   into exactly the memories `propagate` reaches) and `retract_fact` (which
+//!   removes it from every memory and leaves other facts untouched), and
+//!   every memory keeps its own index invariant. (Kani cannot run
+//!   `AlphaNetwork::new`, whose `SparseSecondaryMap` seeds a std
+//!   `RandomState` through the `getrandom` foreign function.)
 //! * Sequence index keys: `theorem_ordered_selector_reads_physical_field` and
 //!   `theorem_template_selector_reads_physical_slot` — whenever
 //!   `physical_selector` maps a logical field to a physical selector, that
@@ -76,8 +85,11 @@
 //! Known gaps: `request_index` is proved under the precondition that every
 //! memory fact is in the fact base (a fact missing from it would be left out
 //! of the index; production upholds this because alpha memories only hold
-//! live facts). The `AlphaNetwork` level (entry nodes, `fact_to_memories`,
-//! `retain_memories`) and beta-memory (token-side) indexes are not modelled.
+//! live facts). `assert_fact` is proved for a fact not yet in the network
+//! (each fact id is asserted once). `retain_memories`, `backfill_memory`,
+//! `clear_all_memories` and beta-memory (token-side) indexes are not
+//! modelled; the network model abstracts constant tests and entry types to
+//! uninterpreted functions.
 
 use vstd::prelude::*;
 
@@ -1166,6 +1178,385 @@ pub proof fn theorem_reachable_memories_are_consistent(ops: Seq<MemOp>, base: Se
     } else {
         theorem_reachable_memories_are_consistent(ops.drop_last(), base);
         lemma_apply_preserves(run(new_memory(), ops.drop_last(), base), ops.last(), base);
+    }
+}
+
+// ===========================================================================
+// Alpha network: propagation and the fact-to-memories reverse index
+// ===========================================================================
+
+/// Models crates/ferric-rules-core/src/alpha.rs:121 enum `AlphaNode`: an
+/// entry node (`test` is `None`) or a constant-test node, its children and
+/// its optional memory.
+pub struct NetNode {
+    pub test: Option<int>,
+    pub children: Seq<int>,
+    pub memory: Option<int>,
+}
+
+/// Models crates/ferric-rules-core/src/alpha.rs:366 struct `AlphaNetwork`:
+/// nodes, memories (each the `AlphaMem` model above), entry nodes by entry
+/// type, and `fact_to_memories`.
+pub struct Net {
+    pub nodes: Seq<NetNode>,
+    pub mems: Seq<AlphaMem>,
+    pub entry: Map<int, int>,
+    pub f2m: Map<int, Seq<int>>,
+}
+
+/// `evaluate_test(fact, test)` (alpha.rs:822); its semantics are checked by
+/// the Kani harnesses, here it is uninterpreted.
+pub uninterp spec fn passes(f: int, test: int) -> bool;
+
+/// The entry type of a fact (alpha.rs:610-613).
+pub uninterp spec fn entry_of(f: int) -> int;
+
+/// Nodes are created parent-first (`create_constant_test_node` gives the
+/// child the next id), so every child id exceeds its parent's.
+pub open spec fn net_wf(net: Net) -> bool {
+    forall|n: int, i: int|
+        0 <= n < net.nodes.len() && 0 <= i < net.nodes[n].children.len() ==> #[trigger] net.nodes[n].children[i]
+            > n
+}
+
+/// Models crates/ferric-rules-core/src/alpha.rs:738 fn `propagate`: the
+/// memories accepting `f` below `node`, in visiting order. A missing node
+/// accepts nothing; a failing test prunes the subtree; the node's memory
+/// (if it exists) is visited before the children, in child order.
+pub open spec fn propagate(net: Net, node: int, f: int) -> Seq<int>
+    decreases net.nodes.len() - node, child_count(net, node) + 1,
+{
+    if node < 0 || node >= net.nodes.len() {
+        Seq::empty()
+    } else {
+        let n = net.nodes[node];
+        if n.test is Some && !passes(f, n.test->Some_0) {
+            Seq::empty()
+        } else {
+            let here = match n.memory {
+                Some(m) => if 0 <= m < net.mems.len() {
+                    seq![m]
+                } else {
+                    Seq::empty()
+                },
+                None => Seq::empty(),
+            };
+            here + propagate_children(net, node, f, n.children.len() as int)
+        }
+    }
+}
+
+pub open spec fn child_count(net: Net, node: int) -> int {
+    if 0 <= node < net.nodes.len() {
+        net.nodes[node].children.len() as int
+    } else {
+        0
+    }
+}
+
+/// The child loop of `propagate` (alpha.rs:762-770) over the first `k`
+/// children of `node`.
+pub open spec fn propagate_children(net: Net, node: int, f: int, k: int) -> Seq<int>
+    decreases net.nodes.len() - node, k,
+{
+    if k <= 0 || node < 0 || node >= net.nodes.len() || k > net.nodes[node].children.len() {
+        Seq::empty()
+    } else {
+        let child = net.nodes[node].children[k - 1];
+        let previous = propagate_children(net, node, f, k - 1);
+        // A child id beyond the node list is a missing node, which
+        // `propagate` would ignore anyway.
+        if node < child < net.nodes.len() {
+            previous + propagate(net, child, f)
+        } else {
+            previous
+        }
+    }
+}
+
+/// Inserting `f` into each accepted memory, in order (alpha.rs:755-758).
+pub open spec fn insert_all(mems: Seq<AlphaMem>, accepted: Seq<int>, f: int, n: int) -> Seq<AlphaMem>
+    decreases n,
+{
+    if n <= 0 || n > accepted.len() {
+        mems
+    } else {
+        let mems = insert_all(mems, accepted, f, n - 1);
+        let m = accepted[n - 1];
+        if 0 <= m < mems.len() {
+            mems.update(m, insert(mems[m], f))
+        } else {
+            mems
+        }
+    }
+}
+
+/// Removing `f` from each recorded memory (alpha.rs:643-647).
+pub open spec fn remove_all(mems: Seq<AlphaMem>, recorded: Seq<int>, f: int, n: int) -> Seq<AlphaMem>
+    decreases n,
+{
+    if n <= 0 || n > recorded.len() {
+        mems
+    } else {
+        let mems = remove_all(mems, recorded, f, n - 1);
+        let m = recorded[n - 1];
+        if 0 <= m < mems.len() {
+            mems.update(m, remove(mems[m], f))
+        } else {
+            mems
+        }
+    }
+}
+
+/// The memories that accept `f`: none when no entry node exists for its type
+/// (alpha.rs:615-618).
+pub open spec fn accepted(net: Net, f: int) -> Seq<int> {
+    if net.entry.contains_key(entry_of(f)) {
+        propagate(net, net.entry[entry_of(f)], f)
+    } else {
+        Seq::empty()
+    }
+}
+
+/// Models crates/ferric-rules-core/src/alpha.rs:609 fn `assert_fact`.
+pub open spec fn assert_fact(net: Net, f: int) -> Net {
+    let accepted = accepted(net, f);
+    Net {
+        mems: insert_all(net.mems, accepted, f, accepted.len() as int),
+        f2m: if accepted.len() > 0 {
+            net.f2m.insert(f, accepted)
+        } else {
+            net.f2m
+        },
+        ..net
+    }
+}
+
+/// Models crates/ferric-rules-core/src/alpha.rs:634 fn `retract_fact`.
+pub open spec fn retract_fact(net: Net, f: int) -> Net {
+    if net.f2m.contains_key(f) {
+        let recorded = net.f2m[f];
+        Net {
+            mems: remove_all(net.mems, recorded, f, recorded.len() as int),
+            f2m: net.f2m.remove(f),
+            ..net
+        }
+    } else {
+        net
+    }
+}
+
+/// The reverse index is exact: `f` is recorded for memory `m` iff memory `m`
+/// holds `f`; recorded ids are valid; every memory keeps its own invariant.
+pub open spec fn net_inv(net: Net) -> bool {
+    &&& net_wf(net)
+    &&& forall|i: int| 0 <= i < net.mems.len() ==> inv(#[trigger] net.mems[i])
+    &&& forall|f: int, m: int|
+        0 <= m < net.mems.len() ==> (#[trigger] net.mems[m].facts.contains(f) <==> (
+        net.f2m.contains_key(f) && net.f2m[f].contains(m)))
+    &&& forall|f: int, j: int|
+        net.f2m.contains_key(f) && 0 <= j < net.f2m[f].len() ==> 0 <= #[trigger] net.f2m[f][j]
+            < net.mems.len()
+}
+
+pub proof fn lemma_propagate_valid(net: Net, node: int, f: int)
+    ensures
+        forall|j: int|
+            0 <= j < propagate(net, node, f).len() ==> 0 <= #[trigger] propagate(net, node, f)[j]
+                < net.mems.len(),
+    decreases net.nodes.len() - node, child_count(net, node) + 1,
+{
+    if 0 <= node < net.nodes.len() {
+        let n = net.nodes[node];
+        let k = n.children.len() as int;
+        lemma_propagate_children_valid(net, node, f, k);
+        if !(n.test is Some && !passes(f, n.test->Some_0)) {
+            let here = match n.memory {
+                Some(m) => if 0 <= m < net.mems.len() {
+                    seq![m]
+                } else {
+                    Seq::empty()
+                },
+                None => Seq::empty(),
+            };
+            let rest = propagate_children(net, node, f, k);
+            assert(propagate(net, node, f) == here + rest);
+            assert forall|j: int| 0 <= j < (here + rest).len() implies 0 <= #[trigger] (here
+                + rest)[j] < net.mems.len() by {
+                if j >= here.len() {
+                    assert((here + rest)[j] == rest[j - here.len()]);
+                }
+            }
+        }
+    }
+}
+
+pub proof fn lemma_propagate_children_valid(net: Net, node: int, f: int, k: int)
+    ensures
+        forall|j: int|
+            0 <= j < propagate_children(net, node, f, k).len() ==> 0
+                <= #[trigger] propagate_children(net, node, f, k)[j] < net.mems.len(),
+    decreases net.nodes.len() - node, k,
+{
+    if k > 0 && 0 <= node < net.nodes.len() && k <= net.nodes[node].children.len() {
+        lemma_propagate_children_valid(net, node, f, k - 1);
+        let child = net.nodes[node].children[k - 1];
+        let previous = propagate_children(net, node, f, k - 1);
+        if node < child < net.nodes.len() {
+            lemma_propagate_valid(net, child, f);
+            let next = propagate(net, child, f);
+            assert forall|j: int| 0 <= j < (previous + next).len() implies 0
+                <= #[trigger] (previous + next)[j] < net.mems.len() by {
+                if j >= previous.len() {
+                    assert((previous + next)[j] == next[j - previous.len()]);
+                }
+            }
+        }
+    }
+}
+
+pub proof fn lemma_insert_all(mems: Seq<AlphaMem>, accepted: Seq<int>, f: int, n: int)
+    requires
+        0 <= n <= accepted.len(),
+        forall|i: int| 0 <= i < mems.len() ==> inv(#[trigger] mems[i]),
+    ensures
+        insert_all(mems, accepted, f, n).len() == mems.len(),
+        forall|i: int| 0 <= i < mems.len() ==> inv(#[trigger] insert_all(mems, accepted, f, n)[i]),
+        forall|i: int, x: int|
+            0 <= i < mems.len() ==> (#[trigger] insert_all(mems, accepted, f, n)[i].facts.contains(x)
+                <==> (mems[i].facts.contains(x) || (x == f && accepted.take(n).contains(i)))),
+    decreases n,
+{
+    if n == 0 {
+        assert forall|i: int| !accepted.take(0).contains(i) by {}
+    } else {
+        lemma_insert_all(mems, accepted, f, n - 1);
+        let previous = insert_all(mems, accepted, f, n - 1);
+        let m = accepted[n - 1];
+        assert forall|i: int| #[trigger]
+            accepted.take(n).contains(i) <==> (accepted.take(n - 1).contains(i) || i == m) by {
+            lemma_take_contains_step(accepted, n, i);
+        }
+        if 0 <= m < previous.len() {
+            lemma_insert_inv(previous[m], f);
+            assert forall|x: int| #[trigger]
+                insert(previous[m], f).facts.contains(x) <==> (previous[m].facts.contains(x) || x
+                    == f) by {
+                if !previous[m].facts.contains(f) {
+                    vstd::seq_lib::lemma_seq_contains_after_push(previous[m].facts, f, x);
+                }
+            }
+        }
+    }
+}
+
+pub proof fn lemma_remove_all(mems: Seq<AlphaMem>, recorded: Seq<int>, f: int, n: int)
+    requires
+        0 <= n <= recorded.len(),
+        forall|i: int| 0 <= i < mems.len() ==> inv(#[trigger] mems[i]),
+    ensures
+        remove_all(mems, recorded, f, n).len() == mems.len(),
+        forall|i: int| 0 <= i < mems.len() ==> inv(#[trigger] remove_all(mems, recorded, f, n)[i]),
+        forall|i: int, x: int|
+            0 <= i < mems.len() ==> (#[trigger] remove_all(mems, recorded, f, n)[i].facts.contains(x)
+                <==> (mems[i].facts.contains(x) && !(x == f && recorded.take(n).contains(i)))),
+    decreases n,
+{
+    if n == 0 {
+        assert forall|i: int| !recorded.take(0).contains(i) by {}
+    } else {
+        lemma_remove_all(mems, recorded, f, n - 1);
+        let previous = remove_all(mems, recorded, f, n - 1);
+        let m = recorded[n - 1];
+        assert forall|i: int| #[trigger]
+            recorded.take(n).contains(i) <==> (recorded.take(n - 1).contains(i) || i == m) by {
+            lemma_take_contains_step(recorded, n, i);
+        }
+        if 0 <= m < previous.len() {
+            lemma_remove_inv(previous[m], f);
+            assert forall|x: int| #[trigger]
+                remove(previous[m], f).facts.contains(x) <==> (previous[m].facts.contains(x) && x
+                    != f) by {
+                lemma_filter_contains_iff(previous[m].facts, other_than(f), x);
+            }
+        }
+    }
+}
+
+/// Asserting a fact that no memory holds yet (each fact is asserted once)
+/// keeps the reverse index exact: afterwards `memories_containing_fact`
+/// (= `f2m[f]`) lists exactly the memories holding `f`, which are exactly
+/// the memories `propagate` reached.
+pub proof fn theorem_assert_fact_keeps_reverse_index_exact(net: Net, f: int)
+    requires
+        net_inv(net),
+        !net.f2m.contains_key(f),
+    ensures
+        net_inv(assert_fact(net, f)),
+        forall|m: int|
+            0 <= m < net.mems.len() ==> (#[trigger] assert_fact(net, f).mems[m].facts.contains(f)
+                <==> accepted(net, f).contains(m)),
+{
+    let acc = accepted(net, f);
+    let out = assert_fact(net, f);
+    if net.entry.contains_key(entry_of(f)) {
+        lemma_propagate_valid(net, net.entry[entry_of(f)], f);
+    }
+    lemma_insert_all(net.mems, acc, f, acc.len() as int);
+    assert(acc.take(acc.len() as int) =~= acc);
+    assert forall|g: int, m: int| 0 <= m < out.mems.len() implies (
+    #[trigger] out.mems[m].facts.contains(g) <==> (out.f2m.contains_key(g) && out.f2m[g].contains(
+        m,
+    ))) by {
+        if g == f {
+            assert(!net.mems[m].facts.contains(f));
+            if acc.len() == 0 {
+                assert(!acc.contains(m));
+            }
+        } else {
+            assert(net.mems[m].facts.contains(g) == out.mems[m].facts.contains(g));
+        }
+    }
+    assert forall|g: int, j: int| out.f2m.contains_key(g) && 0 <= j < out.f2m[g].len() implies 0
+        <= #[trigger] out.f2m[g][j] < out.mems.len() by {
+        if g == f {
+            assert(acc[j] == out.f2m[g][j]);
+        }
+    }
+}
+
+/// Retracting removes the fact from exactly the recorded memories, so
+/// afterwards no memory holds it, every other membership is unchanged and the
+/// reverse index stays exact.
+pub proof fn theorem_retract_fact_removes_everywhere(net: Net, f: int)
+    requires
+        net_inv(net),
+    ensures
+        net_inv(retract_fact(net, f)),
+        forall|m: int|
+            0 <= m < net.mems.len() ==> !(#[trigger] retract_fact(net, f).mems[m].facts.contains(f)),
+        forall|g: int, m: int|
+            g != f && 0 <= m < net.mems.len() ==> (#[trigger] retract_fact(net, f).mems[m].facts.contains(
+                g,
+            ) == net.mems[m].facts.contains(g)),
+{
+    if net.f2m.contains_key(f) {
+        let recorded = net.f2m[f];
+        let out = retract_fact(net, f);
+        lemma_remove_all(net.mems, recorded, f, recorded.len() as int);
+        assert(recorded.take(recorded.len() as int) =~= recorded);
+        assert forall|g: int, m: int| 0 <= m < out.mems.len() implies (
+        #[trigger] out.mems[m].facts.contains(g) <==> (out.f2m.contains_key(g)
+            && out.f2m[g].contains(m))) by {
+            if g != f {
+                assert(net.mems[m].facts.contains(g) == out.mems[m].facts.contains(g));
+            }
+        }
+    } else {
+        assert forall|m: int| 0 <= m < net.mems.len() implies !(#[trigger] retract_fact(
+            net,
+            f,
+        ).mems[m].facts.contains(f)) by {}
     }
 }
 

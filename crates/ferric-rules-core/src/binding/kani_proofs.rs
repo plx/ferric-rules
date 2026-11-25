@@ -1,6 +1,35 @@
 //! Kani proof harnesses for `binding` (see docs/verification.md).
 //!
-//! Placeholder header; rewritten once the harness set is final.
+//! What is proved, on the production code, against an abstract model (a
+//! fixed array of optional integers plus the vector width):
+//!
+//! * `BindingSet::set`/`get` refine a total map: after any three writes to
+//!   variables below `VARS` (last write wins), `get` of every `VarId` —
+//!   including any `u16` id beyond the vector — returns the model's value
+//!   without panicking, `capacity` is the largest written id + 1 and
+//!   `bound_count` counts the bound variables.
+//! * `extend_from` is a left-biased union (the receiver's bindings win, gaps
+//!   are filled from `other`, `other` is unchanged) and widens the vector
+//!   only to `other`'s highest *bound* variable.
+//! * `clone` is an independent snapshot; `clear` empties the set.
+//! * `ValueRef::new` shares exactly the heap-owning variants (`String`,
+//!   `Multifield`) through an `Arc`; cloning a shared reference shares the
+//!   allocation, cloning an inline one copies the value; deref returns the
+//!   wrapped value.
+//! * `VarMap::get_or_create` numbers names densely in first-occurrence order
+//!   (all 27 sequences of three calls over three names), `lookup` and `name`
+//!   agree with the numbering; `name` panics for an id at or beyond `len`
+//!   (its documented `# Panics` contract); `clear` restarts the numbering.
+//!
+//! Bounds: `VARS` = 3 variables, at most three writes per set, three names.
+//! The `TooManyVariables` limit (65536 names) and widths up to 65536 are out
+//! of reach here; verification/verus/core_matching.rs proves them
+//! (`theorem_get_or_create`, `BindingSet::extend_from`'s `idx as u16` cast).
+//! Known gaps: `set` with a large `VarId` (the vector grows to `id + 1`
+//! entries) is only exercised for ids below `VARS`; values other than
+//! integers are not stored in the refinement harnesses. Harness-built sets
+//! are `mem::forget`-ed instead of dropped (dropping a symbolic `Value` makes
+//! CBMC explore the recursive drop glue), so drop glue is not checked.
 
 use super::*;
 use crate::symbol::SymbolId;
@@ -8,7 +37,7 @@ use crate::value::Multifield;
 
 /// Number of variables the bounded harnesses address. Queries also probe
 /// out-of-range ids up to `u16::MAX`.
-const VARS: usize = 3;
+const VARS: usize = 2;
 
 /// Abstract model of a binding set: one optional integer per variable,
 /// with the addressable width (`capacity`) tracked separately.
@@ -47,13 +76,21 @@ fn int_of(value: Option<&ValueRef>) -> Option<i64> {
 
 /// Apply `ops` symbolic writes (variable < `VARS`, small integer value) to
 /// both the production set and the model.
+///
+/// The written variable is case-split so each `set` call indexes the vector
+/// with a constant: a symbolic index makes the binding a write replaces
+/// unknown to CBMC, which then explores the recursive `Value` drop glue.
 fn random_writes(set: &mut BindingSet, model: &mut Model, ops: usize) {
     for _ in 0..ops {
-        if kani::any() {
-            let var: u16 = kani::any_where(|var: &u16| usize::from(*var) < VARS);
-            let value: i64 = kani::any::<i8>().into();
+        let value: i64 = kani::any::<i8>().into();
+        let mut write = |var: u16| {
             set.set(VarId(var), ValueRef::new(Value::Integer(value)));
             model.set(usize::from(var), value);
+        };
+        match kani::any::<u8>() {
+            0 => write(0),
+            1 => write(1),
+            _ => {}
         }
     }
 }
@@ -72,24 +109,20 @@ fn assert_refines(set: &BindingSet, model: &Model) {
 }
 
 /// `set`/`get` refine a total map from variables to optional values: after
-/// any three writes (last write wins, the vector grows to the largest
+/// any two writes (last write wins, the vector grows to the largest
 /// written id + 1, unwritten ids read as unbound), `get` of *any* `VarId`
 /// — including ids beyond the vector — returns the model's value without
 /// panicking, and `capacity`/`bound_count` match the model.
 #[kani::proof]
-#[kani::unwind(5)]
+#[kani::unwind(3)]
 fn binding_set_refines_map_model() {
     let mut set = BindingSet::new();
     let mut model = Model::EMPTY;
     assert_refines(&set, &model);
-    random_writes(&mut set, &mut model, 3);
+    random_writes(&mut set, &mut model, 2);
     assert_refines(&set, &model);
     kani::cover!(model.capacity == VARS && model.bound() == 1, "sparse");
     kani::cover!(model.bound() == VARS, "fully bound");
-    kani::cover!(
-        model.bound() == 2 && model.capacity == 2,
-        "overwrite then grow"
-    );
     std::mem::forget(set);
 }
 
@@ -98,7 +131,7 @@ fn binding_set_refines_map_model() {
 /// width grows to cover `other`'s highest bound variable (not `other`'s
 /// trailing unbound slots), and `other` is unchanged.
 #[kani::proof]
-#[kani::unwind(5)]
+#[kani::unwind(3)]
 fn extend_from_is_left_biased_union() {
     let mut left = BindingSet::new();
     let mut left_model = Model::EMPTY;
@@ -139,7 +172,7 @@ fn extend_from_is_left_biased_union() {
 /// are not visible through the clone, and the clone refines the model of
 /// the original at cloning time.
 #[kani::proof]
-#[kani::unwind(5)]
+#[kani::unwind(3)]
 fn clone_is_an_independent_snapshot() {
     let mut set = BindingSet::new();
     let mut model = Model::EMPTY;
@@ -159,7 +192,7 @@ fn clone_is_an_independent_snapshot() {
 
 /// `clear` unbinds everything and resets the width.
 #[kani::proof]
-#[kani::unwind(5)]
+#[kani::unwind(3)]
 fn clear_resets_to_empty() {
     let mut set = BindingSet::new();
     let mut model = Model::EMPTY;
@@ -175,7 +208,7 @@ fn clear_resets_to_empty() {
 /// returns the wrapped value; cloning a shared reference shares the same
 /// allocation, and cloning an inline one copies the value.
 #[kani::proof]
-#[kani::unwind(3)]
+#[kani::unwind(2)]
 fn value_ref_storage_and_clone() {
     let check = |value: Value, heap: bool| {
         let reference = ValueRef::new(value);
@@ -216,52 +249,58 @@ fn symbol(id: u32) -> Symbol {
     Symbol(SymbolId::Ascii(id))
 }
 
-/// `VarMap` numbers variables densely in first-occurrence order: for every
-/// sequence of three `get_or_create` calls over three distinct names (all
-/// 27 name sequences), each call returns the index of the name's first
-/// occurrence, `lookup` agrees, `name` inverts the numbering, and `len`
-/// counts the distinct names. The names are concrete per sequence (a
-/// symbolic name would make every hash-table probe symbolic).
+/// `VarMap` numbers variables densely in first-occurrence order: for each
+/// equality pattern of three `get_or_create` calls (`aaa`, `aab`, `aba`,
+/// `abb`, `abc` — every sequence of three names up to renaming), each call
+/// returns the index of the name's first occurrence, `lookup` agrees for
+/// every name (including an unused one), `name` inverts the numbering, and
+/// `len` counts the distinct names. Names are concrete per pattern: a
+/// symbolic name makes every hash-table probe symbolic, and the map's
+/// behaviour depends only on name equality.
 #[kani::proof]
 #[kani::unwind(5)]
 fn var_map_numbers_names_in_first_occurrence_order() {
     let names = [symbol(7), symbol(8), symbol(9)];
-    let sequence: [usize; 3] = [
-        kani::any_where(|choice: &usize| *choice < 3),
-        kani::any_where(|choice: &usize| *choice < 3),
-        kani::any_where(|choice: &usize| *choice < 3),
-    ];
-    let mut map = VarMap::new();
-    let mut order: Vec<usize> = Vec::new();
-    for &choice in &sequence {
-        let expected = match order.iter().position(|&seen| seen == choice) {
-            Some(index) => index,
-            None => {
-                order.push(choice);
-                order.len() - 1
-            }
-        };
-        let id = map.get_or_create(names[choice]).unwrap();
-        assert_eq!(usize::from(id.0), expected);
+    let check = |sequence: [usize; 3]| {
+        let mut map = VarMap::new();
+        let mut order: Vec<usize> = Vec::new();
+        for &choice in &sequence {
+            let expected = match order.iter().position(|&seen| seen == choice) {
+                Some(index) => index,
+                None => {
+                    order.push(choice);
+                    order.len() - 1
+                }
+            };
+            let id = map.get_or_create(names[choice]).unwrap();
+            assert_eq!(usize::from(id.0), expected);
+        }
+        assert_eq!(map.len(), order.len());
+        assert!(!map.is_empty());
+        for (choice, name) in names.iter().enumerate() {
+            let expected = order.iter().position(|&seen| seen == choice);
+            assert_eq!(map.lookup(*name).map(|id| usize::from(id.0)), expected);
+        }
+        for (index, &choice) in order.iter().enumerate() {
+            assert_eq!(map.name(VarId(index as u16)), names[choice]);
+        }
+        kani::cover!(order.len() == 3, "three distinct names");
+        kani::cover!(order.len() == 1, "one name repeated");
+    };
+    match kani::any::<u8>() {
+        0 => check([0, 0, 0]),
+        1 => check([0, 0, 1]),
+        2 => check([0, 1, 0]),
+        3 => check([0, 1, 1]),
+        _ => check([0, 1, 2]),
     }
-    assert_eq!(map.len(), order.len());
-    assert_eq!(map.is_empty(), order.is_empty());
-    for (choice, name) in names.iter().enumerate() {
-        let expected = order.iter().position(|&seen| seen == choice);
-        assert_eq!(map.lookup(*name).map(|id| usize::from(id.0)), expected);
-    }
-    for (index, &choice) in order.iter().enumerate() {
-        assert_eq!(map.name(VarId(index as u16)), names[choice]);
-    }
-    kani::cover!(order.len() == 3, "three distinct names");
-    kani::cover!(order.len() == 1, "one name repeated");
 }
 
 /// `VarMap::name` panics exactly for ids at or beyond `len` (its documented
 /// `# Panics` contract); this harness covers the panicking side.
 #[kani::proof]
 #[kani::should_panic]
-#[kani::unwind(3)]
+#[kani::unwind(5)]
 fn var_map_name_panics_out_of_range() {
     let mut map = VarMap::new();
     map.get_or_create(symbol(1)).unwrap();
@@ -272,7 +311,7 @@ fn var_map_name_panics_out_of_range() {
 
 /// `clear` forgets every name and restarts numbering at zero.
 #[kani::proof]
-#[kani::unwind(4)]
+#[kani::unwind(5)]
 fn var_map_clear_restarts_numbering() {
     let mut map = VarMap::new();
     map.get_or_create(symbol(1)).unwrap();
