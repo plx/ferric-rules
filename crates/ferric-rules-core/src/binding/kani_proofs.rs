@@ -9,22 +9,20 @@
 //!   `capacity` is the width and `bound_count` counts the bound slots.
 //! * `ValueRef::new` stores scalar values (integer, float bit pattern,
 //!   symbol, `Void`) inline; cloning copies them and deref returns them.
-//! * `VarMap::get_or_create` numbers names densely in first-occurrence order
-//!   (every equality pattern of two calls), `lookup` and `name` agree with
-//!   the numbering; `name` panics for an id at or beyond `len` (its
-//!   documented `# Panics` contract).
+//! * `VarMap::name` panics for an id at or beyond `len` (its documented
+//!   `# Panics` contract), here after one `get_or_create`.
 //!
-//! Bounds: binding sets of width at most two holding integers; `VarMap`
-//! with concrete names (its behaviour depends only on name equality;
-//! symbolic names make every hash probe symbolic).
+//! Bounds: binding sets of width at most two holding integers; a `VarMap`
+//! holding one concrete name.
 //!
 //! Known gaps. Not checked by Kani but proved for the executable Verus model
 //! in verification/verus/core_matching.rs: `BindingSet::set`, `extend_from`,
-//! the 65536-name `TooManyVariables` limit and the `idx as u16` cast in
-//! `extend_from`. Not checked at all: `BindingSet::clone`/`clear`, shared
-//! (`Arc`) `ValueRef`s, `VarMap::clear` and `VarMap` sequences of more than
-//! two calls. Every Kani attempt at those ran out of memory or time (even a
-//! single `set` on an empty set): CBMC cannot tell which `Value` variant a
+//! `VarMap::get_or_create`/`lookup` numbering (a two-call harness did not
+//! finish in 20 minutes), the 65536-name `TooManyVariables` limit and the
+//! `idx as u16` cast in `extend_from`. Not checked at all:
+//! `BindingSet::clone`/`clear`, shared (`Arc`) `ValueRef`s and
+//! `VarMap::clear`. Every Kani attempt at those ran out of memory or time
+//! (even a single `set` on an empty set): CBMC cannot tell which `Value` variant a
 //! replaced, cleared or cloned binding holds once it has passed through
 //! `SmallVec` storage, so it explores the recursive `Value` drop/clone glue
 //! through every variant, and `VarMap`'s hash-table probe loops are unrolled
@@ -221,51 +219,6 @@ fn value_ref_inline_for_scalar_values() {
 
 fn symbol(id: u32) -> Symbol {
     Symbol(SymbolId::Ascii(id))
-}
-
-/// `VarMap` numbers variables densely in first-occurrence order: for each
-/// equality pattern of two `get_or_create` calls (`aa`, `ab` — every
-/// sequence of two names up to renaming), each call returns the index of the
-/// name's first occurrence, `lookup` agrees for every name (including an
-/// unused one), `name` inverts the numbering, and `len` counts the distinct
-/// names. Names are concrete per pattern: a symbolic name makes every
-/// hash-table probe symbolic, and the map's behaviour depends only on name
-/// equality. (Three calls per pattern exceeded 14 minutes.)
-#[kani::proof]
-#[kani::unwind(5)]
-fn var_map_numbers_names_in_first_occurrence_order() {
-    let names = [symbol(7), symbol(8), symbol(9)];
-    let check = |sequence: [usize; 2]| {
-        let mut map = VarMap::new();
-        let mut order: Vec<usize> = Vec::new();
-        for &choice in &sequence {
-            let expected = match order.iter().position(|&seen| seen == choice) {
-                Some(index) => index,
-                None => {
-                    order.push(choice);
-                    order.len() - 1
-                }
-            };
-            let id = map.get_or_create(names[choice]).unwrap();
-            assert_eq!(usize::from(id.0), expected);
-        }
-        assert_eq!(map.len(), order.len());
-        assert!(!map.is_empty());
-        for (choice, name) in names.iter().enumerate() {
-            let expected = order.iter().position(|&seen| seen == choice);
-            assert_eq!(map.lookup(*name).map(|id| usize::from(id.0)), expected);
-        }
-        for (index, &choice) in order.iter().enumerate() {
-            assert_eq!(map.name(VarId(index as u16)), names[choice]);
-        }
-        kani::cover!(order.len() == 2, "two distinct names");
-        kani::cover!(order.len() == 1, "one name repeated");
-    };
-    if kani::any() {
-        check([0, 0]);
-    } else {
-        check([0, 1]);
-    }
 }
 
 /// `VarMap::name` panics exactly for ids at or beyond `len` (its documented

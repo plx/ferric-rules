@@ -20,15 +20,10 @@
 //!   out-of-range variable, or a missing token fails; an empty list passes.
 //! * `indexable_tests`: without a plan, exactly the plain `Equal` tests in
 //!   order; with a plan, exactly the `Equal` tests whose logical field has a
-//!   physical selector, mapped to it; and every such selector reads, in
-//!   every split the search produces, the very value of the logical field.
+//!   physical selector, mapped to it.
 //! * The capture fast path (`capture_join_matches`) agrees with evaluating
 //!   the test on the copied multifield for every numeric, lexeme and offset
 //!   join test type (both reject every capture).
-//! * With an ordered sequence plan, `evaluate_pattern` (pruned depth-first
-//!   split search) equals the naive semantics "some split, enumerated by
-//!   capture lengths and projected independently, passes every plan test
-//!   and join test", and `split_matches` agrees per split.
 //! * Corollary for the two compilations of one predicate (alpha
 //!   `*SlotOffset` tests, join `*Offset` tests): the join offset harnesses
 //!   here and the alpha slot-offset harnesses match the same reference, so
@@ -42,9 +37,7 @@
 //! Bounds: scalar atoms and numbers range over all payloads; strings have
 //! at most one byte and appear only in the lexeme harness; multifields and
 //! captures hold at most one atom; one join test per list; sequence plans
-//! of at most two ordered fields or two template segments (multislots of at
-//! most one value); ordered facts of at most two fields with values in
-//! {0, 1}.
+//! of at most two ordered fields or two template segments.
 //!
 //! Known gaps (each attempted harness ran out of memory or time in CBMC,
 //! see the cost notes): `collect_candidate_facts` on a real indexed
@@ -60,16 +53,16 @@
 //! values make candidate collection scan, so soundness does not depend on
 //! them), multi-test lists in `evaluate_join` and
 //! `evaluate_pattern` without a plan (the loop is modelled in
-//! verification/verus/core_matching.rs). Not attempted:
-//! `collect_candidate_parent_tokens` (beta-memory index), the
-//! `sequence_matches` binding extraction, plan tests other than `Equal`
-//! and template plans in the naive sequence comparison. Unbounded versions
-//! of the candidate theorem and of selector soundness are in the Verus
-//! model. Harness-built values are `mem::forget`-ed instead of dropped, so
-//! drop glue is not checked.
+//! verification/verus/core_matching.rs), the soundness of sequence
+//! physical selectors on real splits (proved unboundedly for the placement
+//! model in the Verus file) and `evaluate_pattern`/`split_matches` with a
+//! sequence plan against a naive split enumeration (both harnesses ran out
+//! of memory in symbolic execution, even with two-field plans and facts).
+//! Not attempted: `collect_candidate_parent_tokens` (beta-memory index) and
+//! the `sequence_matches` binding extraction. Harness-built values are
+//! `mem::forget`-ed instead of dropped, so drop glue is not checked.
 
 use super::*;
-use crate::alpha::{ConstantTest, ConstantTestType};
 use crate::fact::{OrderedFact, TemplateFact, TemplateId};
 use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
 use crate::string::FerricString;
@@ -183,7 +176,6 @@ fn join(alpha_slot: SlotIndex, beta_var: u16, test_type: JoinTestType) -> JoinTe
 }
 
 const FIRST: SlotIndex = SlotIndex::Ordered(0);
-const SECOND: SlotIndex = SlotIndex::Ordered(1);
 
 /// `evaluate_join` of one test reading field 0 of `(r field)` and `VarId(0)`
 /// bound to `bound`. Inputs are forgotten afterwards.
@@ -724,90 +716,6 @@ fn any_template_sequence() -> SequencePattern {
     }
 }
 
-/// An ordered fact `(r 0 1 .. len-1)` with `len <= 3`.
-fn ordered_fact_len(len: usize) -> Fact {
-    ordered_fact(match len {
-        0 => SmallVec::new(),
-        1 => smallvec::smallvec![Value::Integer(0)],
-        2 => smallvec::smallvec![Value::Integer(0), Value::Integer(1)],
-        _ => smallvec::smallvec![Value::Integer(0), Value::Integer(1), Value::Integer(2)],
-    })
-}
-
-/// A template fact whose slots 0 and 1 each hold an integer or a multifield
-/// of at most one integer.
-fn template_fact_any_shape() -> Fact {
-    let slot = |base: i64| {
-        if kani::any() {
-            Value::Integer(base)
-        } else {
-            let mut values = Multifield::new();
-            if kani::any() {
-                values.push(Value::Integer(base + 1));
-            }
-            Value::Multifield(Box::new(values))
-        }
-    };
-    template_fact(Box::new([slot(10), slot(20)]))
-}
-
-/// Soundness of sequence index keys: whenever `physical_selector` maps a
-/// logical field to a physical selector, the logical field of *every* split
-/// the search produces is the very value (same address) the physical
-/// selector reads from the fact. Hence an index keyed by the physical field
-/// contains every fact having a split whose logical field passes an `Equal`
-/// join test (with `join_equality_is_atom_key_identity`). Precondition: the
-/// plan passes `validate()`, which the compiler enforces before installing a
-/// plan (compiler.rs:601 `validate_entry`) and which sequence.rs:168
-/// documents as the check "before installing or restoring a pattern". The
-/// generators build only plans meeting its rules (sequence.rs:169-186: one
-/// ordered segment, or template segments over distinct slots whose scalar
-/// segments project one single field, and no tests); calling `validate`
-/// itself here made symbolic execution exceed 18 minutes.
-#[kani::proof]
-#[kani::unwind(4)]
-fn physical_selectors_read_the_logical_field_of_every_split() {
-    let ordered: bool = kani::any();
-    let (sequence, fact) = if ordered {
-        let len: usize = kani::any_where(|len: &usize| *len <= 2);
-        (any_ordered_sequence(), ordered_fact_len(len))
-    } else {
-        (any_template_sequence(), template_fact_any_shape())
-    };
-    let width = sequence.logical_width();
-    let mut splits = 0_usize;
-    let mut checked = 0_usize;
-    let _ = sequence.search(&fact, &mut |event| {
-        if let SplitEvent::Match(split) = event {
-            splits += 1;
-            for logical in 0..width {
-                let slot = if ordered {
-                    SlotIndex::Ordered(logical)
-                } else {
-                    SlotIndex::Template(logical)
-                };
-                if let Some(physical) = sequence.physical_selector(slot) {
-                    let via_split = split.get(slot).unwrap();
-                    let via_fact = get_slot_value(&fact, physical).unwrap();
-                    assert!(std::ptr::eq(via_split, via_fact));
-                    checked += 1;
-                }
-            }
-        }
-        ControlFlow::<()>::Continue(())
-    });
-    kani::cover!(
-        ordered && checked >= 1 && splits >= 2,
-        "ordered prefix, several splits"
-    );
-    kani::cover!(
-        !ordered && checked >= 1 && splits >= 2,
-        "template scalar, several splits"
-    );
-    std::mem::forget(fact);
-    std::mem::forget(sequence);
-}
-
 /// With a sequence plan, `indexable_tests` yields, in order, exactly the plain
 /// `Equal` tests whose logical field has a physical selector, paired with
 /// that physical selector.
@@ -969,168 +877,6 @@ fn capture_fast_path_rejects_more_offset_tests() {
         1 => check_capture_rejected(JoinTestType::GreaterOrEqualOffset(offset)),
         _ => check_capture_rejected(JoinTestType::LessOrEqualOffset(offset)),
     }
-}
-
-/// The logical fields of the split of the ordered fact `values` that gives
-/// the plan's captures the lengths `lengths` (written independently of the
-/// production search: walk the plan, take one value per single field and
-/// the next `length` values per capture). `None` when the lengths do not
-/// consume the fact exactly.
-fn naive_projection(
-    fields: &[SequenceField],
-    values: &[i64],
-    lengths: &[usize],
-) -> Option<Vec<Value>> {
-    let mut logical = Vec::new();
-    let mut position = 0;
-    let mut capture = 0;
-    for field in fields {
-        match field {
-            SequenceField::Single => {
-                if position >= values.len() {
-                    std::mem::forget(logical);
-                    return None;
-                }
-                logical.push(Value::Integer(values[position]));
-                position += 1;
-            }
-            SequenceField::Multi => {
-                let length = lengths[capture];
-                capture += 1;
-                if position + length > values.len() {
-                    std::mem::forget(logical);
-                    return None;
-                }
-                let mut multifield = Multifield::new();
-                for value in &values[position..position + length] {
-                    multifield.push(Value::Integer(*value));
-                }
-                logical.push(Value::Multifield(Box::new(multifield)));
-                position += length;
-            }
-        }
-    }
-    if position == values.len() {
-        Some(logical)
-    } else {
-        std::mem::forget(logical);
-        None
-    }
-}
-
-/// Whether the naive split passes the plan's constant tests and the join
-/// tests, both read through its logical fields.
-fn naive_split_matches(
-    logical: &[Value],
-    plan_tests: &[ConstantTest],
-    bindings: &BindingSet,
-    tests: &[JoinTest],
-) -> bool {
-    let field = |slot: SlotIndex| match slot {
-        SlotIndex::Ordered(index) => logical.get(index),
-        SlotIndex::Template(_) => None,
-    };
-    plan_tests
-        .iter()
-        .all(|test| crate::alpha::evaluate_field_test(test, field))
-        && evaluate_join_fields(field, Some(bindings), tests)
-}
-
-/// With an ordered sequence plan, `evaluate_pattern` (a depth-first split
-/// search that prunes on partially placed prefixes and compares captures in
-/// place) agrees with the naive semantics: enumerate every assignment of
-/// capture lengths, project each split, and accept iff some split passes
-/// all plan constant tests and all join tests. `split_matches` on the
-/// production projection of each enumerated split agrees with the naive
-/// verdict for that split.
-#[kani::proof]
-#[kani::unwind(4)]
-fn evaluate_pattern_with_sequence_matches_naive_enumeration() {
-    let mut sequence = any_ordered_sequence();
-    let fields = sequence.segments[0].fields.clone();
-    let len: usize = kani::any_where(|len: &usize| *len <= 2);
-    let raw: [i64; 3] = [
-        kani::any::<bool>().into(),
-        kani::any::<bool>().into(),
-        kani::any::<bool>().into(),
-    ];
-    let values = &raw[..len];
-    let fact = ordered_fact(match len {
-        0 => SmallVec::new(),
-        1 => smallvec::smallvec![Value::Integer(raw[0])],
-        2 => smallvec::smallvec![Value::Integer(raw[0]), Value::Integer(raw[1])],
-        _ => smallvec::smallvec![
-            Value::Integer(raw[0]),
-            Value::Integer(raw[1]),
-            Value::Integer(raw[2])
-        ],
-    });
-    if kani::any() {
-        let index: usize = kani::any_where(|index: &usize| *index <= 2);
-        let key: i64 = kani::any::<bool>().into();
-        sequence.tests.push(ConstantTest {
-            slot: SlotIndex::Ordered(index),
-            test_type: ConstantTestType::Equal(AtomKey::Integer(key)),
-        });
-    }
-    let join_index: usize = kani::any_where(|index: &usize| *index <= 2);
-    let join_type = match kani::any::<u8>() {
-        0 => JoinTestType::Equal,
-        1 => JoinTestType::NotEqual,
-        _ => JoinTestType::GreaterThan,
-    };
-    let tests = [join(SlotIndex::Ordered(join_index), 0, join_type)];
-    let token = if kani::any() {
-        token_binding(Value::Integer(kani::any::<bool>().into()))
-    } else {
-        let mut bound = Multifield::new();
-        let bound_len: usize = kani::any_where(|len: &usize| *len <= 2);
-        for _ in 0..bound_len {
-            bound.push(Value::Integer(kani::any::<bool>().into()));
-        }
-        token_binding(Value::Multifield(Box::new(bound)))
-    };
-
-    let captures = fields
-        .iter()
-        .filter(|field| **field == SequenceField::Multi)
-        .count();
-    let mut naive = false;
-    let mut naive_splits = 0;
-    for first in 0..=len {
-        for second in 0..=len {
-            {
-                let lengths = [first, second, 0];
-                // Enumerate each assignment once: unused capture lengths are 0.
-                if lengths[captures..].iter().any(|length| *length != 0) {
-                    continue;
-                }
-                let lengths = &lengths[..captures];
-                let Some(logical) = naive_projection(&fields, values, lengths) else {
-                    continue;
-                };
-                naive_splits += 1;
-                let passes =
-                    naive_split_matches(&logical, &sequence.tests, &token.bindings, &tests);
-                naive |= passes;
-                let split = sequence.project(&fact, lengths).unwrap();
-                assert_eq!(
-                    split_matches(&split, &token.bindings, &tests, &sequence),
-                    passes
-                );
-                std::mem::forget(split);
-                std::mem::forget(logical);
-            }
-        }
-    }
-    let actual = evaluate_pattern(&fact, &token, &tests, Some(&sequence));
-    assert_eq!(actual, naive);
-    kani::cover!(actual && naive_splits >= 2, "a match among several splits");
-    kani::cover!(!actual && naive_splits >= 2, "no split matches");
-    kani::cover!(actual && captures == 2, "two captures");
-    std::mem::forget(fact);
-    std::mem::forget(token);
-    std::mem::forget(sequence);
 }
 
 fn any_fact_address() -> crate::value::FactAddress {
