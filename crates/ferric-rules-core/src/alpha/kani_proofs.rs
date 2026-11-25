@@ -26,10 +26,8 @@
 //!   which contradicts the documented overflow rule:
 //!   `not_equal_slot_offset_overflow_fails_test` FAILS by design and
 //!   documents that defect.
-//! * `OrderedFieldCount` is exact; `Any` is a disjunction of conjunctions
-//!   guarded by its own field (fixed shape `[[Equal, NotEqual], [Equal]]`,
-//!   plus the empty-disjunction and empty-branch cases); entry-type
-//!   discrimination is exact.
+//! * `OrderedFieldCount` is exact; entry-type discrimination is exact; `Any`
+//!   fails without its own field (its branch semantics are a known gap).
 //! * `AlphaMemory`: after an index request on an empty memory or a backfill,
 //!   with or without a later removal, `lookup_by_slot` equals the naive
 //!   filter of the memory (same facts, same order), emptied buckets are
@@ -43,7 +41,10 @@
 //! keys are `(0, 0)` or `(0, 1)` (concrete per case: symbolic hash keys did
 //! not finish symbolic execution in 13 minutes).
 //!
-//! Known gaps: the whole-fact `Sequence` test (sequence proofs), longer
+//! Known gaps: `Any`'s disjunction-of-conjunctions semantics (harnesses for
+//! a fixed shape and for the empty cases ran out of memory: CBMC cannot see
+//! the nested test vectors' contents, so it explores every nested variant),
+//! the whole-fact `Sequence` test (sequence proofs), longer
 //! alpha-memory operation sequences (the unbounded index invariant is proved
 //! in verification/verus/core_matching.rs), and the whole `AlphaNetwork`:
 //! `AlphaNetwork::new` builds a `SparseSecondaryMap` with std `RandomState`,
@@ -831,74 +832,6 @@ fn ordered_field_count_is_exact() {
     assert_eq!(evaluate_and_forget(fact, test), expected);
     kani::cover!(expected && max.is_none() && min > 0, "open-ended count");
     kani::cover!(!expected && ordered, "count rejects an ordered fact");
-}
-
-/// `Any(branches)` is a disjunction of conjunctions of field tests guarded by
-/// the existence of its own field. Fixed shape `[[t1, t2], [t3]]` with
-/// `t1 = Equal`, `t2 = NotEqual`, `t3 = Equal` (literal semantics proved
-/// above); their keys, the two fields and every selector (including a
-/// missing third field) are symbolic. The shape is fixed because a symbolic
-/// shape makes every nested test variant unknown to CBMC.
-#[kani::proof]
-#[kani::unwind(3)]
-fn any_test_is_disjunction_of_conjunctions() {
-    let fields = [kani::any::<i8>().into(), kani::any::<i8>().into()];
-    let index = || kani::any_where(|index: &usize| *index <= 2);
-    let leaf = |equal: bool| {
-        let slot: usize = index();
-        let key: i64 = kani::any::<i8>().into();
-        let passes = slot < 2 && ((fields[slot] == key) == equal);
-        let test_type = if equal {
-            ConstantTestType::Equal(AtomKey::Integer(key))
-        } else {
-            ConstantTestType::NotEqual(AtomKey::Integer(key))
-        };
-        (test_on(SlotIndex::Ordered(slot), test_type), passes)
-    };
-    let (t1, p1) = leaf(true);
-    let (t2, p2) = leaf(false);
-    let (t3, p3) = leaf(true);
-    let own: usize = index();
-    let expected = own < 2 && ((p1 && p2) || p3);
-    let actual = evaluate_and_forget(
-        ordered2(Value::Integer(fields[0]), Value::Integer(fields[1])),
-        test_on(
-            SlotIndex::Ordered(own),
-            ConstantTestType::Any(vec![vec![t1, t2], vec![t3]]),
-        ),
-    );
-    assert_eq!(actual, expected);
-    kani::cover!(actual && p1 && p2 && !p3, "first branch alone passes");
-    kani::cover!(actual && !(p1 && p2), "second branch alone passes");
-    kani::cover!(
-        !actual && p1 && !p2 && !p3,
-        "a failing conjunct sinks its branch"
-    );
-    kani::cover!(!actual && p3, "missing own field rejects");
-}
-
-/// `Any` edge cases: an empty disjunction never matches; an empty branch
-/// matches exactly when the test's own field exists.
-#[kani::proof]
-#[kani::unwind(3)]
-fn any_test_edge_cases() {
-    let own: usize = kani::any_where(|index: &usize| *index <= 2);
-    let field: i64 = kani::any();
-    let empty = evaluate_and_forget(
-        ordered2(Value::Integer(field), Value::Integer(field)),
-        test_on(SlotIndex::Ordered(own), ConstantTestType::Any(Vec::new())),
-    );
-    let empty_branch = evaluate_and_forget(
-        ordered2(Value::Integer(field), Value::Integer(field)),
-        test_on(
-            SlotIndex::Ordered(own),
-            ConstantTestType::Any(vec![Vec::new()]),
-        ),
-    );
-    assert!(!empty);
-    assert_eq!(empty_branch, own < 2);
-    kani::cover!(empty_branch, "empty branch accepts");
-    kani::cover!(!empty_branch, "missing own field rejects");
 }
 
 /// `get_slot_value` returns exactly the selected field: the selector kind must

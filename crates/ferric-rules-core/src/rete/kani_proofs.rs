@@ -9,16 +9,15 @@
 //!   symbols, instance names, external addresses) and for fact addresses,
 //!   `values_join_eq` is `Some(key_a == key_b)` of their `AtomKey`s — the
 //!   `Equal` join test passes exactly for the facts an `AtomKey` index
-//!   lookup returns. Keyless values: `Void` is incomparable and a
-//!   multifield equals only an element-wise equal multifield.
+//!   lookup returns.
 //! * `evaluate_join`, one test at a time and one copy per test type:
-//!   `Equal`/`NotEqual` (join equality; `Void` fails both), numeric
+//!   `Equal`/`NotEqual` (join equality: `Void` fails both, multifields
+//!   compare element-wise, cross-type values are unequal), numeric
 //!   comparisons (integer/float promotion, NaN unordered), lexeme
 //!   comparisons (strings only, byte order) and the six offset comparisons
 //!   (checked integer sum; overflow fails every offset test, including
 //!   `NotEqualOffset`, as documented). A missing field, an unbound or
-//!   out-of-range variable, or a missing token fails; an empty list passes;
-//!   `evaluate_pattern` without a sequence plan is `evaluate_join`.
+//!   out-of-range variable, or a missing token fails; an empty list passes.
 //! * `indexable_tests`: without a plan, exactly the plain `Equal` tests in
 //!   order; with a plan, exactly the `Equal` tests whose logical field has a
 //!   physical selector, mapped to it; and every such selector reads, in
@@ -37,21 +36,23 @@
 //!   `neq`/`<>` they disagree exactly when the comparison is undefined
 //!   (non-numeric operand, NaN or overflowing sum) — see the defect report.
 //!
-//! Bounds: values as in alpha::kani_proofs; strings at most one byte and
-//! only in the lexeme harness; one join test per list except in the
-//! candidate harness (two); captures and bound multifields of at most one
-//! atom; sequence plans of at most two ordered fields or two template
-//! segments (multislots of at most one value); ordered facts of at most two
-//! fields with values in {0, 1}; the
-//! candidate harness has 17 facts with fixed slot-0 values and symbolic
-//! bindings.
+//! Bounds: scalar atoms and numbers range over all payloads; strings have
+//! at most one byte and appear only in the lexeme harness; multifields and
+//! captures hold at most one atom; one join test per list except in the
+//! candidate harness (two); sequence plans of at most two ordered fields or
+//! two template segments (multislots of at most one value); ordered facts
+//! of at most two fields with values in {0, 1}; the candidate harness has
+//! 17 facts with fixed slot-0 values and symbolic bindings.
 //!
-//! Known gaps: strings in the index lemma and in `Equal`/`NotEqual` join
-//! tests (CBMC ran out of memory; string identity of `AtomKey` is covered by
-//! alpha::kani_proofs), multi-test lists in `evaluate_join` (the loop is
-//! modelled in verification/verus/core_matching.rs; two-test harnesses ran
-//! out of memory), `collect_candidate_parent_tokens` (beta-memory index),
-//! the `sequence_matches` binding extraction, plan tests other than `Equal`
+//! Known gaps (each attempted harness ran out of memory in CBMC, see the
+//! cost notes): strings in the index lemma and in `Equal`/`NotEqual`
+//! (string identity of `AtomKey` is covered by alpha::kani_proofs), the
+//! keyless cases of the index lemma as a lemma (they are exercised through
+//! `Equal`/`NotEqual`), multi-test lists in `evaluate_join` and
+//! `evaluate_pattern` without a plan (the loop is modelled in
+//! verification/verus/core_matching.rs). Not attempted:
+//! `collect_candidate_parent_tokens` (beta-memory index), the
+//! `sequence_matches` binding extraction, plan tests other than `Equal`
 //! and template plans in the naive sequence comparison. Unbounded versions
 //! of the candidate theorem and of selector soundness are in the Verus
 //! model. Harness-built values are `mem::forget`-ed instead of dropped, so
@@ -92,29 +93,6 @@ fn any_string() -> FerricString {
     } else {
         const TEXTS: [&str; 3] = ["", "a", "b"];
         FerricString::Utf8(TEXTS[kani::any_where(|index: &usize| *index < 3)].into())
-    }
-}
-
-/// Any variant except `FactAddress`; multifields hold at most one integer.
-fn any_value() -> Value {
-    match kani::any::<u8>() {
-        0 => Value::Void,
-        1 => {
-            let mut multifield = Multifield::new();
-            if kani::any() {
-                multifield.push(Value::Integer(kani::any()));
-            }
-            Value::Multifield(Box::new(multifield))
-        }
-        2 => Value::Symbol(any_symbol()),
-        3 => Value::InstanceName(InstanceName::from_symbol(any_symbol())),
-        4 => Value::String(any_string()),
-        5 => Value::Float(kani::any()),
-        6 => Value::ExternalAddress(ExternalAddress {
-            type_id: ExternalTypeId(kani::any()),
-            token: kani::any(),
-        }),
-        _ => Value::Integer(kani::any()),
     }
 }
 
@@ -417,48 +395,9 @@ fn join_equality_is_atom_key_identity() {
     std::mem::forget((a, b));
 }
 
-/// Values without a key: `Void` is incomparable with everything; a
-/// multifield equals exactly an element-wise equal multifield and differs
-/// from every atom (checked against `Void`, multifields of at most one
-/// integer, symbols and integers). Candidate collection therefore scans for
-/// them.
-#[kani::proof]
-#[kani::unwind(2)]
-fn join_equality_without_atom_keys() {
-    let a = if kani::any() {
-        Value::Void
-    } else {
-        let mut multifield = Multifield::new();
-        if kani::any() {
-            multifield.push(Value::Integer(kani::any()));
-        }
-        Value::Multifield(Box::new(multifield))
-    };
-    let b = match kani::any::<u8>() {
-        0 => Value::Void,
-        1 => Value::Symbol(any_symbol()),
-        2 => Value::Integer(kani::any()),
-        _ => {
-            let mut multifield = Multifield::new();
-            if kani::any() {
-                multifield.push(Value::Integer(kani::any()));
-            }
-            Value::Multifield(Box::new(multifield))
-        }
-    };
-    let result = check_index_lemma(&a, &b);
-    kani::cover!(result == Some(true), "equal multifields");
-    kani::cover!(result.is_none(), "Void is incomparable");
-    kani::cover!(result == Some(false), "unequal");
-    std::mem::forget((a, b));
-}
-
-/// Any value except a string (strings are covered by the lexeme harness and
-/// the alpha literal harnesses; with them this harness exhausts memory).
-fn any_value_without_strings() -> Value {
+/// `Void` or a multifield of at most one integer.
+fn any_non_atom() -> Value {
     if kani::any() {
-        any_scalar_atom()
-    } else if kani::any() {
         Value::Void
     } else {
         let mut multifield = Multifield::new();
@@ -471,30 +410,54 @@ fn any_value_without_strings() -> Value {
 
 /// `Equal` passes iff the field and the binding are comparable and equal
 /// under join equality; `NotEqual` iff comparable and unequal; a `Void`
-/// field or binding fails both (non-string values).
-fn check_join_equality(test_type: JoinTestType, negated: bool) {
-    let field = any_value_without_strings();
-    let bound = any_value_without_strings();
+/// field or binding fails both. The field is a scalar atom (`atoms`) or a
+/// non-atom, the binding any non-string value; one harness per
+/// combination (with strings, or with both groups at once, CBMC ran out of
+/// memory).
+fn check_join_equality(test_type: JoinTestType, negated: bool, atoms: bool) {
+    let field = if atoms {
+        any_scalar_atom()
+    } else {
+        any_non_atom()
+    };
+    let bound = if kani::any() {
+        any_scalar_atom()
+    } else {
+        any_non_atom()
+    };
     let expected = oracle_join_eq(&field, &bound);
-    let void = matches!(field, Value::Void) || matches!(bound, Value::Void);
     let actual = join_one(field, bound, test_type);
     assert_eq!(actual, expected == Some(!negated));
     kani::cover!(actual, "passes");
-    kani::cover!(void && !actual, "Void fails");
+    kani::cover!(!actual, "fails");
 }
 
-/// `Equal` join test against the reference (see `check_join_equality`).
+/// `Equal` with a scalar-atom field (see `check_join_equality`).
 #[kani::proof]
 #[kani::unwind(2)]
-fn join_equal_test_matches_reference() {
-    check_join_equality(JoinTestType::Equal, false);
+fn join_equal_test_matches_reference_for_atoms() {
+    check_join_equality(JoinTestType::Equal, false, true);
 }
 
-/// `NotEqual` join test against the reference (see `check_join_equality`).
+/// `Equal` with a `Void` or multifield field (see `check_join_equality`).
 #[kani::proof]
 #[kani::unwind(2)]
-fn join_not_equal_test_matches_reference() {
-    check_join_equality(JoinTestType::NotEqual, true);
+fn join_equal_test_matches_reference_for_non_atoms() {
+    check_join_equality(JoinTestType::Equal, false, false);
+}
+
+/// `NotEqual` with a scalar-atom field (see `check_join_equality`).
+#[kani::proof]
+#[kani::unwind(2)]
+fn join_not_equal_test_matches_reference_for_atoms() {
+    check_join_equality(JoinTestType::NotEqual, true, true);
+}
+
+/// `NotEqual` with a `Void` or multifield field (see `check_join_equality`).
+#[kani::proof]
+#[kani::unwind(2)]
+fn join_not_equal_test_matches_reference_for_non_atoms() {
+    check_join_equality(JoinTestType::NotEqual, true, false);
 }
 
 /// Ordered numeric join tests compare numerically (integer/float mixing by
@@ -662,48 +625,6 @@ fn join_tests_require_field_and_binding() {
         field_exists && !var_bound && var > 1,
         "variable beyond the vector"
     );
-    std::mem::forget(fact);
-    std::mem::forget(token);
-}
-
-/// A token binding variables 0 and 1 (each optionally) to small integers.
-fn any_integer_token() -> Token {
-    let binding = || {
-        if kani::any() {
-            Some(ValueRef::new(Value::Integer(kani::any::<i8>().into())))
-        } else {
-            None
-        }
-    };
-    token_of(bindings_of(smallvec::smallvec![binding(), binding()]))
-}
-
-/// Without a sequence plan, `evaluate_pattern` is `evaluate_join` with the
-/// token (one `Equal` or `GreaterThan` test on a symbolic field and
-/// variable, over two integer fields and two optional bindings; the multi-test loop is the same `evaluate_join_fields` loop
-/// modelled in verification/verus/core_matching.rs).
-#[kani::proof]
-#[kani::unwind(2)]
-fn evaluate_pattern_without_sequence_is_evaluate_join() {
-    let fact = ordered_fact(smallvec::smallvec![
-        Value::Integer(kani::any::<i8>().into()),
-        Value::Integer(kani::any::<i8>().into()),
-    ]);
-    let token = any_integer_token();
-    let check = |test_type: JoinTestType| {
-        let slot = SlotIndex::Ordered(kani::any_where(|index: &usize| *index <= 2));
-        let var: u16 = kani::any_where(|var: &u16| *var <= 2);
-        let tests = [join(slot, var, test_type)];
-        let pattern = evaluate_pattern(&fact, &token, &tests, None);
-        assert_eq!(pattern, evaluate_join(&fact, Some(&token), &tests));
-        kani::cover!(pattern, "match");
-        kani::cover!(!pattern, "no match");
-    };
-    if kani::any() {
-        check(JoinTestType::Equal);
-    } else {
-        check(JoinTestType::GreaterThan);
-    }
     std::mem::forget(fact);
     std::mem::forget(token);
 }
@@ -1015,40 +936,40 @@ fn check_capture(capture: &[Value], copied: &Value, test_type: JoinTestType, bou
 
 /// The capture fast path of sequence joins agrees with evaluating the same
 /// join test on the copied multifield, for `Equal` and `NotEqual`, every
-/// capture of at most one atom and every kind of bound value (`Void`, an
-/// atom, a multifield of at most one atom). One copy per test type. (Two
-/// atoms did not finish symbolic execution in 10 minutes: the recursive
-/// `structural_eq` is explored through every variant.)
+/// capture of at most one atom, and a bound `Void`, integer or multifield
+/// of at most one integer — one harness per test type (with both, or with
+/// two-atom captures, CBMC ran out of memory or exceeded 10 minutes).
+fn check_capture_equality(test_type: JoinTestType) {
+    let (capture, len, copied) = any_capture();
+    let bound = match kani::any::<u8>() {
+        0 => Value::Void,
+        1 => Value::Integer(kani::any::<i8>().into()),
+        _ => {
+            let mut bound = Multifield::new();
+            if kani::any() {
+                bound.push(Value::Integer(kani::any::<i8>().into()));
+            }
+            Value::Multifield(Box::new(bound))
+        }
+    };
+    let fast = check_capture(&capture[..len], &copied, test_type, bound);
+    kani::cover!(fast, "passes");
+    kani::cover!(!fast, "fails");
+    std::mem::forget((capture, copied));
+}
+
+/// `Equal` on a capture (see `check_capture_equality`).
 #[kani::proof]
 #[kani::unwind(2)]
-fn capture_fast_path_equals_copied_multifield_for_equality() {
-    let (capture, len, copied) = any_capture();
-    let check = |test_type: JoinTestType| {
-        let bound = match kani::any::<u8>() {
-            0 => Value::Void,
-            1 => Value::Integer(kani::any::<i8>().into()),
-            _ => {
-                let mut bound = Multifield::new();
-                let bound_len: usize = kani::any_where(|len: &usize| *len <= 1);
-                if bound_len >= 1 {
-                    bound.push(atom_from(kani::any(), kani::any()));
-                }
-                if bound_len == 2 {
-                    bound.push(atom_from(kani::any(), kani::any()));
-                }
-                Value::Multifield(Box::new(bound))
-            }
-        };
-        let fast = check_capture(&capture[..len], &copied, test_type, bound);
-        kani::cover!(fast, "passes");
-        kani::cover!(!fast, "fails");
-    };
-    if kani::any() {
-        check(JoinTestType::Equal);
-    } else {
-        check(JoinTestType::NotEqual);
-    }
-    std::mem::forget((capture, copied));
+fn capture_fast_path_equals_copied_multifield_for_equal() {
+    check_capture_equality(JoinTestType::Equal);
+}
+
+/// `NotEqual` on a capture (see `check_capture_equality`).
+#[kani::proof]
+#[kani::unwind(2)]
+fn capture_fast_path_equals_copied_multifield_for_not_equal() {
+    check_capture_equality(JoinTestType::NotEqual);
 }
 
 /// A non-equality join test never admits a capture, on either path.
@@ -1087,7 +1008,9 @@ fn capture_fast_path_rejects_lexeme_tests() {
     }
 }
 
-/// Offset join tests never admit a capture on either path.
+/// `EqualOffset`, `NotEqualOffset` and `GreaterThanOffset` never admit a
+/// capture on either path (three per harness: six at once ran out of
+/// memory).
 #[kani::proof]
 #[kani::unwind(2)]
 fn capture_fast_path_rejects_offset_tests() {
@@ -1095,9 +1018,19 @@ fn capture_fast_path_rejects_offset_tests() {
     match kani::any::<u8>() {
         0 => check_capture_rejected(JoinTestType::EqualOffset(offset)),
         1 => check_capture_rejected(JoinTestType::NotEqualOffset(offset)),
-        2 => check_capture_rejected(JoinTestType::GreaterThanOffset(offset)),
-        3 => check_capture_rejected(JoinTestType::LessThanOffset(offset)),
-        4 => check_capture_rejected(JoinTestType::GreaterOrEqualOffset(offset)),
+        _ => check_capture_rejected(JoinTestType::GreaterThanOffset(offset)),
+    }
+}
+
+/// `LessThanOffset`, `GreaterOrEqualOffset` and `LessOrEqualOffset` never
+/// admit a capture on either path.
+#[kani::proof]
+#[kani::unwind(2)]
+fn capture_fast_path_rejects_more_offset_tests() {
+    let offset: i64 = kani::any::<i8>().into();
+    match kani::any::<u8>() {
+        0 => check_capture_rejected(JoinTestType::LessThanOffset(offset)),
+        1 => check_capture_rejected(JoinTestType::GreaterOrEqualOffset(offset)),
         _ => check_capture_rejected(JoinTestType::LessOrEqualOffset(offset)),
     }
 }
