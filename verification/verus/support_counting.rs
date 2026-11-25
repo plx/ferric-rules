@@ -253,6 +253,32 @@ pub proof fn lemma_unlink<K, T>(m: Map<K, Set<T>>, k: K, t: T)
             k2 != k ==> (#[trigger] unlink(m, k, t).contains_key(k2) == m.contains_key(k2)),
         forall|k2: K| k2 != k && m.contains_key(k2) ==> #[trigger] unlink(m, k, t)[k2] == m[k2],
 {
+    let r = unlink(m, k, t);
+    if m.contains_key(k) {
+        let ts = m[k].remove(t);
+        if ts.is_empty() {
+            assert(r == m.remove(k));
+        } else {
+            assert(r == m.insert(k, ts));
+        }
+    } else {
+        assert(r == m);
+    }
+    assert forall|k2: K, t2: T| #[trigger]
+        in_rel(r, k2, t2) <==> (in_rel(m, k2, t2) && !(k2 == k && t2 == t)) by {
+        if m.contains_key(k) && k2 == k {
+            let ts = m[k].remove(t);
+            assert(ts.contains(t2) <==> (m[k].contains(t2) && t2 != t));
+            if ts.is_empty() {
+                assert(!ts.contains(t2));
+            }
+        }
+    }
+    assert forall|k2: K| #[trigger] r.contains_key(k2) implies !r[k2].is_empty() by {
+        if k2 != k {
+            assert(m.contains_key(k2));
+        }
+    }
 }
 
 pub proof fn lemma_unlink_all<K, T>(m: Map<K, Set<T>>, ks: Seq<K>, t: T)
@@ -3013,6 +3039,8 @@ pub proof fn lemma_ncc_drop_parents(s: NccMem, a: NccAbs, dead: Seq<TokenId>, k:
             let gone = |q: TokenId| dead.subrange(k, dead.len() as int).contains(q);
             &&& ncc_core(t)
             &&& ncc_refines(t, ncc_abs_remove_parents(a, dead, k))
+            &&& forall|q: TokenId| #[trigger] t.unblocked.contains_key(q) <==> (s.unblocked.contains_key(q) && !gone(q))
+            &&& forall|q: TokenId| #[trigger] t.unblocked.contains_key(q) ==> t.unblocked[q] == s.unblocked[q]
             &&& ncc_disjoint(s) ==> ncc_disjoint(t)
             &&& forall|x: TokenId| #[trigger] t.result_owner.contains_key(x) ==> s.result_owner.contains_key(x)
             &&& forall|q: TokenId| #[trigger]
@@ -3210,6 +3238,9 @@ pub proof fn theorem_ncc_cascade(
                 ).contains_key(q) && !dead.contains(q))
             &&& us.no_duplicates()
             &&& ncc_orders_below(t, next + apply.len() as int)
+            &&& forall|q: TokenId| #[trigger] t.unblocked.contains_key(q) <==> (s.unblocked.contains_key(q) && !dead.contains(q))
+            &&& forall|q: TokenId| #[trigger] t.unblocked.contains_key(q) ==> t.unblocked[q] == s.unblocked[q]
+            &&& forall|q: TokenId| #[trigger] t.result_count.contains_key(q) ==> s.result_count.contains_key(q)
         }),
 {
     let (s1, evs) = ncc_collect(s, rs, 0);
@@ -5651,6 +5682,613 @@ pub proof fn theorem_ex_node_sequences(facts: Set<FactId>, m: JoinRel, ops: Seq<
     }
     assert(ex_valid(nf.mem));
     lemma_ex_valid_implies_validate(nf.mem);
+}
+
+// =====================================================================
+// Section 6. NCC node protocol (crates/ferric-rules-core/src/rete.rs)
+// =====================================================================
+pub struct NccNode {
+    pub mem: NccMem,
+    /// ground truth: the live subnetwork results and their owners
+    pub abs: NccAbs,
+    /// parent tokens whose NCC admission (`ncc_left_activate_now`) has run
+    pub admitted: Set<TokenId>,
+    /// `ReteNetwork::next_block_order`
+    pub next_order: nat,
+}
+
+pub open spec fn ncc_node_inv(n: NccNode) -> bool {
+    &&& ncc_wf(n.mem)
+    &&& ncc_disjoint(n.mem)
+    &&& ncc_refines(n.mem, n.abs)
+    &&& ncc_owner_fits(n.mem)
+    &&& forall|p: TokenId| #[trigger]
+        n.mem.unblocked.contains_key(p) <==> (n.admitted.contains(p)
+            && !n.mem.result_count.contains_key(p))
+    &&& ncc_orders_below(n.mem, n.next_order as int)
+}
+
+/// Ground-truth "unblocked": admitted, and no live subnetwork result.
+pub open spec fn ncc_gt_unblocked(n: NccNode, p: TokenId) -> bool {
+    n.admitted.contains(p) && !scratch_fwd(ncc_pairs(n.abs)).contains_key(p)
+}
+
+pub open spec fn ncc_signals_exact(n: NccNode, n2: NccNode, sig: Seq<Signal>) -> bool {
+    &&& one_per_parent(sig)
+    &&& forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(p, x)) <==> (!ncc_gt_unblocked(n, p) && ncc_gt_unblocked(
+            n2,
+            p,
+        ) && n2.mem.unblocked[p] == x)
+    &&& forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(p, x)) <==> (ncc_gt_unblocked(n, p) && !ncc_gt_unblocked(
+            n2,
+            p,
+        ) && n2.admitted.contains(p) && n.mem.unblocked[p] == x)
+}
+
+/// THEOREM (pass-through iff unblocked; incremental = from scratch).
+pub proof fn lemma_ncc_node_passthrough(n: NccNode, p: TokenId)
+    requires
+        ncc_node_inv(n),
+    ensures
+        n.mem.unblocked.contains_key(p) <==> ncc_gt_unblocked(n, p),
+        ncc_result_count(n.mem, p) == scratch_count(ncc_pairs(n.abs), p),
+        ncc_result_count(n.mem, p) <= usize::MAX,
+        ncc_validate_consistency(n.mem),
+{
+    lemma_ncc_from_scratch(n.mem, n.abs);
+    lemma_ncc_count_bound(n.mem, p);
+    lemma_ncc_valid_implies_validate(n.mem);
+}
+
+pub proof fn lemma_ncc_signals_from_concrete(n: NccNode, n2: NccNode, sig: Seq<Signal>)
+    requires
+        ncc_node_inv(n),
+        ncc_node_inv(n2),
+        one_per_parent(sig),
+        forall|p: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Propagate(p, x)) <==> (!n.mem.unblocked.contains_key(p)
+                && n2.mem.unblocked.contains_key(p) && n2.mem.unblocked[p] == x),
+        forall|p: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Retract(p, x)) <==> (n.mem.unblocked.contains_key(p)
+                && !n2.mem.unblocked.contains_key(p) && n2.admitted.contains(p)
+                && n.mem.unblocked[p] == x),
+    ensures
+        ncc_signals_exact(n, n2, sig),
+{
+    assert forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(p, x)) <==> (!ncc_gt_unblocked(n, p) && ncc_gt_unblocked(
+            n2,
+            p,
+        ) && n2.mem.unblocked[p] == x) by {
+        lemma_ncc_node_passthrough(n, p);
+        lemma_ncc_node_passthrough(n2, p);
+    }
+    assert forall|p: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(p, x)) <==> (ncc_gt_unblocked(n, p) && !ncc_gt_unblocked(
+            n2,
+            p,
+        ) && n2.admitted.contains(p) && n.mem.unblocked[p] == x) by {
+        lemma_ncc_node_passthrough(n, p);
+        lemma_ncc_node_passthrough(n2, p);
+    }
+}
+
+// ----------------------------- left activation -------------------------
+/// rete.rs:1619 `ncc_left_activate_now` (the immediate, non-deferred path).
+pub open spec fn ncc_left_activate(n: NccNode, p: TokenId, pt: TokenId) -> (NccNode, Seq<Signal>) {
+    let admitted = n.admitted.insert(p);
+    // 1657: result_count == 0 && get_passthrough(p).is_none()
+    if ncc_result_count(n.mem, p) == 0 && !n.mem.unblocked.contains_key(p) {
+        (
+            NccNode { mem: ncc_set_unblocked(n.mem, p, pt), admitted, ..n },
+            seq![Signal::Propagate(p, pt)],
+        )  // 1658-1685
+
+    } else {
+        (NccNode { admitted, ..n }, Seq::empty())
+    }
+}
+
+pub proof fn lemma_ncc_node_left(n: NccNode, p: TokenId, pt: TokenId)
+    requires
+        ncc_node_inv(n),
+    ensures
+        ncc_node_inv(ncc_left_activate(n, p, pt).0),
+        ncc_signals_exact(n, ncc_left_activate(n, p, pt).0, ncc_left_activate(n, p, pt).1),
+{
+    let (n2, sig) = ncc_left_activate(n, p, pt);
+    assert forall|q: TokenId| #[trigger] ncc_settled(n2.mem, q) by {
+        assert(ncc_settled(n.mem, q));
+    }
+    assert forall|q: TokenId, x: TokenId|
+        #![trigger ncc_fwd(n2.mem, q, x)]
+        #![trigger ncc_owns(n2.mem, q, x)]
+        ncc_fwd(n2.mem, q, x) <==> ncc_owns(n2.mem, q, x) by {
+        assert(ncc_fwd(n.mem, q, x) <==> ncc_owns(n.mem, q, x));
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!n.mem.unblocked.contains_key(q)
+            && n2.mem.unblocked.contains_key(q) && n2.mem.unblocked[q] == x) by {
+        if sig.contains(Signal::Propagate(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Propagate(q, x);
+            assert(i == 0);
+        }
+        if !n.mem.unblocked.contains_key(q) && n2.mem.unblocked.contains_key(q) {
+            assert(sig[0] == Signal::Propagate(p, pt));
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (n.mem.unblocked.contains_key(q)
+            && !n2.mem.unblocked.contains_key(q) && n2.admitted.contains(q) && n.mem.unblocked[q]
+            == x) by {
+        if sig.contains(Signal::Retract(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Retract(q, x);
+            assert(i == 0);
+        }
+    }
+    lemma_ncc_signals_from_concrete(n, n2, sig);
+}
+
+// ----------------------------- partner result --------------------------
+/// rete.rs:1858 `ncc_partner_apply_result` with no reserved order; `p` is the
+/// owner found by `find_ncc_owner_parent_token` (trusted).
+pub open spec fn ncc_partner_result(n: NccNode, p: TokenId, r: TokenId) -> (NccNode, Seq<Signal>) {
+    let first = ncc_result_count(n.mem, p) == 0;
+    let order = if first {
+        n.next_order as u64
+    } else {
+        0
+    };  // 1885-1893
+    let next_order = if first {
+        n.next_order + 1
+    } else {
+        n.next_order
+    };
+    let (s1, (old_c, new_c)) = ncc_add_result(n.mem, p, r, order);  // 1894-1899
+    let abs = ncc_abs_add(n.abs, p, r);
+    if old_c == 0 && new_c == 1 {
+        // 1901-1917: block the parent by retracting its pass-through
+        let (s2, pt) = ncc_remove_unblocked(s1, p);
+        let n2 = NccNode { mem: s2, abs, next_order, ..n };
+        match pt {
+            Some(x) => (n2, seq![Signal::Retract(p, x)]),
+            None => (n2, Seq::empty()),
+        }
+    } else {
+        (NccNode { mem: s1, abs, next_order, ..n }, Seq::empty())
+    }
+}
+
+/// The bound on tracked results (see `ncc_pre`) and no order wrap-around.
+pub open spec fn ncc_partner_ok(n: NccNode) -> bool {
+    n.mem.result_owner.len() < usize::MAX && n.next_order < u64::MAX
+}
+
+pub proof fn lemma_ncc_node_partner(n: NccNode, p: TokenId, r: TokenId)
+    requires
+        ncc_node_inv(n),
+        ncc_partner_ok(n),
+    ensures
+        ncc_node_inv(ncc_partner_result(n, p, r).0),
+        ncc_signals_exact(n, ncc_partner_result(n, p, r).0, ncc_partner_result(n, p, r).1),
+{
+    let s = n.mem;
+    let first = ncc_result_count(s, p) == 0;
+    let order: u64 = if first {
+        n.next_order as u64
+    } else {
+        0
+    };
+    let op = NccOp::AddResult(p, r, order);
+    assert(fresh_order(s.block_order, order) || !first);
+    assert(ncc_pre(s, op));
+    lemma_ncc_step(s, n.abs, op);
+    lemma_ncc_add_result(s, p, r, order);
+    let abs2 = ncc_abs_add(n.abs, p, r);
+    let (s1, (old_c, new_c)) = ncc_add_result(s, p, r, order);
+    let (n2, sig) = ncc_partner_result(n, p, r);
+    let t = n2.mem;
+    let fresh = !s.result_owner.contains_key(r);
+    // block-list positions stay below the counter
+    assert(ncc_orders_below(s1, n2.next_order as int)) by {
+        assert forall|q: TokenId| #[trigger] s1.block_order.contains_key(q) implies s1.block_order[q]
+            < n2.next_order by {
+            if !fresh {
+                assert(s1 == s);
+            } else if q == p && !s.result_count.contains_key(p) {
+                assert(s1.block_order[p] == order);
+            } else if q == p {
+                assert(s.block_order.contains_key(p));
+            } else {
+                assert(ncc_settled(s1, q));
+                assert(s1.primary_result.contains_key(q));
+                assert(s1.result_count.contains_key(q));
+                assert(s.result_count.contains_key(q));
+                assert(s.block_order.contains_key(q));
+            }
+        }
+    }
+    // counts of other parents are unchanged; `p` has results afterwards if `r` is new
+    assert forall|q: TokenId| q != p implies (#[trigger] s1.result_count.contains_key(q)
+        <==> s.result_count.contains_key(q)) by {}
+    if fresh {
+        assert(ncc_fwd(s1, p, r));
+        assert(s1.result_count.contains_key(p));
+    }
+    if old_c == 0 && new_c == 1 {
+        assert(fresh);
+        let s2 = ncc_remove_unblocked(s1, p).0;
+        assert(t == s2);
+        lemma_ncc_step(s1, abs2, NccOp::RemoveUnblocked(p));
+        assert(ncc_step(s1, NccOp::RemoveUnblocked(p)) == s2);
+        assert forall|q: TokenId| #[trigger] t.unblocked.contains_key(q) implies !t.result_count.contains_key(
+            q,
+        ) by {
+            assert(s.unblocked.contains_key(q));
+        }
+        if s.unblocked.contains_key(p) {
+            assert(sig == seq![Signal::Retract(p, s.unblocked[p])]);
+        } else {
+            assert(sig == Seq::<Signal>::empty());
+        }
+    } else {
+        assert(t == s1);
+        assert(sig == Seq::<Signal>::empty());
+        if fresh {
+            assert(old_c > 0);
+            assert(s.result_count.contains_key(p));
+        } else {
+            assert(s1 == s);
+            assert(abs2 == n.abs);
+        }
+        assert forall|q: TokenId| #[trigger] t.unblocked.contains_key(q) implies !t.result_count.contains_key(
+            q,
+        ) by {
+            assert(s.unblocked.contains_key(q));
+        }
+    }
+    assert forall|q: TokenId| #[trigger]
+        t.unblocked.contains_key(q) <==> (n2.admitted.contains(q) && !t.result_count.contains_key(
+            q,
+        )) by {
+        assert(s.unblocked.contains_key(q) <==> (n.admitted.contains(q)
+            && !s.result_count.contains_key(q)));
+    }
+    assert(ncc_disjoint(t));
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!s.unblocked.contains_key(q)
+            && t.unblocked.contains_key(q) && t.unblocked[q] == x) by {
+        if sig.contains(Signal::Propagate(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Propagate(q, x);
+            assert(i == 0);
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (s.unblocked.contains_key(q)
+            && !t.unblocked.contains_key(q) && n2.admitted.contains(q) && s.unblocked[q] == x) by {
+        if sig.contains(Signal::Retract(q, x)) {
+            let i = choose|i: int| 0 <= i < sig.len() && sig[i] == Signal::Retract(q, x);
+            assert(i == 0);
+        }
+        if s.unblocked.contains_key(q) && !t.unblocked.contains_key(q) {
+            assert(q == p);
+            assert(sig[0] == Signal::Retract(p, s.unblocked[p]));
+        }
+    }
+    lemma_ncc_signals_from_concrete(n, n2, sig);
+}
+
+// --------------------------- result retraction --------------------------
+/// rete.rs:2036 `ncc_left_activate` for each parent the cascade unblocked,
+/// each creating pass-through `pts(p)` (same logic as the left activation).
+pub open spec fn ncc_left_all(s: NccMem, us: Seq<TokenId>, pts: spec_fn(TokenId) -> TokenId) -> (
+    NccMem,
+    Seq<Signal>,
+)
+    decreases us.len(),
+{
+    if us.len() == 0 {
+        (s, Seq::empty())
+    } else {
+        let (s1, sig) = ncc_left_all(s, us.drop_last(), pts);
+        let p = us.last();
+        if ncc_result_count(s1, p) == 0 && !s1.unblocked.contains_key(p) {
+            (ncc_set_unblocked(s1, p, pts(p)), sig.push(Signal::Propagate(p, pts(p))))
+        } else {
+            (s1, sig)
+        }
+    }
+}
+
+/// rete.rs:1526-1546 `retract_token_cascade` (and the NCC part of
+/// `retract_fact`, 399-456): the two-phase memory cascade, then admission of
+/// every unblocked parent.
+pub open spec fn ncc_retract(
+    n: NccNode,
+    rs: Seq<TokenId>,
+    dead: Seq<TokenId>,
+    apply: Seq<(TokenId, TokenId)>,
+    pts: spec_fn(TokenId) -> TokenId,
+) -> (NccNode, Seq<Signal>) {
+    let (s1, us) = ncc_cascade(n.mem, rs, dead, apply, n.next_order);
+    let (s2, sig) = ncc_left_all(s1, us, pts);
+    (
+        NccNode {
+            mem: s2,
+            abs: ncc_abs_cascade(n.abs, rs, dead),
+            admitted: n.admitted.difference(dead.to_set()).union(us.to_set()),
+            next_order: n.next_order + apply.len(),
+        },
+        sig,
+    )
+}
+
+pub proof fn lemma_ncc_left_all(s: NccMem, us: Seq<TokenId>, pts: spec_fn(TokenId) -> TokenId)
+    requires
+        us.no_duplicates(),
+        forall|q: TokenId| #[trigger]
+            us.contains(q) ==> !s.result_count.contains_key(q) && !s.unblocked.contains_key(q),
+    ensures
+        ({
+            let (t, sig) = ncc_left_all(s, us, pts);
+            &&& t == NccMem { unblocked: t.unblocked, ..s }
+            &&& forall|q: TokenId| #[trigger]
+                t.unblocked.contains_key(q) <==> (s.unblocked.contains_key(q) || us.contains(q))
+            &&& forall|q: TokenId| #[trigger]
+                t.unblocked.contains_key(q) ==> t.unblocked[q] == if us.contains(q) {
+                    pts(q)
+                } else {
+                    s.unblocked[q]
+                }
+            &&& one_per_parent(sig)
+            &&& forall|q: TokenId, x: TokenId| #[trigger]
+                sig.contains(Signal::Propagate(q, x)) <==> (us.contains(q) && x == pts(q))
+            &&& forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(Signal::Retract(q, x)))
+            &&& forall|i: int| 0 <= i < sig.len() ==> us.contains(sig_parent(#[trigger] sig[i]))
+        }),
+    decreases us.len(),
+{
+    if us.len() > 0 {
+        let ul = us.drop_last();
+        let p = us.last();
+        assert(ul.no_duplicates());
+        assert forall|q: TokenId| #[trigger] us.contains(q) <==> (ul.contains(q) || q == p) by {
+            lemma_seq_contains_drop_last(us, q);
+        }
+        assert forall|q: TokenId| #[trigger] ul.contains(q) implies !s.result_count.contains_key(q)
+            && !s.unblocked.contains_key(q) by {
+            lemma_seq_contains_drop_last(us, q);
+        }
+        assert(us.contains(p)) by {
+            lemma_seq_contains_drop_last(us, p);
+        }
+        lemma_ncc_left_all(s, ul, pts);
+        let (s1, sig1) = ncc_left_all(s, ul, pts);
+        assert(!ul.contains(p)) by {
+            if ul.contains(p) {
+                let i = choose|i: int| 0 <= i < ul.len() && ul[i] == p;
+                assert(us[i] == us[us.len() - 1]);
+            }
+        }
+        assert(ncc_result_count(s1, p) == 0 && !s1.unblocked.contains_key(p));
+        let (t, sig) = ncc_left_all(s, us, pts);
+        assert(sig == sig1.push(Signal::Propagate(p, pts(p))));
+        assert(sig.drop_last() == sig1);
+        assert(forall|x: TokenId| #[trigger] sig1.contains(Signal::Propagate(p, x)) ==> false) by {
+            assert forall|x: TokenId| #[trigger] sig1.contains(Signal::Propagate(p, x)) implies false by {
+                let i = choose|i: int| 0 <= i < sig1.len() && sig1[i] == Signal::Propagate(p, x);
+                assert(ul.contains(sig_parent(sig1[i])));
+            }
+        }
+        assert forall|q: TokenId, x: TokenId| #[trigger]
+            sig.contains(Signal::Propagate(q, x)) <==> (us.contains(q) && x == pts(q)) by {
+            lemma_seq_contains_drop_last(sig, Signal::Propagate(q, x));
+        }
+        assert forall|q: TokenId, x: TokenId| !(#[trigger] sig.contains(Signal::Retract(q, x))) by {
+            lemma_seq_contains_drop_last(sig, Signal::Retract(q, x));
+        }
+        assert forall|i: int, j: int|
+            0 <= i < sig.len() && 0 <= j < sig.len() && i != j implies sig_parent(#[trigger] sig[i])
+            != sig_parent(#[trigger] sig[j]) by {
+            if i == sig.len() - 1 {
+                assert(ul.contains(sig_parent(sig1[j])));
+            } else if j == sig.len() - 1 {
+                assert(ul.contains(sig_parent(sig1[i])));
+            } else {
+                assert(sig[i] == sig1[i] && sig[j] == sig1[j]);
+            }
+        }
+        assert forall|i: int| 0 <= i < sig.len() implies us.contains(sig_parent(#[trigger] sig[i])) by {
+            if i < sig.len() - 1 {
+                assert(sig[i] == sig1[i]);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_ncc_node_retract(
+    n: NccNode,
+    rs: Seq<TokenId>,
+    dead: Seq<TokenId>,
+    apply: Seq<(TokenId, TokenId)>,
+    pts: spec_fn(TokenId) -> TokenId,
+)
+    requires
+        ncc_node_inv(n),
+        ncc_cascade_ok(n.mem, rs, apply, n.next_order),
+    ensures
+        ncc_node_inv(ncc_retract(n, rs, dead, apply, pts).0),
+        ncc_signals_exact(
+            n,
+            ncc_retract(n, rs, dead, apply, pts).0,
+            ncc_retract(n, rs, dead, apply, pts).1,
+        ),
+{
+    let s = n.mem;
+    let op = NccOp::Cascade(rs, dead, apply, n.next_order);
+    lemma_ncc_step(s, n.abs, op);
+    theorem_ncc_cascade(s, n.abs, rs, dead, apply, n.next_order);
+    let (s1, us) = ncc_cascade(s, rs, dead, apply, n.next_order);
+    assert forall|q: TokenId| #[trigger] us.contains(q) implies !s1.result_count.contains_key(q)
+        && !s1.unblocked.contains_key(q) by {
+        assert(s.result_count.contains_key(q));
+        assert(!s.unblocked.contains_key(q));
+    }
+    lemma_ncc_left_all(s1, us, pts);
+    let (n2, sig) = ncc_retract(n, rs, dead, apply, pts);
+    let t = n2.mem;
+    let b = ncc_abs_cascade(n.abs, rs, dead);
+    // only `unblocked` differs from the settled cascade result
+    assert forall|q: TokenId| #[trigger] ncc_settled(t, q) by {
+        assert(ncc_settled(s1, q));
+    }
+    assert forall|q: TokenId, x: TokenId|
+        #![trigger ncc_fwd(t, q, x)]
+        #![trigger ncc_owns(t, q, x)]
+        ncc_fwd(t, q, x) <==> ncc_owns(t, q, x) by {
+        assert(ncc_fwd(s1, q, x) <==> ncc_owns(s1, q, x));
+    }
+    assert(ncc_refines(t, b));
+    assert(ncc_owner_fits(t));
+    assert forall|q: TokenId| #[trigger] n2.admitted.contains(q) <==> ((n.admitted.contains(q)
+        && !dead.contains(q)) || us.contains(q)) by {}
+    assert forall|q: TokenId| #[trigger]
+        t.unblocked.contains_key(q) <==> (n2.admitted.contains(q) && !t.result_count.contains_key(
+            q,
+        )) by {
+        assert(s.unblocked.contains_key(q) <==> (n.admitted.contains(q)
+            && !s.result_count.contains_key(q)));
+        if us.contains(q) {
+            assert(!s1.result_count.contains_key(q));
+        }
+        if !us.contains(q) && !dead.contains(q) && s.result_count.contains_key(q) {
+            assert(s1.result_count.contains_key(q));
+        }
+    }
+    assert(ncc_disjoint(t));
+    assert(ncc_orders_below(t, n2.next_order as int));
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Propagate(q, x)) <==> (!s.unblocked.contains_key(q)
+            && t.unblocked.contains_key(q) && t.unblocked[q] == x) by {
+        if us.contains(q) {
+            assert(s.result_count.contains_key(q));
+            assert(!s.unblocked.contains_key(q));
+        }
+        if !s.unblocked.contains_key(q) && t.unblocked.contains_key(q) {
+            assert(!s1.unblocked.contains_key(q));
+            assert(us.contains(q));
+        }
+    }
+    assert forall|q: TokenId, x: TokenId| #[trigger]
+        sig.contains(Signal::Retract(q, x)) <==> (s.unblocked.contains_key(q)
+            && !t.unblocked.contains_key(q) && n2.admitted.contains(q) && s.unblocked[q] == x) by {
+        if s.unblocked.contains_key(q) && n2.admitted.contains(q) && !dead.contains(q) {
+            assert(s1.unblocked.contains_key(q));
+        }
+        if us.contains(q) {
+            assert(!dead.contains(q));
+        }
+    }
+    lemma_ncc_signals_from_concrete(n, n2, sig);
+}
+
+// --------------------- node operation sequences -------------------------
+pub enum NccNodeOp {
+    Left(TokenId, TokenId),
+    Result(TokenId, TokenId),
+    Retract(Seq<TokenId>, Seq<TokenId>, Seq<(TokenId, TokenId)>, spec_fn(TokenId) -> TokenId),
+}
+
+pub open spec fn ncc_node_step(n: NccNode, op: NccNodeOp) -> (NccNode, Seq<Signal>) {
+    match op {
+        NccNodeOp::Left(p, pt) => ncc_left_activate(n, p, pt),
+        NccNodeOp::Result(p, r) => ncc_partner_result(n, p, r),
+        NccNodeOp::Retract(rs, dead, apply, pts) => ncc_retract(n, rs, dead, apply, pts),
+    }
+}
+
+pub open spec fn ncc_node_ok(n: NccNode, op: NccNodeOp) -> bool {
+    match op {
+        NccNodeOp::Left(_, _) => true,
+        NccNodeOp::Result(_, _) => ncc_partner_ok(n),
+        NccNodeOp::Retract(rs, _, apply, _) => ncc_cascade_ok(n.mem, rs, apply, n.next_order),
+    }
+}
+
+pub open spec fn ncc_node_init(next_order: nat) -> NccNode {
+    NccNode { mem: ncc_new(), abs: ncc_abs_new(), admitted: Set::empty(), next_order }
+}
+
+pub open spec fn ncc_node_run(n0: NccNode, ops: Seq<NccNodeOp>) -> NccNode
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        n0
+    } else {
+        ncc_node_step(ncc_node_run(n0, ops.drop_last()), ops.last()).0
+    }
+}
+
+pub open spec fn ncc_node_admissible(n0: NccNode, ops: Seq<NccNodeOp>) -> bool
+    decreases ops.len(),
+{
+    ops.len() == 0 || (ncc_node_admissible(n0, ops.drop_last()) && ncc_node_ok(
+        ncc_node_run(n0, ops.drop_last()),
+        ops.last(),
+    ))
+}
+
+/// THEOREM (NCC node, arbitrary finite sequences of admissions, subnetwork
+/// results and two-phase retraction cascades): result sets and counts equal
+/// their from-scratch values, every count fits in usize, the pass-through
+/// exists iff the parent is admitted and has no result, `validate_consistency`
+/// passes, and every step's signals are exactly the ground-truth
+/// blocked <-> unblocked transitions.
+pub proof fn theorem_ncc_node_sequences(next_order: nat, ops: Seq<NccNodeOp>)
+    requires
+        ncc_node_admissible(ncc_node_init(next_order), ops),
+    ensures
+        ncc_node_inv(ncc_node_run(ncc_node_init(next_order), ops)),
+        forall|p: TokenId|
+            #![trigger ncc_node_run(ncc_node_init(next_order), ops).mem.unblocked.contains_key(p)]
+            ncc_node_run(ncc_node_init(next_order), ops).mem.unblocked.contains_key(p)
+                <==> ncc_gt_unblocked(ncc_node_run(ncc_node_init(next_order), ops), p),
+        ncc_validate_consistency(ncc_node_run(ncc_node_init(next_order), ops).mem),
+        ops.len() > 0 ==> ncc_signals_exact(
+            ncc_node_run(ncc_node_init(next_order), ops.drop_last()),
+            ncc_node_run(ncc_node_init(next_order), ops),
+            ncc_node_step(ncc_node_run(ncc_node_init(next_order), ops.drop_last()), ops.last()).1,
+        ),
+    decreases ops.len(),
+{
+    let n0 = ncc_node_init(next_order);
+    if ops.len() == 0 {
+        lemma_ncc_new();
+        assert(n0.mem.result_owner.dom() =~= n0.abs.owner.dom());
+        assert(n0.mem.result_owner.len() == 0);
+    } else {
+        theorem_ncc_node_sequences(next_order, ops.drop_last());
+        let n = ncc_node_run(n0, ops.drop_last());
+        match ops.last() {
+            NccNodeOp::Left(p, pt) => lemma_ncc_node_left(n, p, pt),
+            NccNodeOp::Result(p, r) => lemma_ncc_node_partner(n, p, r),
+            NccNodeOp::Retract(rs, dead, apply, pts) => lemma_ncc_node_retract(
+                n,
+                rs,
+                dead,
+                apply,
+                pts,
+            ),
+        }
+    }
+    let nf = ncc_node_run(n0, ops);
+    assert forall|p: TokenId| #[trigger]
+        nf.mem.unblocked.contains_key(p) <==> ncc_gt_unblocked(nf, p) by {
+        lemma_ncc_node_passthrough(nf, p);
+    }
+    lemma_ncc_valid_implies_validate(nf.mem);
 }
 
 } // verus!
