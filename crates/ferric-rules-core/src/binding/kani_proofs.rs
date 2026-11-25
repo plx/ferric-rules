@@ -1,35 +1,38 @@
 //! Kani proof harnesses for `binding` (see docs/verification.md).
 //!
-//! What is proved, on the production code, against an abstract model (a
-//! fixed array of optional integers plus the vector width):
+//! What is proved, on the production code, against an abstract model (one
+//! optional integer per variable plus the vector width), one operation at a
+//! time from *any* binding set of width at most two (so, by induction, for
+//! every sequence of operations on such sets):
 //!
-//! * `BindingSet::set`/`get` refine a total map: after any three writes to
-//!   variables below `VARS` (last write wins), `get` of every `VarId` —
-//!   including any `u16` id beyond the vector — returns the model's value
-//!   without panicking, `capacity` is the largest written id + 1 and
-//!   `bound_count` counts the bound variables.
+//! * `BindingSet::set`/`get` refine a total map: the written variable holds
+//!   the new value (last write wins), every other variable is unchanged, the
+//!   vector widens exactly to cover the variable, and `get` of every `VarId`
+//!   — including any `u16` id beyond the vector — returns the model's value
+//!   without panicking; `capacity` and `bound_count` match the model.
 //! * `extend_from` is a left-biased union (the receiver's bindings win, gaps
 //!   are filled from `other`, `other` is unchanged) and widens the vector
 //!   only to `other`'s highest *bound* variable.
 //! * `clone` is an independent snapshot; `clear` empties the set.
-//! * `ValueRef::new` shares exactly the heap-owning variants (`String`,
-//!   `Multifield`) through an `Arc`; cloning a shared reference shares the
-//!   allocation, cloning an inline one copies the value; deref returns the
-//!   wrapped value.
+//! * `ValueRef::new` stores scalars inline (clone copies, deref returns the
+//!   value) and shares `String`/`Multifield` through one `Arc` (clone shares
+//!   the allocation).
 //! * `VarMap::get_or_create` numbers names densely in first-occurrence order
-//!   (all 27 sequences of three calls over three names), `lookup` and `name`
-//!   agree with the numbering; `name` panics for an id at or beyond `len`
-//!   (its documented `# Panics` contract); `clear` restarts the numbering.
+//!   (every equality pattern of three calls), `lookup` and `name` agree with
+//!   the numbering; `name` panics for an id at or beyond `len` (its
+//!   documented `# Panics` contract); `clear` restarts the numbering.
 //!
-//! Bounds: `VARS` = 3 variables, at most three writes per set, three names.
-//! The `TooManyVariables` limit (65536 names) and widths up to 65536 are out
-//! of reach here; verification/verus/core_matching.rs proves them
-//! (`theorem_get_or_create`, `BindingSet::extend_from`'s `idx as u16` cast).
-//! Known gaps: `set` with a large `VarId` (the vector grows to `id + 1`
-//! entries) is only exercised for ids below `VARS`; values other than
-//! integers are not stored in the refinement harnesses. Harness-built sets
-//! are `mem::forget`-ed instead of dropped (dropping a symbolic `Value` makes
-//! CBMC explore the recursive drop glue), so drop glue is not checked.
+//! Bounds: binding sets of width at most two holding small integers;
+//! `VarMap` with three concrete names (its behaviour depends only on name
+//! equality; symbolic names make every hash probe symbolic). The 65536-name
+//! `TooManyVariables` limit, widths up to 65536 and the `idx as u16` cast in
+//! `extend_from` are out of reach here and are proved in
+//! verification/verus/core_matching.rs (`theorem_get_or_create`,
+//! `BindingSet::extend_from`). Known gaps: `set` with a `VarId` far beyond
+//! the vector (it grows to `id + 1` entries) and non-integer values in the
+//! refinement harnesses. Harness-built sets are `mem::forget`-ed instead of
+//! dropped (dropping a symbolic `Value` makes CBMC explore the recursive drop
+//! glue), so drop glue is not checked.
 
 use super::*;
 use crate::symbol::SymbolId;
@@ -74,25 +77,84 @@ fn int_of(value: Option<&ValueRef>) -> Option<i64> {
     })
 }
 
-/// Apply `ops` symbolic writes (variable < `VARS`, small integer value) to
-/// both the production set and the model.
-///
-/// The written variable is case-split so each `set` call indexes the vector
-/// with a constant: a symbolic index makes the binding a write replaces
-/// unknown to CBMC, which then explores the recursive `Value` drop glue.
-fn random_writes(set: &mut BindingSet, model: &mut Model, ops: usize) {
-    for _ in 0..ops {
-        let value: i64 = kani::any::<i8>().into();
-        let mut write = |var: u16| {
-            set.set(VarId(var), ValueRef::new(Value::Integer(value)));
-            model.set(usize::from(var), value);
-        };
-        match kani::any::<u8>() {
-            0 => write(0),
-            1 => write(1),
-            _ => {}
+/// One binding-set shape: width and which slots are bound.
+#[derive(Clone, Copy)]
+struct Shape {
+    width: usize,
+    bound: [bool; VARS],
+}
+
+/// Every shape of width at most two (seven shapes).
+const SHAPES: [Shape; 7] = [
+    Shape {
+        width: 0,
+        bound: [false, false],
+    },
+    Shape {
+        width: 1,
+        bound: [false, false],
+    },
+    Shape {
+        width: 1,
+        bound: [true, false],
+    },
+    Shape {
+        width: 2,
+        bound: [false, false],
+    },
+    Shape {
+        width: 2,
+        bound: [true, false],
+    },
+    Shape {
+        width: 2,
+        bound: [false, true],
+    },
+    Shape {
+        width: 2,
+        bound: [true, true],
+    },
+];
+
+/// A binding set of the given shape, bound slots holding symbolic small
+/// integers, with its model. The state is built directly from the binding
+/// vector: every such state is reachable through the public API (`set`
+/// widens and binds, `AsMut` unbinds). Harnesses case-split the shape so
+/// each copy knows which slots are bound: when CBMC cannot tell, every
+/// binding that an operation replaces or clones sends it through the
+/// recursive `Value` drop and clone glue, which exhausts memory.
+fn binding_set_of(shape: Shape) -> (BindingSet, Model) {
+    let mut bindings: SmallVec<[Option<ValueRef>; 4]> = SmallVec::new();
+    let mut model = Model::EMPTY;
+    model.capacity = shape.width;
+    for var in 0..shape.width {
+        if shape.bound[var] {
+            let value: i64 = kani::any::<i8>().into();
+            bindings.push(Some(ValueRef::new(Value::Integer(value))));
+            model.values[var] = Some(value);
+        } else {
+            bindings.push(None);
         }
     }
+    (BindingSet { bindings }, model)
+}
+
+/// Run `check` on a binding set of every shape, one copy per shape.
+fn for_each_shape(check: impl Fn(BindingSet, Model)) {
+    match kani::any::<u8>() {
+        0 => check_shape(&check, SHAPES[0]),
+        1 => check_shape(&check, SHAPES[1]),
+        2 => check_shape(&check, SHAPES[2]),
+        3 => check_shape(&check, SHAPES[3]),
+        4 => check_shape(&check, SHAPES[4]),
+        5 => check_shape(&check, SHAPES[5]),
+        _ => check_shape(&check, SHAPES[6]),
+    }
+}
+
+fn check_shape(check: &impl Fn(BindingSet, Model), shape: Shape) {
+    let (set, model) = binding_set_of(shape);
+    check(set, model);
 }
 
 /// The set agrees with the model on every variable, including any
@@ -108,40 +170,60 @@ fn assert_refines(set: &BindingSet, model: &Model) {
     assert_eq!(set.as_ref().len(), model.capacity);
 }
 
-/// `set`/`get` refine a total map from variables to optional values: after
-/// any two writes (last write wins, the vector grows to the largest
-/// written id + 1, unwritten ids read as unbound), `get` of *any* `VarId`
-/// — including ids beyond the vector — returns the model's value without
-/// panicking, and `capacity`/`bound_count` match the model.
+/// `set` refines map insertion and `get` is total: from every state of
+/// width at most two, binding either variable leaves the set agreeing with
+/// the model — the written variable holds the new value (last write wins),
+/// every other variable is unchanged, the vector widens exactly to cover the
+/// variable — and `get` of *any* `VarId`, including ids beyond the vector,
+/// returns the model's value without panicking. One copy per shape and
+/// variable.
 #[kani::proof]
 #[kani::unwind(3)]
 fn binding_set_refines_map_model() {
-    let mut set = BindingSet::new();
-    let mut model = Model::EMPTY;
+    for_each_shape(|set, model| {
+        assert_refines(&set, &model);
+        if kani::any() {
+            write_and_check(set, model, 0);
+        } else {
+            write_and_check(set, model, 1);
+        }
+    });
+}
+
+/// `set(var, v)` on the production set and the model, then compare them.
+fn write_and_check(mut set: BindingSet, mut model: Model, var: u16) {
+    let value: i64 = kani::any::<i8>().into();
+    let overwrite = model.get(usize::from(var)).is_some();
+    let grows = usize::from(var) >= model.capacity;
+    set.set(VarId(var), ValueRef::new(Value::Integer(value)));
+    model.set(usize::from(var), value);
     assert_refines(&set, &model);
-    random_writes(&mut set, &mut model, 2);
-    assert_refines(&set, &model);
-    kani::cover!(model.capacity == VARS && model.bound() == 1, "sparse");
-    kani::cover!(model.bound() == VARS, "fully bound");
+    kani::cover!(overwrite, "overwrite");
+    kani::cover!(grows, "grow");
     std::mem::forget(set);
 }
 
 /// `extend_from` is a left-biased union: every variable bound in `self`
 /// keeps its value, every variable bound only in `other` is copied, the
-/// width grows to cover `other`'s highest bound variable (not `other`'s
-/// trailing unbound slots), and `other` is unchanged.
+/// width grows to cover `other`'s highest *bound* variable (not `other`'s
+/// trailing unbound slots), and `other` is unchanged. The receiver ranges
+/// over every shape; `other` over the width-two shapes with one or two
+/// bindings and the width-one bound shape (one copy per pair).
 #[kani::proof]
 #[kani::unwind(3)]
 fn extend_from_is_left_biased_union() {
-    let mut left = BindingSet::new();
-    let mut left_model = Model::EMPTY;
-    random_writes(&mut left, &mut left_model, 2);
-    let mut right = BindingSet::new();
-    let mut right_model = Model::EMPTY;
-    random_writes(&mut right, &mut right_model, 2);
+    for_each_shape(|left, left_model| match kani::any::<u8>() {
+        0 => extend_and_check(left, left_model, SHAPES[2]),
+        1 => extend_and_check(left, left_model, SHAPES[4]),
+        2 => extend_and_check(left, left_model, SHAPES[5]),
+        _ => extend_and_check(left, left_model, SHAPES[6]),
+    });
+}
 
+/// `left.extend_from(&right)` against the model's left-biased union.
+fn extend_and_check(mut left: BindingSet, left_model: Model, right_shape: Shape) {
+    let (right, right_model) = binding_set_of(right_shape);
     left.extend_from(&right);
-
     let mut expected = left_model;
     for var in 0..VARS {
         if left_model.get(var).is_none() {
@@ -153,12 +235,8 @@ fn extend_from_is_left_biased_union() {
     assert_refines(&left, &expected);
     assert_refines(&right, &right_model);
     kani::cover!(
-        (0..VARS).any(|var| left_model.get(var).is_some() && right_model.get(var).is_some()),
+        left_model.get(0).is_some() && right_model.get(0).is_some(),
         "conflict keeps the left value"
-    );
-    kani::cover!(
-        (0..VARS).any(|var| left_model.get(var).is_none() && right_model.get(var).is_some()),
-        "gap filled from the right"
     );
     kani::cover!(
         expected.capacity > left_model.capacity,
@@ -168,81 +246,113 @@ fn extend_from_is_left_biased_union() {
     std::mem::forget(right);
 }
 
-/// A clone is an independent snapshot: writes to the original after cloning
-/// are not visible through the clone, and the clone refines the model of
-/// the original at cloning time.
+/// A clone is an independent snapshot: a write to the original after
+/// cloning is not visible through the clone (every shape, either variable).
 #[kani::proof]
 #[kani::unwind(3)]
 fn clone_is_an_independent_snapshot() {
-    let mut set = BindingSet::new();
-    let mut model = Model::EMPTY;
-    random_writes(&mut set, &mut model, 2);
-    let snapshot = set.clone();
-    let mut later = model;
-    random_writes(&mut set, &mut later, 1);
-    assert_refines(&snapshot, &model);
-    assert_refines(&set, &later);
-    kani::cover!(
-        (0..VARS).any(|var| model.get(var) != later.get(var)),
-        "original diverged from the clone"
-    );
-    std::mem::forget(set);
-    std::mem::forget(snapshot);
+    for_each_shape(|mut set, model| {
+        let snapshot = set.clone();
+        let value: i64 = kani::any::<i8>().into();
+        let mut later = model;
+        if kani::any() {
+            set.set(VarId(0), ValueRef::new(Value::Integer(value)));
+            later.set(0, value);
+        } else {
+            set.set(VarId(1), ValueRef::new(Value::Integer(value)));
+            later.set(1, value);
+        }
+        assert_refines(&snapshot, &model);
+        assert_refines(&set, &later);
+        kani::cover!(model.get(0) != later.get(0), "original diverged");
+        std::mem::forget(set);
+        std::mem::forget(snapshot);
+    });
 }
 
-/// `clear` unbinds everything and resets the width.
+/// `clear` unbinds everything and resets the width (every shape).
 #[kani::proof]
 #[kani::unwind(3)]
 fn clear_resets_to_empty() {
-    let mut set = BindingSet::new();
-    let mut model = Model::EMPTY;
-    random_writes(&mut set, &mut model, 2);
-    set.clear();
-    assert_refines(&set, &Model::EMPTY);
-    kani::cover!(model.bound() == 2, "cleared two bindings");
-    std::mem::forget(set);
+    for_each_shape(|mut set, model| {
+        set.clear();
+        assert_refines(&set, &Model::EMPTY);
+        kani::cover!(model.bound() == 2, "cleared two bindings");
+        std::mem::forget(set);
+    });
 }
 
-/// `ValueRef::new` shares (via `Arc`) exactly the heap-owning variants
-/// (`String`, `Multifield`) and stores every other variant inline; deref
-/// returns the wrapped value; cloning a shared reference shares the same
-/// allocation, and cloning an inline one copies the value.
+/// `ValueRef::new` stores the non-heap variants inline; cloning an inline
+/// reference copies the value and deref returns it. Checked per variant
+/// (integer, float bit pattern, symbol, `Void`) with variant-specific
+/// comparisons, avoiding the generic recursive `Value` clone/equality glue.
 #[kani::proof]
 #[kani::unwind(2)]
-fn value_ref_storage_and_clone() {
-    let check = |value: Value, heap: bool| {
-        let reference = ValueRef::new(value);
-        let shared = matches!(reference, ValueRef::Shared(_));
-        assert_eq!(shared, heap);
-        let copy = reference.clone();
-        match (&reference, &copy) {
-            (ValueRef::Shared(a), ValueRef::Shared(b)) => {
-                assert!(Arc::ptr_eq(a, b));
-            }
-            (ValueRef::Inline(a), ValueRef::Inline(b)) => {
-                assert!(a.structural_eq(b));
-            }
-            _ => panic!("clone changed the storage kind"),
-        }
-        assert!((*copy).structural_eq(&reference));
-        std::mem::forget(reference);
-        std::mem::forget(copy);
-    };
+fn value_ref_inline_for_scalar_values() {
     match kani::any::<u8>() {
-        0 => check(Value::Integer(kani::any()), false),
-        1 => check(Value::Float(kani::any()), false),
-        2 => check(Value::Symbol(Symbol(SymbolId::Ascii(kani::any()))), false),
-        3 => check(Value::Void, false),
-        4 => check(
-            Value::String(crate::string::FerricString::Ascii(Box::new([kani::any()]))),
-            true,
-        ),
+        0 => {
+            let x: i64 = kani::any();
+            let reference = ValueRef::new(Value::Integer(x));
+            let copy = reference.clone();
+            assert!(matches!(reference, ValueRef::Inline(Value::Integer(v)) if v == x));
+            assert!(matches!(copy, ValueRef::Inline(Value::Integer(v)) if v == x));
+            assert!(matches!(*copy, Value::Integer(v) if v == x));
+            std::mem::forget((reference, copy));
+        }
+        1 => {
+            let bits: u64 = kani::any();
+            let reference = ValueRef::new(Value::Float(f64::from_bits(bits)));
+            let copy = reference.clone();
+            assert!(matches!(reference, ValueRef::Inline(Value::Float(v)) if v.to_bits() == bits));
+            assert!(matches!(*copy, Value::Float(v) if v.to_bits() == bits));
+            std::mem::forget((reference, copy));
+        }
+        2 => {
+            let symbol = Symbol(SymbolId::Ascii(kani::any()));
+            let reference = ValueRef::new(Value::Symbol(symbol));
+            let copy = reference.clone();
+            assert!(matches!(reference, ValueRef::Inline(Value::Symbol(s)) if s == symbol));
+            assert!(matches!(*copy, Value::Symbol(s) if s == symbol));
+            std::mem::forget((reference, copy));
+        }
         _ => {
-            let mut multifield = Multifield::new();
-            multifield.push(Value::Integer(kani::any()));
-            check(Value::Multifield(Box::new(multifield)), true);
+            let reference = ValueRef::new(Value::Void);
+            let copy = reference.clone();
+            assert!(matches!(reference, ValueRef::Inline(Value::Void)));
+            assert!(matches!(*copy, Value::Void));
+            std::mem::forget((reference, copy));
         }
     }
+}
+
+/// `ValueRef::new` shares the heap-owning variants (`String`, `Multifield`)
+/// through an `Arc`; cloning shares the same allocation, and deref of either
+/// reference returns that one shared value.
+#[kani::proof]
+#[kani::unwind(2)]
+fn value_ref_shares_heap_values() {
+    let reference = if kani::any() {
+        ValueRef::new(Value::String(crate::string::FerricString::Ascii(Box::new(
+            [kani::any()],
+        ))))
+    } else {
+        let mut multifield = Multifield::new();
+        multifield.push(Value::Integer(kani::any()));
+        ValueRef::new(Value::Multifield(Box::new(multifield)))
+    };
+    let copy = reference.clone();
+    match (&reference, &copy) {
+        (ValueRef::Shared(a), ValueRef::Shared(b)) => {
+            assert!(Arc::ptr_eq(a, b));
+            assert_eq!(Arc::strong_count(a), 2);
+        }
+        _ => panic!("heap values must be shared"),
+    }
+    assert!(std::ptr::eq(&*reference, &*copy));
+    let string = matches!(*reference, Value::String(_));
+    kani::cover!(string, "string shared");
+    kani::cover!(!string, "multifield shared");
+    std::mem::forget((reference, copy));
 }
 
 fn symbol(id: u32) -> Symbol {
