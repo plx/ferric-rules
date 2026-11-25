@@ -2757,5 +2757,743 @@ pub proof fn lemma_ncc_refines_remove_parent(s: NccMem, a: NccAbs, p: TokenId)
     }
 }
 
+// ------ two-phase result retraction (rete.rs:1526-1546, 399-456) -------
+/// rete.rs:1947 `collect_ncc_result_retractions`, restricted to this memory,
+/// over the removed tokens `rs[k..]` in order: a removed primary records a
+/// `(parent, result)` transition (1978-1986), then its support is dropped
+/// (1987).  The memory is left with dangling primaries.
+pub open spec fn ncc_collect(s: NccMem, rs: Seq<TokenId>, k: int) -> (NccMem, Seq<
+    (TokenId, TokenId),
+>)
+    decreases rs.len() - k,
+{
+    if k < 0 || k >= rs.len() {
+        (s, Seq::empty())
+    } else {
+        let r = rs[k];
+        if s.result_owner.contains_key(r) {
+            let p = s.result_owner[r];
+            let ev: Seq<(TokenId, TokenId)> = if s.primary_result.get(p) == Some(r) {
+                seq![(p, r)]
+            } else {
+                Seq::empty()
+            };
+            let (t, evs) = ncc_collect(ncc_remove_result_support(s, r).0, rs, k + 1);
+            (t, ev + evs)
+        } else {
+            ncc_collect(s, rs, k + 1)
+        }
+    }
+}
+
+/// rete.rs:1530-1543 / 432-441: `cleanup_negative_memories_for_token` calls
+/// `remove_parent_token` for every removed token (the dead parents).
+pub open spec fn ncc_drop_parents(s: NccMem, dead: Seq<TokenId>, k: int) -> NccMem
+    decreases dead.len() - k,
+{
+    if k < 0 || k >= dead.len() {
+        s
+    } else {
+        ncc_drop_parents(ncc_remove_parent_token(s, dead[k]), dead, k + 1)
+    }
+}
+
+/// rete.rs:1994 `apply_ncc_result_retraction`, memory effects; the boolean
+/// is true exactly when production goes on to `ncc_left_activate` (2036).
+pub open spec fn ncc_apply(s: NccMem, p: TokenId, r: TokenId, alive: bool, order: u64) -> (
+    NccMem,
+    bool,
+) {
+    if s.primary_result.get(p) != Some(r) {
+        (s, false)  // 2011-2013: stale transition
+
+    } else if !alive {
+        (ncc_remove_parent_token(s, p), false)  // 2014-2020
+
+    } else {
+        let o = if ncc_result_count(s, p) > 0 {
+            order
+        } else {
+            0
+        };  // 2021-2025
+        let (t, still) = ncc_reassign_primary(s, p, o);  // 2026-2033
+        (t, !still)
+    }
+}
+
+/// The transitions `apply[k..]` applied in order (production sorts them,
+/// rete.rs:1529 / 442; any order is allowed here).  `allocate_block_order`
+/// is modelled as handing out `next + i` for the i-th transition.  Returns
+/// the parents that unblock, in order.
+pub open spec fn ncc_apply_all(
+    s: NccMem,
+    apply: Seq<(TokenId, TokenId)>,
+    k: int,
+    dead: Seq<TokenId>,
+    next: nat,
+) -> (NccMem, Seq<TokenId>)
+    decreases apply.len() - k,
+{
+    if k < 0 || k >= apply.len() {
+        (s, Seq::empty())
+    } else {
+        let (p, r) = apply[k];
+        let (s1, u) = ncc_apply(s, p, r, !dead.contains(p), (next + k) as u64);
+        let (t, us) = ncc_apply_all(s1, apply, k + 1, dead, next);
+        (
+            t,
+            if u {
+                seq![p] + us
+            } else {
+                us
+            },
+        )
+    }
+}
+
+/// The whole cascade: collect, drop dead parents, apply transitions.
+pub open spec fn ncc_cascade(
+    s: NccMem,
+    rs: Seq<TokenId>,
+    dead: Seq<TokenId>,
+    apply: Seq<(TokenId, TokenId)>,
+    next: nat,
+) -> (NccMem, Seq<TokenId>) {
+    ncc_apply_all(ncc_drop_parents(ncc_collect(s, rs, 0).0, dead, 0), apply, 0, dead, next)
+}
+
+pub open spec fn ncc_abs_remove_seq(a: NccAbs, rs: Seq<TokenId>, k: int) -> NccAbs
+    decreases rs.len() - k,
+{
+    if k < 0 || k >= rs.len() {
+        a
+    } else {
+        ncc_abs_remove_seq(ncc_abs_remove(a, rs[k]), rs, k + 1)
+    }
+}
+
+pub open spec fn ncc_abs_remove_parents(a: NccAbs, dead: Seq<TokenId>, k: int) -> NccAbs
+    decreases dead.len() - k,
+{
+    if k < 0 || k >= dead.len() {
+        a
+    } else {
+        ncc_abs_remove_parents(ncc_abs_remove_parent(a, dead[k]), dead, k + 1)
+    }
+}
+
+pub open spec fn ncc_abs_cascade(a: NccAbs, rs: Seq<TokenId>, dead: Seq<TokenId>) -> NccAbs {
+    ncc_abs_remove_parents(ncc_abs_remove_seq(a, rs, 0), dead, 0)
+}
+
+/// Every stored block-list position is below `n`.
+pub open spec fn ncc_orders_below(s: NccMem, n: int) -> bool {
+    forall|q: TokenId| #[trigger] s.block_order.contains_key(q) ==> s.block_order[q] < n
+}
+
+/// Caller obligations of the cascade: every transition the collect phase
+/// records is applied, and fresh orders do not wrap.
+pub open spec fn ncc_cascade_ok(
+    s: NccMem,
+    rs: Seq<TokenId>,
+    apply: Seq<(TokenId, TokenId)>,
+    next: nat,
+) -> bool {
+    &&& forall|e: (TokenId, TokenId)| #[trigger]
+        ncc_collect(s, rs, 0).1.contains(e) ==> apply.contains(e)
+    &&& ncc_orders_below(s, next as int)
+    &&& next + apply.len() <= u64::MAX + 1
+}
+
+pub proof fn lemma_suffix_contains_step<A>(s: Seq<A>, k: int, x: A)
+    requires
+        0 <= k < s.len(),
+        s.subrange(k, s.len() as int).contains(x),
+        s[k] != x,
+    ensures
+        s.subrange(k + 1, s.len() as int).contains(x),
+{
+    let j = choose|j: int|
+        0 <= j < s.subrange(k, s.len() as int).len() && s.subrange(k, s.len() as int)[j] == x;
+    assert(s[k + j] == x);
+    assert(j != 0);
+    assert(s.subrange(k + 1, s.len() as int)[j - 1] == x);
+}
+
+pub proof fn lemma_ncc_collect(s: NccMem, a: NccAbs, rs: Seq<TokenId>, k: int, e: Set<
+    (TokenId, TokenId),
+>)
+    requires
+        ncc_core(s),
+        ncc_refines(s, a),
+        forall|q: TokenId| !(#[trigger] ncc_settled(s, q)) ==> e.contains((q, s.primary_result[q])),
+    ensures
+        ({
+            let (t, evs) = ncc_collect(s, rs, k);
+            &&& ncc_core(t)
+            &&& ncc_refines(t, ncc_abs_remove_seq(a, rs, k))
+            &&& t.primary_result == s.primary_result
+            &&& t.block_order == s.block_order
+            &&& t.unblocked == s.unblocked
+            &&& forall|x: TokenId| #[trigger] t.result_owner.contains_key(x) ==> s.result_owner.contains_key(x)
+            &&& forall|q: TokenId| #[trigger]
+                t.result_count.contains_key(q) ==> s.result_count.contains_key(q)
+            &&& forall|q: TokenId|
+                !(#[trigger] ncc_settled(t, q)) ==> e.contains((q, t.primary_result[q]))
+                    || evs.contains((q, t.primary_result[q]))
+        }),
+    decreases rs.len() - k,
+{
+    if k < 0 || k >= rs.len() {
+    } else {
+        let r = rs[k];
+        if s.result_owner.contains_key(r) {
+            let p = s.result_owner[r];
+            let ev: Seq<(TokenId, TokenId)> = if s.primary_result.get(p) == Some(r) {
+                seq![(p, r)]
+            } else {
+                Seq::empty()
+            };
+            let s1 = ncc_remove_result_support(s, r).0;
+            lemma_ncc_remove_result_support(s, r);
+            lemma_ncc_refines_remove_support(s, a, r);
+            let e1 = e + ev.to_set();
+            assert forall|q: TokenId| !(#[trigger] ncc_settled(s1, q)) implies e1.contains(
+                (q, s1.primary_result[q]),
+            ) by {
+                if ncc_settled(s, q) {
+                    assert(q == p && s.primary_result[q] == r);
+                    assert(ev[0] == (q, s1.primary_result[q]));
+                    assert(ev.to_set().contains(ev[0]));
+                }
+            }
+            lemma_ncc_collect(s1, ncc_abs_remove(a, r), rs, k + 1, e1);
+            let (t, evs) = ncc_collect(s1, rs, k + 1);
+            assert forall|q: TokenId| !(#[trigger] ncc_settled(t, q)) implies e.contains(
+                (q, t.primary_result[q]),
+            ) || (ev + evs).contains((q, t.primary_result[q])) by {
+                let x = (q, t.primary_result[q]);
+                if !e.contains(x) {
+                    if ev.to_set().contains(x) {
+                        let i = choose|i: int| 0 <= i < ev.len() && ev[i] == x;
+                        assert((ev + evs)[i] == x);
+                    } else {
+                        assert(evs.contains(x));
+                        let i = choose|i: int| 0 <= i < evs.len() && evs[i] == x;
+                        assert((ev + evs)[ev.len() + i] == x);
+                    }
+                }
+            }
+        } else {
+            lemma_ncc_collect(s, a, rs, k + 1, e);
+            assert(ncc_abs_remove(a, r) == a) by {
+                assert(ncc_abs_remove(a, r).owner =~= a.owner);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_ncc_drop_parents(s: NccMem, a: NccAbs, dead: Seq<TokenId>, k: int)
+    requires
+        ncc_core(s),
+        ncc_refines(s, a),
+        0 <= k <= dead.len(),
+    ensures
+        ({
+            let t = ncc_drop_parents(s, dead, k);
+            let gone = |q: TokenId| dead.subrange(k, dead.len() as int).contains(q);
+            &&& ncc_core(t)
+            &&& ncc_refines(t, ncc_abs_remove_parents(a, dead, k))
+            &&& ncc_disjoint(s) ==> ncc_disjoint(t)
+            &&& forall|x: TokenId| #[trigger] t.result_owner.contains_key(x) ==> s.result_owner.contains_key(x)
+            &&& forall|q: TokenId| #[trigger]
+                t.primary_result.contains_key(q) <==> (s.primary_result.contains_key(q) && !gone(
+                    q,
+                ))
+            &&& forall|q: TokenId| #[trigger]
+                t.result_count.contains_key(q) <==> (s.result_count.contains_key(q) && !gone(q))
+            &&& forall|q: TokenId| #[trigger]
+                t.primary_result.contains_key(q) ==> t.primary_result[q] == s.primary_result[q]
+            &&& forall|q: TokenId| !(#[trigger] ncc_settled(t, q)) ==> !ncc_settled(s, q)
+            &&& forall|q: TokenId| #[trigger]
+                t.block_order.contains_key(q) ==> s.block_order.contains_key(q)
+                    && t.block_order[q] == s.block_order[q]
+        }),
+    decreases dead.len() - k,
+{
+    if k >= dead.len() {
+        assert forall|q: TokenId| !dead.subrange(k, dead.len() as int).contains(q) by {
+            assert(dead.subrange(k, dead.len() as int).len() == 0);
+        }
+    } else {
+        let p = dead[k];
+        let s1 = ncc_remove_parent_token(s, p);
+        lemma_ncc_remove_parent_token(s, p);
+        lemma_ncc_refines_remove_parent(s, a, p);
+        lemma_ncc_drop_parents(s1, ncc_abs_remove_parent(a, p), dead, k + 1);
+        assert forall|q: TokenId|
+            dead.subrange(k, dead.len() as int).contains(q) <==> (q == p || dead.subrange(
+                k + 1,
+                dead.len() as int,
+            ).contains(q)) by {
+            let sk = dead.subrange(k, dead.len() as int);
+            let sk1 = dead.subrange(k + 1, dead.len() as int);
+            if sk.contains(q) && q != p {
+                lemma_suffix_contains_step(dead, k, q);
+            }
+            if q == p {
+                assert(sk[0] == q);
+            }
+            if sk1.contains(q) {
+                let j = choose|j: int| 0 <= j < sk1.len() && sk1[j] == q;
+                assert(sk[j + 1] == q);
+            }
+        }
+    }
+}
+
+pub proof fn lemma_ncc_apply_all(
+    s: NccMem,
+    apply: Seq<(TokenId, TokenId)>,
+    k: int,
+    dead: Seq<TokenId>,
+    next: nat,
+)
+    requires
+        ncc_core(s),
+        0 <= k <= apply.len(),
+        forall|q: TokenId|
+            !(#[trigger] ncc_settled(s, q)) ==> apply.subrange(k, apply.len() as int).contains(
+                (q, s.primary_result[q]),
+            ),
+        forall|q: TokenId| #[trigger] s.primary_result.contains_key(q) ==> !dead.contains(q),
+        ncc_orders_below(s, next + k),
+        next + apply.len() <= u64::MAX + 1,
+    ensures
+        ({
+            let (t, us) = ncc_apply_all(s, apply, k, dead, next);
+            &&& ncc_wf(t)
+            &&& t.result_count == s.result_count
+            &&& t.parent_results == s.parent_results
+            &&& t.result_owner == s.result_owner
+            &&& t.unblocked == s.unblocked
+            &&& forall|q: TokenId| #[trigger]
+                us.contains(q) <==> (s.primary_result.contains_key(q)
+                    && !s.result_count.contains_key(q))
+            &&& us.no_duplicates()
+            &&& ncc_orders_below(t, next + apply.len() as int)
+        }),
+    decreases apply.len() - k,
+{
+    if k >= apply.len() {
+        assert forall|q: TokenId| #[trigger] ncc_settled(s, q) by {
+            if !ncc_settled(s, q) {
+                assert(apply.subrange(k, apply.len() as int).len() == 0);
+            }
+        }
+        assert forall|q: TokenId|
+            !(s.primary_result.contains_key(q) && !s.result_count.contains_key(q)) by {
+            assert(ncc_settled(s, q));
+        }
+    } else {
+        let (p, r) = apply[k];
+        let alive = !dead.contains(p);
+        let (s1, u) = ncc_apply(s, p, r, alive, (next + k) as u64);
+        if s.primary_result.get(p) != Some(r) {
+            assert forall|q: TokenId|
+                !(#[trigger] ncc_settled(s1, q)) implies apply.subrange(
+                k + 1,
+                apply.len() as int,
+            ).contains((q, s1.primary_result[q])) by {
+                lemma_suffix_contains_step(apply, k, (q, s.primary_result[q]));
+            }
+        } else {
+            assert(alive);
+            let o = if ncc_result_count(s, p) > 0 {
+                (next + k) as u64
+            } else {
+                0
+            };
+            lemma_ncc_reassign_primary(s, p, o);
+            assert forall|q: TokenId|
+                !(#[trigger] ncc_settled(s1, q)) implies apply.subrange(
+                k + 1,
+                apply.len() as int,
+            ).contains((q, s1.primary_result[q])) by {
+                assert(q != p);
+                assert(!ncc_settled(s, q));
+                lemma_suffix_contains_step(apply, k, (q, s.primary_result[q]));
+            }
+        }
+        lemma_ncc_apply_all(s1, apply, k + 1, dead, next);
+        let (t, us1) = ncc_apply_all(s1, apply, k + 1, dead, next);
+        let us = if u {
+            seq![p] + us1
+        } else {
+            us1
+        };
+        assert(ncc_apply_all(s, apply, k, dead, next) == (t, us));
+        assert forall|q: TokenId| #[trigger]
+            us.contains(q) <==> (s.primary_result.contains_key(q) && !s.result_count.contains_key(
+                q,
+            )) by {
+            if u {
+                if us.contains(q) && q != p {
+                    let i = choose|i: int| 0 <= i < us.len() && us[i] == q;
+                    assert(us1[i - 1] == q);
+                }
+                if us1.contains(q) {
+                    let i = choose|i: int| 0 <= i < us1.len() && us1[i] == q;
+                    assert(us[i + 1] == q);
+                }
+                assert(us[0] == p);
+            }
+        }
+        if u {
+            assert(!us1.contains(p));
+            assert forall|i: int, j: int|
+                0 <= i < us.len() && 0 <= j < us.len() && i != j implies us[i] != us[j] by {
+                if i == 0 {
+                    assert(us1.contains(us[j]));
+                } else if j == 0 {
+                    assert(us1.contains(us[i]));
+                } else {
+                    assert(us[i] == us1[i - 1] && us[j] == us1[j - 1]);
+                }
+            }
+        }
+    }
+}
+
+/// THEOREM (NCC two-phase retraction cascade): starting from a settled
+/// memory, collect + parent cleanup + applying every recorded transition
+/// (in any order) yields a settled memory that refines the ground truth with
+/// the removed results and dead parents deleted.  The parents reported as
+/// unblocked (where production calls `ncc_left_activate`) are exactly the
+/// surviving parents whose result set went from non-empty to empty, each
+/// once.
+pub proof fn theorem_ncc_cascade(
+    s: NccMem,
+    a: NccAbs,
+    rs: Seq<TokenId>,
+    dead: Seq<TokenId>,
+    apply: Seq<(TokenId, TokenId)>,
+    next: nat,
+)
+    requires
+        ncc_wf(s),
+        ncc_refines(s, a),
+        ncc_cascade_ok(s, rs, apply, next),
+    ensures
+        ({
+            let (t, us) = ncc_cascade(s, rs, dead, apply, next);
+            let b = ncc_abs_cascade(a, rs, dead);
+            &&& ncc_wf(t)
+            &&& ncc_disjoint(s) ==> ncc_disjoint(t)
+            &&& forall|x: TokenId| #[trigger] t.result_owner.contains_key(x) ==> s.result_owner.contains_key(x)
+            &&& ncc_refines(t, b)
+            &&& forall|q: TokenId| #[trigger]
+                us.contains(q) <==> (s.result_count.contains_key(q)
+                    && !t.result_count.contains_key(q) && !dead.contains(q))
+            &&& forall|q: TokenId| #[trigger]
+                us.contains(q) <==> (scratch_fwd(ncc_pairs(a)).contains_key(q) && !scratch_fwd(
+                    ncc_pairs(b),
+                ).contains_key(q) && !dead.contains(q))
+            &&& us.no_duplicates()
+            &&& ncc_orders_below(t, next + apply.len() as int)
+        }),
+{
+    let (s1, evs) = ncc_collect(s, rs, 0);
+    assert forall|q: TokenId| !(#[trigger] ncc_settled(s, q)) implies Set::<
+        (TokenId, TokenId),
+    >::empty().contains((q, s.primary_result[q])) by {}
+    lemma_ncc_collect(s, a, rs, 0, Set::empty());
+    let a1 = ncc_abs_remove_seq(a, rs, 0);
+    let s2 = ncc_drop_parents(s1, dead, 0);
+    lemma_ncc_drop_parents(s1, a1, dead, 0);
+    assert(dead.subrange(0, dead.len() as int) == dead);
+    assert(apply.subrange(0, apply.len() as int) == apply);
+    assert forall|q: TokenId| !(#[trigger] ncc_settled(s2, q)) implies apply.subrange(
+        0,
+        apply.len() as int,
+    ).contains((q, s2.primary_result[q])) by {
+        assert(!ncc_settled(s1, q));
+        assert(s2.primary_result.contains_key(q));
+        assert(evs.contains((q, s1.primary_result[q])));
+    }
+    assert(ncc_orders_below(s2, next + 0int));
+    lemma_ncc_apply_all(s2, apply, 0, dead, next);
+    let (t, us) = ncc_cascade(s, rs, dead, apply, next);
+    assert forall|q: TokenId| #[trigger]
+        us.contains(q) <==> (s.result_count.contains_key(q) && !t.result_count.contains_key(q)
+            && !dead.contains(q)) by {
+        assert(ncc_settled(s, q));
+        assert(s.result_count.contains_key(q) ==> s.primary_result.contains_key(q));
+    }
+    lemma_ncc_from_scratch(s, a);
+    lemma_ncc_from_scratch(t, ncc_abs_cascade(a, rs, dead));
+}
+
+// ------------------- arbitrary operation sequences ---------------------
+pub enum NccOp {
+    AddResult(TokenId, TokenId, u64),
+    RemoveResult(TokenId, u64),
+    /// removed tokens, dead parents, transitions in apply order, first fresh order
+    Cascade(Seq<TokenId>, Seq<TokenId>, Seq<(TokenId, TokenId)>, nat),
+    SetUnblocked(TokenId, TokenId),
+    RemoveUnblocked(TokenId),
+    RemoveParentToken(TokenId),
+    Clear,
+}
+
+pub open spec fn ncc_step(s: NccMem, op: NccOp) -> NccMem {
+    match op {
+        NccOp::AddResult(p, r, o) => ncc_add_result(s, p, r, o).0,
+        NccOp::RemoveResult(r, o) => ncc_remove_result(s, r, o).0,
+        NccOp::Cascade(rs, dead, apply, next) => ncc_cascade(s, rs, dead, apply, next).0,
+        NccOp::SetUnblocked(p, pt) => ncc_set_unblocked(s, p, pt),
+        NccOp::RemoveUnblocked(p) => ncc_remove_unblocked(s, p).0,
+        NccOp::RemoveParentToken(p) => ncc_remove_parent_token(s, p),
+        NccOp::Clear => ncc_clear(s),
+    }
+}
+
+pub open spec fn ncc_abs_step(a: NccAbs, op: NccOp) -> NccAbs {
+    match op {
+        NccOp::AddResult(p, r, _) => ncc_abs_add(a, p, r),
+        NccOp::RemoveResult(r, _) => ncc_abs_remove(a, r),
+        NccOp::Cascade(rs, dead, _, _) => ncc_abs_cascade(a, rs, dead),
+        NccOp::RemoveParentToken(p) => ncc_abs_remove_parent(a, p),
+        NccOp::Clear => ncc_abs_clear(a),
+        _ => a,
+    }
+}
+
+/// Caller obligations: fresh block orders where they are stored, every
+/// recorded cascade transition is applied, and the number of tracked result
+/// tokens stays below `usize::MAX`.  The last holds because tracked results
+/// are live tokens (snapshot.rs:1500-1504) and a slotmap holds fewer than
+/// `u32::MAX` elements (slotmap 1.1.1 basic.rs:413), i.e. at most
+/// `u32::MAX - 1 <= usize::MAX - 1` on 32- and 64-bit targets.
+pub open spec fn ncc_pre(s: NccMem, op: NccOp) -> bool {
+    match op {
+        NccOp::AddResult(p, r, o) => s.result_owner.len() < usize::MAX && (
+        !s.result_owner.contains_key(r) && ncc_result_count(s, p) == 0 ==> fresh_order(
+            s.block_order,
+            o,
+        )),
+        NccOp::RemoveResult(r, o) => s.result_owner.contains_key(r) && s.primary_result.get(
+            s.result_owner[r],
+        ) == Some(r) && s.result_count[s.result_owner[r]] > 1 ==> fresh_order(s.block_order, o),
+        NccOp::Cascade(rs, _, apply, next) => ncc_cascade_ok(s, rs, apply, next),
+        _ => true,
+    }
+}
+
+pub open spec fn ncc_run(ops: Seq<NccOp>) -> NccMem
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        ncc_new()
+    } else {
+        ncc_step(ncc_run(ops.drop_last()), ops.last())
+    }
+}
+
+pub open spec fn ncc_abs_run(ops: Seq<NccOp>) -> NccAbs
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        ncc_abs_new()
+    } else {
+        ncc_abs_step(ncc_abs_run(ops.drop_last()), ops.last())
+    }
+}
+
+pub open spec fn ncc_admissible(ops: Seq<NccOp>) -> bool
+    decreases ops.len(),
+{
+    ops.len() == 0 || (ncc_admissible(ops.drop_last()) && ncc_pre(
+        ncc_run(ops.drop_last()),
+        ops.last(),
+    ))
+}
+
+/// Every stored count fits in a `usize`.
+pub open spec fn ncc_counts_fit(s: NccMem) -> bool {
+    forall|p: TokenId| #[trigger] s.result_count.contains_key(p) ==> s.result_count[p] <= usize::MAX
+}
+
+/// One step preserves the invariant and refinement; `add_result` cannot
+/// overflow its `usize` counter, and its `(old, new)` result satisfies the
+/// caller's blocking test (rete.rs:1901 `old == 0 && new == 1`) exactly when
+/// the parent's ground-truth result set goes from empty to non-empty.
+pub proof fn lemma_ncc_step(s: NccMem, a: NccAbs, op: NccOp)
+    requires
+        ncc_wf(s),
+        ncc_refines(s, a),
+        ncc_pre(s, op),
+        ncc_owner_fits(s),
+    ensures
+        ncc_wf(ncc_step(s, op)),
+        ncc_refines(ncc_step(s, op), ncc_abs_step(a, op)),
+        ncc_counts_fit(ncc_step(s, op)),
+        ncc_owner_fits(ncc_step(s, op)),
+        op is AddResult ==> ({
+            let (p, r, o) = (op->AddResult_0, op->AddResult_1, op->AddResult_2);
+            let (old_c, new_c) = ncc_add_result(s, p, r, o).1;
+            &&& (!s.result_owner.contains_key(r) ==> old_c + 1 <= usize::MAX)
+            &&& (old_c == 0 && new_c == 1) <==> (!scratch_fwd(ncc_pairs(a)).contains_key(p)
+                && scratch_fwd(ncc_pairs(ncc_abs_step(a, op))).contains_key(p))
+        }),
+{
+    let t = ncc_step(s, op);
+    let b = ncc_abs_step(a, op);
+    match op {
+        NccOp::AddResult(p, r, o) => {
+            lemma_ncc_add_result(s, p, r, o);
+            lemma_ncc_refines_add(s, a, p, r, o);
+            lemma_ncc_from_scratch(s, a);
+            lemma_ncc_from_scratch(t, b);
+            if s.result_owner.contains_key(r) {
+                assert(b == a);
+            }
+        },
+        NccOp::RemoveResult(r, o) => {
+            lemma_ncc_remove_result(s, r, o);
+            let s1 = ncc_remove_result_support(s, r).0;
+            lemma_ncc_remove_result_support(s, r);
+            lemma_ncc_refines_remove_support(s, a, r);
+            if s.result_owner.contains_key(r) && s1.primary_result.get(s.result_owner[r]) == Some(
+                r,
+            ) {
+                let p = s.result_owner[r];
+                if s1.parent_results.contains_key(p) {
+                    assert(s.result_count[p] > 1) by {
+                        assert(s1.result_count[p] == s.result_count[p] - 1);
+                    }
+                }
+                lemma_ncc_reassign_primary(s1, p, o);
+            }
+        },
+        NccOp::Cascade(rs, dead, apply, next) => {
+            theorem_ncc_cascade(s, a, rs, dead, apply, next);
+        },
+        NccOp::SetUnblocked(p, pt) => {
+            assert forall|q: TokenId| #[trigger] ncc_settled(t, q) by {
+                assert(ncc_settled(s, q));
+            }
+            assert forall|q: TokenId, x: TokenId|
+                #![trigger ncc_fwd(t, q, x)]
+                #![trigger ncc_owns(t, q, x)]
+                ncc_fwd(t, q, x) <==> ncc_owns(t, q, x) by {
+                assert(ncc_fwd(s, q, x) <==> ncc_owns(s, q, x));
+            }
+        },
+        NccOp::RemoveUnblocked(p) => {
+            assert forall|q: TokenId| #[trigger] ncc_settled(t, q) by {
+                assert(ncc_settled(s, q));
+            }
+            assert forall|q: TokenId, x: TokenId|
+                #![trigger ncc_fwd(t, q, x)]
+                #![trigger ncc_owns(t, q, x)]
+                ncc_fwd(t, q, x) <==> ncc_owns(t, q, x) by {
+                assert(ncc_fwd(s, q, x) <==> ncc_owns(s, q, x));
+            }
+        },
+        NccOp::RemoveParentToken(p) => {
+            lemma_ncc_remove_parent_token(s, p);
+            lemma_ncc_refines_remove_parent(s, a, p);
+            assert forall|q: TokenId| #[trigger] ncc_settled(t, q) by {
+                if q != p {
+                    assert(ncc_settled(s, q));
+                }
+            }
+        },
+        NccOp::Clear => {
+            lemma_ncc_new();
+            assert(ncc_refines(t, b)) by {
+                assert(t.result_owner.dom() =~= b.owner.dom());
+            }
+        },
+    }
+    // The tracked-result map grows only through `add_result`, by one key.
+    assert(t.result_owner.len() <= usize::MAX) by {
+        match op {
+            NccOp::AddResult(q, r, o) => {
+                if !s.result_owner.contains_key(r) {
+                    assert(t.result_owner.dom() =~= s.result_owner.dom().insert(r));
+                } else {
+                    assert(t == s);
+                }
+            },
+            _ => {
+                assert(t.result_owner.dom().subset_of(s.result_owner.dom())) by {
+                    match op {
+                        NccOp::RemoveParentToken(p) => {
+                            lemma_ncc_remove_parent_token(s, p);
+                        },
+                        NccOp::Clear => {
+                            lemma_ncc_new();
+                        },
+                        NccOp::RemoveResult(r, o) => {
+                            lemma_ncc_remove_result(s, r, o);
+                        },
+                        NccOp::Cascade(rs, dead, apply, next) => {
+                            theorem_ncc_cascade(s, a, rs, dead, apply, next);
+                        },
+                        _ => {},
+                    }
+                }
+                vstd::set_lib::lemma_len_subset(t.result_owner.dom(), s.result_owner.dom());
+            },
+        }
+    }
+    assert forall|p: TokenId| #[trigger] t.result_count.contains_key(p) implies t.result_count[p]
+        <= usize::MAX by {
+        lemma_ncc_count_bound(t, p);
+    }
+}
+
+/// Number of tracked results fits the documented bound.
+pub open spec fn ncc_owner_fits(s: NccMem) -> bool {
+    s.result_owner.len() <= usize::MAX
+}
+
+/// THEOREM (NccMemory, arbitrary finite operation sequences, including the
+/// production two-phase cascade): starting from `new()`, after any admissible
+/// sequence the memory is settled (all structural checks of
+/// `validate_consistency` hold; check 1 is the caller protocol, Section 6),
+/// refines the ground truth with oldest-first result lists, its result sets
+/// and counts equal the from-scratch values, and every count fits in usize.
+pub proof fn theorem_ncc_sequences(ops: Seq<NccOp>)
+    requires
+        ncc_admissible(ops),
+    ensures
+        ({
+            let s = ncc_run(ops);
+            let a = ncc_abs_run(ops);
+            &&& ncc_wf(s)
+            &&& ncc_refines(s, a)
+            &&& ncc_fwd_view(s) == scratch_fwd(ncc_pairs(a))
+            &&& forall|p: TokenId| #[trigger]
+                ncc_result_count(s, p) == scratch_count(ncc_pairs(a), p)
+            &&& ncc_counts_fit(s)
+            &&& ncc_owner_fits(s)
+        }),
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        lemma_ncc_new();
+        let s = ncc_run(ops);
+        assert(s.result_owner.dom() =~= ncc_abs_new().owner.dom());
+        assert(s.result_owner.len() == 0);
+    } else {
+        theorem_ncc_sequences(ops.drop_last());
+        lemma_ncc_step(ncc_run(ops.drop_last()), ncc_abs_run(ops.drop_last()), ops.last());
+    }
+    lemma_ncc_from_scratch(ncc_run(ops), ncc_abs_run(ops));
+}
+
 } // verus!
 
