@@ -18,7 +18,8 @@
 //!   `LessOrEqual`): numeric comparison with integer-to-double promotion and
 //!   NaN unordered, for every integer key and every float key bit pattern;
 //!   a non-numeric field or a symbol key fails.
-//! * Slot tests: `EqualSlot`/`NotEqualSlot` are structural equality; each of
+//! * Slot tests: `EqualSlot`/`NotEqualSlot` are structural equality (for
+//!   non-string values; one harness per test and first-field group); each of
 //!   the five offset tests other than `NotEqualSlotOffset` compares
 //!   `field OP other + offset` with a checked integer sum (overflow fails, as
 //!   documented). `NotEqualSlotOffset` is exactly the complement of
@@ -28,25 +29,22 @@
 //!   documents that defect.
 //! * `OrderedFieldCount` is exact; entry-type discrimination is exact; `Any`
 //!   fails without its own field (its branch semantics are a known gap).
-//! * `AlphaMemory`: after an index request on an empty memory or a backfill,
-//!   with or without a later removal, `lookup_by_slot` equals the naive
-//!   filter of the memory (same facts, same order), emptied buckets are
-//!   pruned and every indexed fact is a member.
 //!
 //! Bounds: field values are any atom (symbol, instance name, string of at
 //! most two ASCII bytes or one of four fixed UTF-8 texts, any float bit
 //! pattern, any integer, external address), `Void`, or a multifield of at
 //! most one integer; fact addresses have u8-ranged components; facts have
-//! at most three fields; the alpha-memory harness has three facts whose
-//! keys are `(0, 0)` or `(0, 1)` (concrete per case: symbolic hash keys did
-//! not finish symbolic execution in 13 minutes).
+//! at most three fields.
 //!
 //! Known gaps: `Any`'s disjunction-of-conjunctions semantics (harnesses for
 //! a fixed shape and for the empty cases ran out of memory: CBMC cannot see
 //! the nested test vectors' contents, so it explores every nested variant),
-//! the whole-fact `Sequence` test (sequence proofs), longer
-//! alpha-memory operation sequences (the unbounded index invariant is proved
-//! in verification/verus/core_matching.rs), and the whole `AlphaNetwork`:
+//! the whole-fact `Sequence` test (sequence proofs), `AlphaMemory` and its
+//! slot indexes (a three-fact insert/index/remove harness did not finish
+//! symbolic execution in 10 minutes, even with concrete keys: CBMC does not
+//! track the hash tables' heap contents, so every probe loop is unrolled to
+//! the bound; the index invariant is proved unboundedly for the model in
+//! verification/verus/core_matching.rs), and the whole `AlphaNetwork`:
 //! `AlphaNetwork::new` builds a `SparseSecondaryMap` with std `RandomState`,
 //! whose seeding calls `getrandom`/`syscall`, which Kani does not support
 //! (every harness creating a network fails on those checks), so
@@ -679,27 +677,74 @@ fn numeric_key_tests_fail_for_symbol_keys() {
     std::mem::forget(key);
 }
 
+/// A scalar atom (no strings: those are covered by the literal harnesses)
+/// or, when `atom` is false, `Void` or a multifield of at most one integer.
+fn any_slot_value(atom: bool) -> Value {
+    if atom {
+        match kani::any::<u8>() {
+            0 => Value::Symbol(any_symbol()),
+            1 => Value::InstanceName(any_instance_name()),
+            2 => Value::Float(kani::any()),
+            3 => Value::ExternalAddress(any_external()),
+            _ => Value::Integer(kani::any()),
+        }
+    } else if kani::any() {
+        Value::Void
+    } else {
+        let mut multifield = Multifield::new();
+        if kani::any() {
+            multifield.push(Value::Integer(kani::any()));
+        }
+        Value::Multifield(Box::new(multifield))
+    }
+}
+
 /// `EqualSlot`/`NotEqualSlot` compare two fields with structural,
 /// type-sensitive equality (floats by bits, multifields element-wise,
-/// `Void == Void`).
-#[kani::proof]
-#[kani::unwind(3)]
-fn slot_equality_tests_match_reference() {
-    let first = any_value();
-    let second = any_value();
+/// `Void == Void`). The first field is a scalar atom or a non-atom per
+/// harness, the second either (one harness per combination and test: with
+/// everything at once CBMC ran out of memory).
+fn check_slot_equality(negated: bool, first_atom: bool) {
+    let first = any_slot_value(first_atom);
+    let second = any_slot_value(kani::any());
     let same = oracle_structural_eq(&first, &second);
-    let multifields = matches!(first, Value::Multifield(_));
-    let voids = matches!(first, Value::Void);
-    let negated: bool = kani::any();
-    let actual = if negated {
-        on_fields(first, second, ConstantTestType::NotEqualSlot(SECOND))
+    let test_type = if negated {
+        ConstantTestType::NotEqualSlot(SECOND)
     } else {
-        on_fields(first, second, ConstantTestType::EqualSlot(SECOND))
+        ConstantTestType::EqualSlot(SECOND)
     };
+    let actual = on_fields(first, second, test_type);
     assert_eq!(actual, same != negated);
-    kani::cover!(actual && !negated && multifields, "equal multifields");
-    kani::cover!(actual && !negated && voids, "two Voids are equal");
-    kani::cover!(actual && negated, "NotEqualSlot passes");
+    kani::cover!(actual, "passes");
+    kani::cover!(!actual, "fails");
+}
+
+/// `EqualSlot` with a scalar-atom first field.
+#[kani::proof]
+#[kani::unwind(2)]
+fn equal_slot_matches_reference_for_atoms() {
+    check_slot_equality(false, true);
+}
+
+/// `EqualSlot` with a `Void` or multifield first field.
+#[kani::proof]
+#[kani::unwind(2)]
+fn equal_slot_matches_reference_for_non_atoms() {
+    check_slot_equality(false, false);
+}
+
+/// `NotEqualSlot` with a scalar-atom first field.
+#[kani::proof]
+#[kani::unwind(2)]
+fn not_equal_slot_matches_reference_for_atoms() {
+    check_slot_equality(true, true);
+}
+
+/// `NotEqualSlot` with a `Void` or multifield first field.
+#[kani::proof]
+#[kani::unwind(2)]
+fn not_equal_slot_matches_reference_for_non_atoms() {
+    check_slot_equality(true, false);
 }
 
 /// `field OP other + offset` for one offset-test variant, checked against the
@@ -904,99 +949,4 @@ fn entry_type_discrimination_is_exact() {
         !expected && relation_id == probe && template == probe,
         "same numeric id, different kind"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Alpha memory and network
-// ---------------------------------------------------------------------------
-
-/// `lookup_by_slot` collected into a vector (`None` as empty).
-fn indexed(memory: &AlphaMemory, key: i64) -> Vec<FactId> {
-    memory
-        .lookup_by_slot(FIRST, &AtomKey::Integer(key))
-        .map(Iterator::collect)
-        .unwrap_or_default()
-}
-
-/// The facts of `memory` (in its iteration order) whose slot 0 holds the
-/// integer `key`, read from the fact base.
-fn naive(memory: &AlphaMemory, facts: &FactBase, key: i64) -> Vec<FactId> {
-    memory
-        .iter()
-        .filter(|id| {
-            matches!(
-                get_slot_value(&facts.get(*id).unwrap().fact, FIRST),
-                Some(Value::Integer(value)) if *value == key
-            )
-        })
-        .collect()
-}
-
-/// Index lookups on a real `AlphaMemory` return exactly what a naive filter
-/// of the memory returns — same facts, same (insertion) order — whether the
-/// index was requested on the empty memory or backfilled afterwards, and
-/// whether or not the first fact was then removed; a bucket emptied by the
-/// removal is pruned (`lookup_by_slot` gives `None`) and every indexed fact
-/// is a member of the memory (alpha.rs `validate_consistency` check 4).
-/// Bounds: three facts whose slot-0 keys are `(0, 0)` or `(0, 1)` (shared or
-/// separate buckets) plus a `Void` field that is never indexed. The keys are
-/// concrete per case: symbolic hash keys made this harness exceed 13 minutes
-/// without finishing symbolic execution.
-#[kani::proof]
-#[kani::unwind(5)]
-fn alpha_memory_index_matches_naive_filter() {
-    let check = |second_key: i64| {
-        let mut facts = FactBase::new();
-        let ids = [
-            facts.assert_ordered(relation(0), smallvec::smallvec![Value::Integer(0)]),
-            facts.assert_ordered(relation(0), smallvec::smallvec![Value::Integer(second_key)]),
-            facts.assert_ordered(relation(0), smallvec::smallvec![Value::Void]),
-        ];
-        let mut memory = AlphaMemory::new(AlphaMemoryId(0));
-        let early: bool = kani::any();
-        if early {
-            memory.request_index_empty(FIRST);
-        }
-        for id in ids {
-            memory.insert(id, &facts.get(id).unwrap().fact);
-        }
-        if !early {
-            memory.request_index(FIRST, &facts);
-        }
-        let removed: bool = kani::any();
-        if removed {
-            memory.remove(ids[0], &facts.get(ids[0]).unwrap().fact);
-        }
-        assert_eq!(memory.len(), if removed { 2 } else { 3 });
-        assert_eq!(memory.contains(ids[0]), !removed);
-        for key in 0..2 {
-            let found = indexed(&memory, key);
-            assert_eq!(found, naive(&memory, &facts, key));
-            if found.is_empty() {
-                assert!(memory
-                    .lookup_by_slot(FIRST, &AtomKey::Integer(key))
-                    .is_none());
-            }
-        }
-        for key_map in memory.slot_indices.values() {
-            for fact_set in key_map.values() {
-                assert!(!fact_set.is_empty());
-                for id in fact_set.iter() {
-                    assert!(memory.contains(*id));
-                }
-            }
-        }
-        kani::cover!(removed && second_key == 0, "removal from a shared bucket");
-        kani::cover!(
-            removed && second_key == 1 && !early,
-            "removal empties a backfilled bucket"
-        );
-        std::mem::forget(memory);
-        std::mem::forget(facts);
-    };
-    if kani::any() {
-        check(0);
-    } else {
-        check(1);
-    }
 }

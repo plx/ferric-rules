@@ -22,9 +22,6 @@
 //!   order; with a plan, exactly the `Equal` tests whose logical field has a
 //!   physical selector, mapped to it; and every such selector reads, in
 //!   every split the search produces, the very value of the logical field.
-//! * `collect_candidate_facts` on a real indexed `AlphaMemory` above the
-//!   scan threshold, followed by the residual `evaluate_join` filter, keeps
-//!   exactly the facts, in order, that a full scan keeps.
 //! * The capture fast path (`capture_join_matches`) equals evaluating the
 //!   test on the copied multifield, for every join test type.
 //! * With an ordered sequence plan, `evaluate_pattern` (pruned depth-first
@@ -43,14 +40,19 @@
 //!
 //! Bounds: scalar atoms and numbers range over all payloads; strings have
 //! at most one byte and appear only in the lexeme harness; multifields and
-//! captures hold at most one atom; one join test per list except in the
-//! candidate harness (two); sequence plans of at most two ordered fields or
-//! two template segments (multislots of at most one value); ordered facts
-//! of at most two fields with values in {0, 1}; the candidate harness has
-//! 17 facts with fixed slot-0 values and symbolic bindings.
+//! captures hold at most one atom; one join test per list; sequence plans
+//! of at most two ordered fields or two template segments (multislots of at
+//! most one value); ordered facts of at most two fields with values in
+//! {0, 1}.
 //!
-//! Known gaps (each attempted harness ran out of memory in CBMC, see the
-//! cost notes): strings in the index lemma and in `Equal`/`NotEqual`
+//! Known gaps (each attempted harness ran out of memory or time in CBMC,
+//! see the cost notes): `collect_candidate_facts` on a real indexed
+//! `AlphaMemory` (17 facts are needed to pass the scan threshold, and even a
+//! three-fact indexed memory did not finish symbolic execution in 10
+//! minutes; the candidate theorem is proved unboundedly for the model in
+//! verification/verus/core_matching.rs, and its two ingredients — the index
+//! lemma and `indexable_tests` — are proved here), strings in the index
+//! lemma and in `Equal`/`NotEqual`
 //! (string identity of `AtomKey` is covered by alpha::kani_proofs), the
 //! keyless cases of the index lemma as a lemma (they are exercised through
 //! `Equal`/`NotEqual`), multi-test lists in `evaluate_join` and
@@ -1200,107 +1202,6 @@ fn evaluate_pattern_with_sequence_matches_naive_enumeration() {
     std::mem::forget(fact);
     std::mem::forget(token);
     std::mem::forget(sequence);
-}
-
-// ---------------------------------------------------------------------------
-// Indexed candidate collection
-// ---------------------------------------------------------------------------
-
-/// Number of facts in the candidate-collection harness: one more than
-/// `INDEX_SCAN_THRESHOLD`, so the index path is enabled.
-const MEMORY_FACTS: usize = INDEX_SCAN_THRESHOLD + 1;
-
-/// Slot-0 value of fact `i` in the candidate-collection harness: integer and
-/// float keys that collide numerically (`1` and `1.0`), both signed zeros,
-/// a symbol, and non-atoms (`Void`, an empty multifield) that are never
-/// indexed.
-fn memory_field(i: usize) -> Value {
-    match i % 8 {
-        0 => Value::Integer(0),
-        1 => Value::Integer(1),
-        2 => Value::Float(1.0),
-        3 => Value::Float(0.0),
-        4 => Value::Float(-0.0),
-        5 => Value::Symbol(Symbol(SymbolId::Ascii(1))),
-        6 => Value::Void,
-        _ => Value::Multifield(Box::new(Multifield::new())),
-    }
-}
-
-/// The real `collect_candidate_facts` on a real indexed `AlphaMemory` above
-/// the scan threshold, followed by the residual `evaluate_join` filter that
-/// every caller applies, keeps exactly the facts (in the same order) that
-/// filtering every fact of the memory keeps. The parent binding of the
-/// indexed variable is any integer (symbolic: the hash lookup key is
-/// symbolic), a float of either sign of zero, `1.0`, a symbol, `Void` or a
-/// multifield; the second join test has a symbolic type and bound value, and
-/// the two tests come in either order (so the index applies to the first
-/// `Equal` test, whichever it is). Bounds: 17 facts with fixed slot-0
-/// values (`memory_field`) and slot-1 values `i % 3`.
-#[kani::proof]
-#[kani::unwind(19)]
-fn indexed_candidates_then_join_tests_equal_full_scan() {
-    let facts: [Fact; MEMORY_FACTS] = std::array::from_fn(|i| {
-        ordered_fact(smallvec::smallvec![
-            memory_field(i),
-            Value::Integer((i % 3) as i64)
-        ])
-    });
-    let mut memory = AlphaMemory::new(crate::alpha::AlphaMemoryId(0));
-    memory.request_index_empty(FIRST);
-    for (i, fact) in facts.iter().enumerate() {
-        memory.insert(fact_id(i as u32), fact);
-    }
-    let fact_of = |id: FactId| &facts[(slotmap::Key::data(&id).as_ffi() & 0xffff_ffff) as usize];
-
-    let check = |bound: Value| {
-        let token = token_of(bindings_of(smallvec::smallvec![
-            Some(ValueRef::new(bound)),
-            Some(ValueRef::new(Value::Integer(kani::any::<i8>().into()))),
-        ]));
-        let residual = join(
-            SECOND,
-            1,
-            match kani::any::<u8>() {
-                0 => JoinTestType::Equal,
-                1 => JoinTestType::NotEqual,
-                2 => JoinTestType::GreaterThan,
-                _ => JoinTestType::LessOrEqual,
-            },
-        );
-        let indexed = join(FIRST, 0, JoinTestType::Equal);
-        let tests = if kani::any() {
-            [indexed, residual]
-        } else {
-            [residual, indexed]
-        };
-        let candidates =
-            collect_candidate_facts(&memory, indexable_tests(&tests, None), &token.bindings);
-        let narrowed = candidates.len() < memory.len();
-        let kept: SmallVec<[FactId; 8]> = candidates
-            .into_iter()
-            .filter(|id| evaluate_join(fact_of(*id), Some(&token), &tests))
-            .collect();
-        let scanned: SmallVec<[FactId; 8]> = memory
-            .iter()
-            .filter(|id| evaluate_join(fact_of(*id), Some(&token), &tests))
-            .collect();
-        assert_eq!(kept, scanned);
-        kani::cover!(narrowed && !kept.is_empty(), "index path keeps matches");
-        kani::cover!(!narrowed, "scan path");
-        std::mem::forget(token);
-    };
-    match kani::any::<u8>() {
-        0 => check(Value::Float(0.0)),
-        1 => check(Value::Float(-0.0)),
-        2 => check(Value::Float(1.0)),
-        3 => check(Value::Symbol(Symbol(SymbolId::Ascii(1)))),
-        4 => check(Value::Void),
-        5 => check(Value::Multifield(Box::new(Multifield::new()))),
-        _ => check(Value::Integer(kani::any::<i8>().into())),
-    }
-    std::mem::forget(facts);
-    std::mem::forget(memory);
 }
 
 fn any_fact_address() -> crate::value::FactAddress {
