@@ -7,9 +7,6 @@
 //!   two (bound or unbound slots), every `VarId` — including any `u16` id
 //!   beyond the vector — reads the model's value without panicking;
 //!   `capacity` is the width and `bound_count` counts the bound slots.
-//! * `BindingSet::set` on an empty set binds exactly the written variable
-//!   (0, 1 or 2) and widens the vector to cover it, leaving lower variables
-//!   unbound.
 //! * `ValueRef::new` stores scalar values (integer, float bit pattern,
 //!   symbol, `Void`) inline; cloning copies them and deref returns them.
 //! * `VarMap::get_or_create` numbers names densely in first-occurrence order
@@ -17,22 +14,22 @@
 //!   the numbering; `name` panics for an id at or beyond `len` (its
 //!   documented `# Panics` contract).
 //!
-//! Bounds: binding sets of width at most two (three after `set`) holding
-//! integers; `VarMap` with three concrete names (its behaviour depends only
-//! on name equality; symbolic names make every hash probe symbolic).
+//! Bounds: binding sets of width at most two holding integers; `VarMap`
+//! with concrete names (its behaviour depends only on name equality;
+//! symbolic names make every hash probe symbolic).
 //!
-//! Known gaps. Not checked by Kani but proved for the executable Verus
-//! model in verification/verus/core_matching.rs: `set` over an existing
-//! binding or after another `set`, `extend_from`, the 65536-name
-//! `TooManyVariables` limit and the `idx as u16` cast in `extend_from`.
-//! Not checked at all: `BindingSet::clone`/`clear`, shared (`Arc`)
-//! `ValueRef`s, `VarMap::clear` and `VarMap` sequences of more than two
-//! calls (`VarMap` harnesses with three or more hash-table operations ran
-//! past 10 minutes). Every Kani attempt at those ran out of memory: CBMC cannot tell which `Value` variant a replaced, cleared or
-//! cloned binding holds once it has passed through `SmallVec` storage, so it
-//! explores the recursive `Value` drop/clone glue through every variant.
-//! Harness-built sets are `mem::forget`-ed instead of dropped for the same
-//! reason, so drop glue is not checked.
+//! Known gaps. Not checked by Kani but proved for the executable Verus model
+//! in verification/verus/core_matching.rs: `BindingSet::set`, `extend_from`,
+//! the 65536-name `TooManyVariables` limit and the `idx as u16` cast in
+//! `extend_from`. Not checked at all: `BindingSet::clone`/`clear`, shared
+//! (`Arc`) `ValueRef`s, `VarMap::clear` and `VarMap` sequences of more than
+//! two calls. Every Kani attempt at those ran out of memory or time (even a
+//! single `set` on an empty set): CBMC cannot tell which `Value` variant a
+//! replaced, cleared or cloned binding holds once it has passed through
+//! `SmallVec` storage, so it explores the recursive `Value` drop/clone glue
+//! through every variant, and `VarMap`'s hash-table probe loops are unrolled
+//! to the bound. Harness-built sets are `mem::forget`-ed instead of dropped
+//! for the same reason, so drop glue is not checked.
 
 use super::*;
 use crate::symbol::SymbolId;
@@ -177,35 +174,6 @@ fn binding_set_get_is_total_and_exact() {
         kani::cover!(model.capacity == 2 && model.bound() == 1, "sparse");
         std::mem::forget(set);
     });
-}
-
-/// `set` on an empty binding set binds exactly the written variable and
-/// widens the vector to cover it, leaving every lower variable unbound
-/// (one copy per variable 0, 1, 2; one write: two writes, or a write over an
-/// existing binding, make CBMC explore the recursive `Value` drop glue of
-/// the replaced binding and exhaust memory).
-#[kani::proof]
-#[kani::unwind(4)]
-fn binding_set_set_widens_and_binds() {
-    let check = |var: u16| {
-        let mut set = BindingSet::new();
-        let value: i64 = kani::any();
-        set.set(VarId(var), ValueRef::new(Value::Integer(value)));
-        assert_eq!(set.capacity(), usize::from(var) + 1);
-        assert_eq!(set.bound_count(), 1);
-        for other in 0..=var {
-            let expected = (other == var).then_some(value);
-            assert_eq!(int_of(set.get(VarId(other))), expected);
-        }
-        let probe: u16 = kani::any_where(|probe: &u16| *probe > var);
-        assert!(set.get(VarId(probe)).is_none());
-        std::mem::forget(set);
-    };
-    match kani::any::<u8>() {
-        0 => check(0),
-        1 => check(1),
-        _ => check(2),
-    }
 }
 
 /// `ValueRef::new` stores the non-heap variants inline; cloning an inline
