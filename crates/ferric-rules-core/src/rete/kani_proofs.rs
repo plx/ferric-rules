@@ -6,21 +6,27 @@
 //! docs/compatibility.md "Predicate and return-value constraints"):
 //!
 //! * Index lemma: for any two scalar atoms (integers, float bit patterns,
-//!   symbols, instance names, external addresses) and for fact addresses,
-//!   `values_join_eq` is `Some(key_a == key_b)` of their `AtomKey`s — the
-//!   `Equal` join test passes exactly for the facts an `AtomKey` index
-//!   lookup returns.
+//!   symbols, instance names, external addresses) and for two fact
+//!   addresses, `values_join_eq` is `Some(key_a == key_b)` of their
+//!   `AtomKey`s — the `Equal` join test passes exactly for the facts an
+//!   `AtomKey` index lookup returns. Its keyless side: a `Void` or a
+//!   multifield of at most one integer (which no index holds) is never
+//!   join-equal to a scalar atom, in either order.
 //! * `evaluate_join`, one test at a time and one copy per test type:
 //!   `Equal`/`NotEqual` on scalar atoms (join equality: same type and
 //!   content, cross-type values unequal), numeric comparisons
 //!   (integer/float promotion, NaN unordered), lexeme
 //!   comparisons (strings only, byte order) and the six offset comparisons
 //!   (checked integer sum; overflow fails every offset test, including
-//!   `NotEqualOffset`, as documented). A missing field, an unbound or
-//!   out-of-range variable, or a missing token fails; an empty list passes.
+//!   `NotEqualOffset`, as documented). For the `Equal` test, a missing
+//!   field, an unbound or out-of-range variable, or a missing token fails;
+//!   an empty list passes (the same guard for the other test types is not
+//!   checked: those harnesses ran out of memory).
 //! * `indexable_tests`: without a plan, exactly the plain `Equal` tests in
 //!   order; with a plan, exactly the `Equal` tests whose logical field has a
-//!   physical selector, mapped to it.
+//!   physical selector, mapped to it, where the expected selector comes
+//!   from an independent reference for `physical_selector` (so the harness
+//!   also checks `physical_selector` on these plans).
 //! * The capture fast path (`capture_join_matches`) agrees with evaluating
 //!   the test on the copied multifield for every numeric, lexeme and offset
 //!   join test type (both reject every capture).
@@ -35,23 +41,27 @@
 //!   ran out of memory.)
 //!
 //! Bounds: scalar atoms and numbers range over all payloads; strings have
-//! at most one byte and appear only in the lexeme harness; multifields and
-//! captures hold at most one atom; one join test per list; sequence plans
-//! of at most two ordered fields or two template segments.
+//! at most one byte (or are one of three fixed UTF-8 texts) and appear only
+//! in the lexeme harness; multifields and captures hold at most one atom;
+//! one join test per `evaluate_join` list (three per unplanned and two per
+//! planned `indexable_tests` list); sequence plans of at most two ordered
+//! fields or two template segments.
 //!
 //! Known gaps (each attempted harness ran out of memory or time in CBMC,
 //! see the cost notes): `collect_candidate_facts` on a real indexed
-//! `AlphaMemory` (17 facts are needed to pass the scan threshold, and even a
+//! `AlphaMemory` (16 facts are needed to reach the index path, and even a
 //! three-fact indexed memory did not finish symbolic execution in 10
 //! minutes; the candidate theorem is proved unboundedly for the model in
-//! verification/verus/core_matching.rs, and its two ingredients — the index
-//! lemma and `indexable_tests` — are proved here), `Equal`/`NotEqual` join
-//! tests and the capture fast path for `Equal`/`NotEqual` when `Void`,
-//! multifields or strings are involved, strings in the index lemma
-//! (string identity of `AtomKey` is covered by alpha::kani_proofs), the
-//! keyless values (`Void`, multifields) in the index lemma (keyless bound
-//! values make candidate collection scan, so soundness does not depend on
-//! them), multi-test lists in `evaluate_join` and
+//! verification/verus/core_matching.rs, and its ingredients — the index
+//! lemma and `indexable_tests` — are proved on production code; the alpha
+//! memory's own index is not Kani-checked, see alpha::kani_proofs),
+//! `Equal`/`NotEqual` join tests (through `evaluate_join`) and the capture
+//! fast path for `Equal`/`NotEqual` when `Void`, multifields or strings are
+//! involved, strings in the index lemma (string identity of `AtomKey` is
+//! covered by alpha::kani_proofs; harnesses with symbolic strings and with
+//! nine concrete string pairs ran out of memory), the index lemma for two
+//! multifields (a keyless bound value makes candidate collection scan, so
+//! soundness does not depend on it), multi-test lists in `evaluate_join` and
 //! `evaluate_pattern` without a plan (the loop is modelled in
 //! verification/verus/core_matching.rs), the soundness of sequence
 //! physical selectors on real splits (proved unboundedly for the placement
@@ -397,6 +407,60 @@ fn join_equality_is_atom_key_identity() {
     std::mem::forget((a, b));
 }
 
+/// Run `check` on a scalar atom of each variant (see `any_scalar_atom`), one
+/// copy per variant so the discriminant is a constant inside `check`.
+fn split_scalar_atom(check: &impl Fn(Value)) {
+    match kani::any::<u8>() {
+        0 => check(Value::Symbol(any_symbol())),
+        1 => check(Value::InstanceName(InstanceName::from_symbol(any_symbol()))),
+        2 => check(Value::Float(kani::any())),
+        3 => check(Value::ExternalAddress(ExternalAddress {
+            type_id: ExternalTypeId(kani::any()),
+            token: kani::any(),
+        })),
+        _ => check(Value::Integer(kani::any())),
+    }
+}
+
+/// `keyless` has no `AtomKey` (so no index holds a fact with that field
+/// value), and join equality with any scalar atom, in either order, is the
+/// documented `expected` (`None` for `Void`, `Some(false)` across types).
+fn check_keyless_against_atoms(keyless: &Value, expected: Option<bool>) {
+    assert!(AtomKey::from_value(keyless).is_none());
+    split_scalar_atom(&|atom: Value| {
+        assert_eq!(values_join_eq(keyless, &atom), expected);
+        assert_eq!(values_join_eq(&atom, keyless), expected);
+        std::mem::forget(atom);
+    });
+}
+
+/// The keyless side of the index lemma: a keyless value (`Void` or a
+/// multifield of at most one integer, which an `AtomKey` index never holds)
+/// is never join-equal to a scalar atom, in either order, so a fact whose
+/// field is keyless is rightly left out of an index lookup for a keyed
+/// bound value. `Void` is incomparable (`None`), a multifield against an
+/// atom is `Some(false)` (`values_join_eq` doc). One copy per keyless kind
+/// and atom variant (a version with symbolic variants ran out of memory).
+#[kani::proof]
+#[kani::unwind(2)]
+fn join_equality_keyless_against_atom_is_never_true() {
+    let void: bool = kani::any();
+    if void {
+        check_keyless_against_atoms(&Value::Void, None);
+    } else {
+        let mut multifield = Multifield::new();
+        let one: bool = kani::any();
+        if one {
+            multifield.push(Value::Integer(kani::any()));
+        }
+        let keyless = Value::Multifield(Box::new(multifield));
+        check_keyless_against_atoms(&keyless, Some(false));
+        kani::cover!(one, "a one-value multifield");
+        std::mem::forget(keyless);
+    }
+    kani::cover!(void, "Void");
+}
+
 /// `Equal` passes iff the field and the binding are join-equal scalar atoms
 /// (same type and content, floats by bits); `NotEqual` iff they are unequal
 /// (including integer/float twins and symbol/instance-name twins). Scalar
@@ -550,10 +614,12 @@ fn join_less_or_equal_offset_matches_reference() {
     check_join_offset(Cmp::Le, JoinTestType::LessOrEqualOffset);
 }
 
-/// A join test fails when its fact field is missing (wrong kind or out of
-/// range) or its variable is unbound (never set, or beyond the binding
-/// vector), and every non-empty test list fails without a token. An empty
-/// test list always passes.
+/// An `Equal` join test fails when its fact field is missing (wrong kind or
+/// out of range) or its variable is unbound (never set, or beyond the
+/// binding vector), and every non-empty test list fails without a token. An
+/// empty test list always passes. Only `Equal` is checked: one copy per test
+/// type, even six types per harness with concrete operands, ran out of
+/// memory in the solver.
 #[kani::proof]
 #[kani::unwind(2)]
 fn join_tests_require_field_and_binding() {
@@ -716,9 +782,55 @@ fn any_template_sequence() -> SequencePattern {
     }
 }
 
+/// Reference for `SequencePattern::physical_selector`, written from its
+/// documented contract (sequence.rs: "an ordered single field before the
+/// first capture, or a scalar template slot"): an ordered logical field
+/// `i` of the single ordered segment keeps its selector iff fields `0..=i`
+/// are all single; a template logical field maps to `Template(p)` iff it
+/// is projected by a `TemplateScalar(p)` segment (fields numbered across
+/// the segments in written order); anything else, including a selector of
+/// the other kind, has no physical selector.
+fn oracle_physical_selector(sequence: &SequencePattern, slot: SlotIndex) -> Option<SlotIndex> {
+    let ordered_plan =
+        sequence.segments.len() == 1 && sequence.segments[0].source == SequenceSource::Ordered;
+    match slot {
+        SlotIndex::Ordered(index) => {
+            if !ordered_plan {
+                return None;
+            }
+            let fields = &sequence.segments[0].fields;
+            let mut position = 0;
+            while position <= index {
+                if position >= fields.len() || fields[position] != SequenceField::Single {
+                    return None;
+                }
+                position += 1;
+            }
+            Some(slot)
+        }
+        SlotIndex::Template(index) => {
+            let mut first = 0;
+            for segment in &sequence.segments {
+                let end = first + segment.fields.len();
+                if first <= index && index < end {
+                    return match segment.source {
+                        SequenceSource::TemplateScalar(physical) => {
+                            Some(SlotIndex::Template(physical))
+                        }
+                        _ => None,
+                    };
+                }
+                first = end;
+            }
+            None
+        }
+    }
+}
+
 /// With a sequence plan, `indexable_tests` yields, in order, exactly the plain
-/// `Equal` tests whose logical field has a physical selector, paired with
-/// that physical selector.
+/// `Equal` tests whose logical field has a physical selector (per the
+/// independent `oracle_physical_selector`), paired with that physical
+/// selector. Selectors of the wrong kind for the plan are never indexed.
 #[kani::proof]
 #[kani::unwind(5)]
 fn indexable_tests_maps_sequence_fields_to_physical_selectors() {
@@ -730,7 +842,7 @@ fn indexable_tests_maps_sequence_fields_to_physical_selectors() {
     };
     let test = || {
         let index: usize = kani::any_where(|index: &usize| *index <= 3);
-        let slot = if ordered {
+        let slot = if ordered == kani::any::<bool>() {
             SlotIndex::Ordered(index)
         } else {
             SlotIndex::Template(index)
@@ -746,14 +858,20 @@ fn indexable_tests_maps_sequence_fields_to_physical_selectors() {
     let mut actual = indexable_tests(&tests, Some(&sequence));
     let mut remapped = false;
     let mut skipped = false;
+    let mut kept_ordered = false;
+    let mut wrong_kind = false;
     for test in &tests {
         if test.test_type == JoinTestType::Equal {
-            match sequence.physical_selector(test.alpha_slot) {
+            match oracle_physical_selector(&sequence, test.alpha_slot) {
                 Some(physical) => {
                     assert_eq!(actual.next(), Some((physical, test.beta_var)));
                     remapped |= physical != test.alpha_slot;
+                    kept_ordered |= ordered && test.alpha_slot != SlotIndex::Ordered(0);
                 }
-                None => skipped = true,
+                None => {
+                    skipped = true;
+                    wrong_kind |= ordered != matches!(test.alpha_slot, SlotIndex::Ordered(_));
+                }
             }
         }
     }
@@ -763,10 +881,12 @@ fn indexable_tests_maps_sequence_fields_to_physical_selectors() {
         !ordered && remapped,
         "template field remapped to its physical slot"
     );
+    kani::cover!(kept_ordered, "a later ordered single field is indexed");
     kani::cover!(
-        skipped,
+        skipped && !wrong_kind,
         "an equality on a capture or shifted field is not indexed"
     );
+    kani::cover!(wrong_kind, "a selector of the other kind is not indexed");
     std::mem::forget(sequence);
 }
 

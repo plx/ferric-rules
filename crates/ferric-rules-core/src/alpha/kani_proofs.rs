@@ -43,15 +43,22 @@
 //! the nested test vectors' contents, so it explores every nested variant),
 //! the whole-fact `Sequence` test (sequence proofs), `AlphaMemory` and its
 //! slot indexes (a three-fact insert/index/remove harness did not finish
-//! symbolic execution in 10 minutes, even with concrete keys: CBMC does not
-//! track the hash tables' heap contents, so every probe loop is unrolled to
-//! the bound; the index invariant is proved unboundedly for the model in
+//! symbolic execution in 10 minutes; one fact with a symbolic choice of
+//! field value and key, eight concrete one-fact cases in one harness, and
+//! eight concrete two-fact cases all ran out of memory in the solver; even
+//! a single concrete one-fact insert/lookup/remove scenario fails its
+//! unwinding assertions at unwind 3 (a `ptr::swap_nonoverlapping` loop in
+//! std) and did not finish in 20 minutes at unwind 10; the index
+//! invariant is proved unboundedly for the model in
 //! verification/verus/core_matching.rs), and the whole `AlphaNetwork`:
-//! `AlphaNetwork::new` builds a `SparseSecondaryMap` with std `RandomState`,
-//! whose seeding calls `getrandom`/`syscall`, which Kani does not support
-//! (every harness creating a network fails on those checks), so
+//! `AlphaNetwork::new` builds a `SparseSecondaryMap` with std
+//! `RandomState`, whose seeding calls
+//! `getrandom`/`syscall`, which Kani does not support, and building a
+//! `RandomState` any other way needs `unsafe` code, which the workspace
+//! denies, or Kani stubbing; so `validate_consistency` is not run, and
 //! propagation and the `fact_to_memories` reverse index are proved only in
-//! the Verus model; `retain_memories` and `backfill_memory` are not covered.
+//! the Verus model (whose memory invariant implies `validate_consistency`'s
+//! index check); `retain_memories` and `backfill_memory` are not covered.
 //! Harness-built values are `mem::forget`-ed instead of dropped (see the cost
 //! notes), so drop glue is not checked.
 

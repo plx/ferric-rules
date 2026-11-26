@@ -30,12 +30,25 @@
 //!   every memory keeps its own index invariant. (Kani cannot run
 //!   `AlphaNetwork::new`, whose `SparseSecondaryMap` seeds a std
 //!   `RandomState` through the `getrandom` foreign function.)
+//!   `theorem_propagate_is_reachability` characterizes `propagate`
+//!   declaratively: for a network built parent-first, it accepts exactly the
+//!   memories reachable from the start node through nodes whose tests all
+//!   pass, so `theorem_assert_fact_reaches_exactly_passing_paths` says a
+//!   fresh fact lands in memory `m` iff its type has an entry node with a
+//!   passing path to `m`. `theorem_network_operations_preserve_inv`: every
+//!   sequence of fresh-fact assertions and retractions keeps the network
+//!   invariant (constant tests and entry types stay uninterpreted).
 //! * Sequence index keys: `theorem_ordered_selector_reads_physical_field` and
 //!   `theorem_template_selector_reads_physical_slot` — whenever
 //!   `physical_selector` maps a logical field to a physical selector, that
 //!   logical field of every split (any capture lengths) is the single value
 //!   the physical selector reads (for template plans, under `validate`'s
 //!   rule that a scalar slot segment projects one single field).
+//!   `theorem_plan_candidates_then_residual_equals_scan`: with a sequence
+//!   plan, if every physical selector reads the same value as its logical
+//!   field in every split, collecting candidates through the selector-mapped
+//!   index and keeping the facts some split of which passes every join test
+//!   gives exactly the facts, in memory order, that a full scan gives.
 //! * `BindingSet` (executable model with `Vec`): `get` is total over every
 //!   `VarId`; `set` refines map insertion and widens exactly to `var + 1`
 //!   (`theorem_set_refines_map_insert`); `extend_from` is a left-biased union
@@ -75,8 +88,14 @@
 //!   path; for sequence plans only the selector/placement correspondence is
 //!   modelled (`place_segment`/`place_all` describe where each logical field
 //!   of a split reads from; which splits the search enumerates and how it
-//!   prunes them is not modelled — Kani checks the search against a naive
-//!   enumeration for small facts).
+//!   prunes them is not modelled here, and the Kani harnesses comparing
+//!   `evaluate_pattern`/`split_matches` with a naive split enumeration ran
+//!   out of memory, see crates/ferric-rules-core/src/rete/kani_proofs.rs).
+//!   `theorem_plan_candidates_then_residual_equals_scan` abstracts splits to
+//!   an uninterpreted `split_value(fact, split, logical field)` and takes
+//!   selector soundness (`selector_sound`) as a hypothesis; the selector
+//!   theorems establish it for the placement model only, so the link to
+//!   the production split search is by the citations, not by proof.
 //! * A `ValueRef` in a `BindingSet` is abstracted to a `u64` token (the set
 //!   only stores, copies and returns values); the production `extend_from`
 //!   iterates with `enumerate`, the model with an index over the same
@@ -86,10 +105,12 @@
 //! memory fact is in the fact base (a fact missing from it would be left out
 //! of the index; production upholds this because alpha memories only hold
 //! live facts). `assert_fact` is proved for a fact not yet in the network
-//! (each fact id is asserted once). `retain_memories`, `backfill_memory`,
-//! `clear_all_memories` and beta-memory (token-side) indexes are not
-//! modelled; the network model abstracts constant tests and entry types to
-//! uninterpreted functions.
+//! (each fact id is asserted once). The network theorems assume `net_wf`
+//! (every child id exceeds its parent's), which node creation and
+//! `retain_memories` maintain but which is not proved here.
+//! `retain_memories`, `backfill_memory`, `clear_all_memories` and
+//! beta-memory (token-side) indexes are not modelled; the network model
+//! abstracts constant tests and entry types to uninterpreted functions.
 
 use vstd::prelude::*;
 
@@ -179,7 +200,7 @@ pub proof fn lemma_same_key_implies_join_eq(a: Val, b: Val)
 pub uninterp spec fn field(f: int, slot: int) -> Option<Val>;
 
 /// The index key of fact `f` at `slot`: `get_slot_value` then
-/// `AtomKey::from_value` (crates/ferric-rules-core/src/alpha.rs:202-203).
+/// `AtomKey::from_value` (crates/ferric-rules-core/src/alpha.rs:203-204).
 pub open spec fn key_at(f: int, slot: int) -> Option<Key> {
     match field(f, slot) {
         Some(v) => atom_key(v),
@@ -222,7 +243,7 @@ pub open spec fn oset_remove(s: Seq<int>, x: int) -> (Seq<int>, bool) {
 
 pub type Index = Map<int, Map<Key, Seq<int>>>;
 
-/// Models crates/ferric-rules-core/src/alpha.rs:166 `AlphaMemory`: `facts` (an `OrderedSet<FactId>`),
+/// Models crates/ferric-rules-core/src/alpha.rs:167 `AlphaMemory`: `facts` (an `OrderedSet<FactId>`),
 /// `slot_indices` and `indexed_slots`.
 pub struct AlphaMem {
     pub facts: Seq<int>,
@@ -284,7 +305,7 @@ pub open spec fn inv(m: AlphaMem) -> bool {
 }
 
 /// Models `slot_indices.entry(slot).or_default().entry(key).or_default()
-/// .insert(fact_id)` (crates/ferric-rules-core/src/alpha.rs:204-209 and 250-255).
+/// .insert(fact_id)` (crates/ferric-rules-core/src/alpha.rs:205-210 and 252-257).
 pub open spec fn index_add(index: Index, slot: int, key: Key, f: int) -> Index {
     let keys = if index.contains_key(slot) {
         index[slot]
@@ -1204,15 +1225,20 @@ pub struct Net {
     pub f2m: Map<int, Seq<int>>,
 }
 
-/// `evaluate_test(fact, test)` (alpha.rs:822); its semantics are checked by
+/// `evaluate_test(fact, test)` (crates/ferric-rules-core/src/alpha.rs:822); its semantics are checked by
 /// the Kani harnesses, here it is uninterpreted.
 pub uninterp spec fn passes(f: int, test: int) -> bool;
 
-/// The entry type of a fact (alpha.rs:610-613).
+/// The entry type of a fact (crates/ferric-rules-core/src/alpha.rs:611-614).
 pub uninterp spec fn entry_of(f: int) -> int;
 
-/// Nodes are created parent-first (`create_constant_test_node` gives the
-/// child the next id), so every child id exceeds its parent's.
+/// Nodes are created parent-first (crates/ferric-rules-core/src/alpha.rs:508
+/// `create_constant_test_node` gives the new child the next id,
+/// `nodes.len()`, and only appends that id to the parent's children), and
+/// crates/ferric-rules-core/src/alpha.rs:405 `retain_memories` renumbers
+/// the kept nodes in their original order, so every child id exceeds its
+/// parent's. Assumed here (a precondition of the network theorems), not
+/// proved: snapshot restore is not modelled.
 pub open spec fn net_wf(net: Net) -> bool {
     forall|n: int, i: int|
         0 <= n < net.nodes.len() && 0 <= i < net.nodes[n].children.len() ==> #[trigger] net.nodes[n].children[i]
@@ -1254,7 +1280,7 @@ pub open spec fn child_count(net: Net, node: int) -> int {
     }
 }
 
-/// The child loop of `propagate` (alpha.rs:762-770) over the first `k`
+/// The child loop of `propagate` (crates/ferric-rules-core/src/alpha.rs:762-771) over the first `k`
 /// children of `node`.
 pub open spec fn propagate_children(net: Net, node: int, f: int, k: int) -> Seq<int>
     decreases net.nodes.len() - node, k,
@@ -1274,7 +1300,7 @@ pub open spec fn propagate_children(net: Net, node: int, f: int, k: int) -> Seq<
     }
 }
 
-/// Inserting `f` into each accepted memory, in order (alpha.rs:755-758).
+/// Inserting `f` into each accepted memory, in order (crates/ferric-rules-core/src/alpha.rs:754-759).
 pub open spec fn insert_all(mems: Seq<AlphaMem>, accepted: Seq<int>, f: int, n: int) -> Seq<AlphaMem>
     decreases n,
 {
@@ -1291,7 +1317,7 @@ pub open spec fn insert_all(mems: Seq<AlphaMem>, accepted: Seq<int>, f: int, n: 
     }
 }
 
-/// Removing `f` from each recorded memory (alpha.rs:643-647).
+/// Removing `f` from each recorded memory (crates/ferric-rules-core/src/alpha.rs:643-647).
 pub open spec fn remove_all(mems: Seq<AlphaMem>, recorded: Seq<int>, f: int, n: int) -> Seq<AlphaMem>
     decreases n,
 {
@@ -1309,7 +1335,7 @@ pub open spec fn remove_all(mems: Seq<AlphaMem>, recorded: Seq<int>, f: int, n: 
 }
 
 /// The memories that accept `f`: none when no entry node exists for its type
-/// (alpha.rs:615-618).
+/// (crates/ferric-rules-core/src/alpha.rs:616-619).
 pub open spec fn accepted(net: Net, f: int) -> Seq<int> {
     if net.entry.contains_key(entry_of(f)) {
         propagate(net, net.entry[entry_of(f)], f)
@@ -1557,6 +1583,302 @@ pub proof fn theorem_retract_fact_removes_everywhere(net: Net, f: int)
             net,
             f,
         ).mems[m].facts.contains(f)) by {}
+    }
+}
+
+// ===========================================================================
+// Alpha network: declarative characterization of propagation
+// ===========================================================================
+
+/// Node `n` lets `f` through: an entry node always does, a constant-test
+/// node when its test passes.
+pub open spec fn node_passes(net: Net, n: int, f: int) -> bool {
+    !(net.nodes[n].test is Some && !passes(f, net.nodes[n].test->Some_0))
+}
+
+/// The memory of node `n`, when it names an existing memory.
+pub open spec fn memory_of(net: Net, n: int) -> Option<int> {
+    match net.nodes[n].memory {
+        Some(m) => if 0 <= m < net.mems.len() {
+            Some(m)
+        } else {
+            None
+        },
+        None => None,
+    }
+}
+
+/// A downward path of existing nodes, each a child of the previous one,
+/// every node letting `f` through.
+pub open spec fn passing_path(net: Net, path: Seq<int>, f: int) -> bool {
+    &&& path.len() > 0
+    &&& forall|i: int|
+        0 <= i < path.len() ==> 0 <= #[trigger] path[i] < net.nodes.len() && node_passes(
+            net,
+            path[i],
+            f,
+        )
+    &&& forall|i: int|
+        0 <= i < path.len() - 1 ==> net.nodes[path[i]].children.contains(#[trigger] path[i + 1])
+}
+
+/// Memory `m` is reachable for `f` from `node`: some passing path from
+/// `node` ends at a node owning `m`.
+pub open spec fn reaches(net: Net, node: int, f: int, m: int) -> bool {
+    exists|path: Seq<int>|
+        #[trigger] passing_path(net, path, f) && path[0] == node && memory_of(net, path.last())
+            == Some(m)
+}
+
+/// The child loop accepts `m` only through some child before `k`.
+pub proof fn lemma_propagate_children_member(net: Net, node: int, f: int, k: int, m: int)
+    requires
+        propagate_children(net, node, f, k).contains(m),
+    ensures
+        exists|j: int|
+            0 <= j < k && j < net.nodes[node].children.len() && node
+                < #[trigger] net.nodes[node].children[j] < net.nodes.len() && propagate(
+                net,
+                net.nodes[node].children[j],
+                f,
+            ).contains(m),
+    decreases k,
+{
+    broadcast use vstd::seq_lib::lemma_seq_concat_contains_all_elements;
+
+    let child = net.nodes[node].children[k - 1];
+    let previous = propagate_children(net, node, f, k - 1);
+    if previous.contains(m) {
+        lemma_propagate_children_member(net, node, f, k - 1, m);
+    } else {
+        assert(node < child < net.nodes.len());
+        assert(propagate(net, child, f).contains(m));
+    }
+}
+
+/// And every child before `k` contributes what it accepts.
+pub proof fn lemma_propagate_children_includes(net: Net, node: int, f: int, k: int, j: int, m: int)
+    requires
+        0 <= node < net.nodes.len(),
+        0 <= j < k <= net.nodes[node].children.len(),
+        node < net.nodes[node].children[j] < net.nodes.len(),
+        propagate(net, net.nodes[node].children[j], f).contains(m),
+    ensures
+        propagate_children(net, node, f, k).contains(m),
+    decreases k,
+{
+    broadcast use vstd::seq_lib::lemma_seq_concat_contains_all_elements;
+
+    if j < k - 1 {
+        lemma_propagate_children_includes(net, node, f, k - 1, j, m);
+    }
+}
+
+/// Declarative characterization of `propagate` (crates/ferric-rules-core/src/alpha.rs:738): for a network built
+/// parent-first, the memories `propagate` accepts below `node` are exactly
+/// the memories reachable from `node` through nodes whose tests all pass.
+pub proof fn theorem_propagate_is_reachability(net: Net, node: int, f: int, m: int)
+    requires
+        net_wf(net),
+    ensures
+        propagate(net, node, f).contains(m) <==> reaches(net, node, f, m),
+    decreases net.nodes.len() - node,
+{
+    broadcast use vstd::seq_lib::lemma_seq_concat_contains_all_elements;
+
+    if 0 <= node < net.nodes.len() && node_passes(net, node, f) {
+        let n = net.nodes[node];
+        let k = n.children.len() as int;
+        let here = match n.memory {
+            Some(mm) => if 0 <= mm < net.mems.len() {
+                seq![mm]
+            } else {
+                Seq::empty()
+            },
+            None => Seq::empty(),
+        };
+        assert(propagate(net, node, f) == here + propagate_children(net, node, f, k));
+        assert(here.contains(m) <==> memory_of(net, node) == Some(m)) by {
+            if memory_of(net, node) == Some(m) {
+                assert(here[0] == m);
+            }
+        }
+        if propagate(net, node, f).contains(m) {
+            if here.contains(m) {
+                let path = seq![node];
+                assert(passing_path(net, path, f));
+            } else {
+                lemma_propagate_children_member(net, node, f, k, m);
+                let j = choose|j: int|
+                    0 <= j < k && j < net.nodes[node].children.len() && node
+                        < #[trigger] net.nodes[node].children[j] < net.nodes.len() && propagate(
+                        net,
+                        net.nodes[node].children[j],
+                        f,
+                    ).contains(m);
+                let child = n.children[j];
+                theorem_propagate_is_reachability(net, child, f, m);
+                let tail = choose|path: Seq<int>|
+                    #[trigger] passing_path(net, path, f) && path[0] == child && memory_of(
+                        net,
+                        path.last(),
+                    ) == Some(m);
+                let path = seq![node] + tail;
+                assert(path.last() == tail.last());
+                assert forall|i: int| 0 <= i < path.len() - 1 implies net.nodes[path[i]].children.contains(
+                    #[trigger] path[i + 1],
+                ) by {
+                    if i == 0 {
+                        assert(path[0] == node && path[1] == tail[0] && tail[0] == child);
+                        assert(n.children[j] == child);
+                        assert(n.children.contains(child));
+                    } else {
+                        assert(path[i] == tail[i - 1] && path[i + 1] == tail[i]);
+                        assert(net.nodes[tail[i - 1]].children.contains(tail[(i - 1) + 1]));
+                    }
+                }
+                assert forall|i: int| 0 <= i < path.len() implies 0 <= #[trigger] path[i]
+                    < net.nodes.len() && node_passes(net, path[i], f) by {
+                    if i > 0 {
+                        assert(path[i] == tail[i - 1]);
+                    }
+                }
+                assert(passing_path(net, path, f));
+            }
+        }
+        if reaches(net, node, f, m) {
+            let path = choose|path: Seq<int>|
+                #[trigger] passing_path(net, path, f) && path[0] == node && memory_of(
+                    net,
+                    path.last(),
+                ) == Some(m);
+            if path.len() == 1 {
+                assert(here.contains(m));
+            } else {
+                let child = path[1];
+                assert(net.nodes[path[0]].children.contains(path[1]));
+                let j = choose|j: int| 0 <= j < n.children.len() && n.children[j] == child;
+                assert(child > node);
+                let tail = path.drop_first();
+                assert(passing_path(net, tail, f)) by {
+                    assert forall|i: int| 0 <= i < tail.len() - 1 implies net.nodes[tail[i]].children.contains(
+                        #[trigger] tail[i + 1],
+                    ) by {
+                        assert(tail[i] == path[i + 1] && tail[i + 1] == path[i + 2]);
+                    }
+                    assert forall|i: int| 0 <= i < tail.len() implies 0 <= #[trigger] tail[i]
+                        < net.nodes.len() && node_passes(net, tail[i], f) by {
+                        assert(tail[i] == path[i + 1]);
+                    }
+                }
+                assert(tail.last() == path.last());
+                theorem_propagate_is_reachability(net, child, f, m);
+                lemma_propagate_children_includes(net, node, f, k, j, m);
+            }
+        }
+    } else if reaches(net, node, f, m) {
+        let path = choose|path: Seq<int>|
+            #[trigger] passing_path(net, path, f) && path[0] == node && memory_of(net, path.last())
+                == Some(m);
+        assert(0 <= path[0] < net.nodes.len() && node_passes(net, path[0], f));
+    }
+}
+
+/// `assert_fact` in declarative terms: after asserting a fresh fact, memory
+/// `m` holds it exactly when the network has an entry node for the fact's
+/// type from which `m` is reachable through nodes whose tests all pass.
+pub proof fn theorem_assert_fact_reaches_exactly_passing_paths(net: Net, f: int, m: int)
+    requires
+        net_inv(net),
+        !net.f2m.contains_key(f),
+        0 <= m < net.mems.len(),
+    ensures
+        assert_fact(net, f).mems[m].facts.contains(f) <==> (net.entry.contains_key(entry_of(f))
+            && reaches(net, net.entry[entry_of(f)], f, m)),
+{
+    theorem_assert_fact_keeps_reverse_index_exact(net, f);
+    if net.entry.contains_key(entry_of(f)) {
+        theorem_propagate_is_reachability(net, net.entry[entry_of(f)], f, m);
+    }
+}
+
+/// Network operations: assert a fact not yet recorded (each fact id is
+/// asserted once, crates/ferric-rules-core/src/fact.rs ids are never reused
+/// for new data) or retract any fact.
+pub enum NetOp {
+    Assert(int),
+    Retract(int),
+}
+
+pub open spec fn apply_net(net: Net, op: NetOp) -> Net {
+    match op {
+        NetOp::Assert(f) => assert_fact(net, f),
+        NetOp::Retract(f) => retract_fact(net, f),
+    }
+}
+
+pub open spec fn net_allowed(net: Net, op: NetOp) -> bool {
+    match op {
+        NetOp::Assert(f) => !net.f2m.contains_key(f),
+        NetOp::Retract(_) => true,
+    }
+}
+
+pub open spec fn run_net(net: Net, ops: Seq<NetOp>) -> Net
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        net
+    } else {
+        apply_net(run_net(net, ops.drop_last()), ops.last())
+    }
+}
+
+pub open spec fn run_net_allowed(net: Net, ops: Seq<NetOp>) -> bool
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        true
+    } else {
+        run_net_allowed(net, ops.drop_last()) && net_allowed(
+            run_net(net, ops.drop_last()),
+            ops.last(),
+        )
+    }
+}
+
+/// Every sequence of assertions (of fresh facts) and retractions keeps the
+/// network invariant: the reverse index stays exact and every memory keeps
+/// its index invariant, so `theorem_lookup_is_naive_filter` and
+/// `theorem_candidates_then_residual_equals_scan` apply to every memory in
+/// every reachable network state. The node graph and the memory count never
+/// change.
+pub proof fn theorem_network_operations_preserve_inv(net: Net, ops: Seq<NetOp>)
+    requires
+        net_inv(net),
+        run_net_allowed(net, ops),
+    ensures
+        net_inv(run_net(net, ops)),
+        run_net(net, ops).nodes == net.nodes,
+        run_net(net, ops).mems.len() == net.mems.len(),
+    decreases ops.len(),
+{
+    if ops.len() > 0 {
+        theorem_network_operations_preserve_inv(net, ops.drop_last());
+        let before = run_net(net, ops.drop_last());
+        match ops.last() {
+            NetOp::Assert(f) => {
+                theorem_assert_fact_keeps_reverse_index_exact(before, f);
+                let acc = accepted(before, f);
+                lemma_insert_all(before.mems, acc, f, acc.len() as int);
+            },
+            NetOp::Retract(f) => {
+                theorem_retract_fact_removes_everywhere(before, f);
+                if before.f2m.contains_key(f) {
+                    lemma_remove_all(before.mems, before.f2m[f], f, before.f2m[f].len() as int);
+                }
+            },
+        }
     }
 }
 
@@ -2059,6 +2381,195 @@ pub proof fn theorem_template_selector_reads_physical_slot(
             rest_lengths,
             index - first.fields.len(),
         );
+    }
+}
+
+// ===========================================================================
+// Candidate collection for sequence plans
+// ===========================================================================
+
+/// The value of logical field `logical` in split `split` of fact `f`
+/// (`SplitView::get`, crates/ferric-rules-core/src/sequence.rs): an
+/// uninterpreted function, so the theorem below holds for every split
+/// enumeration and every projection.
+pub uninterp spec fn split_value(f: int, split: int, logical: int) -> Option<Val>;
+
+/// The number of splits the search can visit for fact `f`.
+pub uninterp spec fn split_count(f: int) -> nat;
+
+/// One join test against a split (crates/ferric-rules-core/src/rete.rs:2699
+/// `evaluate_join_fields` with `field = |slot| split.get(slot)`).
+pub open spec fn split_test_passes(f: int, split: int, b: Seq<Option<Val>>, t: JoinTest) -> bool {
+    match split_value(f, split, t.slot) {
+        None => false,
+        Some(fact_value) => match binding_get(b, t.var) {
+            None => false,
+            Some(bound) => match t.ty {
+                TestTy::Equal => join_eq(fact_value, bound) == Some(true),
+                TestTy::Other(code) => other_test_holds(code, fact_value, bound),
+            },
+        },
+    }
+}
+
+pub open spec fn split_join_from(
+    f: int,
+    split: int,
+    b: Seq<Option<Val>>,
+    tests: Seq<JoinTest>,
+    i: int,
+) -> bool
+    decreases tests.len() - i,
+{
+    if i >= tests.len() || i < 0 {
+        true
+    } else if !split_test_passes(f, split, b, tests[i]) {
+        false
+    } else {
+        split_join_from(f, split, b, tests, i + 1)
+    }
+}
+
+/// `evaluate_pattern` with a plan (crates/ferric-rules-core/src/rete.rs:2816,
+/// via `any_split_matches`): some split passes every join test. Which
+/// splits the search visits and how it prunes them is abstracted to
+/// `split_count`; only the existence of a passing split matters here.
+pub open spec fn pattern_matches(f: int, b: Seq<Option<Val>>, tests: Seq<JoinTest>) -> bool {
+    exists|split: int| 0 <= split < split_count(f) && #[trigger] split_join_from(f, split, b, tests, 0)
+}
+
+/// The first item of crates/ferric-rules-core/src/rete.rs:2797
+/// `indexable_tests(tests, Some(plan))`: the first `Equal` test whose
+/// logical field has a physical selector (`selector`, standing for
+/// `SequencePattern::physical_selector`), mapped to that selector.
+pub open spec fn first_indexable_with_plan(
+    tests: Seq<JoinTest>,
+    selector: spec_fn(int) -> Option<int>,
+    i: int,
+) -> Option<(int, int)>
+    decreases tests.len() - i,
+{
+    if i >= tests.len() || i < 0 {
+        None
+    } else if tests[i].ty is Equal && selector(tests[i].slot) is Some {
+        Some((selector(tests[i].slot)->Some_0, tests[i].var))
+    } else {
+        first_indexable_with_plan(tests, selector, i + 1)
+    }
+}
+
+/// Selector soundness, the hypothesis of the theorem below: whenever the
+/// selector maps logical field `l` to physical slot `p`, every split reads
+/// at `l` the value the fact holds at `p`. For the placement model this is
+/// `theorem_ordered_selector_reads_physical_field` and
+/// `theorem_template_selector_reads_physical_slot`; for the production
+/// split search it is not proved (see the header).
+pub open spec fn selector_sound(selector: spec_fn(int) -> Option<int>) -> bool {
+    forall|f: int, split: int, l: int|
+        0 <= split < split_count(f) && selector(l) is Some ==> #[trigger] split_value(f, split, l)
+            == field(f, selector(l)->Some_0)
+}
+
+pub proof fn lemma_first_indexable_with_plan_is_an_equal_test(
+    tests: Seq<JoinTest>,
+    selector: spec_fn(int) -> Option<int>,
+    i: int,
+)
+    requires
+        0 <= i,
+        first_indexable_with_plan(tests, selector, i) is Some,
+    ensures
+        exists|j: int|
+            i <= j < tests.len() && (#[trigger] tests[j]).ty is Equal && selector(tests[j].slot) is Some
+                && first_indexable_with_plan(tests, selector, i) == Some(
+                (selector(tests[j].slot)->Some_0, tests[j].var),
+            ),
+    decreases tests.len() - i,
+{
+    if !(tests[i].ty is Equal && selector(tests[i].slot) is Some) {
+        lemma_first_indexable_with_plan_is_an_equal_test(tests, selector, i + 1);
+        let j = choose|j: int|
+            i + 1 <= j < tests.len() && (#[trigger] tests[j]).ty is Equal && selector(
+                tests[j].slot,
+            ) is Some && first_indexable_with_plan(tests, selector, i + 1) == Some(
+                (selector(tests[j].slot)->Some_0, tests[j].var),
+            );
+        assert(i <= j);
+    }
+}
+
+pub proof fn lemma_split_join_implies_each(
+    f: int,
+    split: int,
+    b: Seq<Option<Val>>,
+    tests: Seq<JoinTest>,
+    i: int,
+    j: int,
+)
+    requires
+        0 <= i <= j < tests.len(),
+        split_join_from(f, split, b, tests, i),
+    ensures
+        split_test_passes(f, split, b, tests[j]),
+    decreases j - i,
+{
+    if i < j {
+        lemma_split_join_implies_each(f, split, b, tests, i + 1, j);
+    }
+}
+
+/// Candidate collection for a join with a sequence plan
+/// (crates/ferric-rules-core/src/rete.rs:1185 `left_activate` calls
+/// `collect_candidate_facts` with `indexable_tests(tests, plan)` and then
+/// keeps the facts some split of which passes every join test): if the
+/// physical selectors are sound, filtering the candidates by
+/// `pattern_matches` yields exactly the facts, in the same order, that
+/// filtering the whole memory would — for any memory satisfying `inv`, any
+/// tests, bindings, split enumeration and number of facts.
+pub proof fn theorem_plan_candidates_then_residual_equals_scan(
+    m: AlphaMem,
+    tests: Seq<JoinTest>,
+    b: Seq<Option<Val>>,
+    selector: spec_fn(int) -> Option<int>,
+)
+    requires
+        inv(m),
+        selector_sound(selector),
+    ensures
+        collect_candidate_facts(m, first_indexable_with_plan(tests, selector, 0), b).filter(
+            |f: int| pattern_matches(f, b, tests),
+        ) == m.facts.filter(|f: int| pattern_matches(f, b, tests)),
+{
+    let pass = |f: int| pattern_matches(f, b, tests);
+    let first = first_indexable_with_plan(tests, selector, 0);
+    if indexed_candidates(m, first, b) is Some {
+        lemma_first_indexable_with_plan_is_an_equal_test(tests, selector, 0);
+        let j = choose|j: int|
+            0 <= j < tests.len() && (#[trigger] tests[j]).ty is Equal && selector(tests[j].slot) is Some
+                && first_indexable_with_plan(tests, selector, 0) == Some(
+                (selector(tests[j].slot)->Some_0, tests[j].var),
+            );
+        let slot = selector(tests[j].slot)->Some_0;
+        let bound = binding_get(b, tests[j].var).unwrap();
+        let key = atom_key(bound).unwrap();
+        assert(lookup(m, slot, key) == bucket(m.facts, slot, key));
+        assert(collect_candidate_facts(m, first, b) == bucket(m.facts, slot, key));
+        let has_key = |f: int| key_at(f, slot) == Some(key);
+        lemma_filter_filter(m.facts, has_key, pass);
+        assert forall|i: int| 0 <= i < m.facts.len() implies (has_key(m.facts[i]) && pass(
+            m.facts[i],
+        )) == pass(m.facts[i]) by {
+            let f = m.facts[i];
+            if pass(f) {
+                let split = choose|split: int|
+                    0 <= split < split_count(f) && #[trigger] split_join_from(f, split, b, tests, 0);
+                lemma_split_join_implies_each(f, split, b, tests, 0, j);
+                let fact_value = split_value(f, split, tests[j].slot).unwrap();
+                lemma_join_eq_implies_same_key(fact_value, bound);
+                assert(split_value(f, split, tests[j].slot) == field(f, slot));
+            }
+        }
+        lemma_filter_ext(m.facts, |f: int| has_key(f) && pass(f), pass);
     }
 }
 

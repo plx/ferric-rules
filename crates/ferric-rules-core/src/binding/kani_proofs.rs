@@ -10,7 +10,8 @@
 //! * `ValueRef::new` stores scalar values (integer, float bit pattern,
 //!   symbol, `Void`) inline; cloning copies them and deref returns them.
 //! * `VarMap::name` panics for an id at or beyond `len` (its documented
-//!   `# Panics` contract), here after one `get_or_create`.
+//!   `# Panics` contract), on a map holding one name; `name` is the only
+//!   call in that harness that can panic.
 //!
 //! Bounds: binding sets of width at most two holding integers; a `VarMap`
 //! holding one concrete name.
@@ -18,8 +19,10 @@
 //! Known gaps. Not checked by Kani but proved for the executable Verus model
 //! in verification/verus/core_matching.rs: `BindingSet::set`, `extend_from`,
 //! `VarMap::get_or_create`/`lookup` numbering (a two-call harness did not
-//! finish in 20 minutes), the 65536-name `TooManyVariables` limit and the
-//! `idx as u16` cast in `extend_from`. Not checked at all:
+//! finish in 20 minutes, and neither did one concrete `get_or_create`
+//! followed by two `lookup`s and a repeated `get_or_create`), the
+//! 65536-name `TooManyVariables` limit and the `idx as u16` cast in
+//! `extend_from`. Not checked at all:
 //! `BindingSet::clone`/`clear`, shared (`Arc`) `ValueRef`s and
 //! `VarMap::clear`. Every Kani attempt at those ran out of memory or time
 //! (even a single `set` on an empty set): CBMC cannot tell which `Value` variant a
@@ -221,14 +224,20 @@ fn symbol(id: u32) -> Symbol {
     Symbol(SymbolId::Ascii(id))
 }
 
-/// `VarMap::name` panics exactly for ids at or beyond `len` (its documented
-/// `# Panics` contract); this harness covers the panicking side.
+/// `VarMap::name` panics for ids at or beyond `len` (its documented
+/// `# Panics` contract); this harness covers the panicking side. The map is
+/// built directly (one registered name) so that `name` is the only call
+/// that can panic: a `should_panic` harness passes on any panic, and a
+/// panicking setup step (such as unwrapping a failed `get_or_create`) would
+/// otherwise make it pass vacuously.
 #[kani::proof]
 #[kani::should_panic]
-#[kani::unwind(5)]
+#[kani::unwind(2)]
 fn var_map_name_panics_out_of_range() {
-    let mut map = VarMap::new();
-    map.get_or_create(symbol(1)).unwrap();
+    let map = VarMap {
+        by_name: FxHashMap::default(),
+        by_id: vec![symbol(1)],
+    };
     let id: u16 = kani::any_where(|id: &u16| *id >= 1);
     kani::cover!(id == u16::MAX, "largest id");
     let _ = map.name(VarId(id));
