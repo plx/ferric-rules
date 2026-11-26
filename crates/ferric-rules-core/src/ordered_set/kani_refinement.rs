@@ -57,8 +57,8 @@
 //! iterations. Measured here (7 GB address-space limit, alongside other
 //! agents' cbmc runs): promotion alone took 146 s of symbolic execution;
 //! promotion plus three `get`s 500 s (669 s in total); a removal plus its
-//! relink plus one read-back `get` 766 s (about 1030 s in total); promotion
-//! plus three iterator lookups, and a removal followed by a walk of the whole
+//! relink plus one read-back `get` 766-791 s (1027-1078 s in total, close to
+//! the 20-minute limit); promotion plus three iterator lookups, and a removal followed by a walk of the whole
 //! table (`HashMap::iter`), ran out of memory in the solver back end; and
 //! every harness that called `insert` on an allocated table (re-inserting a
 //! member, or inserting after `clear`) was still in symbolic execution at the
@@ -385,8 +385,8 @@ fn linked_remove_head_refines_spec() {
 /// Linked interior removal: both neighbours are relinked through
 /// `get_mut(..).unwrap()` (both lookups hit, so neither `unwrap` panics) and
 /// the endpoints stay. The rewritten links are not read back: that needs two
-/// more lookups, and one read-back after a single relink already takes about
-/// 1030 s, so it was not attempted.
+/// more lookups, and one read-back after a single relink already takes over
+/// 1000 s, so it was not attempted.
 #[kani::proof]
 #[kani::unwind(5)]
 fn linked_remove_middle_refines_spec() {
