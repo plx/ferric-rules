@@ -229,9 +229,9 @@ verify-kani crate="":
         cargo kani -p "$pkg"
     done
 
-# Run a single Kani harness by name (e.g. `just verify-kani-harness ferric-rules-core ordered_set_refines_sequence`)
+# Run one Kani harness by its full path (e.g. `just verify-kani-harness ferric-rules-core ordered_set::kani_refinement::promotion_refines_spec`)
 verify-kani-harness crate harness:
-    cargo kani -p {{crate}} --harness {{harness}}
+    cargo kani -p {{crate}} --harness {{harness}} --exact
 
 # Check the Verus proofs under verification/verus/
 verify-verus:

@@ -92,6 +92,10 @@ to `ferric-rules`; its import name can remain `ferric`.
   their presence does not establish executed compatibility.
 - `crates/ferric-rules/tests/scaling_tests.rs` — fourteen `#[ignore]`
   complexity-class checks run by `just scaling-check`.
+- Formal verification: `#[cfg(kani)]` Kani harnesses in
+  `src/<module>/kani_proofs.rs` and `kani_refinement.rs`, plus Verus models in
+  `verification/verus/`, run by `just verify` (see
+  [`verification.md`](verification.md)).
 
 ## 4. Benchmarks
 
@@ -163,6 +167,8 @@ Maintainers:
 - [`compatibility-assessment.md`](compatibility-assessment.md) — differential
   oracle contract for the compatibility tooling.
 - [`benchmark-policy.md`](benchmark-policy.md) — performance regression policy.
+- [`verification.md`](verification.md) — Kani and Verus proofs: how to run
+  them, what they prove, and their trusted base.
 - [`dependency-security-policy.md`](dependency-security-policy.md) —
   dependency scanning.
 - [`history.md`](history.md) — short project history.
