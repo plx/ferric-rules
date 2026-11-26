@@ -9,7 +9,9 @@
 //!    model of `validate_ncc_parent_ranks` (every member has a rank below the
 //!    counter, ranks strictly increase in insertion order, no stale ranks),
 //!    including the one-shot rebase when the counter reaches `u64::MAX`.
-//!    The rank conversions `u64::try_from(index).expect(..)` cannot fail.
+//!    The rank conversions `u64::try_from(index).expect(..)` are modelled as
+//!    plain casts; that they cannot fail is not proved here but follows from
+//!    the physical bound assumed in `wf` (fewer than `u64::MAX` members).
 //! 2. Variable index agrees with a naive scan: if every token is inserted and
 //!    removed through `insert_indexed` / `remove_indexed` with its own
 //!    bindings, then for every indexed variable `v` and key `k`,

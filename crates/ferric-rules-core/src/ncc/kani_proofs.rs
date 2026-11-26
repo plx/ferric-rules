@@ -18,7 +18,12 @@
 //! covered here. A harness for one `add_result` (five hash-table insertions),
 //! a repeated `add_result`, and `remove_result` on concrete tokens with
 //! symbolic chronology did not finish within 20 minutes, almost all of it in
-//! symbolic execution of the hash tables (see negative/kani_proofs.rs). Counts (including absence of overflow and
+//! symbolic execution of the hash tables (see negative/kani_proofs.rs). A
+//! review variant that replaced the six maps of a fresh memory with empty
+//! maps of spare capacity (so no insertion resizes), then ran two results of
+//! one parent through `add_result`/`remove_result` with
+//! `validate_consistency` after each step, also did not finish within 20
+//! minutes. Counts (including absence of overflow and
 //! underflow), the block/unblock transition signals, primary-result
 //! chronology, invariant preservation and parent cleanup are proved without
 //! bounds on a model of this module in verification/verus/ncc_memory.rs.

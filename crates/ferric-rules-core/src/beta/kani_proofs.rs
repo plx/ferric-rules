@@ -6,12 +6,15 @@
 //!   `insert` / `remove` / `clear` operations over two tokens, `BetaMemory`
 //!   (without NCC ranks or variable indices) agrees after every step with an
 //!   independent model, a duplicate-free list in insertion order: `contains`,
-//!   `len`, `is_empty`, and `iter` (newest first) match, and
-//!   `validate_ncc_parent_ranks` holds.
-//! * `compact_memories_is_order_preserving_renumbering`: for every retention
-//!   mask over up to 4 memories, `compact_memories` keeps exactly the retained
-//!   memories in their original order, renumbers them densely from 0, and
-//!   returns the matching old-to-new mapping.
+//!   `len`, `is_empty`, `iter` (newest first) and the member order (oldest
+//!   first) match. Covers show that every transition of `OrderedSet`'s
+//!   two-endpoint representation is reached. The harness also calls
+//!   `validate_ncc_parent_ranks`, but ranks are never enabled here, so that
+//!   check is trivially `Ok` and proves nothing about ranks.
+//! * `compact_memories_is_order_preserving_renumbering`: for 4 memories and
+//!   every retention mask (all 16), `compact_memories` keeps exactly the
+//!   retained memories in their original order, renumbers them densely from
+//!   0 through the callback, and returns the matching old-to-new mapping.
 //! * `node_capacity_check_matches_allocation`: for every counter value and
 //!   demand, `ensure_node_capacity(required)` succeeds exactly when `required`
 //!   further IDs can be allocated; when it admits a demand of up to 3, that
@@ -26,10 +29,15 @@
 //! node-map insertion of a `BetaNode` already exhausted CBMC's memory (7 GB
 //! limit): `validate_consistency` on the fresh network after 318 s, and a
 //! harness for the root-ID overflow defect (`BetaNetwork::new(NodeId(u32::MAX))`
-//! computes `root + 1` unchecked; reproduced by ordinary execution instead)
-//! after 321 s. NCC parent ranks are not covered either: a harness inserting a
-//! second member into a one-member ranked memory (two insertions into the rank
-//! table) did not finish within 20 minutes. Variable-index maintenance
+//! computes `root + 1` unchecked; reproduced by ordinary execution instead:
+//! debug builds panic, release builds allocate `NodeId(0)` next, and
+//! `validate_consistency` accepts that network) after 321 s. NCC parent ranks
+//! are not covered either: a harness inserting a second member into a
+//! one-member ranked memory (two insertions into the rank table) did not
+//! finish within 20 minutes, and neither did a review variant that started
+//! from an empty rank table created with spare capacity (no resize) and a
+//! symbolic counter, inserting two tokens (the symbolic counter makes every
+//! insertion branch into the rebase path). Variable-index maintenance
 //! (`insert_indexed`/`remove_indexed`, `request_var_index`) and populated
 //! networks need several hash-table insertions, including into tables nested
 //! in map values, which did not finish within 20 minutes in comparable
@@ -82,6 +90,28 @@ fn step(memory: &mut BetaMemory, model: &mut ListModel, tokens: &[TokenId; 2]) {
     let which: u8 = kani::any_where(|w| *w < 2);
     let op: u8 = kani::any_where(|o| *o < 3);
     let t = u32::from(which) + 1;
+    // Every transition of the endpoint representation is reached.
+    kani::cover!(
+        op == 1 && model.len == 2 && model.items[0] == t,
+        "remove the older of two"
+    );
+    kani::cover!(
+        op == 1 && model.len == 2 && model.items[1] == t,
+        "remove the newer of two"
+    );
+    kani::cover!(
+        op == 1 && model.len == 1 && model.items[0] == t,
+        "remove the only token"
+    );
+    kani::cover!(
+        op == 1 && model.len == 1 && model.items[0] != t,
+        "remove an absent token"
+    );
+    kani::cover!(op == 0 && model.len == 2, "re-insert into a full pair");
+    kani::cover!(
+        op == 0 && model.len == 1 && model.items[0] == t,
+        "re-insert the only token"
+    );
     match op {
         0 => {
             memory.insert(tokens[usize::from(which)]);
@@ -109,6 +139,18 @@ fn step(memory: &mut BetaMemory, model: &mut ListModel, tokens: &[TokenId; 2]) {
         assert_eq!(iter.next(), Some(tok(model.items[0])));
     }
     assert_eq!(iter.next(), None);
+    // The underlying member order, oldest first, is what rank backfill
+    // (`enable_ncc_parent_ranks`) and `request_var_index` traverse.
+    let mut members = memory.tokens.iter();
+    if model.len >= 1 {
+        assert_eq!(members.next(), Some(&tok(model.items[0])));
+    }
+    if model.len == 2 {
+        assert_eq!(members.next(), Some(&tok(model.items[1])));
+    }
+    assert_eq!(members.next(), None);
+    // Ranks are not enabled on this memory, so this is the trivial `None`
+    // path of `validate_ncc_parent_ranks`.
     assert!(memory.validate_ncc_parent_ranks().is_ok());
 }
 
@@ -145,6 +187,10 @@ struct Tagged {
 #[kani::proof]
 #[kani::unwind(6)]
 fn compact_memories_is_order_preserving_renumbering() {
+    // Callers pass one retention flag per memory (beta.rs:649-652,
+    // `retain_nodes`). A symbolic memory count (0..=4, via `truncate`) made
+    // CBMC run out of memory during propositional reduction, so the count is
+    // fixed at 4.
     let mask: [bool; 4] = kani::any();
     let mut memories = vec![
         Tagged { id: 0, tag: 10 },
@@ -167,6 +213,12 @@ fn compact_memories_is_order_preserving_renumbering() {
         }
     }
     assert_eq!(memories.len(), kept);
+    kani::cover!(kept == 4, "all four retained");
+    kani::cover!(kept == 0, "all four dropped");
+    kani::cover!(
+        !mask[0] && mask[1] && !mask[2] && mask[3],
+        "renumbering across gaps"
+    );
 }
 
 /// A network with no nodes: only the ID counters matter for allocation.

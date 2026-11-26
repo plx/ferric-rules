@@ -27,6 +27,22 @@
 //! 5. `remove_parent_token(p)` removes every trace of `p` (count, results,
 //!    owners pointing at `p`, primary, chronology, pass-through) and leaves the
 //!    other parents untouched.
+//! 6. Batched cascades (several pending primaries at once). `cascade_inv(m, P)`
+//!    describes the state between rete.rs `collect_ncc_result_retractions`
+//!    and the `apply_ncc_result_retraction` calls: consistent except that each
+//!    parent in `P` still records a stale primary (no longer a tracked result)
+//!    and its block order. A consistent memory satisfies it with `P` empty and
+//!    `P` empty implies `validate_consistency`. `remove_result_support`
+//!    preserves it, adding the parent to `P` exactly when the removed result
+//!    was its recorded primary (at most once per parent per batch), and leaves
+//!    all primaries and block orders untouched, so each recorded transition's
+//!    guard still holds when it is applied. `reassign_primary` (true exactly
+//!    when results survive, oldest survivor becomes primary at the fresh
+//!    order) and `remove_parent_token` each settle one pending parent without
+//!    touching the others; `set_unblocked` of a settled, unblocked parent
+//!    preserves it. `theorem_cascade_batch` composes these: phase one over any
+//!    sequence of removed results followed by settling every recorded parent
+//!    once, in any order, by either operation, restores `validate_consistency`.
 //!
 //! Model / abstractions (the trusted base besides Verus, vstd and Z3):
 //!
@@ -53,6 +69,12 @@
 //! its production function and mirrors its branches), not mechanically.
 //! `increment_results`/`decrement_results` are `pub`, but are modelled only as
 //! used by `add_result`/`remove_result_support` (they have no other callers).
+//! The batch theorem covers one memory and no activity interleaved with the
+//! settlement: in the rete, settling an unblocked parent runs
+//! `ncc_left_activate`, whose propagation may call `add_result` on a pending
+//! parent before its own transition is applied; that interleaving is not
+//! covered. The spec functions `collect` and `settle` model the rete loops
+//! (rete.rs:1947 and rete.rs:1994); their fidelity is checked by review.
 //! The bounded Kani harnesses in crates/ferric-rules-core/src/ncc/kani_proofs.rs
 //! exercise the production code itself.
 use vstd::prelude::*;
@@ -1063,6 +1085,500 @@ pub proof fn theorem_remove_unblocked(m: NccMem, p: Tok)
 {
     lemma_validate_implies_strong(m);
     lemma_strong_implies_validate(remove_unblocked(m, p).0);
+}
+
+// ---------------------------------------------------------------------------
+// Batched retraction cascade (several pending primaries at once)
+// ---------------------------------------------------------------------------
+/// The state between the two phases of a retraction cascade: rete.rs
+/// `collect_ncc_result_retractions` calls `remove_result_support` for every
+/// removed result first, recording a transition for each removed primary, and
+/// only afterwards settles each transition with `apply_ncc_result_retraction`
+/// (`reassign_primary`, or `remove_parent_token` when the parent token is
+/// gone). In between, `validate_consistency` does not hold: each parent in
+/// `pending` lost its primary result and still records that stale primary
+/// and its block order. Otherwise the state satisfies `strong`.
+pub open spec fn cascade_inv(m: NccMem, pending: Set<Tok>) -> bool {
+    &&& wf(m)
+    &&& m.result_count.dom() =~= m.parent_results.dom()
+    &&& m.primary_result.dom() =~= m.result_count.dom().union(pending)
+    &&& m.block_order.dom() =~= m.result_count.dom().union(pending)
+    &&& forall|p: Tok| #[trigger]
+        m.result_count.dom().contains(p) ==> {
+            &&& m.parent_results[p].len() == m.result_count[p]
+            &&& m.parent_results[p].len() > 0
+            &&& !pending.contains(p) ==> m.parent_results[p][0] == m.primary_result[p]
+        }
+    // the recorded primary of a pending parent is no longer a tracked result
+    &&& forall|p: Tok| #[trigger]
+        pending.contains(p) ==> !m.result_owner.dom().contains(m.primary_result[p])
+    &&& forall|p: Tok, r: Tok|
+        #![trigger m.parent_results[p].contains(r)]
+        m.result_count.dom().contains(p) && m.parent_results[p].contains(r)
+            ==> m.result_owner.dom().contains(r) && m.result_owner[r] == p
+    &&& forall|r: Tok| #[trigger]
+        m.result_owner.dom().contains(r) ==> m.result_count.dom().contains(m.result_owner[r])
+            && m.parent_results[m.result_owner[r]].contains(r)
+    // a blocked or pending parent has no pass-through
+    &&& forall|p: Tok| #[trigger]
+        m.unblocked.dom().contains(p) ==> !m.result_count.dom().contains(p) && !pending.contains(p)
+    &&& forall|p: Tok| #[trigger] m.result_count.dom().contains(p) ==> m.result_count[p] > 0
+}
+
+/// A cascade starts from a consistent memory with nothing pending.
+pub proof fn theorem_cascade_start(m: NccMem)
+    requires
+        wf(m),
+        validate_consistency(m),
+    ensures
+        cascade_inv(m, Set::empty()),
+{
+    lemma_validate_implies_strong(m);
+    assert(m.result_count.dom().union(Set::empty()) =~= m.result_count.dom());
+}
+
+/// Once every recorded transition is settled, `validate_consistency` holds again.
+pub proof fn theorem_cascade_finish(m: NccMem)
+    requires
+        cascade_inv(m, Set::empty()),
+    ensures
+        validate_consistency(m),
+        wf(m),
+{
+    assert(m.result_count.dom().union(Set::empty()) =~= m.result_count.dom());
+    assert(strong(m));
+    lemma_strong_implies_validate(m);
+}
+
+/// Phase one: `remove_result_support` for one more removed result. The rete
+/// records a transition exactly when the result is its parent's recorded
+/// primary (rete.rs `collect_ncc_result_retractions`); that parent then joins
+/// `pending`. A parent is recorded at most once per batch, and phase one
+/// leaves every recorded primary and block order untouched, so the guard
+/// `primary_result[parent] == result` in `apply_ncc_result_retraction` still
+/// sees the recorded transition.
+pub proof fn theorem_cascade_remove_support(m: NccMem, pending: Set<Tok>, r: Tok)
+    requires
+        cascade_inv(m, pending),
+        m.result_owner.dom().contains(r),
+    ensures
+        ({
+            let p = m.result_owner[r];
+            let (m1, out) = remove_result_support(m, r);
+            let transition = m.primary_result[p] == r;
+            &&& out == Some((p, (results(m, p).len() - 1) as usize))
+            &&& results(m1, p) == results(m, p).remove(r)
+            &&& forall|q: Tok| q != p ==> #[trigger] results(m1, q) == results(m, q)
+            &&& transition ==> !pending.contains(p)
+            &&& cascade_inv(
+                m1,
+                if transition {
+                    pending.insert(p)
+                } else {
+                    pending
+                },
+            )
+            &&& m1.primary_result == m.primary_result
+            &&& m1.block_order == m.block_order
+            &&& m1.unblocked == m.unblocked
+        }),
+{
+    let p = m.result_owner[r];
+    let (m1, out) = remove_result_support(m, r);
+    let transition = m.primary_result[p] == r;
+    let pending1 = if transition {
+        pending.insert(p)
+    } else {
+        pending
+    };
+    let list = m.parent_results[p];
+    assert(list.contains(r));
+    lemma_os_remove(list, r);
+    list.to_set_ensures();
+    list.unique_seq_to_set();
+    let remaining = os_remove(list, r);
+    remaining.to_set_ensures();
+    remaining.unique_seq_to_set();
+    assert(results(m, p) =~= list.to_set());
+    assert(remaining.len() + 1 == list.len());
+    assert(results(m1, p) =~= results(m, p).remove(r));
+    if transition {
+        // a pending parent's primary is not tracked, but `r` is
+        assert(!pending.contains(p));
+    }
+    if !pending.contains(p) && !transition {
+        // the primary survives, so the parent stays blocked by it
+        assert(list[0] == m.primary_result[p]);
+        assert(remaining.contains(list[0]));
+    }
+    if remaining.len() > 0 {
+        assert(m1.result_count.dom() =~= m.result_count.dom());
+    } else {
+        assert(m1.result_count.dom() =~= m.result_count.dom().remove(p));
+    }
+    assert(m1.parent_results.dom() =~= m1.result_count.dom());
+    assert(m1.primary_result.dom() =~= m1.result_count.dom().union(pending1));
+    assert(m1.block_order.dom() =~= m1.result_count.dom().union(pending1));
+    assert forall|q: Tok| #[trigger] m1.result_count.dom().contains(q) implies {
+        &&& m1.parent_results[q].len() == m1.result_count[q]
+        &&& m1.parent_results[q].len() > 0
+        &&& !pending1.contains(q) ==> m1.parent_results[q][0] == m1.primary_result[q]
+    } by {
+        if q == p && !pending1.contains(q) {
+            assert(list[0] == m.primary_result[p]);
+        }
+    }
+    assert forall|q: Tok| #[trigger] pending1.contains(q) implies !m1.result_owner.dom().contains(
+        m1.primary_result[q],
+    ) by {}
+    assert forall|q: Tok, x: Tok|
+        m1.result_count.dom().contains(q) && #[trigger] m1.parent_results[q].contains(
+            x,
+        ) implies m1.result_owner.dom().contains(x) && m1.result_owner[x] == q by {
+        if q != p {
+            assert(m.parent_results[q].contains(x));
+        } else {
+            assert(list.contains(x));
+        }
+    }
+    assert forall|x: Tok| #[trigger] m1.result_owner.dom().contains(x) implies m1.result_count.dom().contains(
+        m1.result_owner[x],
+    ) && m1.parent_results[m1.result_owner[x]].contains(x) by {
+        let q = m.result_owner[x];
+        assert(m.parent_results[q].contains(x));
+        if q == p {
+            assert(remaining.contains(x));
+        }
+    }
+    assert forall|q: Tok| q != p implies #[trigger] results(m1, q) == results(m, q) by {}
+}
+
+/// Phase two, parent token still live: `reassign_primary` settles one pending
+/// parent (rete.rs `apply_ncc_result_retraction`). It returns `true` exactly
+/// when results survive, in which case the oldest survivor becomes primary at
+/// the fresh `order`; otherwise the parent's chronology is dropped and it may
+/// be unblocked. Other parents, settled or pending, are untouched.
+pub proof fn theorem_cascade_reassign(m: NccMem, pending: Set<Tok>, p: Tok, order: u64)
+    requires
+        cascade_inv(m, pending),
+        pending.contains(p),
+    ensures
+        ({
+            let (m1, still_blocked) = reassign_primary(m, p, order);
+            &&& cascade_inv(m1, pending.remove(p))
+            &&& still_blocked == (results(m, p).len() > 0)
+            &&& still_blocked == m.result_count.dom().contains(p)
+            &&& still_blocked ==> m1.primary_result[p] == m.parent_results[p][0]
+                && m1.block_order[p] == order
+            &&& !still_blocked ==> !m1.primary_result.dom().contains(p)
+                && !m1.block_order.dom().contains(p)
+            &&& forall|q: Tok|
+                q != p ==> (#[trigger] m1.primary_result.dom().contains(q)
+                    <==> m.primary_result.dom().contains(q))
+            &&& forall|q: Tok|
+                q != p && #[trigger] m.primary_result.dom().contains(q) ==> m1.primary_result[q]
+                    == m.primary_result[q] && m1.block_order[q] == m.block_order[q]
+            &&& forall|q: Tok| #[trigger] results(m1, q) == results(m, q)
+            &&& m1.unblocked == m.unblocked
+            &&& orders_unique(m) && (still_blocked ==> fresh_order(m, p, order)) ==> orders_unique(
+                m1,
+            )
+        }),
+{
+    let (m1, still_blocked) = reassign_primary(m, p, order);
+    let pending1 = pending.remove(p);
+    if m.result_count.dom().contains(p) {
+        let list = m.parent_results[p];
+        list.to_set_ensures();
+        assert(results(m, p).contains(list[0]));
+    } else {
+        assert(results(m, p) =~= Set::empty());
+    }
+    assert(m1.primary_result.dom() =~= m1.result_count.dom().union(pending1));
+    assert(m1.block_order.dom() =~= m1.result_count.dom().union(pending1));
+    assert forall|q: Tok| #[trigger] m1.result_count.dom().contains(q) implies {
+        &&& m1.parent_results[q].len() == m1.result_count[q]
+        &&& m1.parent_results[q].len() > 0
+        &&& !pending1.contains(q) ==> m1.parent_results[q][0] == m1.primary_result[q]
+    } by {}
+    assert forall|q: Tok| #[trigger] pending1.contains(q) implies !m1.result_owner.dom().contains(
+        m1.primary_result[q],
+    ) by {
+        assert(pending.contains(q) && q != p);
+    }
+    assert forall|q: Tok, x: Tok|
+        m1.result_count.dom().contains(q) && #[trigger] m1.parent_results[q].contains(
+            x,
+        ) implies m1.result_owner.dom().contains(x) && m1.result_owner[x] == q by {
+        assert(m.parent_results[q].contains(x));
+    }
+    assert forall|q: Tok| #[trigger] results(m1, q) == results(m, q) by {}
+    if orders_unique(m) && (still_blocked ==> fresh_order(m, p, order)) {
+        assert forall|a: Tok, b: Tok|
+            m1.block_order.dom().contains(a) && m1.block_order.dom().contains(b) && a
+                != b implies #[trigger] m1.block_order[a] != #[trigger] m1.block_order[b] by {
+            if a != p && b != p {
+                assert(m.block_order[a] != m.block_order[b]);
+            }
+        }
+    }
+}
+
+/// Phase two, parent token already gone: `remove_parent_token` settles a
+/// pending parent (rete.rs `apply_ncc_result_retraction`) and removes every
+/// trace of it; any other parent can be removed mid-cascade as well.
+pub proof fn theorem_cascade_remove_parent(m: NccMem, pending: Set<Tok>, p: Tok)
+    requires
+        cascade_inv(m, pending),
+    ensures
+        ({
+            let m1 = remove_parent_token(m, p);
+            &&& cascade_inv(m1, pending.remove(p))
+            &&& results(m1, p) == Set::<Tok>::empty()
+            &&& forall|x: Tok| #[trigger] m1.result_owner.dom().contains(x) ==> m1.result_owner[x] != p
+            &&& !m1.primary_result.dom().contains(p)
+            &&& !m1.block_order.dom().contains(p)
+            &&& !m1.unblocked.dom().contains(p)
+            &&& forall|q: Tok| q != p ==> #[trigger] results(m1, q) == results(m, q)
+            &&& forall|q: Tok|
+                q != p && #[trigger] m.primary_result.dom().contains(q) ==> m1.primary_result.dom().contains(q)
+                    && m1.primary_result[q] == m.primary_result[q] && m1.block_order[q]
+                    == m.block_order[q]
+        }),
+{
+    let m1 = remove_parent_token(m, p);
+    let pending1 = pending.remove(p);
+    let list = if m.parent_results.dom().contains(p) {
+        m.parent_results[p]
+    } else {
+        Seq::<Tok>::empty()
+    };
+    if m.parent_results.dom().contains(p) {
+        lemma_remove_owners(m.result_owner, list, 0);
+    }
+    assert(list.subrange(0, list.len() as int) =~= list);
+    assert forall|x: Tok| #[trigger] m1.result_owner.dom().contains(x) implies m.result_owner.dom().contains(
+        x,
+    ) && m1.result_owner[x] == m.result_owner[x] && m1.result_owner[x] != p by {
+        assert(list.subrange(0, list.len() as int).contains(x) == list.contains(x));
+        if m.result_owner[x] == p {
+            assert(m.parent_results[p].contains(x));
+        }
+    }
+    assert forall|x: Tok|
+        m.result_owner.dom().contains(x) && m.result_owner[x] != p implies #[trigger] m1.result_owner.dom().contains(
+        x,
+    ) by {
+        assert(list.subrange(0, list.len() as int).contains(x) == list.contains(x));
+        if list.contains(x) {
+            assert(m.result_owner[x] == p);
+        }
+    }
+    assert(m1.result_count.dom() =~= m.result_count.dom().remove(p));
+    assert(m1.parent_results.dom() =~= m1.result_count.dom());
+    assert(m1.primary_result.dom() =~= m1.result_count.dom().union(pending1));
+    assert(m1.block_order.dom() =~= m1.result_count.dom().union(pending1));
+    assert forall|q: Tok| #[trigger] pending1.contains(q) implies !m1.result_owner.dom().contains(
+        m1.primary_result[q],
+    ) by {
+        assert(pending.contains(q));
+    }
+    assert forall|q: Tok, x: Tok|
+        m1.result_count.dom().contains(q) && #[trigger] m1.parent_results[q].contains(
+            x,
+        ) implies m1.result_owner.dom().contains(x) && m1.result_owner[x] == q by {
+        assert(m.parent_results[q].contains(x));
+    }
+    assert forall|x: Tok| #[trigger] m1.result_owner.dom().contains(x) implies m1.result_count.dom().contains(
+        m1.result_owner[x],
+    ) && m1.parent_results[m1.result_owner[x]].contains(x) by {
+        assert(m.result_owner.dom().contains(x));
+    }
+    assert(results(m1, p) =~= Set::<Tok>::empty());
+    assert forall|q: Tok| q != p implies #[trigger] results(m1, q) == results(m, q) by {}
+}
+
+/// Phase two, unblocked parent: after `reassign_primary` returned `false`,
+/// `ncc_left_activate` may record a pass-through for the settled parent.
+pub proof fn theorem_cascade_set_unblocked(m: NccMem, pending: Set<Tok>, p: Tok, pt: Tok)
+    requires
+        cascade_inv(m, pending),
+        !m.result_count.dom().contains(p),
+        !pending.contains(p),
+    ensures
+        cascade_inv(set_unblocked(m, p, pt), pending),
+{
+}
+
+/// Models phase one over a whole batch, the loop of rete.rs:1947
+/// `collect_ncc_result_retractions`, for one memory: for each removed result
+/// `rs[i..]` in order, skip it if it is not tracked (`let Some(parent) =
+/// result_owner.get(result) else { continue }`), record its parent if it is
+/// the recorded primary, then `remove_result_support`. Returns the memory and
+/// the parents with recorded transitions (added to `pending`).
+pub open spec fn collect(m: NccMem, pending: Set<Tok>, rs: Seq<Tok>, i: int) -> (NccMem, Set<Tok>)
+    decreases rs.len() - i,
+{
+    if i < 0 || i >= rs.len() {
+        (m, pending)
+    } else if !m.result_owner.dom().contains(rs[i]) {
+        collect(m, pending, rs, i + 1)
+    } else {
+        let p = m.result_owner[rs[i]];
+        let pending1 = if m.primary_result[p] == rs[i] {
+            pending.insert(p)
+        } else {
+            pending
+        };
+        collect(remove_result_support(m, rs[i]).0, pending1, rs, i + 1)
+    }
+}
+
+/// Models phase two over a whole batch, one rete.rs:1994
+/// `apply_ncc_result_retraction` per recorded parent `ps[i..]` in order: its
+/// guard `primary_result[parent] == result` always holds here (see
+/// `theorem_cascade_remove_support`), so the parent is settled by
+/// `reassign_primary` at `orders[i]` (any value; the rete passes a fresh
+/// `allocate_block_order()` when results survive and 0 otherwise) when its
+/// parent token is still live, or by `remove_parent_token` otherwise. `live` stands for `token_store.get(parent).is_some()`.
+pub open spec fn settle(
+    m: NccMem,
+    ps: Seq<Tok>,
+    live: spec_fn(Tok) -> bool,
+    orders: Seq<u64>,
+    i: int,
+) -> NccMem
+    decreases ps.len() - i,
+{
+    if i < 0 || i >= ps.len() {
+        m
+    } else {
+        let m1 = if live(ps[i]) {
+            reassign_primary(m, ps[i], if i < orders.len() {
+                orders[i]
+            } else {
+                0
+            }).0
+        } else {
+            remove_parent_token(m, ps[i])
+        };
+        settle(m1, ps, live, orders, i + 1)
+    }
+}
+
+pub proof fn lemma_collect(m: NccMem, pending: Set<Tok>, rs: Seq<Tok>, i: int)
+    requires
+        cascade_inv(m, pending),
+        0 <= i <= rs.len(),
+    ensures
+        cascade_inv(collect(m, pending, rs, i).0, collect(m, pending, rs, i).1),
+        pending.subset_of(collect(m, pending, rs, i).1),
+    decreases rs.len() - i,
+{
+    if i < rs.len() {
+        if m.result_owner.dom().contains(rs[i]) {
+            let p = m.result_owner[rs[i]];
+            let pending1 = if m.primary_result[p] == rs[i] {
+                pending.insert(p)
+            } else {
+                pending
+            };
+            theorem_cascade_remove_support(m, pending, rs[i]);
+            lemma_collect(remove_result_support(m, rs[i]).0, pending1, rs, i + 1);
+        } else {
+            lemma_collect(m, pending, rs, i + 1);
+        }
+    }
+}
+
+pub proof fn lemma_settle(
+    m: NccMem,
+    ps: Seq<Tok>,
+    live: spec_fn(Tok) -> bool,
+    orders: Seq<u64>,
+    i: int,
+)
+    requires
+        0 <= i <= ps.len(),
+        ps.no_duplicates(),
+        cascade_inv(m, ps.subrange(i, ps.len() as int).to_set()),
+    ensures
+        cascade_inv(settle(m, ps, live, orders, i), Set::empty()),
+    decreases ps.len() - i,
+{
+    let pending = ps.subrange(i, ps.len() as int).to_set();
+    if i < ps.len() {
+        let p = ps[i];
+        let rest = ps.subrange(i + 1, ps.len() as int).to_set();
+        assert(pending.remove(p) =~= rest) by {
+            assert forall|x: Tok| pending.remove(p).contains(x) <==> rest.contains(x) by {
+                let suffix = ps.subrange(i, ps.len() as int);
+                let tail = ps.subrange(i + 1, ps.len() as int);
+                suffix.to_set_ensures();
+                tail.to_set_ensures();
+                if tail.contains(x) {
+                    let j = choose|j: int| 0 <= j < tail.len() && tail[j] == x;
+                    assert(suffix[j + 1] == x);
+                    assert(ps[i + 1 + j] == x);
+                    assert(x != p);
+                }
+                if suffix.contains(x) && x != p {
+                    let j = choose|j: int| 0 <= j < suffix.len() && suffix[j] == x;
+                    assert(j != 0);
+                    assert(tail[j - 1] == x);
+                }
+            }
+        }
+        assert(pending.contains(p)) by {
+            ps.subrange(i, ps.len() as int).to_set_ensures();
+            assert(ps.subrange(i, ps.len() as int)[0] == p);
+        }
+        let order = if i < orders.len() {
+            orders[i]
+        } else {
+            0
+        };
+        if live(p) {
+            theorem_cascade_reassign(m, pending, p, order);
+            lemma_settle(reassign_primary(m, p, order).0, ps, live, orders, i + 1);
+        } else {
+            theorem_cascade_remove_parent(m, pending, p);
+            lemma_settle(remove_parent_token(m, p), ps, live, orders, i + 1);
+        }
+    } else {
+        assert(pending =~= Set::empty()) by {
+            ps.subrange(i, ps.len() as int).to_set_ensures();
+        }
+    }
+}
+
+/// A whole batched cascade on one memory restores `validate_consistency`:
+/// starting from a consistent memory, phase one removes the support of every
+/// removed result `rs` (in any order, tracked or not), and phase two settles
+/// every recorded transition exactly once (`ps` enumerates the recorded
+/// parents, in any order), each by `reassign_primary` or
+/// `remove_parent_token` as the liveness of its parent token dictates.
+pub proof fn theorem_cascade_batch(
+    m: NccMem,
+    rs: Seq<Tok>,
+    ps: Seq<Tok>,
+    live: spec_fn(Tok) -> bool,
+    orders: Seq<u64>,
+)
+    requires
+        wf(m),
+        validate_consistency(m),
+        ps.no_duplicates(),
+        ps.to_set() == collect(m, Set::empty(), rs, 0).1,
+    ensures
+        validate_consistency(settle(collect(m, Set::empty(), rs, 0).0, ps, live, orders, 0)),
+        wf(settle(collect(m, Set::empty(), rs, 0).0, ps, live, orders, 0)),
+{
+    theorem_cascade_start(m);
+    lemma_collect(m, Set::empty(), rs, 0);
+    assert(ps.subrange(0, ps.len() as int) =~= ps);
+    lemma_settle(collect(m, Set::empty(), rs, 0).0, ps, live, orders, 0);
+    theorem_cascade_finish(settle(collect(m, Set::empty(), rs, 0).0, ps, live, orders, 0));
 }
 
 } // verus!

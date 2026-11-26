@@ -20,7 +20,11 @@
 //! inside a map value); symbolic execution of it alone did not finish within
 //! 20 minutes. `negative_passthrough_lifecycle` (one insertion, then a
 //! symbolic choice of removal path) took 655 s, 496 s of it in symbolic
-//! execution and under 15 s in the SAT solver.
+//! execution and under 15 s in the SAT solver. A review variant that built a
+//! parent with two blockers directly from the fields, using maps and sets with
+//! spare capacity so that no insertion resizes, and then removed both
+//! blockers in a symbolic order (no validation of the populated states) did
+//! not finish within 20 minutes either.
 //! Invariant preservation, the blocked/unblocked transition signal,
 //! chronology and parent cleanup are instead proved without bounds on a model
 //! of this module in verification/verus/negative_memory.rs.
