@@ -3,16 +3,21 @@
 //! `sequence` (see docs/verification.md).
 //!
 //! `model` below is a plain-Rust copy of every exec function of the Verus
-//! model, kept textually aligned with it: specifications, ghost variables and
-//! proof blocks are removed, `slice_from_ref`/`slice_subrange` are the std
+//! model except the `example_admits` non-vacuity check, kept textually
+//! aligned with it: specifications, ghost variables and proof blocks are
+//! removed (so are the ghost `SplitSearch::work` counter and the `Ghost`
+//! second component of `search`'s result, which carry the Verus work
+//! bound), `slice_from_ref`/`slice_subrange` are the std
 //! operations their Verus specifications describe, and the three model enums
 //! that own heap data (`Val`, `Fact`, `TestType`) carry `#[repr(u8)]`, a
 //! layout-only change (see "Harness technique"). The harnesses run model
 //! functions and their production counterparts on the same inputs and
 //! require equal results. They link to production the helpers the Verus
-//! proof builds on (`segment_extra`, `test_extent`, and `Equal` evaluation
-//! through `SplitView::get`); they do NOT link `search`/`place` themselves
-//! (see "Not covered").
+//! proof builds on (`segment_extra`, `test_extent`, and production
+//! `evaluate_field_test` for `Equal` over the values `SplitView::get` is
+//! documented to return, supplied by an oracle closure); they do NOT link
+//! `search`/`place` or production `SplitView::get` themselves (see "Not
+//! covered").
 //!
 //! # What is proved (all inputs within the stated bounds)
 //!
@@ -34,6 +39,14 @@
 //!   documented to return (sequence.rs:542-555: a single field reads as its
 //!   value, a capture as the multifield of its values, a selector of the
 //!   other kind or past the fields as `None`). Unwind 3.
+//! * `equal_never_matches_a_multifield`: for ANY integer key and a capture
+//!   or scalar multifield of up to two ANY integers, the model and
+//!   production `Equal` evaluation agree and are false, even when the
+//!   multifield is exactly `[key]`. `equal_never_matches_a_one_value_multifield`
+//!   is its one-value instance, kept separately because it still returns a
+//!   counterexample within the memory budget for a production change that
+//!   reads a one-value multifield as its atom (the symbolic-length harness
+//!   runs out of memory on that change). Unwind 3.
 //!
 //! # Not covered, and why (Kani 0.68, `ulimit -v 7000000`, shared 4-CPU host)
 //!
@@ -812,4 +825,100 @@ fn equal_semantics_refine_production() {
     );
     std::mem::forget(test);
     std::mem::forget(production_test);
+}
+
+/// `Equal(key)` on one multifield field — a capture when `scalar` is false,
+/// a scalar slot holding a multifield when it is true — of the values in
+/// `run`: the model (`evaluate_field_test` over the borrowed field) and
+/// production `evaluate_field_test` (over the multifield value a capture
+/// reads as, sequence.rs:551-554 and :602) agree, and neither matches.
+/// Returns whether the multifield holds exactly `[key]`.
+fn check_equal_on_multifield(key: i64, run: Run, scalar: bool) -> bool {
+    let model_values = run.model();
+    let model_multi = model::Val::Mf(run.model());
+    let fact = model::Fact::Template(Vec::new());
+    let field = if scalar {
+        model::FieldRef::Single(&model_multi)
+    } else {
+        model::FieldRef::Multi(&model_values)
+    };
+    let split = model::SplitView {
+        fact: &fact,
+        fields: vec![field],
+        lengths: Vec::new(),
+    };
+    let test = model::Test {
+        slot: model::Slot::Template(0),
+        test_type: model::TestType::Equal(key),
+    };
+    let production_test = ConstantTest {
+        slot: SlotIndex::Template(0),
+        test_type: ConstantTestType::Equal(AtomKey::Integer(key)),
+    };
+    let value = run.production();
+    let get = |slot: SlotIndex| match slot {
+        SlotIndex::Template(0) => Some(&value),
+        _ => None,
+    };
+    let expected = model::evaluate_field_test(&test, &split);
+    let actual = evaluate_field_test(&production_test, get);
+    assert_eq!(actual, expected);
+    assert!(!actual, "Equal never matches a multifield");
+    std::mem::forget(split);
+    std::mem::forget(fact);
+    std::mem::forget(model_values);
+    std::mem::forget(model_multi);
+    std::mem::forget(value);
+    std::mem::forget(test);
+    std::mem::forget(production_test);
+    run.len == 1 && run.atoms[0] == key
+}
+
+/// `Equal(key)` on a capture or a scalar multifield of up to two values, for
+/// ANY key and ANY integer values: the model and production agree and
+/// neither matches (the Verus `eval` compares the key only with a single
+/// atom). Generalizes `equal_semantics_refine_production`, whose key and
+/// values are fixed to {0, 1}.
+#[kani::proof]
+#[kani::unwind(3)]
+fn equal_never_matches_a_multifield() {
+    let key: i64 = kani::any();
+    let run = Run {
+        atoms: kani::any(),
+        len: kani::any_where(|len| *len <= 2),
+    };
+    let scalar: bool = kani::any();
+    let holds_key = check_equal_on_multifield(key, run, scalar);
+
+    kani::cover!(holds_key && !scalar, "a capture holding exactly the key");
+    kani::cover!(
+        holds_key && scalar,
+        "a scalar multifield holding exactly the key"
+    );
+    kani::cover!(run.len == 0, "an empty multifield");
+    kani::cover!(run.len == 2, "a two-value multifield");
+}
+
+/// The one-value case of `equal_never_matches_a_multifield` on its own. A
+/// production change that read a one-value multifield as its atom (e.g. in
+/// `AtomKey::try_from`) runs the symbolic-length harness out of CBMC memory;
+/// this fixed-length instance stays small enough to return a counterexample
+/// for it (measured: about 6 s).
+#[kani::proof]
+#[kani::unwind(3)]
+fn equal_never_matches_a_one_value_multifield() {
+    let key: i64 = kani::any();
+    let run = Run {
+        atoms: kani::any(),
+        len: 1,
+    };
+    let scalar: bool = kani::any();
+    let holds_key = check_equal_on_multifield(key, run, scalar);
+
+    kani::cover!(holds_key && !scalar, "a capture holding exactly the key");
+    kani::cover!(
+        holds_key && scalar,
+        "a scalar multifield holding exactly the key"
+    );
+    kani::cover!(!holds_key, "a one-value multifield without the key");
 }

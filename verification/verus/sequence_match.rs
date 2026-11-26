@@ -30,6 +30,21 @@
 //!   (`lemma_checked_advance`), a failing ready test excludes every
 //!   completion (`lemma_prune`), and the final check accepts exactly the
 //!   splits passing all tests (`lemma_complete_check`).
+//! * Work bound (`search`, `place`): the search runs at most
+//!   `(Step events + 1) * (logical width + segments)` iterations of
+//!   `place`'s loop, over all recursive calls. An iteration places one
+//!   single field, moves to the next segment, or runs the ready tests once
+//!   (at a capture, before trying its lengths, or at a complete split);
+//!   each capture length tried starts a recursive call whose iterations
+//!   are counted, so this bounds all placements and test runs. This is the
+//!   premise of callers that bound the search by charging a fixed cost per
+//!   `Step` (snapshot.rs `any_sequence_match` charges `split_cost`, which
+//!   includes `logical_width() + segments.len()`, up front and per step).
+//!   "Step events" counts the steps the visitor accepted (`Visitor::steps`;
+//!   a step that breaks the search is not counted). Equality
+//!   holds for a one-capture pattern over no values (2 iterations, no
+//!   step), and the bound is false if a capture that is not its segment's
+//!   last stops emitting `Step`, or if only the last one emits it.
 //! * Termination of every exec function (Verus `decreases` checks), and
 //!   absence of arithmetic overflow and out-of-bounds indexing in the model
 //!   (Verus checks every exec operation).
@@ -42,7 +57,9 @@
 //! crates/ferric-rules-core/src/sequence/kani_refinement.rs holds a
 //! plain-Rust copy of this exec code and Kani harnesses comparing parts of it
 //! with the production code on bounded inputs: `segment_extra`, `test_extent`
-//! (`Equal`/`EqualSlot`) and `Equal` evaluation through `SplitView::get`.
+//! (`Equal`/`EqualSlot`) and production `evaluate_field_test` for `Equal`
+//! over the values `SplitView::get` is documented to return (supplied by an
+//! oracle closure there, not by production `SplitView::get`).
 //! The search itself (`search`/`place`/`ready_tests_pass`) is beyond the
 //! Kani budget there (measurements in that file), so it is linked to
 //! production only by the line-by-line fidelity of this transcription.
@@ -69,6 +86,10 @@
 //!   .rev()` is written as a countdown loop; `place`'s mutable parameters are
 //!   copied into locals (`segment0` → `segment`, ...); the facts' relation
 //!   and template id are omitted (the search never reads them).
+//! * Ghost instrumentation with no production counterpart (erased, and
+//!   dropped from the Kani copy): `SplitSearch::work` counts `place`'s loop
+//!   iterations, and `search` returns it as the `Ghost` second component of
+//!   its result, next to production's `is_break()`.
 //! * Precondition `width(..) < usize::MAX`: the logical width
 //!   (`logical_width`, sequence.rs:64) is a sum of in-memory `Vec` lengths;
 //!   it bounds every placed prefix so a saturated `test_extent` is exact
@@ -89,6 +110,9 @@
 //!   on bounded inputs; the search loop itself is not machine-linked.
 //! * `validate`, `project` (sequence.rs:302), `physical_selector`/
 //!   `physical_test` and the copy-on-read capture cache are not modelled.
+//! * `Step` events are specified only through the work bound, not by their
+//!   exact positions; when the visitor breaks, the matches already reported
+//!   are sound and ordered but are not proved to be the greatest ones.
 use vstd::prelude::*;
 use vstd::slice::slice_subrange;
 
@@ -1590,6 +1614,7 @@ impl Visitor {
             final(self).matches@[old(self).matches@.len() as int]@ == lengths@,
             final(self).stop_on_match == old(self).stop_on_match,
             final(self).step_budget == old(self).step_budget,
+            final(self).steps@ == old(self).steps@,
             stop == old(self).stop_on_match,
     {
         let copy = copy_lengths(lengths);
@@ -1605,6 +1630,8 @@ impl Visitor {
             final(self).stop_on_match == old(self).stop_on_match,
             final(self).step_budget == old(self).step_budget,
             stop ==> budget_hit(*final(self)),
+            stop ==> final(self).steps@.len() == old(self).steps@.len(),
+            !stop ==> final(self).steps@.len() == old(self).steps@.len() + 1,
     {
         if let Some(budget) = self.step_budget {
             if self.steps.len() >= budget {
@@ -1628,12 +1655,16 @@ pub open spec fn measure(segs: Seq<Segment>, s: int, f: int) -> int {
 }
 
 // Models crates/ferric-rules-core/src/sequence.rs:415 struct SplitSearch
-// (without the `prefix` filter, i.e. as used by `search`).
+// (without the `prefix` filter, i.e. as used by `search`). `work` is ghost
+// instrumentation with no production counterpart: it counts the iterations
+// of `place`'s loop, i.e. the search effort that the work-bound theorem
+// relates to the number of `Step` events.
 pub struct SplitSearch<'a> {
     pub plan: &'a Pattern,
     pub sources: Vec<(&'a [Val], usize)>,
     pub needs: Vec<usize>,
     pub split: SplitView<'a>,
+    pub work: Ghost<nat>,
 }
 
 impl<'a> SplitSearch<'a> {
@@ -1899,6 +1930,55 @@ proof fn lemma_extends_keeps(
 }
 
 // ===================================================================
+// Work-bound arithmetic
+// ===================================================================
+
+/// Adding the iterations `wi <= (si + 1) * (mp - 1)` of one capture
+/// length's recursive call (`si` steps inside it) to `w <= wc + d0 * (mp -
+/// 1)` (`d0` steps before it) gives the bound with `d0 + si + 1` steps: the
+/// step count after the call when the capture emitted a `Step` for this
+/// length, one more than it otherwise.
+proof fn lemma_work_add(w: int, wc: int, d0: int, wi: int, si: int, mp: int)
+    requires
+        w <= wc + d0 * (mp - 1),
+        wi <= (si + 1) * (mp - 1),
+    ensures
+        w + wi <= wc + (d0 + si + 1) * (mp - 1),
+{
+    assert((d0 + si + 1) * (mp - 1) == d0 * (mp - 1) + (si + 1) * (mp - 1)) by (nonlinear_arith);
+}
+
+/// `wc + (ds + 1) * (mp - 1) <= (ds + 1) * (wc + mp - 1)`: closing a call
+/// that spent `wc` iterations reaching a capture with measure `mp`.
+proof fn lemma_work_close(w: int, wc: int, ds: int, mp: int)
+    requires
+        0 <= wc,
+        0 <= ds,
+        w <= wc + (ds + 1) * (mp - 1),
+    ensures
+        w <= (ds + 1) * (wc + mp - 1),
+{
+    assert((ds + 1) * (wc + mp - 1) == (ds + 1) * wc + (ds + 1) * (mp - 1)) by (nonlinear_arith);
+    assert(wc <= (ds + 1) * wc) by (nonlinear_arith)
+        requires
+            0 <= wc,
+            0 <= ds,
+    ;
+}
+
+/// A measure is at least 1 at every valid search position.
+proof fn lemma_measure_pos(segs: Seq<Segment>, s: int, f: int)
+    requires
+        0 <= s < segs.len(),
+        0 <= f <= segs[s].fields@.len(),
+    ensures
+        measure(segs, s, f) >= 1,
+{
+    lemma_fields_upto_mono(segs, s + 1, segs.len() as int);
+    assert(fields_upto(segs, s + 1) == fields_upto(segs, s) + segs[s].fields@.len());
+}
+
+// ===================================================================
 // Exec: the split search
 // ===================================================================
 
@@ -1935,6 +2015,17 @@ impl<'a> SplitSearch<'a> {
                 old(self).split.lengths@,
                 broke,
             ),
+            // Work bound: the loop iterations of this call and its
+            // recursive calls are at most (Step events + 1) times the
+            // remaining fields and segments.
+            old(visitor).steps@.len() <= final(visitor).steps@.len(),
+            old(self).work@ <= final(self).work@,
+            final(self).work@ - old(self).work@ <= (final(visitor).steps@.len()
+                - old(visitor).steps@.len() + 1) * measure(
+                old(self).segs(),
+                segment0 as int,
+                field0 as int,
+            ),
         decreases measure(self.segs(), segment0 as int, field0 as int),
     {
         let ghost pat = *self.plan;
@@ -1947,6 +2038,8 @@ impl<'a> SplitSearch<'a> {
         let ghost segs = self.segs();
         let ghost s0 = segment0 as int;
         let ghost f0 = field0 as int;
+        let ghost w0 = self.work@;
+        let ghost m_all = measure(segs, s0, f0);
         let mark = self.split.fields.len();
         let plan = self.plan;
         let mut segment = segment0;
@@ -1964,7 +2057,11 @@ impl<'a> SplitSearch<'a> {
                 ),
                 *visitor == v0,
                 measure(segs, segment as int, field as int) <= measure(segs, s0, f0),
+                self.work@ - w0 + measure(segs, segment as int, field as int) == m_all,
             invariant
+                w0 <= self.work@,
+                w0 == old(self).work@,
+                m_all == measure(segs, s0, f0),
                 self.same_frame(old(self)),
                 self.wf(),
                 plan == self.plan,
@@ -1987,8 +2084,14 @@ impl<'a> SplitSearch<'a> {
                 self.split.fields@.take(mark as int) == fields0,
             ensures
                 visit_ok(pat, fact, v0, *visitor, lens, false),
+                v0.steps@.len() <= visitor.steps@.len(),
+                self.work@ - w0 <= (visitor.steps@.len() - v0.steps@.len() + 1) * m_all,
             decreases measure(segs, segment as int, field as int),
         {
+            proof {
+                lemma_measure_pos(segs, segment as int, field as int);
+            }
+            self.work = Ghost(self.work@ + 1);
             let fields = &plan.segments[segment].fields;
             let values = self.sources[segment].0;
             let ghost s = segment as int;
@@ -2127,9 +2230,12 @@ impl<'a> SplitSearch<'a> {
                     );
                 }
             }
+            let ghost wc = self.work@ - w0;
+            let ghost mp = measure(segs, s, f);
             let mut length = extra;
             loop
                 invariant_except_break
+                    self.work@ - w0 <= wc + (visitor.steps@.len() - v0.steps@.len()) * (mp - 1),
                     shortest <= length,
                     above(
                         visitor.matches@,
@@ -2196,7 +2302,17 @@ impl<'a> SplitSearch<'a> {
                     sound_from(pat, fact, visitor.matches@, m0, visitor.matches@.len() as int, lens),
                     sorted_desc(visitor.matches@, m0, visitor.matches@.len() as int),
                     visitor.stop_on_match ==> visitor.matches@.len() == m0,
+                    w0 <= self.work@,
+                    w0 == old(self).work@,
+                    m_all == measure(segs, s0, f0),
+                    0 <= wc,
+                    wc + mp == m_all + 1,
+                    mp == measure(segs, s, f),
+                    mp >= 2,
+                    v0.steps@.len() <= visitor.steps@.len(),
                 ensures
+                    self.work@ - w0 <= wc + (visitor.steps@.len() - v0.steps@.len() + 1) * (mp
+                        - 1),
                     complete_above(
                         pat,
                         fact,
@@ -2208,12 +2324,21 @@ impl<'a> SplitSearch<'a> {
                     ),
                 decreases length,
             {
+                let ghost d0 = visitor.steps@.len() - v0.steps@.len();
                 if !last {
                     if visitor.on_step() {
+                        proof {
+                            assert(wc + d0 * (mp - 1) <= wc + (d0 + 1) * (mp - 1)) by (nonlinear_arith)
+                                requires
+                                    mp >= 1,
+                            ;
+                            lemma_work_close(self.work@ - w0, wc, d0, mp);
+                        }
                         return true;
                     }
                 }
                 let ghost vb = *visitor;
+                let ghost wb = self.work@;
                 proof {
                     assert(offset as int + length as int <= vals.len());
                     assert(vals.len() == values.len());
@@ -2251,6 +2376,22 @@ impl<'a> SplitSearch<'a> {
                         lens,
                         length,
                     );
+                    // Work: this length's subtree adds at most
+                    // (its steps + 1) * (mp - 1) iterations.
+                    let si = visitor.steps@.len() - vb.steps@.len();
+                    let ds = visitor.steps@.len() - v0.steps@.len();
+                    lemma_work_add(wb - w0, wc, d0, self.work@ - wb, si, mp);
+                    if !last {
+                        assert(ds == d0 + 1 + si);
+                        assert(wc + ds * (mp - 1) <= wc + (ds + 1) * (mp - 1)) by (nonlinear_arith)
+                            requires
+                                mp >= 1,
+                        ;
+                    } else {
+                        assert(ds == d0 + si);
+                    }
+                    assert(self.work@ - w0 <= wc + (ds + 1) * (mp - 1));
+                    lemma_work_close(self.work@ - w0, wc, ds, mp);
                 }
                 if broke {
                     return true;
@@ -2295,6 +2436,12 @@ impl<'a> SplitSearch<'a> {
                         rest,
                     );
                 }
+                lemma_work_close(
+                    self.work@ - w0,
+                    wc,
+                    visitor.steps@.len() - v0.steps@.len(),
+                    mp,
+                );
             }
             break;
         }
@@ -2311,12 +2458,22 @@ impl<'a> SplitSearch<'a> {
 // ===================================================================
 
 // Models crates/ferric-rules-core/src/sequence.rs:265 fn search_with_prefix
-// with the always-true prefix filter, i.e. sequence.rs:250 fn search.
-pub fn search(plan: &Pattern, fact: &Fact, visitor: &mut Visitor) -> (broke: bool)
+// with the always-true prefix filter, i.e. sequence.rs:250 fn search. The
+// result is production's `ControlFlow::is_break()` paired with a ghost
+// component (erased; no production counterpart): the number of `place`
+// loop iterations the search ran.
+pub fn search(plan: &Pattern, fact: &Fact, visitor: &mut Visitor) -> (r: (bool, Ghost<nat>))
     requires
         width(plan.segments@) < usize::MAX,
     ensures
-        visit_ok(*plan, *fact, *old(visitor), *final(visitor), Seq::empty(), broke),
+        visit_ok(*plan, *fact, *old(visitor), *final(visitor), Seq::empty(), r.0),
+        // Work bound: the search runs at most (Step events + 1) * (logical
+        // width + segments) loop iterations, so a caller charging a fixed
+        // cost per `Step` (snapshot.rs `any_sequence_match`) bounds it.
+        old(visitor).steps@.len() <= final(visitor).steps@.len(),
+        r.1@ <= (final(visitor).steps@.len() - old(visitor).steps@.len() + 1) * (width(
+            plan.segments@,
+        ) + plan.segments@.len()),
 {
     let ghost v0 = *visitor;
     let mut sources: Vec<(&[Val], usize)> = Vec::new();
@@ -2345,7 +2502,7 @@ pub fn search(plan: &Pattern, fact: &Fact, visitor: &mut Visitor) -> (broke: boo
                         lemma_bad_segment(plan.segments@, *fact, 0, k as int, Seq::<usize>::empty() + rest);
                     }
                 }
-                return false;
+                return (false, Ghost(0));
             },
         };
         let extra = match segment_extra(&segment.fields, values) {
@@ -2362,14 +2519,14 @@ pub fn search(plan: &Pattern, fact: &Fact, visitor: &mut Visitor) -> (broke: boo
                         lemma_bad_segment(plan.segments@, *fact, 0, k as int, Seq::<usize>::empty() + rest);
                     }
                 }
-                return false;
+                return (false, Ghost(0));
             },
         };
         sources.push((values, extra));
         k += 1;
     }
     if sources.len() == 0 {
-        return false;
+        return (false, Ghost(0));
     }
     let extra = sources[0].1;
     let mut needs: Vec<usize> = Vec::new();
@@ -2390,6 +2547,7 @@ pub fn search(plan: &Pattern, fact: &Fact, visitor: &mut Visitor) -> (broke: boo
         sources,
         needs,
         split: SplitView { fact, fields: Vec::new(), lengths: Vec::new() },
+        work: Ghost(0),
     };
     proof {
         lemma_link_start(*plan, *fact);
@@ -2404,7 +2562,12 @@ pub fn search(plan: &Pattern, fact: &Fact, visitor: &mut Visitor) -> (broke: boo
             assert(search.needs@[i0] == sat(extent(search.tests()[i0])));
         }
     }
-    search.place(0, 0, 0, extra, 0, visitor)
+    let broke = search.place(0, 0, 0, extra, 0, visitor);
+    proof {
+        assert(fields_upto(plan.segments@, 0) == 0);
+        assert(measure(plan.segments@, 0, 0) == width(plan.segments@) + plan.segments@.len());
+    }
+    (broke, Ghost(search.work@))
 }
 
 /// Every matching split, in the order the search reports them.
@@ -2430,7 +2593,7 @@ pub fn search_all(plan: &Pattern, fact: &Fact) -> (r: Vec<Vec<usize>>)
         stop_on_match: false,
         step_budget: None,
     };
-    let broke = search(plan, fact, &mut visitor);
+    let (broke, _work) = search(plan, fact, &mut visitor);
     proof {
         assert(!broke);
         assert forall|lens: Seq<usize>| #[trigger]
@@ -2456,7 +2619,7 @@ pub fn admits(plan: &Pattern, fact: &Fact) -> (r: bool)
         stop_on_match: true,
         step_budget: None,
     };
-    let broke = search(plan, fact, &mut visitor);
+    let (broke, _work) = search(plan, fact, &mut visitor);
     proof {
         if broke {
             assert(is_match(*plan, *fact, visitor.matches@[0]@));
