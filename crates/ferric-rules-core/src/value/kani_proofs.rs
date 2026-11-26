@@ -71,8 +71,10 @@
 //! checked in string/kani_proofs.rs; modeled in
 //! verification/verus/value_structural_eq.rs): a single pair of STRING
 //! values exceeded the solver's memory, as did 36 pairs, and 5 pairs did not
-//! finish within 18 minutes. STRING `AtomKey` equality is checked for the
-//! listed string shapes only. MULTIFIELD equality is checked only
+//! finish within 18 minutes; even four fully concrete STRING values of 1-2
+//! bytes compared pairwise (no symbolic data at all) were still in symbolic
+//! execution of the MULTIFIELD arm after 10 minutes. STRING `AtomKey`
+//! equality is checked for the listed string shapes only. MULTIFIELD equality is checked only
 //! for one-element multifields: two-element multifields and
 //! `Value::structural_eq` on MULTIFIELD values (nesting) did not finish
 //! within 500 s each (CBMC does not resolve the variants of elements read

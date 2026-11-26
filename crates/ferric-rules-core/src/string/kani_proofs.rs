@@ -34,7 +34,9 @@
 //!   `ascii_variant_as_str_panics_on_invalid_utf8`: `as_str` on the raw
 //!   `Ascii` variant returns the content exactly iff it is valid UTF-8 and
 //!   panics otherwise (values from `new` are never in the panicking case)
-//!   [content of exactly 2 bytes].
+//!   [content of exactly 2 bytes]. The `should_panic` harness ends with a
+//!   cover after the call that must be reported UNREACHABLE: Kani's
+//!   `should_panic` alone only shows that *some* input panics.
 //! - DEFECT, expected to FAIL: `borrow_str_hash_agrees_with_owned`. The
 //!   `Borrow<str>` contract requires `hash(x) == hash(x.borrow())`, but
 //!   `FerricString` hashes as `[u8]` (`write_usize(len)`, then
@@ -478,9 +480,14 @@ fn ascii_variant_as_str_is_exact_on_utf8_content() {
 }
 
 /// Documented-invariant boundary: a raw `Ascii` variant whose content is
-/// not valid UTF-8 makes `as_str` panic (its `expect`). Such values cannot
-/// come from `FerricString::new`; snapshot and host boundaries reject them
-/// (snapshot.rs:131-132, ferric-rules-runtime host.rs:134).
+/// not valid UTF-8 makes `as_str` panic (its `expect`), for every such
+/// 2-byte content. Such values cannot come from `FerricString::new`;
+/// snapshot and host boundaries reject them (snapshot.rs:131-132,
+/// ferric-rules-runtime host.rs:134).
+///
+/// `#[kani::should_panic]` alone only shows that *some* content panics;
+/// the last cover statement, after the call, must be reported
+/// UNREACHABLE, which shows that `as_str` returns for none of them.
 #[kani::proof]
 #[kani::should_panic]
 #[kani::unwind(4)]
@@ -489,6 +496,11 @@ fn ascii_variant_as_str_panics_on_invalid_utf8() {
     kani::assume(std::str::from_utf8(&buf).is_err());
     kani::cover!(buf[0] == 0xFF);
     kani::cover!(buf[0] == 0xC3 && buf[1] < 0x80);
+    kani::cover!(buf[0] < 0x80 && buf[1] >= 0x80);
     let raw = FerricString::Ascii(buf.as_slice().into());
     let _ = raw.as_str();
+    kani::cover!(
+        true,
+        "expected UNREACHABLE (every input panics): as_str returned on invalid UTF-8"
+    );
 }

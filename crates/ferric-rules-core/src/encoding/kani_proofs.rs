@@ -27,14 +27,17 @@
 //!   panicking.
 //!
 //! Gaps: `intern_symbol` is not checked on the production code in either
-//! direction. Its accepting direction inserts into an `FxHashMap`, which
-//! does not finish under Kani even for one concrete string, and CBMC
-//! unrolls that direction even for inputs that are non-ASCII (constrained
-//! symbolic inputs, and also concrete literals: a harness rejecting three
-//! concrete non-ASCII literals did not finish within 10 minutes). Both
-//! directions are proved, for all inputs, on the model in
-//! verification/verus/symbol_table.rs (`theorem_intern_symbol`). Inputs are
-//! bounded as stated.
+//! direction. Its accepting direction inserts into an `FxHashMap`: a single
+//! concrete `intern_ascii` verifies (symbol/kani_proofs.rs), but
+//! `intern_symbol` with any follow-up lookup did not finish within 10
+//! minutes, and CBMC unrolls that direction even for inputs that are
+//! non-ASCII (constrained symbolic inputs, and also concrete literals: a
+//! harness rejecting three concrete non-ASCII literals did not finish
+//! within 10 minutes). Both directions are proved, for all inputs, on the
+//! model in verification/verus/symbol_table.rs (`theorem_intern_symbol`).
+//! The `find_symbol` check below runs on an empty table, where every
+//! lookup is `None`, so it shows absence of panics but cannot distinguish
+//! the `is_ascii` guard from the map lookup. Inputs are bounded as stated.
 
 use super::*;
 use crate::string::FerricString;

@@ -485,8 +485,8 @@ pub proof fn theorem_utf8_byte_order_is_scalar_order(a: Seq<char>, b: Seq<char>)
     }
 }
 
-/// Non-vacuity witness on concrete strings: "z" < "é" < "€" < "😀" both as
-/// scalars and as bytes, and the exec model agrees on concrete slices.
+/// Non-vacuity witness on concrete strings: "z" < "é" and "€a" < "😀",
+/// both as scalar sequences and as UTF-8 byte sequences.
 pub proof fn example_concrete_order() {
     let z = seq!['z'];
     let e = seq!['\u{e9}'];
