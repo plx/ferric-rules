@@ -23,12 +23,29 @@
 //! `lemma_retract_a_preserves`, `lemma_retract_b_preserves`,
 //! `lemma_step_preserves`.
 //!
+//! Non-vacuity witnesses (the counterpart of Kani covers):
+//! `witness_not_block_unblock`, `witness_exists_support` and
+//! `witness_join_and_single` instantiate the main theorem on concrete
+//! operation sequences and show agenda counts of 1 that appear, persist and
+//! disappear as expected: blocking by one and by two `b` facts and unblocking
+//! only after both are retracted, one activation (not two) for two supports,
+//! a join that admits only the equal-valued partner, retraction and reset.
+//!
 //! Trusted base: Verus, Z3 and vstd. No `assume`, `admit` or external bodies.
 //! Mutation checks run during development (each made verification fail):
 //! activating every matching exists parent instead of only 0 -> 1 ones
 //! (duplicate activation), unblocking every parent that loses a blocker
 //! instead of only those left with none, keeping second-join tokens of a
-//! retracted `b` fact.
+//! retracted `b` fact. Independent review mutations, each also made
+//! verification fail: not recording a new blocker on an already blocked
+//! parent; leaving freed parents in `blocked`; skipping the pass-through
+//! cascade on exists support loss and on negative blocking; skipping
+//! `cleanup_negative_memories_for_token` for a retracted `a` fact; `!=`
+//! instead of `==` in the parent join lookup; removing join activations by
+//! the wrong tuple position; swapping the exists left-activation branch;
+//! blocking on every `b` fact (missing join test); keeping the agenda across
+//! reset; keeping second-join tokens of a retracted `a` fact; skipping the
+//! alpha-memory insertion of an `a` fact.
 //!
 //! Abstractions and simplifications (fidelity gaps):
 //! - Facts are `(relation, value)` pairs keyed by `nat` fact ids; the
@@ -51,6 +68,18 @@
 //!   filter they implement), predicates, NCC, auto-focus.
 //! - One rule per network: node sharing between rules (the compiler's
 //!   alpha-path and join caches) is not modelled.
+//! - Facts carry exactly one field, an integer; the join test is integer
+//!   equality on it. Production `values_join_eq` (cross-type comparison,
+//!   multifields) and alpha length tests are not modelled.
+//! - The `Single` shape compiles no `(b ...)` pattern, so production stores a
+//!   `b` fact in no alpha memory; the model still records it in `alpha_b`.
+//!   This only adds an unused memory and does not affect the agenda claim.
+//! - Rule disabling (`disabled_rules`, checked in `propagate_to_child`) is
+//!   not modelled: the rule is enabled throughout.
+//! - The engine's duplicate-fact check (`FactBase::try_assert_fact`) is not
+//!   modelled: two facts may carry the same relation and value. This is
+//!   more general than the engine with duplicate detection on, and matches
+//!   it with duplicates allowed.
 //! - Known gap: there is no mechanical link to the production code. Bounded
 //!   Kani checking of the same oracle on the production `ReteNetwork` was
 //!   measured as intractable (see
@@ -760,6 +789,15 @@ pub enum Op {
     Clear,
 }
 
+/// Models the engine's calls into the network:
+/// crates/ferric-rules-runtime/src/engine.rs:788 `Engine::assert_with_result`
+/// (`FactBase` insertion, then engine.rs:77 `propagate_fact_assertion` ->
+/// `ReteNetwork::assert_fact`), engine.rs:1090 `Engine::retract`
+/// (`ReteNetwork::retract_fact` with the fact still in the `FactBase`, then
+/// `FactBase::retract`; an unknown handle is an error, here a no-op), and
+/// engine.rs:1667 `Engine::reset` (engine.rs:1695 `reset_state`:
+/// `FactBase::new()` and, at engine.rs:1715, `clear_working_memory`; the
+/// deffacts and initial fact asserted afterwards are not modelled).
 pub open spec fn step(shape: Shape, st: (Net, Wm), op: Op) -> (Net, Wm) {
     match op {
         Op::Assert(f, d) => if st.1.dom().contains(f) {
@@ -834,6 +872,168 @@ pub proof fn theorem_run_matches_oracle(shape: Shape, ops: Seq<Op>)
         theorem_run_matches_oracle(shape, ops.drop_last());
         lemma_step_preserves(shape, run(shape, ops.drop_last()), ops.last());
     }
+}
+
+// ---------------------------------------------------------------------
+// Non-vacuity witnesses
+// ---------------------------------------------------------------------
+// The Verus counterpart of Kani covers: concrete operation sequences on which
+// `theorem_run_matches_oracle` yields activations that appear, persist and
+// disappear as each rule shape demands. They show the oracle is not
+// trivially false and that the theorem constrains reachable, non-empty
+// agendas (blocking by one or two facts, support by one or two facts,
+// join partners, retraction and reset).
+pub open spec fn fa(v: int) -> FactData {
+    FactData { rel: Rel::A, val: v }
+}
+
+pub open spec fn fb(v: int) -> FactData {
+    FactData { rel: Rel::B, val: v }
+}
+
+proof fn lemma_run_push(shape: Shape, ops: Seq<Op>, op: Op)
+    ensures
+        run(shape, ops.push(op)) == step(shape, run(shape, ops), op),
+{
+    assert(ops.push(op).drop_last() =~= ops);
+}
+
+/// `(a ?x) (not (b ?x))`: `a 1` activates; `b 1` and a second `b 1` block
+/// it; retracting one blocker keeps it blocked; retracting the other
+/// re-activates it exactly once; reset clears it.
+pub proof fn witness_not_block_unblock() {
+    let s = Shape::Not;
+    let o0 = Seq::<Op>::empty();
+    let o1 = o0.push(Op::Assert(0, fa(1)));
+    let o2 = o1.push(Op::Assert(1, fb(1)));
+    let o3 = o2.push(Op::Assert(2, fb(1)));
+    let o4 = o3.push(Op::Retract(1));
+    let o5 = o4.push(Op::Retract(2));
+    let o6 = o5.push(Op::Clear);
+    lemma_run_push(s, o0, Op::Assert(0, fa(1)));
+    lemma_run_push(s, o1, Op::Assert(1, fb(1)));
+    lemma_run_push(s, o2, Op::Assert(2, fb(1)));
+    lemma_run_push(s, o3, Op::Retract(1));
+    lemma_run_push(s, o4, Op::Retract(2));
+    lemma_run_push(s, o5, Op::Clear);
+    let w1 = Map::<nat, FactData>::empty().insert(0, fa(1));
+    let w2 = w1.insert(1, fb(1));
+    let w3 = w2.insert(2, fb(1));
+    let w4 = w3.remove(1);
+    let w5 = w4.remove(2);
+    assert(run(s, o1).1 == w1);
+    assert(run(s, o2).1 == w2);
+    assert(run(s, o3).1 == w3);
+    assert(run(s, o4).1 == w4);
+    assert(run(s, o5).1 == w5);
+    let t = seq![0nat];
+    theorem_run_matches_oracle(s, o1);
+    theorem_run_matches_oracle(s, o2);
+    theorem_run_matches_oracle(s, o3);
+    theorem_run_matches_oracle(s, o4);
+    theorem_run_matches_oracle(s, o5);
+    theorem_run_matches_oracle(s, o6);
+    assert(!some_b(w1, 1)) by {
+        if some_b(w1, 1) {
+            let b = choose|b: nat| #[trigger] is_b(w1, b) && w1[b].val == 1;
+            assert(b == 0);
+        }
+    }
+    assert(is_b(w2, 1));
+    assert(is_b(w4, 2));
+    assert(w5 =~= w1);
+    assert(run(s, o1).0.agenda.count(t) == 1);
+    assert(run(s, o2).0.agenda.count(t) == 0);
+    assert(run(s, o3).0.agenda.count(t) == 0);
+    assert(run(s, o4).0.agenda.count(t) == 0);
+    assert(run(s, o5).0.agenda.count(t) == 1);
+    assert(run(s, o6).0.agenda.count(t) == 0);
+}
+
+/// `(a ?x) (exists (b ?x))`: no support, then one and two supports (one
+/// activation, not two), then losing them one at a time.
+pub proof fn witness_exists_support() {
+    let s = Shape::Exists;
+    let o0 = Seq::<Op>::empty();
+    let o1 = o0.push(Op::Assert(0, fa(1)));
+    let o2 = o1.push(Op::Assert(1, fb(1)));
+    let o3 = o2.push(Op::Assert(2, fb(1)));
+    let o4 = o3.push(Op::Retract(1));
+    let o5 = o4.push(Op::Retract(2));
+    lemma_run_push(s, o0, Op::Assert(0, fa(1)));
+    lemma_run_push(s, o1, Op::Assert(1, fb(1)));
+    lemma_run_push(s, o2, Op::Assert(2, fb(1)));
+    lemma_run_push(s, o3, Op::Retract(1));
+    lemma_run_push(s, o4, Op::Retract(2));
+    let w1 = Map::<nat, FactData>::empty().insert(0, fa(1));
+    let w2 = w1.insert(1, fb(1));
+    let w3 = w2.insert(2, fb(1));
+    let w4 = w3.remove(1);
+    let w5 = w4.remove(2);
+    assert(run(s, o1).1 == w1);
+    assert(run(s, o2).1 == w2);
+    assert(run(s, o3).1 == w3);
+    assert(run(s, o4).1 == w4);
+    assert(run(s, o5).1 == w5);
+    let t = seq![0nat];
+    theorem_run_matches_oracle(s, o1);
+    theorem_run_matches_oracle(s, o2);
+    theorem_run_matches_oracle(s, o3);
+    theorem_run_matches_oracle(s, o4);
+    theorem_run_matches_oracle(s, o5);
+    assert(!some_b(w1, 1)) by {
+        if some_b(w1, 1) {
+            let b = choose|b: nat| #[trigger] is_b(w1, b) && w1[b].val == 1;
+            assert(b == 0);
+        }
+    }
+    assert(is_b(w2, 1));
+    assert(is_b(w3, 1));
+    assert(is_b(w4, 2));
+    assert(w5 =~= w1);
+    assert(run(s, o1).0.agenda.count(t) == 0);
+    assert(run(s, o2).0.agenda.count(t) == 1);
+    assert(run(s, o3).0.agenda.count(t) == 1);
+    assert(run(s, o4).0.agenda.count(t) == 1);
+    assert(run(s, o5).0.agenda.count(t) == 0);
+}
+
+/// `(a ?x) (b ?x)`: only the partner with the equal value joins, and
+/// retracting it removes the activation; `(a ?x)`: assert and retract.
+pub proof fn witness_join_and_single() {
+    let s = Shape::Join;
+    let o0 = Seq::<Op>::empty();
+    let o1 = o0.push(Op::Assert(0, fa(1)));
+    let o2 = o1.push(Op::Assert(1, fb(1)));
+    let o3 = o2.push(Op::Assert(2, fb(2)));
+    let o4 = o3.push(Op::Retract(1));
+    lemma_run_push(s, o0, Op::Assert(0, fa(1)));
+    lemma_run_push(s, o1, Op::Assert(1, fb(1)));
+    lemma_run_push(s, o2, Op::Assert(2, fb(2)));
+    lemma_run_push(s, o3, Op::Retract(1));
+    let w1 = Map::<nat, FactData>::empty().insert(0, fa(1));
+    let w2 = w1.insert(1, fb(1));
+    let w3 = w2.insert(2, fb(2));
+    let w4 = w3.remove(1);
+    assert(run(s, o3).1 == w3);
+    assert(run(s, o4).1 == w4);
+    theorem_run_matches_oracle(s, o3);
+    theorem_run_matches_oracle(s, o4);
+    assert(run(s, o3).0.agenda.count(seq![0nat, 1nat]) == 1);
+    assert(run(s, o3).0.agenda.count(seq![0nat, 2nat]) == 0);
+    assert(run(s, o4).0.agenda.count(seq![0nat, 1nat]) == 0);
+
+    let s = Shape::Single;
+    let p1 = o0.push(Op::Assert(0, fa(1)));
+    let p2 = p1.push(Op::Retract(0));
+    lemma_run_push(s, o0, Op::Assert(0, fa(1)));
+    lemma_run_push(s, p1, Op::Retract(0));
+    assert(run(s, p1).1 == w1);
+    assert(run(s, p2).1 =~= Map::<nat, FactData>::empty());
+    theorem_run_matches_oracle(s, p1);
+    theorem_run_matches_oracle(s, p2);
+    assert(run(s, p1).0.agenda.count(seq![0nat]) == 1);
+    assert(run(s, p2).0.agenda.count(seq![0nat]) == 0);
 }
 
 } // verus!
