@@ -10,34 +10,45 @@
 //!   segment, and either it is a single ordered segment, or every segment
 //!   is a template multislot source or a scalar template source projecting
 //!   exactly one single field, with no template slot used twice.
-//! * `theorem_check_pending`: the selector loop (sequence.rs:201-226,
-//!   modelled by the spec function `check_pending`, which pops the last
-//!   pending test and queues a disjunction's branches in order) accepts a
-//!   list of tests exactly when every test, nested ones included, reads a
-//!   selector of the projection's kind below its width (both selectors of a
-//!   slot pair) and is not a whole-fact constraint (`all_ok`).
+//! * `check_tests` (an executable model of the selector loop,
+//!   sequence.rs:201-226, line by line: a `Vec<&TestE>` worklist collected
+//!   from the tests, `pop`, the selector check, `extend` with the flattened
+//!   branches of a disjunction, rejection of whole-fact constraints and of
+//!   slot pairs with an invalid other selector) returns `true` exactly when
+//!   the spec loop `check_pending` does, and terminates on every test tree.
+//! * `theorem_check_pending`: `check_pending` accepts a list of tests
+//!   exactly when every test, nested ones included, reads a selector of the
+//!   projection's kind below its width (both selectors of a slot pair) and
+//!   is not a whole-fact constraint (`all_ok`).
+//! * `validate` (the composition, sequence.rs:169-228) returns `true`
+//!   exactly when `sources_valid`, the test-count limit holds, and
+//!   `all_ok` holds for the validator of the plan (`is_ordered()` and the
+//!   logical width).
 //!
-//! `validate` returns `Ok` exactly when the source checks pass,
-//! `constant_test_count` is at most 64, and the selector loop passes; the
-//! count is not modelled here (it is `alpha::constant_test_count`).
+//! The test-count limit (`constant_test_count(&self.tests) <= 64`,
+//! sequence.rs:198) is an input of `validate` (`within_limit`), not
+//! modelled, and the logical width is an input tied to `spec_width` by a
+//! precondition (Kani proves `logical_width` exact on production:
+//! `projection_helpers_are_exact`).
 //!
-//! Kani cannot reach either part on the production code: every harness
-//! that reached the duplicate check's hash-set insertion, or that iterated
-//! over a heap-allocated list of `ConstantTest`s (whose `Any` variant makes
-//! symbolic execution explore nested heap data), ran for more than ten
-//! minutes or out of memory (see
-//! crates/ferric-rules-core/src/sequence/kani_proofs.rs).
+//! Kani cannot run `validate` on the production code: every harness that
+//! reached the duplicate check's hash-set insertion, or that iterated over
+//! a heap-allocated list of `ConstantTest`s, ran for more than ten minutes
+//! or out of memory, and so did one restricted to single ordered segments,
+//! where the insertion is unreachable (see
+//! crates/ferric-rules-core/src/sequence/kani_proofs.rs). The link between
+//! this model and production is by inspection.
 //!
 //! Abstractions: `FxHashSet<usize>` is modelled by std `HashSet<usize>`
 //! (vstd specification): only set semantics matter (`insert` returns
 //! whether the key was absent); the hasher is not modelled. `Err` results
 //! are modelled as `false`. A `ConstantTest` is modelled by what `validate`
-//! reads (`TestT`: its slot and variant group); the selector validator is
-//! `valid_slot`, the logic of `logical_slot_validator` (sequence.rs:84),
-//! which Kani proves on production (`projection_helpers_are_exact`).
+//! reads (`TestE`, viewed as `TestT`: its slot and variant group, with the
+//! branches of `Any` as nested vectors); the selector validator is
+//! `valid_slot`, the logic of `logical_slot_validator` (sequence.rs:84).
 //!
-//! Trusted base: vstd, including its `HashSet` specifications. No `assume`,
-//! `admit`, `external_body` or other trusted glue is used.
+//! Trusted base: vstd, including its `HashSet` and `Vec` specifications.
+//! No `assume`, `admit`, `external_body` or other trusted glue is used.
 use vstd::prelude::*;
 use std::collections::HashSet;
 
@@ -524,5 +535,306 @@ pub proof fn theorem_check_pending(ordered: bool, width: nat, pending: Seq<TestT
             }
         }
     }
+}
+
+// ===========================================================================
+// Executable model of the selector loop
+// ===========================================================================
+
+/// An executable test tree in the shape `validate` walks: `Any` holds its
+/// branches as vectors of tests, as `ConstantTestType::Any(Vec<Vec<ConstantTest>>)`
+/// (crates/ferric-rules-core/src/alpha.rs:53) does.
+pub enum TestE {
+    Atom(Slot),
+    Pair(Slot, Slot),
+    Whole(Slot),
+    Any(Slot, Vec<Vec<TestE>>),
+}
+
+/// The spec test tree of an executable one.
+pub open spec fn tview(t: TestE) -> TestT
+    decreases t,
+{
+    match t {
+        TestE::Atom(s) => TestT::Atom(s),
+        TestE::Pair(s, o) => TestT::Pair(s, o),
+        TestE::Whole(s) => TestT::Whole(s),
+        TestE::Any(s, b) => TestT::Any(s, bview(b@)),
+    }
+}
+
+pub open spec fn bview(b: Seq<Vec<TestE>>) -> Seq<Seq<TestT>>
+    decreases b,
+{
+    if b.len() == 0 {
+        seq![]
+    } else {
+        bview(b.drop_last()).push(tsview(b.last()@))
+    }
+}
+
+pub open spec fn tsview(ts: Seq<TestE>) -> Seq<TestT>
+    decreases ts,
+{
+    if ts.len() == 0 {
+        seq![]
+    } else {
+        tsview(ts.drop_last()).push(tview(ts.last()))
+    }
+}
+
+pub proof fn lemma_tsview_push(ts: Seq<TestE>, t: TestE)
+    ensures
+        tsview(ts.push(t)) == tsview(ts).push(tview(t)),
+{
+    assert(ts.push(t).drop_last() =~= ts);
+}
+
+pub proof fn lemma_tsview_len(ts: Seq<TestE>)
+    ensures
+        tsview(ts).len() == ts.len(),
+    decreases ts.len(),
+{
+    if ts.len() > 0 {
+        lemma_tsview_len(ts.drop_last());
+    }
+}
+
+pub proof fn lemma_tsview_prefix(ts: Seq<TestE>, j: int)
+    requires
+        0 <= j < ts.len(),
+    ensures
+        tsview(ts.subrange(0, j + 1)) == tsview(ts.subrange(0, j)).push(tview(ts[j])),
+{
+    assert(ts.subrange(0, j + 1).drop_last() =~= ts.subrange(0, j));
+}
+
+pub proof fn lemma_bview_prefix(b: Seq<Vec<TestE>>, i: int)
+    requires
+        0 <= i < b.len(),
+    ensures
+        bview(b.subrange(0, i + 1)) == bview(b.subrange(0, i)).push(tsview(b[i]@)),
+        flatten(bview(b.subrange(0, i + 1))) == flatten(bview(b.subrange(0, i))) + tsview(b[i]@),
+{
+    assert(b.subrange(0, i + 1).drop_last() =~= b.subrange(0, i));
+    let x = bview(b.subrange(0, i));
+    let y = tsview(b[i]@);
+    assert(x.push(y).drop_last() =~= x);
+}
+
+/// The tests a `Vec<&ConstantTest>` worklist refers to.
+pub open spec fn derefs(s: Seq<&TestE>) -> Seq<TestE> {
+    s.map_values(|t: &TestE| *t)
+}
+
+pub proof fn lemma_derefs_push(s: Seq<&TestE>, x: &TestE)
+    ensures
+        derefs(s.push(x)) == derefs(s).push(*x),
+{
+    assert(derefs(s.push(x)) =~= derefs(s).push(*x)) by {
+        assert forall|i: int| 0 <= i < s.len() + 1 implies #[trigger] derefs(s.push(x))[i] == derefs(
+            s,
+        ).push(*x)[i] by {
+            if i < s.len() {
+                assert(s.push(x)[i] == s[i]);
+            }
+        }
+    }
+}
+
+/// Models `logical_slot_validator`'s closure (crates/ferric-rules-core/src/sequence.rs:87).
+pub fn valid_slot_exec(ordered: bool, width: usize, slot: &Slot) -> (r: bool)
+    ensures
+        r == valid_slot(ordered, width as nat, *slot),
+{
+    match slot {
+        Slot::Ordered(index) => ordered && *index < width,
+        Slot::Template(index) => !ordered && *index < width,
+    }
+}
+
+/// Models the selector loop of `SequencePattern::validate`
+/// (crates/ferric-rules-core/src/sequence.rs:201-226) line by line:
+/// `pending` is collected from the tests, each iteration pops the last
+/// pending test, rejects an invalid selector, queues a disjunction's
+/// branches with `extend(branches.iter().flatten())`, rejects whole-fact
+/// constraints, and rejects a slot pair whose other selector is invalid.
+/// `ordered` and `width` are the values `logical_slot_validator` captures
+/// (`is_ordered()` and `logical_width()`). `true` stands for `Ok(())`.
+pub fn check_tests(ordered: bool, width: usize, tests: &Vec<TestE>) -> (r: bool)
+    ensures
+        r == check_pending(ordered, width as nat, tsview(tests@)),
+        r == all_ok(ordered, width as nat, tsview(tests@)),
+{
+    proof {
+        theorem_check_pending(ordered, width as nat, tsview(tests@));
+    }
+    let ghost goal = check_pending(ordered, width as nat, tsview(tests@));
+    // `let mut pending: Vec<_> = self.tests.iter().collect();`
+    let mut pending: Vec<&TestE> = Vec::new();
+    let mut k: usize = 0;
+    while k < tests.len()
+        invariant
+            k <= tests.len(),
+            derefs(pending@) == tests@.subrange(0, k as int),
+        decreases tests.len() - k,
+    {
+        let ghost p0 = pending@;
+        pending.push(&tests[k]);
+        proof {
+            lemma_derefs_push(p0, &tests@[k as int]);
+            assert(derefs(pending@) =~= tests@.subrange(0, k + 1));
+        }
+        k += 1;
+    }
+    proof {
+        assert(derefs(pending@) =~= tests@);
+    }
+    // `while let Some(test) = pending.pop()`
+    loop
+        invariant
+            check_pending(ordered, width as nat, tsview(derefs(pending@))) == goal,
+            goal == check_pending(ordered, width as nat, tsview(tests@)),
+            goal == all_ok(ordered, width as nat, tsview(tests@)),
+        decreases sizes(tsview(derefs(pending@))),
+    {
+        let ghost before = derefs(pending@);
+        let popped = pending.pop();
+        let test = match popped {
+            None => {
+                proof {
+                    assert(before.len() == 0);
+                    assert(tsview(before) == Seq::<TestT>::empty());
+                }
+                return true;
+            },
+            Some(test) => test,
+        };
+        let ghost rest = derefs(pending@);
+        proof {
+            assert(before == rest.push(*test));
+            lemma_tsview_push(rest, *test);
+            lemma_tsview_len(before);
+            let v = tsview(before);
+            assert(v.last() == tview(*test));
+            assert(v.drop_last() =~= tsview(rest));
+            lemma_check_decreases(v);
+        }
+        let slot = match test {
+            TestE::Atom(s) => s,
+            TestE::Pair(s, _) => s,
+            TestE::Whole(s) => s,
+            TestE::Any(s, _) => s,
+        };
+        proof {
+            assert(slot_of(tview(*test)) == *slot);
+        }
+        // `if !valid_slot(test.slot) { return Err(..) }`
+        if !valid_slot_exec(ordered, width, slot) {
+            return false;
+        }
+        match test {
+            // `ConstantTestType::Any(branches) => pending.extend(branches.iter().flatten())`
+            TestE::Any(_, branches) => {
+                let ghost b = branches@;
+                let mut i: usize = 0;
+                while i < branches.len()
+                    invariant
+                        i <= branches.len(),
+                        b == branches@,
+                        tsview(derefs(pending@)) == tsview(rest) + flatten(bview(b.subrange(0, i as int))),
+                    decreases branches.len() - i,
+                {
+                    let branch = &branches[i];
+                    let mut j: usize = 0;
+                    while j < branch.len()
+                        invariant
+                            i < branches.len(),
+                            b == branches@,
+                            *branch == b[i as int],
+                            j <= branch.len(),
+                            tsview(derefs(pending@)) == tsview(rest) + flatten(bview(b.subrange(0, i as int)))
+                                + tsview(branch@.subrange(0, j as int)),
+                        decreases branch.len() - j,
+                    {
+                        let ghost p0 = derefs(pending@);
+                        let ghost r0 = pending@;
+                        pending.push(&branch[j]);
+                        proof {
+                            lemma_derefs_push(r0, &branch@[j as int]);
+                            lemma_tsview_push(p0, branch@[j as int]);
+                            lemma_tsview_prefix(branch@, j as int);
+                            let f = tsview(rest) + flatten(bview(b.subrange(0, i as int)));
+                            assert(f + tsview(branch@.subrange(0, j as int)).push(tview(branch@[j as int])) =~= (f + tsview(branch@.subrange(0, j as int))).push(tview(branch@[j as int])));
+                        }
+                        j += 1;
+                    }
+                    proof {
+                        assert(branch@.subrange(0, j as int) =~= branch@);
+                        lemma_bview_prefix(b, i as int);
+                        let f = flatten(bview(b.subrange(0, i as int)));
+                        assert(tsview(rest) + f + tsview(b[i as int]@) =~= tsview(rest) + (f + tsview(b[i as int]@)));
+                    }
+                    i += 1;
+                }
+                proof {
+                    assert(b.subrange(0, i as int) =~= b);
+                }
+            },
+            // `OrderedFieldCount { .. } | Sequence(_) => return Err(..)`
+            TestE::Whole(_) => {
+                return false;
+            },
+            // `EqualSlot(slot) | ... if !valid_slot(*slot) => return Err(..)`
+            TestE::Pair(_, other) => {
+                if !valid_slot_exec(ordered, width, other) {
+                    return false;
+                }
+            },
+            // `_ => {}`
+            TestE::Atom(_) => {},
+        }
+    }
+}
+
+/// Number of logical fields of a projection (`logical_width`,
+/// crates/ferric-rules-core/src/sequence.rs:64).
+pub open spec fn spec_width(segs: Seq<SegmentV>) -> nat
+    decreases segs.len(),
+{
+    if segs.len() == 0 {
+        0
+    } else {
+        spec_width(segs.drop_last()) + segs.last().fields.len()
+    }
+}
+
+/// Models `SequencePattern::validate`
+/// (crates/ferric-rules-core/src/sequence.rs:169-228): the source checks,
+/// the test-count limit, then the selector loop with the validator of
+/// `logical_slot_validator` (`is_ordered()`, `logical_width()`). `width`
+/// is `logical_width()`, passed in (Kani proves `logical_width` exact:
+/// `projection_helpers_are_exact`), and `within_limit` stands for
+/// `constant_test_count(&self.tests) <= MAX_ALPHA_TESTS` (sequence.rs:198),
+/// which is not modelled. `true` stands for `Ok(())`.
+pub fn validate(segments: &Vec<Segment>, tests: &Vec<TestE>, width: usize, within_limit: bool) -> (r:
+    bool)
+    requires
+        width as nat == spec_width(view_segments(segments@)),
+    ensures
+        r == (sources_valid(view_segments(segments@)) && within_limit && all_ok(
+            spec_is_ordered(view_segments(segments@)),
+            width as nat,
+            tsview(tests@),
+        )),
+{
+    if !validate_sources(segments) {
+        return false;
+    }
+    if !within_limit {
+        return false;
+    }
+    let ordered = is_ordered(segments);
+    check_tests(ordered, width, tests)
 }
 } // verus!

@@ -10,7 +10,13 @@
 //!   structural spec `spec_place`, and restores `fields` and `lengths`
 //!   (push/pop/truncate discipline). `ready_tests_pass`, `last_capture`
 //!   and `segment_extra` meet their specs; `search_with_prefix` emits
-//!   exactly `search_log`.
+//!   exactly `search_log`. Every position production indexes or slices
+//!   (`values[offset]`, `values[offset..offset + length]`,
+//!   `fields[field + 1..]`, `segments[segment]`, `sources[segment]`) is in
+//!   bounds and no `usize` arithmetic of `place` overflows: the search's
+//!   own indexing and arithmetic cannot panic on any plan, validated or
+//!   not (test evaluation, the prefix filter and the visitor are outside
+//!   the model).
 //! * `theorem_search` (main result): the `Match` events of the search are
 //!   exactly the accepted splits, each reported once, in strictly
 //!   decreasing lexicographic order of capture lengths (`sound`,
@@ -25,7 +31,11 @@
 //!   the declarative brute-force characterization: early test evaluation
 //!   prunes nothing it should not and the depth-first enumeration with
 //!   longest-first lengths misses nothing, duplicates nothing and yields
-//!   the order CLIPS uses.
+//!   the order CLIPS uses. `theorem_search` also proves `views`: the split
+//!   view each `Match` hands the visitor is exactly the projection of its
+//!   capture lengths (`all_descs`: every logical field borrows the values
+//!   at the offset and length the lengths determine), so captures bound
+//!   from a reported split are the brute-force captures.
 //! * `example_two_captures`: a concrete instance (`(row $? $?)` over one
 //!   value) where both splits are accepted and reported in order, showing
 //!   the theorem is not vacuous.
@@ -36,10 +46,13 @@
 //! * `local(needs, holds)`: a constant test decides the same on two
 //!   projections that agree on their first `needs[t]` fields. Kani proves
 //!   `test_extent` is exactly one past the largest selector every non-`Any`
-//!   test names (`test_extent_is_exact`) and that evaluating the atom tests
-//!   reads no field at or past it (`atom_tests_read_below_extent`);
-//!   `SplitView::get` reads only `fields[index]`. For slot-pair, offset and
-//!   `Any` tests the read bound is by inspection of `evaluate_field_test`.
+//!   test names (`test_extent_is_exact`) and that evaluating `Equal`,
+//!   `NotEqual` and `EqualAny` reads no field at or past it
+//!   (`atom_tests_read_below_extent`); `SplitView::get` reads only
+//!   `fields[index]`. For the four ordered key comparisons, the slot-pair
+//!   and offset tests and `Any`, the read bound (and `test_extent` of
+//!   `Any`) is by inspection of `alpha::evaluate_field_test` and
+//!   sequence.rs:380-402.
 //! * `needs[t] >= 1` (`test_extent` saturating-adds one, sequence.rs:401).
 //!
 //! Model abstractions (each fixed by the production code it stands for):
@@ -103,10 +116,12 @@ pub struct Placed {
 }
 
 /// Models `SplitEvent` (crates/ferric-rules-core/src/sequence.rs:372);
-/// `Match` carries the split's capture lengths (`SplitView::lengths`).
+/// `Match` carries the split's capture lengths (`SplitView::lengths`) and
+/// the logical fields of the view handed to the visitor (the `FieldRef`
+/// part of `SplitView::fields`, which `SplitView::get` and `capture` read).
 pub ghost enum Ev {
     Step,
-    Match(Seq<usize>),
+    Match(Seq<usize>, Seq<Placed>),
 }
 
 /// Models `SplitSearch` (crates/ferric-rules-core/src/sequence.rs:415).
@@ -238,7 +253,7 @@ pub open spec fn spec_place(
                 lengths,
             )
         } else if ready(needs, holds, pf, fields, checked, true) {
-            seq![Ev::Match(lengths)]
+            seq![Ev::Match(lengths, fields)]
         } else {
             seq![]
         }
@@ -598,7 +613,7 @@ impl SplitSearch {
                 }
                 if self.ready_tests_pass(checked, true, eval, prefix, Ghost(holds), Ghost(pf)) {
                     proof {
-                        *log = Ghost(log@.push(Ev::Match(self.lengths@)));
+                        *log = Ghost(log@.push(Ev::Match(self.lengths@, self.fields@)));
                         assert(log@ =~= log0 + target);
                     }
                 } else {
@@ -613,6 +628,12 @@ impl SplitSearch {
                 Field::Multi => false,
             };
             if is_single {
+                // Production reads `values[offset]` here: the index is in
+                // bounds (`values.len()` is `srcs[segment].0`).
+                proof {
+                    assert(singles_from(segs[segment as int], field as int) >= 1);
+                    assert(offset < srcs[segment as int].0);
+                }
                 self.fields.push(Placed { segment, offset, length: 1, multi: false });
                 field += 1;
                 offset += 1;
@@ -626,6 +647,10 @@ impl SplitSearch {
             }
             let checked = self.fields.len();
             // The segment's last capture takes whatever the others leave.
+            // Production slices `fields[field + 1..]`: in bounds.
+            proof {
+                assert(field + 1 <= segs[segment as int].len());
+            }
             let last = Self::last_capture(&self.segments[segment], field + 1);
             let shortest = if last {
                 extra
@@ -727,6 +752,11 @@ impl SplitSearch {
                 }
                 proof {
                     assert(log@ =~= log_before + step);
+                }
+                // Production slices `values[offset..offset + length]`: in
+                // bounds.
+                proof {
+                    assert(offset + length <= srcs[segment as int].0);
                 }
                 self.fields.push(Placed { segment, offset, length, multi: true });
                 self.lengths.push(length);
@@ -1008,9 +1038,23 @@ pub open spec fn lex_gt(a: Seq<usize>, b: Seq<usize>) -> bool {
 
 pub open spec fn match_of(e: Ev) -> Option<Seq<usize>> {
     match e {
-        Ev::Match(c) => Some(c),
+        Ev::Match(c, _) => Some(c),
         Ev::Step => None,
     }
+}
+
+/// A match's view is the projection of its capture lengths.
+pub open spec fn view_ok(segs: Seq<Seq<Field>>, e: Ev) -> bool {
+    match e {
+        Ev::Match(c, v) => v == all_descs(segs, c),
+        Ev::Step => true,
+    }
+}
+
+/// Every match of `log` hands the visitor exactly the projection of its
+/// capture lengths: each logical field borrows the right values.
+pub open spec fn views(log: Seq<Ev>, segs: Seq<Seq<Field>>) -> bool {
+    forall|i: int| 0 <= i < log.len() ==> view_ok(segs, #[trigger] log[i])
 }
 
 /// Every match of `log` satisfies `p`.
@@ -1020,7 +1064,7 @@ pub open spec fn sound(log: Seq<Ev>, p: spec_fn(Seq<usize>) -> bool) -> bool {
 
 /// Every split satisfying `p` is a match of `log`.
 pub open spec fn complete(log: Seq<Ev>, p: spec_fn(Seq<usize>) -> bool) -> bool {
-    forall|c: Seq<usize>| #[trigger] p(c) ==> exists|i: int| 0 <= i < log.len() && log[i] == Ev::Match(c)
+    forall|c: Seq<usize>| #[trigger] p(c) ==> exists|i: int| 0 <= i < log.len() && match_of(log[i]) == Some(c)
 }
 
 /// The matches of `log` strictly decrease lexicographically.
@@ -1296,13 +1340,29 @@ pub proof fn lemma_complete_concat(
         complete(a + b, p),
 {
     assert forall|c: Seq<usize>| #[trigger] p(c) implies exists|i: int|
-        0 <= i < (a + b).len() && (a + b)[i] == Ev::Match(c) by {
+        0 <= i < (a + b).len() && match_of((a + b)[i]) == Some(c) by {
         if pa(c) {
-            let i = choose|i: int| 0 <= i < a.len() && a[i] == Ev::Match(c);
+            let i = choose|i: int| 0 <= i < a.len() && match_of(a[i]) == Some(c);
             assert((a + b)[i] == a[i]);
         } else {
-            let i = choose|i: int| 0 <= i < b.len() && b[i] == Ev::Match(c);
+            let i = choose|i: int| 0 <= i < b.len() && match_of(b[i]) == Some(c);
             assert((a + b)[i + a.len()] == b[i]);
+        }
+    }
+}
+
+pub proof fn lemma_views_concat(a: Seq<Ev>, b: Seq<Ev>, segs: Seq<Seq<Field>>)
+    requires
+        views(a, segs),
+        views(b, segs),
+    ensures
+        views(a + b, segs),
+{
+    assert forall|i: int| 0 <= i < (a + b).len() implies view_ok(segs, #[trigger] (a + b)[i]) by {
+        if i < a.len() {
+            assert((a + b)[i] == a[i]);
+        } else {
+            assert((a + b)[i] == b[i - a.len()]);
         }
     }
 }
@@ -1343,6 +1403,7 @@ pub proof fn lemma_step_log(last: bool)
             &&& forall|p: spec_fn(Seq<usize>) -> bool| sound(step, p)
             &&& sorted(step)
             &&& forall|i: int| 0 <= i < step.len() ==> match_of(#[trigger] step[i]) is None
+            &&& forall|segs: Seq<Seq<Field>>| views(step, segs)
         }),
 {
 }
@@ -1576,6 +1637,7 @@ pub proof fn lemma_place(
             &&& sound(out, p)
             &&& complete(out, p)
             &&& sorted(out)
+            &&& views(out, segs)
         }),
     decreases rest_from(segs, seg, field), 1nat, 0int,
 {
@@ -1645,8 +1707,8 @@ pub proof fn lemma_place(
                         }
                     }
                 }
-                assert(out == seq![Ev::Match(lengths)]);
-                assert(out[0] == Ev::Match(lengths));
+                assert(out == seq![Ev::Match(lengths, fields)]);
+                assert(out[0] == Ev::Match(lengths, fields));
             } else {
                 assert(out == Seq::<Ev>::empty());
             }
@@ -1872,6 +1934,7 @@ pub proof fn lemma_tries(
             &&& sound(out, p)
             &&& complete(out, p)
             &&& sorted(out)
+            &&& views(out, segs)
         }),
     decreases rest_from(segs, seg, field), 0nat, length + 1,
 {
@@ -2045,6 +2108,8 @@ pub proof fn lemma_tries(
             }
         }
         lemma_step_log(last);
+        lemma_views_concat(step, placed, segs);
+        lemma_views_concat(step + placed, rest, segs);
         lemma_sound_weaken(placed, pp, p);
         lemma_sound_weaken(rest, pr, p);
         lemma_sound_concat(step, placed, p);
@@ -2220,6 +2285,7 @@ pub proof fn theorem_search(
             &&& sound(out, p)
             &&& complete(out, p)
             &&& sorted(out)
+            &&& views(out, segs)
         }),
 {
     let out = search_log(segs, lens, needs, holds, pf);
@@ -2446,8 +2512,8 @@ pub proof fn example_two_captures() {
     let p = |c: Seq<usize>| accepted(segs, lens, needs, holds, pf, c);
     assert(p(a));
     assert(p(b));
-    let i = choose|i: int| 0 <= i < out.len() && out[i] == Ev::Match(a);
-    let j = choose|j: int| 0 <= j < out.len() && out[j] == Ev::Match(b);
+    let i = choose|i: int| 0 <= i < out.len() && match_of(out[i]) == Some(a);
+    let j = choose|j: int| 0 <= j < out.len() && match_of(out[j]) == Some(b);
     assert(match_of(out[i]) is Some && match_of(out[j]) is Some);
     if j < i {
         assert(lex_gt(b, a));

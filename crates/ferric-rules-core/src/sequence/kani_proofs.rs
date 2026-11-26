@@ -29,6 +29,13 @@
 //!   `physical_test` maps a test exactly when every selector it reads has a
 //!   fixed physical position, rewriting exactly those selectors, and never
 //!   maps a whole-fact constraint.
+//! * `physical_test_maps_every_slot_pair` and
+//!   `physical_test_maps_every_key_test`: the same exactness for every
+//!   other non-`Any` variant (`NotEqualSlot` and the other five offset
+//!   comparisons; `NotEqual`, `EqualAny` with one key and the four ordered
+//!   key comparisons, with integer keys): the variant, offset and key are
+//!   kept, both selectors of a slot pair are rewritten, and the test is
+//!   mapped exactly when every selector it reads has a fixed position.
 //! * `segment_values_is_exact`: `segment_values` returns exactly (same
 //!   address and length) the documented physical sequence for every source
 //!   kind and slot (present, multislot, scalar slot, missing), on an
@@ -36,12 +43,15 @@
 //!
 //! The central property of the module — the split search reports exactly
 //! the splits a brute-force enumeration accepts, once each, in CLIPS order,
-//! with sound early test pruning — is proved for all sizes on a Verus model
-//! of `search_with_prefix`/`place`/`ready_tests_pass`/`segment_extra`
-//! (verification/verus/core_sequence_split_search.rs). `validate` is
-//! modelled in verification/verus/core_sequence_validate.rs (source checks
-//! and the nested-test selector loop). The harnesses above discharge, on
-//! production code, the facts those models take as premises or abstract.
+//! with sound early test pruning, handing the visitor exactly each split's
+//! projection — is proved for all sizes on a Verus model of
+//! `search_with_prefix`/`place`/`ready_tests_pass`/`segment_extra`
+//! (verification/verus/core_sequence_split_search.rs), not on the
+//! production code (see below). `validate` is modelled in
+//! verification/verus/core_sequence_validate.rs (source checks, the
+//! nested-test selector loop as an executable worklist, and their
+//! composition). The harnesses above discharge, on production code, the
+//! facts those models take as premises or abstract.
 //!
 //! Harness technique: values with recursive drop glue (`Value`,
 //! `ConstantTest`, facts, plans) are leaked with `mem::forget` where their
@@ -58,14 +68,23 @@
 //!   (two pushes and a pop) ran out of memory in 140 s at unwind 3 (13 s at
 //!   unwind 2); a fully concrete search of `[$?, ?, $?]` over three values
 //!   ran out of memory in 212 s; a capture-free search (no `pop`) ran out of
-//!   memory in 466 s through the `capture` path of `SplitView::get`.
+//!   memory in 466 s through the `capture` path of `SplitView::get`. The
+//!   smallest search, one single field over a one-value ordered fact with
+//!   no tests and no captures, all concrete and with a visitor that only
+//!   counts matches, ran out of memory in 187 s (cause not isolated; the
+//!   `truncate` in `place` and the drop of the `SplitView` both reach the
+//!   drop glue of `OnceCell<Value>`).
 //! * `project`: the early returns drop a partly built `SplitView`; out of
 //!   memory in 302-397 s even with concrete field shapes.
 //! * `validate`: any template source reaches the `FxHashSet` insertion
 //!   (still in symbolic execution after 11-16 minutes, even for one
 //!   insertion), and the test checks iterate a heap `Vec<ConstantTest>`
 //!   (6.8 GB after 14 minutes; the 64-test limit harness timed out at 10
-//!   minutes).
+//!   minutes). Even a harness restricted to single ordered segments (up to
+//!   three symbolic fields, at most one test of a concrete variant), where
+//!   the insertion is unreachable, was still in symbolic execution at
+//!   6.5 GB after 15 minutes: symbolic execution does not prune the
+//!   infeasible `FxHashSet` branch and unwinds hashbrown's probe loop.
 //! * Evaluation of slot-offset and key-comparison tests (`compare_offset`,
 //!   `compare_test_key`) and of `Any` (`test_extent`, `physical_test` on
 //!   `Any` ran over 10 minutes).
@@ -702,4 +721,159 @@ fn segment_values_is_exact() {
         "missing slot"
     );
     std::mem::forget((ordered, template));
+}
+
+// ---------------------------------------------------------------------------
+// `physical_test` on every remaining non-`Any` variant (review addition).
+// ---------------------------------------------------------------------------
+
+/// The variant of a slot-pair test, its other selector and its offset (0
+/// for the plain slot comparisons); `None` for every other variant. Written
+/// from the variant list of `alpha::ConstantTestType`.
+fn pair_parts(test_type: &ConstantTestType) -> Option<(u8, SlotIndex, i64)> {
+    match test_type {
+        ConstantTestType::EqualSlot(other) => Some((0, *other, 0)),
+        ConstantTestType::NotEqualSlot(other) => Some((1, *other, 0)),
+        ConstantTestType::EqualSlotOffset(other, k) => Some((2, *other, *k)),
+        ConstantTestType::NotEqualSlotOffset(other, k) => Some((3, *other, *k)),
+        ConstantTestType::GreaterThanSlotOffset(other, k) => Some((4, *other, *k)),
+        ConstantTestType::LessThanSlotOffset(other, k) => Some((5, *other, *k)),
+        ConstantTestType::GreaterOrEqualSlotOffset(other, k) => Some((6, *other, *k)),
+        ConstantTestType::LessOrEqualSlotOffset(other, k) => Some((7, *other, *k)),
+        _ => None,
+    }
+}
+
+/// `physical_test` of a slot-pair test is defined exactly when both of its
+/// selectors have a fixed physical position, and then rewrites both and
+/// keeps the variant and offset.
+fn check_physical_pair(shape: &Shape, slot: SlotIndex, test_type: ConstantTestType) {
+    let (tag, other, offset) = pair_parts(&test_type).unwrap();
+    let pattern = shape.pattern(vec![]);
+    let got = pattern.physical_test(&ConstantTest { slot, test_type });
+    match (&got, shape.physical(slot), shape.physical(other)) {
+        (Some(mapped), Some(mapped_slot), Some(mapped_other)) => {
+            assert_eq!(mapped.slot, mapped_slot);
+            assert_eq!(
+                pair_parts(&mapped.test_type),
+                Some((tag, mapped_other, offset))
+            );
+        }
+        (None, None, _) | (None, _, None) => {}
+        _ => panic!("physical_test differs from the reference"),
+    }
+    kani::cover!(got.is_some(), "mapped slot pair");
+    kani::cover!(
+        got.is_none() && shape.physical(slot).is_some(),
+        "fixed slot, unfixed other slot"
+    );
+    std::mem::forget((got, pattern));
+}
+
+/// Every slot-pair variant (`EqualSlot`, `NotEqualSlot` and the six offset
+/// comparisons) is rewritten exactly as the reference says: both selectors
+/// must have a fixed position, both are rewritten, nothing else changes.
+#[kani::proof]
+#[kani::unwind(4)]
+fn physical_test_maps_every_slot_pair() {
+    let shape = any_shape(2);
+    let slot = any_small_selector(MAX_SEGMENTS * MAX_SEGMENT_FIELDS);
+    let other = any_small_selector(MAX_SEGMENTS * MAX_SEGMENT_FIELDS);
+    let offset: i64 = kani::any();
+    match kani::any::<u8>() {
+        0 => check_physical_pair(&shape, slot, ConstantTestType::EqualSlot(other)),
+        1 => check_physical_pair(&shape, slot, ConstantTestType::NotEqualSlot(other)),
+        2 => check_physical_pair(
+            &shape,
+            slot,
+            ConstantTestType::EqualSlotOffset(other, offset),
+        ),
+        3 => check_physical_pair(
+            &shape,
+            slot,
+            ConstantTestType::NotEqualSlotOffset(other, offset),
+        ),
+        4 => check_physical_pair(
+            &shape,
+            slot,
+            ConstantTestType::GreaterThanSlotOffset(other, offset),
+        ),
+        5 => check_physical_pair(
+            &shape,
+            slot,
+            ConstantTestType::LessThanSlotOffset(other, offset),
+        ),
+        6 => check_physical_pair(
+            &shape,
+            slot,
+            ConstantTestType::GreaterOrEqualSlotOffset(other, offset),
+        ),
+        _ => check_physical_pair(
+            &shape,
+            slot,
+            ConstantTestType::LessOrEqualSlotOffset(other, offset),
+        ),
+    }
+}
+
+/// The variant and integer key of a test against constant keys; `None`
+/// for every other variant or key kind. (Only integer keys are compared:
+/// `AtomKey` equality over every key kind exhausts the solver's memory.)
+fn key_parts(test_type: &ConstantTestType) -> Option<(u8, i64)> {
+    let (tag, key) = match test_type {
+        ConstantTestType::Equal(key) => (0, key),
+        ConstantTestType::NotEqual(key) => (1, key),
+        ConstantTestType::EqualAny(keys) if keys.len() == 1 => (2, &keys[0]),
+        ConstantTestType::GreaterThan(key) => (3, key),
+        ConstantTestType::LessThan(key) => (4, key),
+        ConstantTestType::GreaterOrEqual(key) => (5, key),
+        ConstantTestType::LessOrEqual(key) => (6, key),
+        _ => return None,
+    };
+    match key {
+        AtomKey::Integer(value) => Some((tag, *value)),
+        _ => None,
+    }
+}
+
+/// `physical_test` of a test against constant keys is defined exactly when
+/// its selector has a fixed physical position, and then rewrites only it.
+fn check_physical_key(shape: &Shape, slot: SlotIndex, test_type: ConstantTestType) {
+    let parts = key_parts(&test_type);
+    assert!(parts.is_some());
+    let pattern = shape.pattern(vec![]);
+    let got = pattern.physical_test(&ConstantTest { slot, test_type });
+    match (&got, shape.physical(slot)) {
+        (Some(mapped), Some(mapped_slot)) => {
+            assert_eq!(mapped.slot, mapped_slot);
+            assert_eq!(key_parts(&mapped.test_type), parts);
+        }
+        (None, None) => {}
+        _ => panic!("physical_test differs from the reference"),
+    }
+    kani::cover!(got.is_some(), "mapped key test");
+    kani::cover!(
+        got.is_none() && shape.valid_slot(slot),
+        "a valid selector without a fixed position"
+    );
+    std::mem::forget((got, pattern));
+}
+
+/// Every test against constant keys (`NotEqual`, `EqualAny` and the four
+/// ordered comparisons; `Equal` is in `physical_test_is_exact`) is rewritten
+/// exactly when its selector has a fixed position, keeping its keys.
+#[kani::proof]
+#[kani::unwind(4)]
+fn physical_test_maps_every_key_test() {
+    let shape = any_shape(2);
+    let slot = any_small_selector(MAX_SEGMENTS * MAX_SEGMENT_FIELDS);
+    let key = AtomKey::Integer(kani::any());
+    match kani::any::<u8>() {
+        0 => check_physical_key(&shape, slot, ConstantTestType::NotEqual(key)),
+        1 => check_physical_key(&shape, slot, ConstantTestType::EqualAny(vec![key])),
+        2 => check_physical_key(&shape, slot, ConstantTestType::GreaterThan(key)),
+        3 => check_physical_key(&shape, slot, ConstantTestType::LessThan(key)),
+        4 => check_physical_key(&shape, slot, ConstantTestType::GreaterOrEqual(key)),
+        _ => check_physical_key(&shape, slot, ConstantTestType::LessOrEqual(key)),
+    }
 }
