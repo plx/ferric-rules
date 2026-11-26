@@ -25,16 +25,28 @@
 //!   sequences have distinct keys, so `add` never overwrites an `ordering`
 //!   entry. Salience, complexity, sequences and recency tags are full-width
 //!   symbolic; depth/breadth use recency lengths 1 and 0, LEX/MEA every pair
-//!   of lengths in `0..=4` (one harness per first length).
+//!   of lengths in `0..=4` (one harness per first length). The activation's
+//!   `id`, `rule`, `token` and `timestamp` are fixed; `build_key` does not
+//!   read them.
 //! - `lex_key_ignores_recency_order`, `mea_key_ignores_order_after_first_recency`:
 //!   the LEX key depends only on the multiset of recency tags and the MEA key
 //!   only on the first tag and the multiset (every adjacent transposition,
 //!   which together generate all permutations; lengths 2..=4).
-//! - `add_never_overflows_sequence_counter`: from any `next_seq`, `add` assigns
-//!   the current sequence (zero after the exhaustion rebase) and advances the
-//!   counter without overflow.
+//! - `add_never_overflows_sequence_counter`: on an empty agenda with any
+//!   `next_seq`, `add` assigns the current sequence (zero after the exhaustion
+//!   rebase), advances the counter without overflow, and indexes the
+//!   activation once (one entry in `activations`, `ordering` and the token
+//!   index; its `id_to_key` entry is `build_key` of the stored activation;
+//!   no per-rule index is created).
+//! - `add_to_empty_agenda_is_indexed`: after one `add` to an empty agenda
+//!   (depth; symbolic salience, complexity and starting `next_seq`), every
+//!   condition `validate_consistency` checks for a one-activation agenda holds,
+//!   checked directly: the activation is the first `ordering` entry under its
+//!   current key (the entry `pop` removes), `id_to_key` holds that key, the
+//!   token index lists exactly that activation, its `id` is its slot key, and
+//!   its sequence is below `next_seq`.
 //! - `clear_resets_sequence_and_indexes`: `clear` empties every index, drops
-//!   the per-rule index and resets the sequence counter.
+//!   an allocated per-rule index and resets the sequence counter.
 //! - `new_agenda_is_consistent`: a new agenda passes `validate_consistency`
 //!   under every strategy.
 //!
@@ -48,15 +60,19 @@
 //!   `pop_matching`, `pop_matching_rule`, `remove_activations_for_token`,
 //!   `remove_activations_for_rule`). `BTreeMap::pop_first` on a one-entry
 //!   `BTreeMap<AgendaKey, u32>` with concrete keys runs out of memory in
-//!   propositional reduction (84 s); one concrete `add` followed by `pop` runs
-//!   out of memory (615 s). That `pop` returns the highest-priority activation
-//!   therefore rests on the `build_key` characterization above, on
-//!   `BTreeMap::pop_first` removing the least key (standard library contract),
-//!   and on the agenda invariant; it is not checked end to end.
+//!   propositional reduction (84 s; reproduced in review at unwind 2: out of
+//!   memory after 34 s of symbolic execution); one concrete `add` followed by
+//!   `pop` runs out of memory (615 s). That `pop` returns the
+//!   highest-priority activation therefore rests on the `build_key`
+//!   characterization above, on `BTreeMap::pop_first` removing the least key
+//!   (standard library contract), and on the agenda invariant; it is not
+//!   checked end to end.
 //! - `validate_consistency` on any agenda that has held an activation: one
 //!   concrete `add` followed by `validate_consistency` runs out of memory
-//!   (584 s), as does `clear` followed by `validate_consistency`. Invariant
-//!   preservation across operations is therefore not checked by Kani.
+//!   (584 s), as does `clear` followed by `validate_consistency`. Only the
+//!   one-activation conditions after a single `add` are checked (directly, in
+//!   `add_to_empty_agenda_is_indexed`); invariant preservation across
+//!   operations is not checked by Kani.
 //! - Operations on agendas with two or more activations: two concrete `add`s
 //!   followed by `set_strategy` (symbolic target) or crossing sequence
 //!   exhaustion time out, as does inspecting `iter_ordered` on an agenda
@@ -441,13 +457,57 @@ fn add_never_overflows_sequence_counter() {
     agenda.next_seq = ActivationSeq::new(start);
     let id = agenda.add(concrete_activation());
     let expected = if start == u64::MAX { 0 } else { start };
-    assert_eq!(
-        agenda.get(id).unwrap().activation_seq,
-        ActivationSeq::new(expected)
-    );
+    let activation = agenda.get(id).unwrap();
+    assert_eq!(activation.activation_seq, ActivationSeq::new(expected));
     assert_eq!(agenda.next_seq, ActivationSeq::new(expected + 1));
+    // The activation is indexed once, under the key of the current strategy
+    // built from its assigned sequence (the per-activation checks of
+    // `validate_consistency` that do not search a map).
+    assert_eq!(activation.id, id);
+    assert_eq!(agenda.len(), 1);
+    assert_eq!(agenda.ordering.len(), 1);
+    assert_eq!(agenda.token_to_activations.len(), 1);
+    assert!(agenda.id_to_key.get(id) == Some(&agenda.build_key(activation)));
+    assert!(agenda.rule_ordering.is_none());
     kani::cover!(start == u64::MAX);
     kani::cover!(start == u64::MAX - 1);
+}
+
+/// After one `add` to an empty agenda, for any salience, complexity and
+/// starting `next_seq` (exhaustion rebase included), the activation is the
+/// first entry of `ordering` under the key the strategy builds for it (the
+/// entry `pop` removes), `id_to_key` holds that key, and the token index
+/// lists exactly that activation: the `validate_consistency` conditions for a
+/// one-activation agenda, checked directly (calling `validate_consistency`
+/// itself runs out of memory). Bounds: depth strategy (a symbolic strategy
+/// did not finish symbolic execution in 10 minutes), one activation with no
+/// recency tags and a concrete rule and token (the token is the hash key).
+#[kani::proof]
+#[kani::unwind(6)]
+fn add_to_empty_agenda_is_indexed() {
+    let mut agenda = Agenda::new();
+    let start: u64 = kani::any();
+    agenda.next_seq = ActivationSeq::new(start);
+    let mut activation = concrete_activation();
+    activation.salience = Salience::new(kani::any());
+    activation.complexity = kani::any();
+    let id = agenda.add(activation);
+    let stored = agenda.get(id).unwrap();
+    assert_eq!(stored.id, id);
+    let key = agenda.build_key(stored);
+    assert_eq!(agenda.ordering.len(), 1);
+    assert_eq!(agenda.ordering.first_key_value(), Some((&key, &id)));
+    assert!(agenda.id_to_key.get(id) == Some(&key));
+    assert_eq!(agenda.token_to_activations.len(), 1);
+    assert_eq!(
+        agenda
+            .token_to_activations
+            .get(&token(0))
+            .map(SmallVec::as_slice),
+        Some(&[id][..])
+    );
+    assert!(stored.activation_seq < agenda.next_seq);
+    kani::cover!(start == u64::MAX);
 }
 
 fn concrete_activation() -> Activation {
@@ -466,7 +526,10 @@ fn concrete_activation() -> Activation {
 /// `clear` from a non-empty agenda empties every index, drops the derived rule
 /// index and resets the sequence counter. (`validate_consistency` on the
 /// cleared agenda runs out of memory; see the module documentation.) Bounds:
-/// one concrete activation added from a symbolic starting `next_seq` (depth).
+/// one concrete activation added from a symbolic starting `next_seq` (depth);
+/// the per-rule index is allocated empty (as a stand-in for the one
+/// `pop_matching_rule` builds after a focus miss, which `add` never creates),
+/// so that dropping it is observable.
 #[kani::proof]
 #[kani::unwind(6)]
 fn clear_resets_sequence_and_indexes() {
@@ -474,6 +537,8 @@ fn clear_resets_sequence_and_indexes() {
     let start: u64 = kani::any();
     agenda.next_seq = ActivationSeq::new(start);
     agenda.add(concrete_activation());
+    agenda.rule_ordering = Some(RuleOrdering::default());
+    assert!(!agenda.is_empty());
     agenda.clear();
     assert!(agenda.is_empty());
     assert!(agenda.ordering.is_empty());

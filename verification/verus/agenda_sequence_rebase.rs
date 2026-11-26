@@ -1,35 +1,50 @@
 //! Verus model of activation-sequence bookkeeping in `Agenda`
 //! (crates/ferric-rules-core/src/agenda.rs).
 //!
-//! Proved (unbounded: any number of live activations, any number of
-//! operations, any number of sequence rebases):
+//! Proved (unbounded: any number of live activations and of operations; every
+//! operation, the exhaustion rebase included, preserves `inv` from every state
+//! satisfying it, so the results hold across any number of rebases):
 //!
 //! - `rebase`: the sequence rebase assigns `0..n` to the `n` live activations,
 //!   keeps them pairwise distinct and below `next_seq == n`, and preserves the
 //!   relative order of every pair of live activations.
 //! - `add`: never overflows the `u64` sequence counter (it rebases first when
 //!   `next_seq == u64::MAX`; Verus checks the `+ 1` that models
-//!   `ActivationSeq::next`); the new activation's sequence is strictly greater
-//!   than every live one; the relative order of existing activations is
-//!   unchanged.
+//!   `ActivationSeq::next`); the new activation gets exactly `next_seq`, or
+//!   the live count after the exhaustion rebase, and `next_seq` becomes its
+//!   successor; without a rebase the existing sequences are untouched; the new
+//!   activation's sequence is strictly greater than every live one; the
+//!   relative order of existing activations is unchanged.
 //! - `remove` / `clear`: preserve the invariant; `clear` resets `next_seq`.
 //! - Invariant `inv` (preserved by every operation): live sequences are
 //!   pairwise distinct, below `next_seq`, and ordered exactly like the ghost
 //!   creation counter `created`, i.e. sequence order is creation order
 //!   (`sequence_order_is_creation_order`). Hence depth (`Reverse(seq)`) always
 //!   prefers the most recently created live activation and breadth the oldest,
-//!   across rebases.
-//! - `run_ops`: every sequence of add / remove-at-any-position / clear from a
-//!   new agenda keeps `inv`, with the rebase order supplied by `chronological`,
-//!   which shows that the sort contract `rebase` assumes is satisfiable in
-//!   every reachable state.
+//!   across rebases. (That depth/breadth keys order by the sequence is the
+//!   Kani `build_key_*` result; it is not re-proved here.)
+//! - `run_ops_from`: every sequence of add / remove-at-any-position / clear
+//!   from any state satisfying `inv` (any `next_seq`, so rebases occur) keeps
+//!   `inv`, with the rebase order supplied by `chronological`, which shows that
+//!   the sort contract `rebase` assumes is satisfiable in every such state;
+//!   `run_ops` is the special case of a new agenda. (From a new agenda alone,
+//!   fewer than `u64::MAX` operations never reach the rebase, which is why the
+//!   general start state matters.)
+//! - `exhaustion_example`: the rebase branch is reachable and reproduces the
+//!   production unit test at agenda.rs:685 (three adds from
+//!   `u64::MAX - 2` give sequences 0, 1, 2 and `next_seq == 3`).
 //!
 //! Model and abstractions (see each function for the production line it
 //! models):
 //!
-//! - Only the sequence state is modeled: `seqs[i]` is the `activation_seq` of
-//!   the i-th live activation in `SlotMap` iteration order (`activations`,
-//!   agenda.rs:160), and `next_seq` is `Agenda::next_seq` (agenda.rs:167).
+//! - Only the sequence state is modeled: `seqs` holds the `activation_seq` of
+//!   every live activation (`activations`, agenda.rs:160), and `next_seq` is
+//!   `Agenda::next_seq` (agenda.rs:167). The position order of `seqs` is the
+//!   model's own (`add` appends, `remove` closes the gap); it is not the
+//!   `SlotMap` slot order, which reuses freed slots (slotmap 1.1.1
+//!   `try_insert_with_key`). This does not affect the results: `rebase`
+//!   accepts every sorted permutation of the positions, and every invariant
+//!   and postcondition quantifies over all pairs of live activations.
 //!   Keys, the `ordering` / `id_to_key` / token / per-rule indexes and which
 //!   activation a removal path selects are not modeled here.
 //! - `rebase` receives `chron`, the slot order produced in production by
@@ -45,9 +60,12 @@
 //!   `remove_activations_for_token`, `remove_activations_for_rule`): one live
 //!   activation disappears and the others keep their sequence and relative
 //!   iteration order.
-//! - `add` requires fewer than `u64::MAX` live activations, the domain of the
-//!   production `expect("live activations fit the sequence space")`
-//!   (agenda.rs:286, 290).
+//! - `add` (and `rebase`) require fewer than `u64::MAX` live activations. In
+//!   production this is guaranteed by the `SlotMap` capacity (fewer than
+//!   `u32::MAX` slots; slotmap 1.1.1 `try_insert_with_key` panics with
+//!   "SlotMap is full"), not by the `expect("live activations fit the
+//!   sequence space")` calls at agenda.rs:286 and 290, which only guard the
+//!   `usize` to `u64` conversion and cannot fail on 64-bit targets.
 //!
 //! Trusted base: Verus and vstd's specifications of `Vec` (`new`, `push`,
 //! `set`, `insert`, `remove`, `clear`, `len`, indexing). No `assume`, `admit`,
@@ -219,6 +237,12 @@ impl SeqState {
             final(self).seqs@.len() == old(self).seqs@.len() + 1,
             final(self).seqs@.last() == seq,
             final(self).created@ == old(self).created@.push(old(self).clock@),
+            // Exact assignment: the current counter, or the live count after
+            // the exhaustion rebase; the counter then advances by one.
+            old(self).next_seq < u64::MAX ==> seq == old(self).next_seq,
+            old(self).next_seq < u64::MAX ==> final(self).seqs@ == old(self).seqs@.push(seq),
+            old(self).next_seq == u64::MAX ==> seq == old(self).seqs@.len(),
+            final(self).next_seq == seq + 1,
             forall|i: int| 0 <= i < old(self).seqs@.len() ==> #[trigger] final(self).seqs@[i] < seq,
             forall|i: int, j: int|
                 0 <= i < old(self).seqs@.len() && 0 <= j < old(self).seqs@.len() ==> ((
@@ -436,25 +460,29 @@ pub fn chronological(seqs: &Vec<u64>) -> (chron: Vec<usize>)
     chron
 }
 
-/// Any sequence of operations from a fresh agenda keeps `inv`: `kinds[k]`
-/// selects add (0), removal of the live activation at `indexes[k]` (1, when
-/// it exists) or clear (2); other values are ignored.
-pub fn run_ops(kinds: &Vec<u8>, indexes: &Vec<usize>) -> (st: SeqState)
+/// Any sequence of operations from any state satisfying `inv` keeps `inv`:
+/// `kinds[k]` selects add (0), removal of the live activation at `indexes[k]`
+/// (1, when it exists) or clear (2); other values are ignored. The start state
+/// may have any `next_seq` (including `u64::MAX`), so the exhaustion rebase is
+/// reachable here; the only bound is that the live count stays below
+/// `u64::MAX` (see the module documentation).
+pub fn run_ops_from(st: &mut SeqState, kinds: &Vec<u8>, indexes: &Vec<usize>)
     requires
+        old(st).inv(),
         kinds@.len() == indexes@.len(),
-        kinds@.len() < u64::MAX,
+        old(st).seqs@.len() + kinds@.len() < u64::MAX,
     ensures
-        st.inv(),
+        final(st).inv(),
 {
-    let mut st = SeqState::new();
+    let ghost n0 = st.seqs@.len();
     let mut k: usize = 0;
     while k < kinds.len()
         invariant
             st.inv(),
             0 <= k <= kinds@.len(),
-            st.seqs@.len() <= k,
+            st.seqs@.len() <= n0 + k,
             kinds@.len() == indexes@.len(),
-            kinds@.len() < u64::MAX,
+            n0 + kinds@.len() < u64::MAX,
         decreases kinds@.len() - k,
     {
         let kind = kinds[k];
@@ -468,7 +496,49 @@ pub fn run_ops(kinds: &Vec<u8>, indexes: &Vec<usize>) -> (st: SeqState)
         }
         k += 1;
     }
+}
+
+/// Any sequence of operations from a new agenda keeps `inv`.
+pub fn run_ops(kinds: &Vec<u8>, indexes: &Vec<usize>) -> (st: SeqState)
+    requires
+        kinds@.len() == indexes@.len(),
+        kinds@.len() < u64::MAX,
+    ensures
+        st.inv(),
+{
+    let mut st = SeqState::new();
+    run_ops_from(&mut st, kinds, indexes);
     st
+}
+
+/// Witness that the exhaustion path is reachable and behaves as the
+/// production unit test `sequence_exhaustion_preserves_live_chronology_and_indexes`
+/// (agenda.rs:685) expects: from `next_seq == u64::MAX - 2`, three adds give
+/// `u64::MAX - 2`, `u64::MAX - 1`, then (after rebasing the two live
+/// activations to 0 and 1) 2, leaving `next_seq == 3` and the live sequences
+/// in creation order.
+pub fn exhaustion_example() {
+    let mut st = SeqState {
+        seqs: Vec::new(),
+        next_seq: u64::MAX - 2,
+        created: Ghost(Seq::empty()),
+        clock: Ghost(0),
+    };
+    let chron = chronological(&st.seqs);
+    let s0 = st.add(&chron);
+    let chron = chronological(&st.seqs);
+    let s1 = st.add(&chron);
+    let ghost before = st.seqs@;
+    assert(before[0] == u64::MAX - 2 && before[1] == u64::MAX - 1);
+    let chron = chronological(&st.seqs);
+    let s2 = st.add(&chron);
+    assert(s0 == u64::MAX - 2 && s1 == u64::MAX - 1);
+    assert(s2 == 2);
+    assert(st.next_seq == 3);
+    assert(st.seqs@.len() == 3);
+    // Order of the two live activations is kept, and both are below 2.
+    assert(st.seqs@[0] < st.seqs@[1] && st.seqs@[1] < 2);
+    assert(st.seqs@[0] == 0 && st.seqs@[1] == 1 && st.seqs@[2] == 2);
 }
 
 } // verus!
