@@ -51,14 +51,28 @@
 //!    exactly on an empty agenda and otherwise the activation that strictly
 //!    precedes every other live activation (the maximum priority);
 //!    `pop_matching` likewise among the activations satisfying the predicate;
-//!    `iter_ordered` lists every live activation once in strictly decreasing
-//!    priority; the removal operations remove exactly the targeted
-//!    activations; `set_strategy` and `rebase` keep every activation (rebase
-//!    changing only sequence numbers, and preserving every pairwise
-//!    comparison). `theorem_set_strategy_deterministic`: the rebuilt agenda
-//!    does not depend on the SlotMap iteration order (via
+//!    `iter_ordered` (modelled with its `filter_map`, `iter_ordered_spec`)
+//!    drops no entry and yields every live activation exactly once, in
+//!    strictly decreasing priority; the removal operations remove exactly
+//!    the targeted activations; `set_strategy` and `rebase` keep every
+//!    activation (rebase changing only sequence numbers, and preserving every
+//!    pairwise comparison). `theorem_set_strategy_deterministic`: the rebuilt
+//!    agenda does not depend on the SlotMap iteration order (via
 //!    `lemma_sorted_entries_unique`). `example_add_then_pop` shows `inv` is
 //!    satisfiable by a non-empty agenda.
+//! 7. Agenda-level behaviour: `theorem_pops_in_priority_order` (any number of
+//!    successive pops returns distinct live activations in strictly
+//!    decreasing priority, stopping early only once all were returned);
+//!    where `add` places the new activation: under Depth it precedes every
+//!    live activation of lower or equal salience and is popped next when no
+//!    live activation has higher salience
+//!    (`theorem_depth_add_places_new_first`); under Breadth it follows every
+//!    live activation of higher or equal salience, so the next pop is
+//!    unchanged when one exists (`theorem_breadth_add_places_new_last`);
+//!    under LEX an activation with the most recent fact, and under MEA one
+//!    with the most recent first-pattern fact, is popped next at maximal
+//!    salience (`theorem_lex_add_most_recent_fact_fires_next`,
+//!    `theorem_mea_add_most_recent_first_pattern_fires_next`).
 //!
 //! Abstractions and simplifications (fidelity notes):
 //! - Newtypes are unwrapped (`Salience` -> i32, `ActivationSeq`/`RecencyTag`
@@ -98,7 +112,13 @@
 //! operations to production is by inspection (each model cites its source
 //! lines); `pop_matching_rule` and the per-rule index are not covered; the
 //! agenda model assumes fewer than `u64::MAX` live activations on the
-//! exhaustion path (production `expect`s it).
+//! exhaustion path. Production does not check this itself (the `expect`s in
+//! `rebase_sequences`, agenda.rs:286-291, only guard `usize -> u64`
+//! conversions, which cannot fail on 64-bit targets); it holds because the
+//! `activations` SlotMap panics with "SlotMap is full" before reaching
+//! `u32::MAX` slots (slotmap 1.1.1 src/basic.rs:413-415). With `u64::MAX`
+//! live activations, `ActivationSeq::next` (agenda.rs:46-48) would overflow
+//! after the rebase.
 
 use vstd::prelude::*;
 use vstd::relations::*;
@@ -3223,7 +3243,11 @@ pub proof fn theorem_rebase(ag: AgendaModel, chron: Seq<nat>, ids: Seq<nat>)
 
 /// THEOREM (add, complete). `add` preserves the invariant on both paths,
 /// provided the live activations do not fill the whole sequence space
-/// (`chron.len() < u64::MAX`; production `expect`s it, crates/ferric-rules-core/src/agenda.rs:286-291).
+/// (`chron.len() < u64::MAX`). This is not checked by `add` or
+/// `rebase_sequences` (whose `expect`s at
+/// crates/ferric-rules-core/src/agenda.rs:286-291 only guard `usize -> u64`
+/// conversions); it is enforced by the `activations` SlotMap, which panics
+/// before holding `u32::MAX` entries (slotmap 1.1.1 src/basic.rs:413-415).
 pub proof fn theorem_add_full_preserves_inv(
     ag: AgendaModel,
     activation: SAct,
@@ -3254,51 +3278,470 @@ pub proof fn theorem_add_full_preserves_inv(
 // iter_ordered (crates/ferric-rules-core/src/agenda.rs:484)
 // ---------------------------------------------------------------------
 
-/// THEOREM (iter_ordered). `iter_ordered` walks `ordering` in key order; on
-/// a consistent agenda it yields every live activation exactly once, in
-/// strictly decreasing priority under the agenda's strategy.
+/// Models `Agenda::iter_ordered` (crates/ferric-rules-core/src/agenda.rs:484-488):
+/// `ordering.values().filter_map(|id| activations.get(*id))`, i.e. the
+/// activations of the in-order entries, skipping ids that are not live.
+pub open spec fn iter_ordered_spec(s: Entries, acts: Map<nat, SAct>) -> Seq<SAct>
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        Seq::empty()
+    } else if acts.contains_key(s[0].1) {
+        seq![acts[s[0].1]] + iter_ordered_spec(s.drop_first(), acts)
+    } else {
+        iter_ordered_spec(s.drop_first(), acts)
+    }
+}
+
+/// When every entry's id is live, `filter_map` drops nothing.
+pub proof fn lemma_iter_ordered_all_live(s: Entries, acts: Map<nat, SAct>)
+    requires
+        forall|i: int| 0 <= i < s.len() ==> acts.contains_key(#[trigger] s[i].1),
+    ensures
+        iter_ordered_spec(s, acts).len() == s.len(),
+        forall|i: int|
+            0 <= i < s.len() ==> #[trigger] iter_ordered_spec(s, acts)[i] == acts[s[i].1],
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        let t = s.drop_first();
+        assert forall|i: int| 0 <= i < t.len() implies acts.contains_key(#[trigger] t[i].1) by {
+            assert(t[i] == s[i + 1]);
+        }
+        lemma_iter_ordered_all_live(t, acts);
+        assert(acts.contains_key(s[0].1));
+        let r = iter_ordered_spec(s, acts);
+        assert(r == seq![acts[s[0].1]] + iter_ordered_spec(t, acts));
+        assert forall|i: int| 0 <= i < s.len() implies #[trigger] r[i] == acts[s[i].1] by {
+            if i > 0 {
+                assert(r[i] == iter_ordered_spec(t, acts)[i - 1]);
+                assert(t[i - 1] == s[i]);
+            }
+        }
+    }
+}
+
+/// THEOREM (iter_ordered). On a consistent agenda the `filter_map` in
+/// `iter_ordered` drops nothing (every entry of `ordering` is live), and the
+/// iterator yields every live activation exactly once (each is the stored
+/// activation of its id), in strictly decreasing priority under the
+/// agenda's strategy.
 pub proof fn theorem_iter_ordered(ag: AgendaModel)
     requires
         inv(ag),
     ensures
+        forall|i: int|
+            0 <= i < ag.ordering.len() ==> ag.activations.contains_key(#[trigger] ag.ordering[i].1),
+        iter_ordered_spec(ag.ordering, ag.activations).len() == ag.ordering.len(),
+        forall|i: int|
+            0 <= i < ag.ordering.len() ==> #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[i]
+                == ag.activations[ag.ordering[i].1] && ag.activations[ag.ordering[i].1].id
+                == ag.ordering[i].1,
         forall|i: int, j: int|
-            #![trigger ag.ordering[i], ag.ordering[j]]
-            0 <= i < j < ag.ordering.len() ==> cmp_act_spec(
+            0 <= i < j < iter_ordered_spec(ag.ordering, ag.activations).len() ==> cmp_act_spec(
                 ag.strategy,
-                ag.activations[ag.ordering[i].1],
-                ag.activations[ag.ordering[j].1],
+                #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[i],
+                #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[j],
             ) == Ordering::Less,
+        forall|i: int|
+            0 <= i < iter_ordered_spec(ag.ordering, ag.activations).len() ==> {
+                let a = #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[i];
+                ag.activations.contains_key(a.id) && ag.activations[a.id] == a
+            },
         forall|i: int, j: int|
-            0 <= i < ag.ordering.len() && 0 <= j < ag.ordering.len() && i != j ==> #[trigger] ag.ordering[i].1
-                != #[trigger] ag.ordering[j].1,
+            0 <= i < iter_ordered_spec(ag.ordering, ag.activations).len() && 0 <= j
+                < iter_ordered_spec(ag.ordering, ag.activations).len() && i != j
+                ==> #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[i].id
+                != #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[j].id,
         forall|id: nat| #[trigger]
             ag.activations.contains_key(id) ==> exists|i: int|
-                0 <= i < ag.ordering.len() && #[trigger] ag.ordering[i].1 == id,
+                0 <= i < iter_ordered_spec(ag.ordering, ag.activations).len()
+                    && #[trigger] iter_ordered_spec(ag.ordering, ag.activations)[i]
+                    == ag.activations[id],
 {
-    lemma_sorted_first_is_min(ag.ordering);
-    assert forall|i: int, j: int|
-        #![trigger ag.ordering[i], ag.ordering[j]]
-        0 <= i < j < ag.ordering.len() implies cmp_act_spec(
-        ag.strategy,
-        ag.activations[ag.ordering[i].1],
-        ag.activations[ag.ordering[j].1],
-    ) == Ordering::Less by {
-        assert(ag.ordering.contains(ag.ordering[i]));
-        assert(ag.ordering.contains(ag.ordering[j]));
-        assert(cmp_key_spec(ag.ordering[i].0, ag.ordering[j].0) == Ordering::Less);
+    let s = ag.ordering;
+    let out = iter_ordered_spec(s, ag.activations);
+    lemma_sorted_first_is_min(s);
+    assert forall|i: int| 0 <= i < s.len() implies ag.activations.contains_key(#[trigger] s[i].1) by {
+        assert(s.contains(s[i]));
+    }
+    lemma_iter_ordered_all_live(s, ag.activations);
+    assert forall|i: int| 0 <= i < out.len() implies {
+        let a = #[trigger] out[i];
+        ag.activations.contains_key(a.id) && ag.activations[a.id] == a && a.id == s[i].1
+    } by {
+        assert(s.contains(s[i]));
+        assert(ag.activations.contains_key(s[i].1));
     }
     assert forall|i: int, j: int|
-        0 <= i < ag.ordering.len() && 0 <= j < ag.ordering.len() && i != j implies #[trigger] ag.ordering[i].1
-        != #[trigger] ag.ordering[j].1 by {
-        assert(ag.ordering.contains(ag.ordering[i]));
-        assert(ag.ordering.contains(ag.ordering[j]));
+        0 <= i < j < out.len() implies cmp_act_spec(ag.strategy, #[trigger] out[i], #[trigger] out[j])
+        == Ordering::Less by {
+        assert(s.contains(s[i]));
+        assert(s.contains(s[j]));
+        assert(cmp_key_spec(s[i].0, s[j].0) == Ordering::Less);
+    }
+    assert forall|i: int, j: int|
+        0 <= i < out.len() && 0 <= j < out.len() && i != j implies #[trigger] out[i].id
+        != #[trigger] out[j].id by {
+        assert(s.contains(s[i]));
+        assert(s.contains(s[j]));
+        assert(out[i].id == s[i].1);
+        assert(out[j].id == s[j].1);
     }
     assert forall|id: nat| #[trigger] ag.activations.contains_key(id) implies exists|i: int|
-        0 <= i < ag.ordering.len() && #[trigger] ag.ordering[i].1 == id by {
-        assert(ag.ordering.contains((ag.id_to_key[id], id)));
+        0 <= i < out.len() && #[trigger] out[i] == ag.activations[id] by {
+        let e = (ag.id_to_key[id], id);
+        assert(s.contains(e));
+        let i = choose|i: int| 0 <= i < s.len() && s[i] == e;
+        assert(out[i] == ag.activations[id]);
     }
 }
 
+// ---------------------------------------------------------------------
+// Firing order and where `add` places a new activation (agenda level)
+// ---------------------------------------------------------------------
+
+/// The strict maximum is unique: an activation that strictly precedes every
+/// other live activation is the one `pop` returns.
+pub proof fn lemma_pop_returns_strict_max(ag: AgendaModel, x: nat)
+    requires
+        inv(ag),
+        ag.activations.contains_key(x),
+        forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) && id != x ==> cmp_act_spec(
+                ag.strategy,
+                ag.activations[x],
+                ag.activations[id],
+            ) == Ordering::Less,
+    ensures
+        pop_spec(ag).1 == Some(ag.activations[x]),
+{
+    theorem_pop(ag);
+    assert(ag.activations.dom().contains(x));
+    assert(!(ag.activations.dom() =~= Set::<nat>::empty()));
+    match pop_spec(ag).1 {
+        Some(a) => {
+            if a.id != x {
+                lemma_key_flip(
+                    build_key_spec(ag.strategy, a),
+                    build_key_spec(ag.strategy, ag.activations[x]),
+                );
+            }
+        },
+        None => {},
+    }
+}
+
+/// `n` successive calls of `pop` (the engine's firing loop), stopping at the
+/// first `None`.
+pub open spec fn pops_spec(ag: AgendaModel, n: nat) -> Seq<SAct>
+    decreases n,
+{
+    if n == 0 {
+        Seq::empty()
+    } else {
+        match pop_spec(ag).1 {
+            None => Seq::empty(),
+            Some(a) => seq![a] + pops_spec(pop_spec(ag).0, (n - 1) as nat),
+        }
+    }
+}
+
+/// THEOREM (firing order). Successive pops return live activations of the
+/// original agenda (as stored), pairwise distinct and in strictly
+/// decreasing priority under the agenda's strategy; fewer than `n` pops
+/// succeed only if every live activation has been returned.
+pub proof fn theorem_pops_in_priority_order(ag: AgendaModel, n: nat)
+    requires
+        inv(ag),
+    ensures
+        pops_spec(ag, n).len() <= n,
+        forall|i: int|
+            0 <= i < pops_spec(ag, n).len() ==> ag.activations.contains_key(
+                (#[trigger] pops_spec(ag, n)[i]).id,
+            ) && ag.activations[pops_spec(ag, n)[i].id] == pops_spec(ag, n)[i],
+        forall|i: int, j: int|
+            0 <= i < j < pops_spec(ag, n).len() ==> cmp_act_spec(
+                ag.strategy,
+                #[trigger] pops_spec(ag, n)[i],
+                #[trigger] pops_spec(ag, n)[j],
+            ) == Ordering::Less && pops_spec(ag, n)[i].id != pops_spec(ag, n)[j].id,
+        pops_spec(ag, n).len() < n ==> forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) ==> exists|i: int|
+                0 <= i < pops_spec(ag, n).len() && (#[trigger] pops_spec(ag, n)[i]).id == id,
+    decreases n,
+{
+    theorem_pop(ag);
+    if n > 0 {
+        match pop_spec(ag).1 {
+            None => {
+                assert forall|id: nat| #[trigger] ag.activations.contains_key(id) implies false by {
+                    assert(ag.activations.dom().contains(id));
+                }
+            },
+            Some(a) => {
+                let ag1 = pop_spec(ag).0;
+                let m = (n - 1) as nat;
+                theorem_pops_in_priority_order(ag1, m);
+                let rest = pops_spec(ag1, m);
+                let all = pops_spec(ag, n);
+                assert(all == seq![a] + rest);
+                assert(ag1.strategy == ag.strategy);
+                assert forall|i: int| 0 <= i < all.len() implies ag.activations.contains_key(
+                    (#[trigger] all[i]).id,
+                ) && ag.activations[all[i].id] == all[i] && (i > 0 ==> all[i].id != a.id) by {
+                    if i > 0 {
+                        assert(all[i] == rest[i - 1]);
+                    }
+                }
+                assert forall|i: int, j: int| 0 <= i < j < all.len() implies cmp_act_spec(
+                    ag.strategy,
+                    #[trigger] all[i],
+                    #[trigger] all[j],
+                ) == Ordering::Less && all[i].id != all[j].id by {
+                    assert(all[j] == rest[j - 1]);
+                    if i > 0 {
+                        assert(all[i] == rest[i - 1]);
+                    } else {
+                        assert(ag.activations.contains_key(all[j].id));
+                    }
+                }
+                if all.len() < n {
+                    assert forall|id: nat| #[trigger] ag.activations.contains_key(id) implies exists|i: int|
+                        0 <= i < all.len() && (#[trigger] all[i]).id == id by {
+                        if id == a.id {
+                            assert(all[0].id == id);
+                        } else {
+                            assert(ag1.activations.contains_key(id));
+                            let k = choose|k: int| 0 <= k < rest.len() && (#[trigger] rest[k]).id == id;
+                            assert(all[k + 1] == rest[k]);
+                        }
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Depth at the agenda level (CLIPS: newly activated rules are placed above
+/// all rules of the same salience). After `add` under Depth the new
+/// activation precedes every live activation whose salience is at most its
+/// own and follows every live activation of higher salience; so if no live
+/// activation has higher salience, the next `pop` returns it.
+pub proof fn theorem_depth_add_places_new_first(ag: AgendaModel, activation: SAct, new_id: nat)
+    requires
+        inv(ag),
+        ag.next_seq < u64::MAX,
+        !ag.activations.contains_key(new_id),
+        ag.strategy is Depth,
+    ensures
+        forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) ==> cmp_act_spec(
+                ag.strategy,
+                added_activation(ag, activation, new_id),
+                ag.activations[id],
+            ) == (if ag.activations[id].salience <= activation.salience {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }),
+        (forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) ==> ag.activations[id].salience <= activation.salience)
+            ==> pop_spec(add_spec(ag, activation, new_id)).1 == Some(
+            added_activation(ag, activation, new_id),
+        ),
+{
+    let n = added_activation(ag, activation, new_id);
+    theorem_add_preserves_inv(ag, activation, new_id);
+    let ag2 = add_spec(ag, activation, new_id);
+    assert forall|id: nat| #[trigger] ag.activations.contains_key(id) implies cmp_act_spec(
+        ag.strategy,
+        n,
+        ag.activations[id],
+    ) == (if ag.activations[id].salience <= activation.salience {
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    }) by {
+        assert(ag.activations[id].activation_seq < n.activation_seq);
+    }
+    if forall|id: nat| #[trigger]
+        ag.activations.contains_key(id) ==> ag.activations[id].salience <= activation.salience {
+        assert forall|id: nat| #[trigger]
+            ag2.activations.contains_key(id) && id != new_id implies cmp_act_spec(
+            ag2.strategy,
+            ag2.activations[new_id],
+            ag2.activations[id],
+        ) == Ordering::Less by {
+            assert(ag.activations.contains_key(id));
+        }
+        lemma_pop_returns_strict_max(ag2, new_id);
+    }
+}
+
+/// Breadth at the agenda level (CLIPS: newly activated rules are placed
+/// below all rules of the same salience). After `add` under Breadth the new
+/// activation follows every live activation whose salience is at least its
+/// own and precedes every live activation of lower salience; so if some live
+/// activation has salience at least the new one's, the next `pop` returns
+/// exactly what it would have returned before the `add`.
+pub proof fn theorem_breadth_add_places_new_last(ag: AgendaModel, activation: SAct, new_id: nat)
+    requires
+        inv(ag),
+        ag.next_seq < u64::MAX,
+        !ag.activations.contains_key(new_id),
+        ag.strategy is Breadth,
+    ensures
+        forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) ==> cmp_act_spec(
+                ag.strategy,
+                added_activation(ag, activation, new_id),
+                ag.activations[id],
+            ) == (if ag.activations[id].salience >= activation.salience {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }),
+        (exists|id: nat| #[trigger]
+            ag.activations.contains_key(id) && ag.activations[id].salience >= activation.salience)
+            ==> pop_spec(add_spec(ag, activation, new_id)).1 == pop_spec(ag).1,
+{
+    let n = added_activation(ag, activation, new_id);
+    theorem_add_preserves_inv(ag, activation, new_id);
+    let ag2 = add_spec(ag, activation, new_id);
+    assert forall|id: nat| #[trigger] ag.activations.contains_key(id) implies cmp_act_spec(
+        ag.strategy,
+        n,
+        ag.activations[id],
+    ) == (if ag.activations[id].salience >= activation.salience {
+        Ordering::Greater
+    } else {
+        Ordering::Less
+    }) by {
+        assert(ag.activations[id].activation_seq < n.activation_seq);
+    }
+    if exists|id: nat| #[trigger]
+        ag.activations.contains_key(id) && ag.activations[id].salience >= activation.salience {
+        let x = choose|id: nat| #[trigger]
+            ag.activations.contains_key(id) && ag.activations[id].salience >= activation.salience;
+        theorem_pop(ag);
+        assert(ag.activations.dom().contains(x));
+        assert(!(ag.activations.dom() =~= Set::<nat>::empty()));
+        let top = pop_spec(ag).1->Some_0;
+        let t = top.id;
+        // The current top has salience at least that of x.
+        assert(top.salience >= ag.activations[x].salience) by {
+            if t != x {
+                assert(cmp_act_spec(ag.strategy, top, ag.activations[x]) == Ordering::Less);
+            }
+        }
+        assert forall|id: nat| #[trigger]
+            ag2.activations.contains_key(id) && id != t implies cmp_act_spec(
+            ag2.strategy,
+            ag2.activations[t],
+            ag2.activations[id],
+        ) == Ordering::Less by {
+            if id == new_id {
+                lemma_key_flip(build_key_spec(ag.strategy, n), build_key_spec(ag.strategy, top));
+            } else {
+                assert(ag.activations.contains_key(id));
+            }
+        }
+        lemma_pop_returns_strict_max(ag2, t);
+    }
+}
+
+/// LEX at the agenda level: an activation added with salience at least that
+/// of every live activation, and matching a fact more recent than every
+/// fact of every live activation, is the next one popped (whatever the
+/// complexities and chronology).
+pub proof fn theorem_lex_add_most_recent_fact_fires_next(
+    ag: AgendaModel,
+    activation: SAct,
+    new_id: nat,
+    i: int,
+)
+    requires
+        inv(ag),
+        ag.next_seq < u64::MAX,
+        !ag.activations.contains_key(new_id),
+        ag.strategy is Lex,
+        0 <= i < activation.recency.len(),
+        forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) ==> ag.activations[id].salience <= activation.salience,
+        forall|id: nat, j: int|
+            ag.activations.contains_key(id) && 0 <= j < ag.activations[id].recency.len()
+                ==> #[trigger] ag.activations[id].recency[j] < activation.recency[i],
+    ensures
+        pop_spec(add_spec(ag, activation, new_id)).1 == Some(
+            added_activation(ag, activation, new_id),
+        ),
+{
+    let n = added_activation(ag, activation, new_id);
+    theorem_add_preserves_inv(ag, activation, new_id);
+    let ag2 = add_spec(ag, activation, new_id);
+    assert forall|id: nat| #[trigger]
+        ag2.activations.contains_key(id) && id != new_id implies cmp_act_spec(
+        ag2.strategy,
+        ag2.activations[new_id],
+        ag2.activations[id],
+    ) == Ordering::Less by {
+        assert(ag.activations.contains_key(id));
+        let x = ag.activations[id];
+        if x.salience < n.salience {
+            theorem_salience_precedes_everything(Strategy::Lex, n, x);
+        } else {
+            assert forall|j: int| 0 <= j < x.recency.len() implies x.recency[j] < n.recency[i] by {
+                assert(ag.activations[id].recency[j] < activation.recency[i]);
+            }
+            theorem_lex_most_recent_fact_wins(n, x, i);
+        }
+    }
+    lemma_pop_returns_strict_max(ag2, new_id);
+}
+
+/// MEA at the agenda level: an activation added with salience at least that
+/// of every live activation and a first-pattern fact more recent than every
+/// live activation's first-pattern fact is the next one popped.
+pub proof fn theorem_mea_add_most_recent_first_pattern_fires_next(
+    ag: AgendaModel,
+    activation: SAct,
+    new_id: nat,
+)
+    requires
+        inv(ag),
+        ag.next_seq < u64::MAX,
+        !ag.activations.contains_key(new_id),
+        ag.strategy is Mea,
+        forall|id: nat| #[trigger]
+            ag.activations.contains_key(id) ==> ag.activations[id].salience <= activation.salience
+                && first_or_absent(ag.activations[id].recency) < first_or_absent(
+                activation.recency,
+            ),
+    ensures
+        pop_spec(add_spec(ag, activation, new_id)).1 == Some(
+            added_activation(ag, activation, new_id),
+        ),
+{
+    let n = added_activation(ag, activation, new_id);
+    theorem_add_preserves_inv(ag, activation, new_id);
+    let ag2 = add_spec(ag, activation, new_id);
+    assert forall|id: nat| #[trigger]
+        ag2.activations.contains_key(id) && id != new_id implies cmp_act_spec(
+        ag2.strategy,
+        ag2.activations[new_id],
+        ag2.activations[id],
+    ) == Ordering::Less by {
+        assert(ag.activations.contains_key(id));
+        let x = ag.activations[id];
+        if x.salience < n.salience {
+            theorem_salience_precedes_everything(Strategy::Mea, n, x);
+        } else {
+            theorem_mea_first_pattern_dominates(n, x);
+        }
+    }
+    lemma_pop_returns_strict_max(ag2, new_id);
+}
 
 // ---------------------------------------------------------------------
 // Determinism: the agenda order does not depend on SlotMap iteration order

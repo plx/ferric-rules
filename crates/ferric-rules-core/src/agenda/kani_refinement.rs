@@ -13,27 +13,40 @@
 //!   `StrategyOrd` variants, cross-variant pairs included, arbitrary unsorted
 //!   recency vectors of every length 0..=3, all scalars unconstrained), the
 //!   derived `Ord::cmp` equals `model::cmp_key`, and `partial_cmp` agrees
-//!   with `cmp`.
+//!   with `cmp`. `key_cmp_refines_model_spilled_lex`,
+//!   `..._spilled_mea_vs_inline` and `..._spilled_mea_vs_spilled`: the same
+//!   for LEX/MEA keys whose recency vector has 5 tags (stored on the heap by
+//!   `SmallVec`) against keys of the same variant with 4 (inline) or 5
+//!   (heap) tags.
 //! * `build_key_refines_model_{depth,breadth,lex}` (basis lengths 0..=4),
 //!   `build_key_refines_model_mea` (0..=3) and `..._mea_len4` (4): for an
 //!   activation with unconstrained salience, complexity, sequence and tags,
 //!   `Agenda::build_key` (clone plus `sort_unstable_by` for LEX/MEA) produces
 //!   exactly `model::build_key` (insertion sort), compared field by field
 //!   after the abstraction map `key_to_model` (which strips the newtypes and
-//!   `Reverse` wrappers).
-//! * `activation_cmp_refines_model_{depth,breadth,lex,mea}`: end to end, for
-//!   two such activations with every pair of basis lengths in 0..=3, the
-//!   production key comparison equals `model::cmp_activations`.
+//!   `Reverse` wrappers). `build_key_refines_model_{lex,mea}_spilled`: the
+//!   same for a basis of 5 tags held on the heap.
+//! * `activation_cmp_refines_model_{depth,breadth}` and
+//!   `activation_cmp_refines_model_{lex,mea}_a{0,1,2,3}` (split by the basis
+//!   length of `a`): end to end, for two such activations with every pair of
+//!   basis lengths in 0..=3, the production key comparison equals
+//!   `model::cmp_activations`.
+//! * `recency_tag_encoding_is_order_embedding`: `RecencyTag::from_timestamp`
+//!   maps every timestamp but `u64::MAX` strictly above `ABSENT`, preserves
+//!   the timestamp order exactly, and `RecencyTag::timestamp` inverts it on
+//!   every tag (absence decodes to `None`). The Verus model treats tags as
+//!   plain `u64`s; this is what makes "absent matches sort below every fact"
+//!   hold for the encoded tags.
 //!
-//! Bounds: recency vectors as stated above, at most the `SmallVec` inline
-//! capacity 4 (the Verus proofs are unbounded); every integer field ranges
-//! over its whole type. Lengths are concrete in the build-key and activation
-//! harnesses (see `any_recency_of_len`).
-//! Known gaps: recency vectors longer than these bounds, in particular the
-//! `SmallVec` heap representation beyond 4 tags, are not exercised; the
-//! agenda operations (`add`, `pop`, ...) are modelled in Verus but are not
-//! linked to production here; agreement of this transcription with the Verus
-//! source is by inspection (it is line-for-line).
+//! Bounds: recency vectors as stated above, at most 5 tags (the Verus proofs
+//! are unbounded); every integer field ranges over its whole type. Lengths
+//! are concrete in the build-key and activation harnesses (see
+//! `any_recency_of_len`).
+//! Known gaps: recency vectors longer than these bounds are not exercised
+//! (end-to-end comparisons only up to 3 tags each); the agenda operations
+//! (`add`, `pop`, ...) are modelled in Verus but are not linked to
+//! production here; agreement of this transcription with the Verus source is
+//! by inspection (it is line-for-line once ghost code is removed).
 
 use super::*;
 use std::cmp::Ordering;
@@ -339,9 +352,22 @@ fn any_recency_of_len(len: usize) -> SmallVec<[RecencyTag; 4]> {
     SmallVec::from_buf_and_len(buf.map(RecencyTag), len)
 }
 
+/// A recency vector of exactly 5 unconstrained tags: one more than the
+/// inline capacity, so `SmallVec` stores it on the heap.
+fn any_spilled_recency() -> SmallVec<[RecencyTag; 4]> {
+    let buf: [u64; 5] = kani::any();
+    SmallVec::from_slice(&buf.map(RecencyTag))
+}
+
 /// An activation with every field read by `build_key` unconstrained and a
 /// basis of exactly `len` tags.
 fn any_activation(len: usize) -> Activation {
+    activation_with_recency(any_recency_of_len(len))
+}
+
+/// An activation with the given basis and every other field read by
+/// `build_key` unconstrained.
+fn activation_with_recency(recency: SmallVec<[RecencyTag; 4]>) -> Activation {
     Activation {
         id: ActivationId::default(),
         rule: RuleId(0),
@@ -350,7 +376,7 @@ fn any_activation(len: usize) -> Activation {
         complexity: kani::any(),
         timestamp: Timestamp::ZERO,
         activation_seq: ActivationSeq::new(kani::any()),
-        recency: any_recency_of_len(len),
+        recency,
     }
 }
 
@@ -381,6 +407,37 @@ fn variant_of(key: &AgendaKey) -> u8 {
         StrategyOrd::Breadth(_) => 1,
         StrategyOrd::Lex(_) => 2,
         StrategyOrd::Mea { .. } => 3,
+    }
+}
+
+/// A LEX (`mea == false`) or MEA key whose recency vector holds the first
+/// `len` (<= 5) of five unconstrained tags; with 5 tags the vector is on the
+/// heap.
+fn any_recency_key(mea: bool, len: usize) -> AgendaKey {
+    let buf: [u64; 5] = kani::any();
+    let tags: SmallVec<[RecencyTag; 4]> = SmallVec::from_slice(&buf.map(RecencyTag)[..len]);
+    let strategy_ord = if !mea {
+        StrategyOrd::Lex(std::cmp::Reverse(tags))
+    } else {
+        StrategyOrd::Mea {
+            first_recency: std::cmp::Reverse(RecencyTag(kani::any())),
+            sorted_recency: std::cmp::Reverse(tags),
+        }
+    };
+    AgendaKey {
+        salience: std::cmp::Reverse(Salience::new(kani::any())),
+        strategy_ord,
+        complexity: std::cmp::Reverse(kani::any()),
+        seq: ActivationSeq::new(kani::any()),
+    }
+}
+
+/// The recency vector of a LEX or MEA key.
+fn recency_of(key: &AgendaKey) -> Option<&SmallVec<[RecencyTag; 4]>> {
+    match &key.strategy_ord {
+        StrategyOrd::Lex(tags) => Some(&tags.0),
+        StrategyOrd::Mea { sorted_recency, .. } => Some(&sorted_recency.0),
+        _ => None,
     }
 }
 
@@ -420,13 +477,88 @@ fn key_cmp_refines_model() {
     );
 }
 
+/// The derived `Ord` (and `PartialOrd`) on `AgendaKey` equals the model's
+/// `cmp_key` on LEX keys whose recency vector is spilled to the heap (5
+/// tags), compared against LEX keys with 4 (inline) or 5 (heap) tags.
+/// Variant and lengths are concrete: a harness choosing the variant
+/// symbolically (with or without a symbolic length) exceeded the 7 GB memory
+/// cap during propositional reduction.
+#[kani::proof]
+#[kani::unwind(6)]
+fn key_cmp_refines_model_spilled_lex() {
+    let (a, b, production) = check_key_cmp_spilled(false, 4);
+    cover_spilled_vs_inline(&a, &b, production);
+    let (a, b, production) = check_key_cmp_spilled(false, 5);
+    cover_spilled_vs_spilled(&a, &b, production);
+}
+
+/// As `key_cmp_refines_model_spilled_lex`, for MEA keys against MEA keys
+/// with 4 (inline) tags. (Both lengths in one MEA harness exceed the 7 GB
+/// memory cap.)
+#[kani::proof]
+#[kani::unwind(6)]
+fn key_cmp_refines_model_spilled_mea_vs_inline() {
+    let (a, b, production) = check_key_cmp_spilled(true, 4);
+    cover_spilled_vs_inline(&a, &b, production);
+}
+
+/// As `key_cmp_refines_model_spilled_lex`, for MEA keys against MEA keys
+/// with 5 (heap) tags.
+#[kani::proof]
+#[kani::unwind(6)]
+fn key_cmp_refines_model_spilled_mea_vs_spilled() {
+    let (a, b, production) = check_key_cmp_spilled(true, 5);
+    cover_spilled_vs_spilled(&a, &b, production);
+}
+
+/// Checks `cmp` and `partial_cmp` against the model for a key `a` with a
+/// spilled 5-tag vector and a key `b` of the same variant with `len_b` tags.
+fn check_key_cmp_spilled(mea: bool, len_b: usize) -> (AgendaKey, AgendaKey, Ordering) {
+    let a = any_recency_key(mea, 5);
+    let b = any_recency_key(mea, len_b);
+    assert!(recency_of(&a).unwrap().spilled());
+    assert_eq!(recency_of(&b).unwrap().spilled(), len_b == 5);
+
+    let production = a.cmp(&b);
+    assert_eq!(
+        production,
+        model::cmp_key(&key_to_model(&a), &key_to_model(&b))
+    );
+    assert_eq!(a.partial_cmp(&b), Some(production));
+    (a, b, production)
+}
+
+fn cover_spilled_vs_inline(a: &AgendaKey, b: &AgendaKey, production: Ordering) {
+    let (tags_a, tags_b) = (recency_of(a).unwrap(), recency_of(b).unwrap());
+    kani::cover!(production == Ordering::Less, "spilled first");
+    kani::cover!(production == Ordering::Greater, "inline first");
+    kani::cover!(
+        a.salience == b.salience && tags_a[..4] == tags_b[..],
+        "spilled vector extends the inline one at equal salience"
+    );
+}
+
+fn cover_spilled_vs_spilled(a: &AgendaKey, b: &AgendaKey, production: Ordering) {
+    let (tags_a, tags_b) = (recency_of(a).unwrap(), recency_of(b).unwrap());
+    kani::cover!(production == Ordering::Less, "less");
+    kani::cover!(production == Ordering::Equal, "equal");
+    kani::cover!(production == Ordering::Greater, "greater");
+    kani::cover!(
+        a.salience == b.salience && tags_a[..4] == tags_b[..4] && tags_a[4] != tags_b[4],
+        "pair differing only in the fifth (heap) tag at equal salience"
+    );
+}
+
 fn check_build_key(strategy: ConflictResolutionStrategy, len: usize) {
-    let activation = any_activation(len);
+    check_build_key_of(strategy, &any_activation(len));
+}
+
+fn check_build_key_of(strategy: ConflictResolutionStrategy, activation: &Activation) {
     let agenda = Agenda::with_strategy(strategy);
-    let production = agenda.build_key(&activation);
+    let production = agenda.build_key(activation);
     let expected = model::build_key(
         strategy_to_model(strategy),
-        &activation_to_model(&activation),
+        &activation_to_model(activation),
     );
     assert!(same_key(&key_to_model(&production), &expected));
 
@@ -490,6 +622,63 @@ fn build_key_refines_model_mea() {
 #[kani::unwind(6)]
 fn build_key_refines_model_mea_len4() {
     check_build_key(ConflictResolutionStrategy::Mea, 4);
+}
+
+/// `Agenda::build_key` equals `model::build_key` under LEX for a basis of 5
+/// tags, which `SmallVec` keeps on the heap (clone and sort of a spilled
+/// vector).
+#[kani::proof]
+#[kani::unwind(6)]
+fn build_key_refines_model_lex_spilled() {
+    let activation = activation_with_recency(any_spilled_recency());
+    assert!(activation.recency.spilled());
+    check_build_key_of(ConflictResolutionStrategy::Lex, &activation);
+}
+
+/// `Agenda::build_key` equals `model::build_key` under MEA for a basis of 5
+/// tags, which `SmallVec` keeps on the heap.
+#[kani::proof]
+#[kani::unwind(6)]
+fn build_key_refines_model_mea_spilled() {
+    let activation = activation_with_recency(any_spilled_recency());
+    assert!(activation.recency.spilled());
+    check_build_key_of(ConflictResolutionStrategy::Mea, &activation);
+}
+
+/// `RecencyTag`'s encoding (agenda.rs:51-79), on which the documented LEX/MEA
+/// semantics rely ("absent matches sort below every fact"): every encodable
+/// fact timestamp (all but `u64::MAX`, which the fact store never assigns,
+/// agenda.rs:62) maps above `ABSENT`; the encoding preserves the timestamp
+/// order exactly; and `timestamp` inverts it on every tag.
+#[kani::proof]
+fn recency_tag_encoding_is_order_embedding() {
+    let t1: u64 = kani::any();
+    let t2: u64 = kani::any();
+    let e1 = RecencyTag::from_timestamp(Timestamp::new(t1));
+    let e2 = RecencyTag::from_timestamp(Timestamp::new(t2));
+    assert_eq!(e1.is_none(), t1 == u64::MAX);
+    if let Some(tag) = e1 {
+        assert!(RecencyTag::ABSENT < tag);
+        assert_eq!(tag.timestamp(), Some(Timestamp::new(t1)));
+    }
+    if let (Some(x), Some(y)) = (e1, e2) {
+        assert_eq!(x.cmp(&y), t1.cmp(&t2));
+    }
+    assert_eq!(RecencyTag::ABSENT.timestamp(), None);
+
+    let tag = RecencyTag(kani::any());
+    match tag.timestamp() {
+        None => assert_eq!(tag, RecencyTag::ABSENT),
+        Some(timestamp) => assert_eq!(RecencyTag::from_timestamp(timestamp), Some(tag)),
+    }
+
+    kani::cover!(e1.is_none(), "unencodable timestamp");
+    kani::cover!(
+        e1.is_some() && e2.is_some() && t1 < t2,
+        "two facts, older first"
+    );
+    kani::cover!(tag == RecencyTag::ABSENT, "absent tag");
+    kani::cover!(tag.0 == u64::MAX, "largest tag decodes");
 }
 
 fn check_activation_cmp(strategy: ConflictResolutionStrategy, len_a: usize, len_b: usize) {
