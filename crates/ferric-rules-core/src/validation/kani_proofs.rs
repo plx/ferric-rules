@@ -2,8 +2,10 @@
 //!
 //! This module defines the diagnostics types; the validators that emit them
 //! live in `compiler.rs` (E0005, see compiler/kani_proofs.rs) and in the
-//! runtime loader (E0001-E0005, modeled in
-//! verification/verus/pattern_restrictions.rs).
+//! runtime loader (E0001, E0002, E0003 and E0005, modeled in
+//! verification/verus/pattern_restrictions.rs). No validator in the
+//! workspace constructs E0004 (`ForallUnboundVariable`); the harnesses below
+//! check only the code that variant would carry.
 //!
 //! What is proved, on the production code (the expected codes are written
 //! here from the variant documentation, validation.rs:89-109):

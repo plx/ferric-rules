@@ -20,8 +20,10 @@
 //! * `sequence_bindings_must_select_logical_fields`: for an ordered sequence
 //!   plan of one or two single fields, `validate_pattern_tests` accepts a
 //!   pattern exactly when its alpha source is an ordered relation and both
-//!   its binding and its negated binding select one of the plan's logical
-//!   fields (indexes below 4); otherwise it reports exactly one E0005.
+//!   its binding and its negated binding are ordered-field selectors naming
+//!   one of the plan's logical fields (selectors of both kinds, ordered field
+//!   and template slot, with indexes below 4 are tried); otherwise it
+//!   reports exactly one E0005.
 //! * `top_level_predicates_are_accepted`: zero to three predicate conditions
 //!   (any indexes) pass `validate_conditions`.
 //! * `maximum_new_beta_nodes_counts_ncc_partners`: for zero to three
@@ -76,9 +78,11 @@
 //! the specified condition trees of any shape and size (including the
 //! 64-node limit, reported as demand 65, and acceptance implies every NCC is
 //! non-empty), variable reuse is reported exactly, `maximum_new_beta_nodes`
-//! is exact and bounds every installation, alpha paths are shared exactly
-//! when their keys are equal and reused on recompilation, and the snapshot's
-//! alpha-cache check accepts every compiled state.
+//! is exact and bounds every installation, alpha paths and join nodes are
+//! shared exactly when their keys are equal and reused on recompilation, and
+//! the snapshot's alpha-cache and join-cache checks accept every compiled
+//! state. "Compiled networks pass `validate_consistency`" is not proved
+//! anywhere (neither on production code nor on the model).
 
 use super::*;
 use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
@@ -258,18 +262,33 @@ fn ordered_plan(width: usize) -> SequencePattern {
     }
 }
 
+/// A selector of either kind: ordered fields and template slots share the
+/// index space, so only the kind tells them apart.
+fn selector(template: bool, index: usize) -> SlotIndex {
+    if template {
+        SlotIndex::Template(index)
+    } else {
+        SlotIndex::Ordered(index)
+    }
+}
+
 #[kani::proof]
 #[kani::unwind(5)]
 fn sequence_bindings_must_select_logical_fields() {
     for width in 1..3_usize {
         let positive: usize = kani::any_where(|i: &usize| *i < 4);
         let negated: usize = kani::any_where(|i: &usize| *i < 4);
+        let positive_template: bool = kani::any();
+        let negated_template: bool = kani::any();
         let template_entry: bool = kani::any();
         let mut pattern = plain_pattern(false, false);
         pattern.sequence = Some(ordered_plan(width));
-        pattern.variable_slots = vec![(SlotIndex::Ordered(positive), Symbol(SymbolId::Ascii(0)))];
+        pattern.variable_slots = vec![(
+            selector(positive_template, positive),
+            Symbol(SymbolId::Ascii(0)),
+        )];
         pattern.negated_variable_slots = vec![(
-            SlotIndex::Ordered(negated),
+            selector(negated_template, negated),
             Symbol(SymbolId::Ascii(1)),
             JoinTestType::NotEqual,
         )];
@@ -278,15 +297,28 @@ fn sequence_bindings_must_select_logical_fields() {
         }
         let result = ReteCompiler::validate_pattern_tests(&pattern);
         // Specification: an ordered projection reads only ordered alpha
-        // sources, and every selector names one of its `width` logical fields.
-        let expected_ok = !template_entry && positive < width && negated < width;
+        // sources, and every selector is an ordered field naming one of its
+        // `width` logical fields (template-slot selectors name nothing in an
+        // ordered projection).
+        let expected_ok = !template_entry
+            && !positive_template
+            && positive < width
+            && !negated_template
+            && negated < width;
         if expected_ok {
             assert!(result.is_ok());
         } else {
             assert!(is_e0005_list(&result, 1));
         }
         kani::cover!(expected_ok && width == 2, "accepted two-field plan");
-        kani::cover!(!template_entry && positive == width, "first invalid field");
+        kani::cover!(
+            !template_entry && !positive_template && positive == width,
+            "first invalid field"
+        );
+        kani::cover!(
+            !template_entry && negated_template && negated < width && !positive_template,
+            "in-range template selector rejected"
+        );
         std::mem::forget(result);
         std::mem::forget(pattern);
     }

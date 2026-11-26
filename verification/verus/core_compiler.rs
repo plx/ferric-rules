@@ -11,10 +11,14 @@
 //!   structural diagnostics, `theorem_validate_conditions_exact` and the
 //!   postconditions of `validate_conditions` / `validate_conditions_accepts_exactly`:
 //!   - the worklist scan counts every condition node exactly once, nested NCC
-//!     nodes and their contents included (`sizes`), so the rule is rejected
-//!     with `ResourceLimit { required: 65, limit: 64 }` exactly when it has
-//!     more than 64 nodes and all pattern test checks pass; the reported
-//!     demand is always 65, never the rule's real size;
+//!     nodes and their contents included (`sizes`). A `ResourceLimit` is
+//!     reported only for rules of more than 64 nodes, always as
+//!     `{ required: 65, limit: 64 }` (never the rule's real size), and every
+//!     rule of more than 64 nodes whose pattern test checks all pass is
+//!     rejected that way. (With more than 64 nodes and a failing pattern test
+//!     check, which of the two errors is reported depends on the worklist
+//!     order; the model does not characterize that case.) At most 64 nodes
+//!     and a failing check always give the pattern-test error;
 //!   - it returns `Ok` exactly when the rule has at most 64 nodes, every
 //!     pattern passes its test checks, and the declarative structure
 //!     predicate holds: every top-level NCC is non-empty; inside any NCC,
@@ -58,6 +62,22 @@
 //!   cache size, `parents`/`owners` reconstruction, duplicate cached memory,
 //!   owner lookup, test-by-test walk, entry match) returns `Ok` on every state
 //!   produced by any sequence of `ensure_alpha_path` calls.
+//! * Join-node sharing (`ensure_join_node`, compiler.rs:826, over
+//!   `create_join_node` / `set_sequence` / `allocate_node_id`, beta.rs:770/
+//!   811/1429, interleaved with any other node creation): `join_wf` states
+//!   that node ids are distinct and allocated, cached keys and cached nodes
+//!   are distinct, each cached node is a join whose parent, alpha memory,
+//!   tests, bindings and sequence spell its key, and there are as many join
+//!   nodes as cache entries; it holds for `BetaNetwork::new()` /
+//!   `ReteCompiler::new()` and is preserved by every step.
+//!   - `theorem_join_sharing_exact`: two positive patterns get the same join
+//!     node if and only if their join keys are equal;
+//!   - `theorem_join_recompile_reuses`: ensuring the same key again returns
+//!     the same node and leaves the network and the cache unchanged;
+//!   - `theorem_snapshot_accepts_compiled_joins`: the model of the join-cache
+//!     part of `ReteCompiler::validate_snapshot_checked` (snapshot.rs:2077-2094:
+//!     cache size against the join count, duplicate cached join, field-by-field
+//!     node match) returns `Ok` after any sequence of such steps.
 //!
 //! # Abstractions and simplifications (each also noted at its site)
 //!
@@ -91,9 +111,17 @@
 //!   and only states the invariant (it is what the snapshot check
 //!   reconstructs as `parents`).
 //! * The snapshot model omits the work budget (`Work::spend`, a resource
-//!   limit, not a structural check), the join-cache part of the same
-//!   function, and the rule-ID checks; the 32-bit index conversion is
-//!   implied by `nodes.len() == next_node_id: u32`.
+//!   limit, not a structural check) and the rule-ID checks; the 32-bit index
+//!   conversion is implied by `nodes.len() == next_node_id: u32`. Its alpha
+//!   and join parts are separate functions over separate state.
+//! * Join model: `JoinNodeKey`'s tests, bindings and sequence plan are `u64`
+//!   codes compared by equality; `BetaNetwork::nodes` (a `HashMap`) is an
+//!   association list with distinct ids (map semantics; a fresh id is never
+//!   present, so `insert` appends); node kinds other than joins are one
+//!   `Other` kind, and memories, children lists and the alpha-to-joins index
+//!   are not modeled. `set_sequence` requires a join node (production panics
+//!   on any other kind). Join keys are free inputs: how `compile_pattern`
+//!   builds them (join tests, binding extractions) is not modeled.
 //! * Unsigned counters: `create_entry_node`/`create_constant_test_node`
 //!   require `next_node_id < u32::MAX` and `create_memory` requires
 //!   `memory_count < u32::MAX` (production uses unchecked `+= 1`, alpha.rs:489,
@@ -113,8 +141,9 @@
 //!   model function cites its production counterpart), not on compiling the
 //!   production code. The Kani harnesses in compiler/kani_proofs.rs and
 //!   snapshot/kani_proofs.rs check the production code on bounded inputs.
-//! * Join-node sharing (`ensure_join_node`, the join part of the snapshot
-//!   check) and the content of compiled beta nodes are not modeled beyond the
+//! * Join-node sharing is modeled at the level of join keys only: the
+//!   contents of compiled beta nodes (how `compile_pattern` derives join
+//!   tests and bindings, beta memories, children) are not modeled beyond the
 //!   allocation count; nor are `remove_rules` cache remapping, backfill,
 //!   memory indexes, or the runtime's `validate_pattern_tests` details.
 //! * The source-level validator that emits E0001, E0002, E0003 and E0005
@@ -736,7 +765,7 @@ pub open spec fn top_member_ok(c: CondM) -> bool {
 }
 
 /// Every NCC at every depth has at least one subcondition (the
-/// `debug_assert!` at compiler.rs:957 that `compile_ncc_condition` relies on).
+/// `debug_assert!` at compiler.rs:958 that `compile_ncc_condition` relies on).
 pub open spec fn nccs_nonempty(c: CondM) -> bool
     decreases c, 1nat,
 {
@@ -2460,6 +2489,681 @@ fn theorem_snapshot_accepts_compiled_alpha_paths(entries: &Vec<u64>, tests: &Vec
         i += 1;
     }
     validate_alpha_cache_snapshot(&compiler, &alpha, Ghost(cur))
+}
+
+// ---------------------------------------------------------------------------
+// Join-node sharing (`ensure_join_node`) and the snapshot join-cache check
+// ---------------------------------------------------------------------------
+
+/// Models `JoinNodeKey` (compiler.rs:163). Join tests, bindings and the
+/// sequence plan are `u64` codes compared by equality (the production key
+/// derives `PartialEq`/`Hash`).
+pub struct JoinKeyM {
+    pub parent: u32,
+    pub alpha_memory: u32,
+    pub tests: Vec<u64>,
+    pub bindings: Vec<u64>,
+    pub sequence: Option<u64>,
+}
+
+pub open spec fn jk(k: JoinKeyM) -> (u32, u32, Seq<u64>, Seq<u64>, Option<u64>) {
+    (k.parent, k.alpha_memory, k.tests@, k.bindings@, k.sequence)
+}
+
+/// Models `BetaNode` (beta.rs) as far as the join cache reads it: a join's
+/// `parent`, `alpha_memory`, `tests`, `bindings` and `sequence`; every other
+/// node kind (root, negative, exists, NCC, partner, predicate, terminal) is
+/// `Other`.
+pub enum BetaNodeM {
+    Join { parent: u32, alpha_memory: u32, tests: Vec<u64>, bindings: Vec<u64>, sequence: Option<u64> },
+    Other,
+}
+
+pub open spec fn node_key(n: BetaNodeM) -> Option<(u32, u32, Seq<u64>, Seq<u64>, Option<u64>)> {
+    match n {
+        BetaNodeM::Join { parent, alpha_memory, tests, bindings, sequence } => Some(
+            (parent, alpha_memory, tests@, bindings@, sequence),
+        ),
+        BetaNodeM::Other => None,
+    }
+}
+
+/// Models `BetaNetwork` (beta.rs:506): `nodes: HashMap<NodeId, BetaNode>`
+/// as an association list with distinct keys (map semantics), and
+/// `next_node_id`.
+pub struct BetaNetM {
+    pub nodes: Vec<(u32, BetaNodeM)>,
+    pub next_node_id: u32,
+}
+
+/// `join_node_cache: HashMap<JoinNodeKey, NodeId>` (compiler.rs:234) as an
+/// association list with map semantics.
+pub struct JoinCacheM {
+    pub join_node_cache: Vec<(JoinKeyM, u32)>,
+}
+
+/// Number of join nodes (`nodes.values().filter(Join).count()`).
+pub open spec fn joins(s: Seq<(u32, BetaNodeM)>) -> nat
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        joins(s.drop_last()) + if s.last().1 is Join {
+            1nat
+        } else {
+            0nat
+        }
+    }
+}
+
+proof fn lemma_joins_push(s: Seq<(u32, BetaNodeM)>, x: (u32, BetaNodeM))
+    ensures
+        joins(s.push(x)) == joins(s) + if x.1 is Join {
+            1nat
+        } else {
+            0nat
+        },
+{
+    assert(s.push(x).drop_last() =~= s);
+}
+
+/// The join cache and the beta network agree: node ids are distinct and
+/// allocated; cached keys are distinct and so are cached nodes; each cached
+/// node is a join whose fields spell its key; there are exactly as many join
+/// nodes as cache entries.
+pub open spec fn join_wf(c: Seq<(JoinKeyM, u32)>, b: BetaNetM) -> bool {
+    let n = b.nodes@;
+    &&& forall|i: int| 0 <= i < n.len() ==> (#[trigger] n[i]).0 < b.next_node_id
+    &&& forall|i: int, j: int| 0 <= i < j < n.len() ==> (#[trigger] n[i]).0 != (#[trigger] n[j]).0
+    &&& forall|j: int, l: int| 0 <= j < l < c.len() ==> jk((#[trigger] c[j]).0) != jk((#[trigger] c[l]).0)
+    &&& forall|j: int, l: int| 0 <= j < l < c.len() ==> (#[trigger] c[j]).1 != (#[trigger] c[l]).1
+    &&& forall|j: int| 0 <= j < c.len() ==> #[trigger] cached_node(c, b, j)
+    &&& joins(n) == c.len()
+}
+
+/// Cache entry `j` names a node of the network that is a join spelling its key.
+pub open spec fn cached_node(c: Seq<(JoinKeyM, u32)>, b: BetaNetM, j: int) -> bool {
+    exists|i: int|
+        0 <= i < b.nodes@.len() && (#[trigger] b.nodes@[i]).0 == c[j].1 && node_key(b.nodes@[i].1)
+            == Some(jk(c[j].0))
+}
+
+/// `Vec<u64>` equality (derived `PartialEq` of the key's vectors).
+fn vec_eq(a: &Vec<u64>, b: &Vec<u64>) -> (r: bool)
+    ensures
+        r == (a@ == b@),
+{
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i: usize = 0;
+    while i < a.len()
+        invariant
+            a.len() == b.len(),
+            i <= a.len(),
+            forall|k: int| 0 <= k < i ==> a@[k] == b@[k],
+        decreases a.len() - i,
+    {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    assert(a@ =~= b@);
+    true
+}
+
+/// `JoinNodeKey` equality (derived `PartialEq`, compiler.rs:161).
+fn join_key_eq(a: &JoinKeyM, b: &JoinKeyM) -> (r: bool)
+    ensures
+        r == (jk(*a) == jk(*b)),
+{
+    a.parent == b.parent && a.alpha_memory == b.alpha_memory && vec_eq(&a.tests, &b.tests) && vec_eq(
+        &a.bindings,
+        &b.bindings,
+    ) && a.sequence == b.sequence
+}
+
+/// `join_node_cache.get(&key)` (compiler.rs:844) under map semantics.
+fn join_cache_get(cache: &Vec<(JoinKeyM, u32)>, key: &JoinKeyM) -> (r: Option<u32>)
+    ensures
+        r matches Some(id) ==> exists|j: int| 0 <= j < cache@.len() && jk((#[trigger] cache@[j]).0) == jk(*key) && cache@[j].1 == id,
+        r is None ==> forall|j: int| 0 <= j < cache@.len() ==> jk((#[trigger] cache@[j]).0) != jk(*key),
+{
+    let mut j: usize = 0;
+    while j < cache.len()
+        invariant
+            j <= cache@.len(),
+            forall|l: int| 0 <= l < j ==> jk((#[trigger] cache@[l]).0) != jk(*key),
+        decreases cache@.len() - j,
+    {
+        if join_key_eq(&cache[j].0, key) {
+            return Some(cache[j].1);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Models `BetaNetwork::allocate_node_id` plus `self.nodes.insert(node_id,
+/// node)` for a node kind the join cache does not read (`create_negative_node`,
+/// `create_exists_node`, `create_predicate_node`, `create_ncc_node`,
+/// `create_ncc_partner`, `create_terminal_node_with_complexity`; beta.rs).
+fn create_other_node(b: &mut BetaNetM, Ghost(c): Ghost<Seq<(JoinKeyM, u32)>>) -> (id: u32)
+    requires
+        join_wf(c, *old(b)),
+        old(b).next_node_id < u32::MAX,
+    ensures
+        join_wf(c, *final(b)),
+        id == old(b).next_node_id,
+        final(b).next_node_id == old(b).next_node_id + 1,
+        final(b).nodes@ == old(b).nodes@.push((id, BetaNodeM::Other)),
+{
+    let id = allocate_beta_node_id(b);
+    let ghost n0 = b.nodes@;
+    b.nodes.push((id, BetaNodeM::Other));
+    proof {
+        let n = b.nodes@;
+        lemma_joins_push(n0, (id, BetaNodeM::Other));
+        assert forall|j: int| 0 <= j < c.len() implies #[trigger] cached_node(c, *b, j) by {
+            assert(cached_node(c, *old(b), j));
+            let i = choose|i: int|
+                0 <= i < n0.len() && (#[trigger] n0[i]).0 == c[j].1 && node_key(n0[i].1) == Some(jk(c[j].0));
+            assert(n[i] == n0[i]);
+        }
+        assert forall|i: int, k: int| 0 <= i < k < n.len() implies (#[trigger] n[i]).0 != (#[trigger] n[k]).0 by {
+            if k == n0.len() {
+                assert(n[i] == n0[i]);
+            } else {
+                assert(n[i] == n0[i] && n[k] == n0[k]);
+            }
+        }
+        assert forall|i: int| 0 <= i < n.len() implies (#[trigger] n[i]).0 < b.next_node_id by {
+            if i < n0.len() {
+                assert(n[i] == n0[i]);
+            }
+        }
+    }
+    id
+}
+
+/// Models `BetaNetwork::allocate_node_id` (beta.rs:1429) on this network.
+fn allocate_beta_node_id(b: &mut BetaNetM) -> (id: u32)
+    requires
+        old(b).next_node_id < u32::MAX,
+    ensures
+        id == old(b).next_node_id,
+        final(b).next_node_id == old(b).next_node_id + 1,
+        final(b).nodes@ == old(b).nodes@,
+{
+    let id = b.next_node_id;
+    b.next_node_id = b.next_node_id + 1;
+    id
+}
+
+/// Models `BetaNetwork::create_join_node` (beta.rs:770): allocate an id and
+/// insert a join with no sequence plan (memories, children and the
+/// alpha-to-joins index are not modeled).
+fn create_join_node(b: &mut BetaNetM, parent: u32, alpha_memory: u32, tests: Vec<u64>, bindings: Vec<u64>) -> (id: u32)
+    requires
+        old(b).next_node_id < u32::MAX,
+        forall|i: int| 0 <= i < old(b).nodes@.len() ==> (#[trigger] old(b).nodes@[i]).0 < old(b).next_node_id,
+    ensures
+        id == old(b).next_node_id,
+        final(b).next_node_id == old(b).next_node_id + 1,
+        final(b).nodes@ == old(b).nodes@.push(
+            (id, BetaNodeM::Join { parent, alpha_memory, tests, bindings, sequence: None }),
+        ),
+{
+    let id = allocate_beta_node_id(b);
+    // `self.nodes.insert(node_id, node)`: the id is fresh (every key is
+    // below the counter), so the map gains one entry.
+    b.nodes.push((id, BetaNodeM::Join { parent, alpha_memory, tests, bindings, sequence: None }));
+    id
+}
+
+/// Models `BetaNetwork::set_sequence` (beta.rs:811) on a join node. The
+/// production panics on any other node kind; the `requires` makes callers
+/// prove the node is a join.
+fn set_sequence(b: &mut BetaNetM, node: u32, pattern: Option<u64>) -> (at: Ghost<int>)
+    requires
+        exists|i: int| 0 <= i < old(b).nodes@.len() && (#[trigger] old(b).nodes@[i]).0 == node && old(b).nodes@[i].1 is Join,
+        forall|i: int, j: int| 0 <= i < j < old(b).nodes@.len() ==> (#[trigger] old(b).nodes@[i]).0 != (#[trigger] old(b).nodes@[j]).0,
+    ensures
+        0 <= at@ < old(b).nodes@.len(),
+        old(b).nodes@[at@].0 == node,
+        final(b).next_node_id == old(b).next_node_id,
+        final(b).nodes@ == old(b).nodes@.update(at@, (node, match old(b).nodes@[at@].1 {
+            BetaNodeM::Join { parent, alpha_memory, tests, bindings, sequence: _ } => BetaNodeM::Join {
+                parent,
+                alpha_memory,
+                tests,
+                bindings,
+                sequence: pattern,
+            },
+            BetaNodeM::Other => BetaNodeM::Other,
+        })),
+{
+    // `self.nodes.get_mut(&node)`
+    let mut k: usize = 0;
+    while k < b.nodes.len() && b.nodes[k].0 != node
+        invariant
+            k <= b.nodes@.len(),
+            b.nodes@ == old(b).nodes@,
+            b.next_node_id == old(b).next_node_id,
+            forall|l: int| 0 <= l < k ==> (#[trigger] b.nodes@[l]).0 != node,
+        decreases b.nodes@.len() - k,
+    {
+        k += 1;
+    }
+    if k == b.nodes.len() {
+        // Unreachable: the node exists.
+        proof {
+            let i = choose|i: int| 0 <= i < old(b).nodes@.len() && (#[trigger] old(b).nodes@[i]).0 == node && old(b).nodes@[i].1 is Join;
+            assert(old(b).nodes@[i].0 != node);
+        }
+        return Ghost(0);
+    }
+    let ghost n0 = b.nodes@;
+    let (id, current) = b.nodes.remove(k);
+    // `Some(BetaNode::Join { sequence, .. }) => *sequence = pattern`
+    let updated = match current {
+        BetaNodeM::Join { parent, alpha_memory, tests, bindings, sequence: _ } => BetaNodeM::Join {
+            parent,
+            alpha_memory,
+            tests,
+            bindings,
+            sequence: pattern,
+        },
+        BetaNodeM::Other => BetaNodeM::Other,
+    };
+    b.nodes.insert(k, (id, updated));
+    proof {
+        assert(b.nodes@ =~= n0.update(k as int, (node, updated)));
+    }
+    Ghost(k as int)
+}
+
+/// Models `ReteCompiler::ensure_join_node` (compiler.rs:826).
+fn ensure_join_node(
+    compiler: &mut JoinCacheM,
+    beta: &mut BetaNetM,
+    parent: u32,
+    alpha_memory: u32,
+    tests: Vec<u64>,
+    bindings: Vec<u64>,
+    sequence: Option<u64>,
+) -> (id: u32)
+    requires
+        join_wf(old(compiler).join_node_cache@, *old(beta)),
+        old(beta).next_node_id < u32::MAX,
+    ensures
+        join_wf(final(compiler).join_node_cache@, *final(beta)),
+        // The returned node is the one cached under exactly this key.
+        exists|j: int| 0 <= j < final(compiler).join_node_cache@.len() && jk((#[trigger] final(compiler).join_node_cache@[j]).0) == (parent, alpha_memory, tests@, bindings@, sequence)
+            && final(compiler).join_node_cache@[j].1 == id,
+        final(beta).next_node_id <= old(beta).next_node_id + 1,
+        // The cache only grows.
+        old(compiler).join_node_cache@.len() <= final(compiler).join_node_cache@.len(),
+        forall|j: int| 0 <= j < old(compiler).join_node_cache@.len() ==> #[trigger] final(compiler).join_node_cache@[j] == old(compiler).join_node_cache@[j],
+        // A cached key reuses its node: nothing changes.
+        (exists|j: int| 0 <= j < old(compiler).join_node_cache@.len() && jk((#[trigger] old(compiler).join_node_cache@[j]).0) == (parent, alpha_memory, tests@, bindings@, sequence))
+            ==> final(beta).nodes@ == old(beta).nodes@ && final(beta).next_node_id == old(beta).next_node_id
+                && final(compiler).join_node_cache@ == old(compiler).join_node_cache@,
+{
+    let key = JoinKeyM {
+        parent,
+        alpha_memory,
+        tests: clone_tests(&tests),
+        bindings: clone_tests(&bindings),
+        sequence,
+    };
+    if let Some(join_id) = join_cache_get(&compiler.join_node_cache, &key) {
+        return join_id;
+    }
+    let ghost c0 = compiler.join_node_cache@;
+    let ghost n0 = beta.nodes@;
+    let join_id = create_join_node(beta, parent, alpha_memory, tests, bindings);
+    let ghost n1 = beta.nodes@;
+    proof {
+        let last = n0.len() as int;
+        assert(n1[last].0 == join_id);
+        assert forall|i: int, j: int| 0 <= i < j < n1.len() implies (#[trigger] n1[i]).0 != (#[trigger] n1[j]).0 by {
+            if j == last {
+                assert(n1[i] == n0[i]);
+            } else {
+                assert(n1[i] == n0[i] && n1[j] == n0[j]);
+            }
+        }
+    }
+    let Ghost(at) = set_sequence(beta, join_id, sequence);
+    compiler.join_node_cache.push((key, join_id));
+    proof {
+        let n = beta.nodes@;
+        let c = compiler.join_node_cache@;
+        let last = n0.len() as int;
+        // The updated entry is the new join (ids are distinct).
+        if at != last {
+            assert(n1[at] == n0[at]);
+            assert(n0[at].0 < old(beta).next_node_id);
+        }
+        assert(at == last);
+        assert(n =~= n0.push((join_id, BetaNodeM::Join { parent, alpha_memory, tests: n1[last].1->Join_tests, bindings: n1[last].1->Join_bindings, sequence })));
+        lemma_joins_push(n0, n[last]);
+        assert(node_key(n[last].1) == Some(jk(key)));
+        assert forall|i: int, j: int| 0 <= i < j < n.len() implies (#[trigger] n[i]).0 != (#[trigger] n[j]).0 by {
+            if j == last {
+                assert(n[i] == n0[i]);
+            } else {
+                assert(n[i] == n0[i] && n[j] == n0[j]);
+            }
+        }
+        assert forall|i: int| 0 <= i < n.len() implies (#[trigger] n[i]).0 < beta.next_node_id by {
+            if i < last {
+                assert(n[i] == n0[i]);
+            }
+        }
+        assert forall|j: int, l: int| 0 <= j < l < c.len() implies jk((#[trigger] c[j]).0) != jk((#[trigger] c[l]).0) by {
+            assert(c[j] == c0[j]);
+            if l < c0.len() {
+                assert(c[l] == c0[l]);
+            }
+        }
+        assert forall|j: int, l: int| 0 <= j < l < c.len() implies (#[trigger] c[j]).1 != (#[trigger] c[l]).1 by {
+            assert(c[j] == c0[j]);
+            if l < c0.len() {
+                assert(c[l] == c0[l]);
+            } else {
+                assert(cached_node(c0, *old(beta), j));
+                let i = choose|i: int|
+                    0 <= i < n0.len() && (#[trigger] n0[i]).0 == c0[j].1 && node_key(n0[i].1) == Some(jk(c0[j].0));
+                assert(n0[i].0 < old(beta).next_node_id);
+            }
+        }
+        assert forall|j: int| 0 <= j < c.len() implies #[trigger] cached_node(c, *beta, j) by {
+            if j < c0.len() {
+                assert(c[j] == c0[j]);
+                assert(cached_node(c0, *old(beta), j));
+                let i = choose|i: int|
+                    0 <= i < n0.len() && (#[trigger] n0[i]).0 == c0[j].1 && node_key(n0[i].1) == Some(jk(c0[j].0));
+                assert(n[i] == n0[i]);
+            } else {
+                assert(n[last].0 == c[j].1);
+            }
+        }
+        assert(c[c0.len() as int].0 == key);
+    }
+    join_id
+}
+
+/// `BetaNetwork::new(root_node_id)` (beta.rs:557) holds only the root node
+/// and starts its counter after it; `ReteCompiler::new` has an empty join
+/// cache.
+fn new_join_state(root: u32) -> (r: (JoinCacheM, BetaNetM))
+    requires
+        root < u32::MAX,
+    ensures
+        join_wf(r.0.join_node_cache@, r.1),
+        r.1.next_node_id == root + 1,
+{
+    let compiler = JoinCacheM { join_node_cache: Vec::new() };
+    let mut nodes: Vec<(u32, BetaNodeM)> = Vec::new();
+    nodes.push((root, BetaNodeM::Other));
+    let beta = BetaNetM { nodes, next_node_id: root + 1 };
+    proof {
+        lemma_joins_push(Seq::empty(), (root, BetaNodeM::Other));
+        assert(Seq::<(u32, BetaNodeM)>::empty().push((root, BetaNodeM::Other)) =~= beta.nodes@);
+    }
+    (compiler, beta)
+}
+
+/// Theorem (join sharing is exact): two positive patterns compiled one after
+/// the other, from any reachable state, get the same join node if and only
+/// if their join keys (parent, alpha memory, tests, bindings, sequence plan)
+/// are equal.
+fn theorem_join_sharing_exact(
+    compiler: &mut JoinCacheM,
+    beta: &mut BetaNetM,
+    parent1: u32,
+    alpha1: u32,
+    tests1: Vec<u64>,
+    bindings1: Vec<u64>,
+    sequence1: Option<u64>,
+    parent2: u32,
+    alpha2: u32,
+    tests2: Vec<u64>,
+    bindings2: Vec<u64>,
+    sequence2: Option<u64>,
+) -> (r: (u32, u32))
+    requires
+        join_wf(old(compiler).join_node_cache@, *old(beta)),
+        old(beta).next_node_id as int + 2 <= u32::MAX,
+    ensures
+        join_wf(final(compiler).join_node_cache@, *final(beta)),
+        (r.0 == r.1) == ((parent1, alpha1, tests1@, bindings1@, sequence1) == (
+            parent2,
+            alpha2,
+            tests2@,
+            bindings2@,
+            sequence2,
+        )),
+{
+    let ghost s1 = (parent1, alpha1, tests1@, bindings1@, sequence1);
+    let ghost s2 = (parent2, alpha2, tests2@, bindings2@, sequence2);
+    let id1 = ensure_join_node(compiler, beta, parent1, alpha1, tests1, bindings1, sequence1);
+    let ghost c1 = compiler.join_node_cache@;
+    let id2 = ensure_join_node(compiler, beta, parent2, alpha2, tests2, bindings2, sequence2);
+    proof {
+        let c2 = compiler.join_node_cache@;
+        let j1 = choose|j: int| 0 <= j < c1.len() && jk((#[trigger] c1[j]).0) == s1 && c1[j].1 == id1;
+        let j2 = choose|j: int| 0 <= j < c2.len() && jk((#[trigger] c2[j]).0) == s2 && c2[j].1 == id2;
+        assert(c2[j1] == c1[j1]);
+        if j1 != j2 {
+            if j1 < j2 {
+                assert(jk(c2[j1].0) != jk(c2[j2].0));
+                assert(c2[j1].1 != c2[j2].1);
+            } else {
+                assert(jk(c2[j2].0) != jk(c2[j1].0));
+                assert(c2[j2].1 != c2[j1].1);
+            }
+        }
+    }
+    (id1, id2)
+}
+
+/// Theorem (recompilation reuses the join node): ensuring the same join key
+/// again returns the same node and changes neither the network nor the cache.
+fn theorem_join_recompile_reuses(
+    compiler: &mut JoinCacheM,
+    beta: &mut BetaNetM,
+    parent: u32,
+    alpha_memory: u32,
+    tests: &Vec<u64>,
+    bindings: &Vec<u64>,
+    sequence: Option<u64>,
+) -> (r: (u32, u32))
+    requires
+        join_wf(old(compiler).join_node_cache@, *old(beta)),
+        old(beta).next_node_id as int + 2 <= u32::MAX,
+    ensures
+        join_wf(final(compiler).join_node_cache@, *final(beta)),
+        r.0 == r.1,
+{
+    let id1 = ensure_join_node(compiler, beta, parent, alpha_memory, clone_tests(tests), clone_tests(bindings), sequence);
+    let ghost nodes1 = beta.nodes@;
+    let ghost c1 = compiler.join_node_cache@;
+    let id2 = ensure_join_node(compiler, beta, parent, alpha_memory, clone_tests(tests), clone_tests(bindings), sequence);
+    proof {
+        let s = (parent, alpha_memory, tests@, bindings@, sequence);
+        assert(beta.nodes@ == nodes1);
+        assert(compiler.join_node_cache@ == c1);
+        let j1 = choose|j: int| 0 <= j < c1.len() && jk((#[trigger] c1[j]).0) == s && c1[j].1 == id1;
+        let j2 = choose|j: int| 0 <= j < c1.len() && jk((#[trigger] c1[j]).0) == s && c1[j].1 == id2;
+        if j1 < j2 {
+            assert(jk(c1[j1].0) != jk(c1[j2].0));
+        } else if j2 < j1 {
+            assert(jk(c1[j2].0) != jk(c1[j1].0));
+        }
+    }
+    (id1, id2)
+}
+
+/// Models the join-cache part of `ReteCompiler::validate_snapshot_checked`
+/// (snapshot.rs:2077-2094): the cache size against the number of join nodes,
+/// "duplicate cached join node", and "cached join node mismatch" (the node
+/// under the cached id is a join whose parent, alpha memory, tests, bindings
+/// and sequence equal the key's). Returns `true` for `Ok`.
+fn validate_join_cache_snapshot(compiler: &JoinCacheM, beta: &BetaNetM) -> (ok: bool)
+    requires
+        join_wf(compiler.join_node_cache@, *beta),
+    ensures
+        ok,
+{
+    let ghost n = beta.nodes@;
+    let ghost c = compiler.join_node_cache@;
+    // `rete.beta.nodes.values().filter(|node| matches!(node, BetaNode::Join { .. })).count()`
+    let mut count: usize = 0;
+    let mut i: usize = 0;
+    while i < beta.nodes.len()
+        invariant
+            n == beta.nodes@,
+            i <= n.len(),
+            count == joins(n.take(i as int)),
+            count <= i,
+        decreases n.len() - i,
+    {
+        proof {
+            assert(n.take(i + 1).drop_last() =~= n.take(i as int));
+            assert(n.take(i + 1).last() == n[i as int]);
+        }
+        if let BetaNodeM::Join { .. } = &beta.nodes[i].1 {
+            count = count + 1;
+        }
+        i += 1;
+    }
+    proof {
+        assert(n.take(n.len() as int) =~= n);
+    }
+    // require_eq!(self.join_node_cache.len(), <join count>);
+    if compiler.join_node_cache.len() != count {
+        return false;
+    }
+    let mut cached_joins: HashSetWithView<u32> = HashSetWithView::new();
+    let mut j: usize = 0;
+    while j < compiler.join_node_cache.len()
+        invariant
+            n == beta.nodes@,
+            c == compiler.join_node_cache@,
+            join_wf(c, *beta),
+            j <= c.len(),
+            forall|m: u32| #[trigger] cached_joins@.contains(m) <==> exists|l: int| 0 <= l < j && (#[trigger] c[l]).1 == m,
+        decreases c.len() - j,
+    {
+        let id = compiler.join_node_cache[j].1;
+        // require!(cached_joins.insert(*id), "duplicate cached join node");
+        proof {
+            if cached_joins@.contains(id) {
+                let l = choose|l: int| 0 <= l < j && (#[trigger] c[l]).1 == id;
+                assert(c[l].1 != c[j as int].1);
+            }
+        }
+        if !cached_joins.insert(id) {
+            return false;
+        }
+        proof {
+            assert forall|m: u32| #[trigger] cached_joins@.contains(m) <==> exists|l: int| 0 <= l < j + 1 && (#[trigger] c[l]).1 == m by {
+                if m == id {
+                    assert(c[j as int].1 == m);
+                }
+            }
+        }
+        // rete.beta.nodes.get(id)
+        let mut k: usize = 0;
+        while k < beta.nodes.len() && beta.nodes[k].0 != id
+            invariant
+                n == beta.nodes@,
+                k <= n.len(),
+                forall|l: int| 0 <= l < k ==> (#[trigger] n[l]).0 != id,
+            decreases n.len() - k,
+        {
+            k += 1;
+        }
+        proof {
+            assert(cached_node(c, *beta, j as int));
+        }
+        if k == beta.nodes.len() {
+            proof {
+                let i = choose|i: int|
+                    0 <= i < n.len() && (#[trigger] n[i]).0 == c[j as int].1 && node_key(n[i].1) == Some(jk(c[j as int].0));
+                assert(n[i].0 != id);
+            }
+            return false;
+        }
+        proof {
+            let i = choose|i: int|
+                0 <= i < n.len() && (#[trigger] n[i]).0 == c[j as int].1 && node_key(n[i].1) == Some(jk(c[j as int].0));
+            if i != k as int {
+                assert(n[i].0 != n[k as int].0);
+            }
+        }
+        let key = &compiler.join_node_cache[j].0;
+        // require!(matches!(nodes.get(id), Some(BetaNode::Join { parent, alpha_memory, tests, bindings, sequence, .. })
+        //     if *parent == key.parent && *alpha_memory == key.alpha_memory && tests == key.tests
+        //         && bindings == key.bindings && sequence == key.sequence), "cached join node mismatch");
+        match &beta.nodes[k].1 {
+            BetaNodeM::Join { parent, alpha_memory, tests, bindings, sequence } => {
+                if !(*parent == key.parent && *alpha_memory == key.alpha_memory && vec_eq(tests, &key.tests)
+                    && vec_eq(bindings, &key.bindings) && *sequence == key.sequence) {
+                    return false;
+                }
+            },
+            BetaNodeM::Other => {
+                return false;
+            },
+        }
+        j += 1;
+    }
+    true
+}
+
+/// One compilation step: either a positive pattern's `ensure_join_node`
+/// (`compile_pattern`, compiler.rs:925-934) or any other node creation.
+pub enum BetaStepM {
+    Join { parent: u32, alpha_memory: u32, tests: Vec<u64>, bindings: Vec<u64>, sequence: Option<u64> },
+    Other,
+}
+
+/// Theorem (snapshot accepts compiled join caches): from `BetaNetwork::new()`
+/// and `ReteCompiler::new()`, after any sequence of join-node and other node
+/// creations, the snapshot's join-cache check succeeds.
+fn theorem_snapshot_accepts_compiled_joins(root: u32, steps: Vec<BetaStepM>) -> (ok: bool)
+    requires
+        root as int + steps.len() < u32::MAX,
+    ensures
+        ok,
+{
+    let (mut compiler, mut beta) = new_join_state(root);
+    let mut steps = steps;
+    let ghost total = steps.len();
+    while steps.len() > 0
+        invariant
+            join_wf(compiler.join_node_cache@, beta),
+            beta.next_node_id + steps.len() <= root as int + 1 + total,
+            root as int + total < u32::MAX,
+        decreases steps.len(),
+    {
+        let step = steps.pop().unwrap();
+        match step {
+            BetaStepM::Join { parent, alpha_memory, tests, bindings, sequence } => {
+                ensure_join_node(&mut compiler, &mut beta, parent, alpha_memory, tests, bindings, sequence);
+            },
+            BetaStepM::Other => {
+                create_other_node(&mut beta, Ghost(compiler.join_node_cache@));
+            },
+        }
+    }
+    validate_join_cache_snapshot(&compiler, &beta)
 }
 
 }

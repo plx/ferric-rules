@@ -26,14 +26,23 @@
 //!   timestamp plus one), for every timestamp, index, epoch and mode. So
 //!   every address captured during normal operation is accepted, and no
 //!   other index is.
+//! * `current_epoch_address_of_retracted_fact_accepts_exactly_the_assigned_index`:
+//!   the same for an address whose fact has since been retracted (its key no
+//!   longer resolves; retained query members keep such addresses): accepted
+//!   exactly when its timestamp is below the counter and its index is the
+//!   one the runtime assigned, for every timestamp, counter, index, epoch and
+//!   mode (the protected initial fact stays live within an epoch).
 //! * `older_epoch_addresses_are_checked_by_shape`: an address from an older
 //!   epoch is accepted exactly when its key is not null, its timestamp is
 //!   below `u64::MAX`, and its index is 0, the timestamp, or the timestamp
 //!   plus one.
 //! * `future_epoch_addresses_are_rejected`: always `InvalidState`.
-//! * `index_key_metadata_check_is_exact`: two fact-address keys of the same
-//!   identity pass exactly when their public indexes agree; non-address
-//!   keys and dummy addresses always pass.
+//! * `index_key_metadata_check_is_exact`: for two keys, each a non-address
+//!   atom, the dummy address, or a real address with arbitrary identity and
+//!   metadata, `validate_index_key_metadata` fails exactly when both are fact
+//!   addresses whose public spellings differ (two real addresses with
+//!   different indexes, or the dummy against a real address), and then as
+//!   `InvalidState`.
 //! * `symbol_value_is_accepted_exactly_when_it_resolves`: over a symbol
 //!   table holding one ASCII symbol, `validate_snapshot_value_checked`
 //!   accepts a symbol value exactly when its id (any ASCII or UTF-8 index)
@@ -41,13 +50,15 @@
 //! * `external_address_value_is_rejected`: external addresses are rejected
 //!   as `InvalidState` (unsupported identity); integers are accepted.
 //! * `fact_address_constant_is_rejected`: `validate_constant` rejects an
-//!   equality test against any fact-address constant as `InvalidState`.
+//!   equality test against any fact-address constant as `InvalidState` (the
+//!   six single-constant operators share that match arm; the separate
+//!   `EqualAny` arm is not covered, see below).
 //!
 //! Bounds: two facts in the fact base, one interned symbol, one value or
 //! constant test per call; address metadata, symbol ids, integers, budgets
 //! and costs are fully symbolic. The only assumptions are the fact base's
 //! own invariants (distinct timestamps below the counter, checked by
-//! `FactBase::validate_snapshot_checked`, snapshot.rs:241-249) and the
+//! `FactBase::validate_snapshot_checked`, snapshot.rs:244-251) and the
 //! epoch ordering that names each harness's case.
 //!
 //! Not covered by Kani, with the reason:
@@ -58,10 +69,11 @@
 //!   beta and rete end-to-end proof modules: `BetaNetwork::new`'s single
 //!   node-map insertion ran out of memory after 318 s, and `ReteNetwork::new`
 //!   reaches `RandomState`'s `getrandom` through the std `HashSet` of
-//!   disabled rules and ran out of memory after about 420 s). The alpha-cache part
-//!   of `ReteCompiler::validate_snapshot_checked` is modeled in
-//!   verification/verus/core_compiler.rs and proved to accept every state
-//!   produced by `ensure_alpha_path`.
+//!   disabled rules and ran out of memory after about 420 s). The alpha-cache
+//!   and join-cache parts of `ReteCompiler::validate_snapshot_checked` are
+//!   modeled in verification/verus/core_compiler.rs and proved to accept
+//!   every state produced by `ensure_alpha_path` and `ensure_join_node`
+//!   (work budget and rule-ID checks omitted there).
 //! * Nested values and nested disjunctions (`validate_snapshot_value_checked`
 //!   on multifields, the 32-level depth limit, nested `Any` in
 //!   `validate_constant`) and `constant_test_cost`: their worklists read
@@ -75,7 +87,10 @@
 //!   multifield arm with string or nested data are also out of reach: an
 //!   ASCII-string value ran out of memory after 95 s, a symbol constant
 //!   after 442 s, and an external-address constant plus a field-count test
-//!   after 510 s. The
+//!   after 510 s; a sweep of all seven constant-carrying operators (a
+//!   fact-address and an integer constant each, 14 calls) after 568 s; and
+//!   a single `EqualAny` holding one fact-address alternative after 562 s
+//!   (two alternatives: 522 s). The
 //!   depth limit is covered by the unit test
 //!   `snapshot_limits_remain_distinct_from_invalid_symbols_and_instances`.
 //! * `SymbolTable::validate_snapshot_checked`, `VarMap::validate_snapshot_checked`,
@@ -232,7 +247,7 @@ fn current_epoch_address_accepts_exactly_the_assigned_index() {
     let target_ts: u64 = kani::any();
     let next: u64 = kani::any();
     // FactBase invariants (checked by `FactBase::validate_snapshot_checked`,
-    // snapshot.rs:241-249): distinct timestamps below the counter.
+    // snapshot.rs:244-251): distinct timestamps below the counter.
     kani::assume(initial_ts != target_ts && initial_ts < next && target_ts < next);
     let mut facts = FactBase::new();
     let initial = insert_fact(&mut facts, initial_ts);
@@ -269,6 +284,55 @@ fn current_epoch_address_accepts_exactly_the_assigned_index() {
         "one-based numbering"
     );
     kani::cover!(result.is_err() && index == ts, "off by one rejected");
+    std::mem::forget(result);
+    std::mem::forget(address);
+    std::mem::forget(facts);
+}
+
+/// Addresses outlive their facts: a retained query member keeps the address
+/// captured while its fact was live (runtime `fact_address.rs`), and the
+/// protected initial fact cannot be retracted within an epoch (runtime
+/// `engine.rs` refuses to retract it). So in the current epoch an address of
+/// a retracted fact is accepted exactly when its timestamp is below the
+/// counter and its public index is the one the runtime assigned.
+#[kani::proof]
+#[kani::unwind(4)]
+fn current_epoch_address_of_retracted_fact_accepts_exactly_the_assigned_index() {
+    let initial_ts: u64 = kani::any();
+    let target_ts: u64 = kani::any();
+    let next: u64 = kani::any();
+    // FactBase invariants for the live initial fact (snapshot.rs:244-251),
+    // and the target's timestamp came from the same counter.
+    kani::assume(initial_ts != target_ts && initial_ts < next);
+    let mut facts = FactBase::new();
+    let initial = insert_fact(&mut facts, initial_ts);
+    let target = insert_fact(&mut facts, target_ts);
+    // Retract the target: its key no longer resolves.
+    let removed = facts.facts.remove(target);
+    std::mem::forget(removed);
+    facts.next_timestamp = Timestamp::new(next);
+    let has_initial: bool = kani::any();
+    let zero_based: bool = kani::any();
+    let initial_precedes = has_initial && initial_ts < target_ts;
+    let index: u64 = kani::any();
+    let epoch: u64 = kani::any();
+    let address = FactAddress::new(target, epoch, Timestamp::new(target_ts), index);
+    let initial_id = if has_initial { Some(initial) } else { None };
+    let result =
+        facts.validate_snapshot_fact_address_checked(&address, epoch, initial_id, zero_based);
+    let expected_ok = target_ts < next
+        && index == reference_public_index(false, initial_precedes, zero_based, target_ts);
+    assert_eq!(result.is_ok(), expected_ok);
+    assert!(result.is_ok() || is_invalid(&result));
+    kani::cover!(result.is_ok() && initial_precedes, "after initial fact");
+    kani::cover!(
+        result.is_ok() && !zero_based && !initial_precedes,
+        "one-based numbering"
+    );
+    kani::cover!(
+        result.is_err() && target_ts >= next,
+        "future timestamp rejected"
+    );
     std::mem::forget(result);
     std::mem::forget(address);
     std::mem::forget(facts);
@@ -336,33 +400,64 @@ fn future_epoch_addresses_are_rejected() {
     std::mem::forget(facts);
 }
 
+/// The public spelling of an index key, recorded when the key is built (not
+/// read back through the production accessors): `None` for a non-address
+/// atom, `Some(None)` for the dummy address (it has no public index), and
+/// `Some(Some(index))` for a real address with arbitrary identity.
+fn any_index_key() -> (AtomKey, Option<Option<u64>>) {
+    match kani::any::<u8>() {
+        0 => (AtomKey::Integer(kani::any()), None),
+        1 => (AtomKey::FactAddress(FactAddress::dummy()), Some(None)),
+        _ => {
+            let index: u64 = kani::any();
+            let address = FactAddress::new(
+                fact_id(kani::any()),
+                kani::any(),
+                Timestamp::new(kani::any()),
+                index,
+            );
+            (AtomKey::FactAddress(address), Some(Some(index)))
+        }
+    }
+}
+
 /// Index keys compare fact addresses by identity, so a rebuilt key may carry
-/// a different public index; the metadata check rejects exactly that case.
+/// a different public spelling; the metadata check rejects exactly two
+/// fact-address keys whose spellings differ (including a dummy address
+/// against a real one) and accepts every other pair.
 #[kani::proof]
 #[kani::unwind(4)]
 fn index_key_metadata_check_is_exact() {
-    let id = fact_id(kani::any());
-    let epoch: u64 = kani::any();
-    let ts = Timestamp::new(kani::any());
-    let actual_index: u64 = kani::any();
-    let expected_index: u64 = kani::any();
-    let actual = AtomKey::FactAddress(FactAddress::new(id, epoch, ts, actual_index));
-    let expected = AtomKey::FactAddress(FactAddress::new(id, epoch, ts, expected_index));
+    let (actual, actual_spelling) = any_index_key();
+    let (expected, expected_spelling) = any_index_key();
     let result = validate_index_key_metadata(&actual, &expected);
-    assert_eq!(result.is_ok(), actual_index == expected_index);
-    std::mem::forget(result);
-    // Non-address keys carry no such metadata.
-    let integer = AtomKey::Integer(kani::any());
-    let result = validate_index_key_metadata(&integer, &expected);
-    assert!(result.is_ok());
-    let result2 = validate_index_key_metadata(&expected, &integer);
-    assert!(result2.is_ok());
-    let dummy = AtomKey::FactAddress(FactAddress::dummy());
-    let result3 = validate_index_key_metadata(&dummy, &dummy);
-    assert!(result3.is_ok());
-    kani::cover!(actual_index != expected_index, "index mismatch");
-    std::mem::forget((result, result2, result3));
-    std::mem::forget((actual, expected, integer, dummy));
+    let expected_ok = match (actual_spelling, expected_spelling) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    };
+    assert_eq!(result.is_ok(), expected_ok);
+    assert!(result.is_ok() || is_invalid(&result));
+    kani::cover!(
+        !expected_ok
+            && matches!(actual_spelling, Some(Some(_)))
+            && matches!(expected_spelling, Some(Some(_))),
+        "index mismatch"
+    );
+    kani::cover!(
+        !expected_ok && actual_spelling == Some(None),
+        "dummy against real address"
+    );
+    kani::cover!(
+        expected_ok
+            && matches!(actual_spelling, Some(Some(_)))
+            && matches!(expected_spelling, Some(Some(_))),
+        "matching real addresses"
+    );
+    kani::cover!(
+        expected_ok && actual_spelling.is_none() && expected_spelling.is_some(),
+        "non-address against address"
+    );
+    std::mem::forget((result, actual, expected));
 }
 
 // ---------------------------------------------------------------------------
