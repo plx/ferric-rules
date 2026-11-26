@@ -2,8 +2,8 @@
 //!
 //! What is proved, on the production code:
 //!
-//! * Duplicate detection is complete (structurally equal facts have equal
-//!   structural fingerprints), checked in two parts:
+//! * Toward completeness of duplicate detection (structurally equal facts
+//!   must have equal structural fingerprints), two partial checks:
 //!   - `value_structural_eq_{symbol, integer, float,
 //!     void_and_external_address, fact_address}`: on independent atoms of
 //!     each kind (arbitrary payloads), `Value::structural_eq` holds exactly
@@ -12,6 +12,9 @@
 //!     (NaNs and signed zeros included), void, external addresses, fact
 //!     addresses by epoch, fact id and timestamp but not by the cached
 //!     public index (dummy equals dummy, never a real address).
+//!     `value_structural_eq_distinguishes_atom_kinds`: atoms of two
+//!     different kinds among these seven are never equal, whatever their
+//!     payloads (e.g. a symbol and the instance name of the same symbol).
 //!   - `fingerprint_ignores_fact_address_public_index`,
 //!     `fingerprint_ignores_public_index_in_{ordered, template}_fact`: the
 //!     structural hash (value level, and fact level for ordered and template
@@ -35,14 +38,16 @@
 //! * `assertion_capacity_is_exactly_below_max`: `ensure_assertion_capacity`
 //!   succeeds iff `next_timestamp < u64::MAX`, for every counter value.
 //! * `exhausted_ordered_assertion_has_no_side_effects`,
-//!   `exhausted_template_assertion_has_no_side_effects`: with the counter at
-//!   `u64::MAX`, `try_assert_fact` (either duplicate policy) and
-//!   `try_assert_distinct_fact` return `FactTimestampExhausted` without
-//!   overflow or panic and leave the facts, every index and the counter
-//!   unchanged (the duplicate index may only be invalidated, which is
-//!   derived state).
-//! * `retract_missing_fact_is_noop`: retracting an id that is not live
-//!   returns `None` and changes nothing.
+//!   `exhausted_template_assertion_has_no_side_effects`: starting from an
+//!   empty fact base with the counter at `u64::MAX`, `try_assert_fact`
+//!   (either duplicate policy) and `try_assert_distinct_fact` (with the
+//!   duplicate index present or dropped) return `FactTimestampExhausted`
+//!   without overflow or panic and leave the facts, every index and the
+//!   counter unchanged (the duplicate index may only be invalidated, which
+//!   is derived state). Exhaustion with live facts, duplicate suppression
+//!   while exhausted, and the lazy index rebuild are not checked by Kani.
+//! * `retract_missing_fact_is_noop`: retracting an arbitrary id from an
+//!   empty fact base returns `None` and changes nothing.
 //! * `symbol_map_refines_partial_map`: `SymbolMap` (the relation index
 //!   container) refines a partial map over all sequences of two
 //!   `get_or_insert_with` / `get_mut` / `remove` operations on symbols with
@@ -197,6 +202,51 @@ fn value_structural_eq_fact_address() {
         Value::FactAddress(real1)
     ));
     kani::cover!(equal && ix1 != ix2);
+}
+
+/// An atom of the given kind (0..7: symbol, instance name, integer, float,
+/// void, external address, fact address) with an arbitrary payload.
+fn any_atom_of_kind(kind: u8) -> Value {
+    match kind {
+        0 => Value::Symbol(any_symbol()),
+        1 => Value::InstanceName(InstanceName::from_symbol(any_symbol())),
+        2 => Value::Integer(kani::any()),
+        3 => Value::Float(kani::any()),
+        4 => Value::Void,
+        5 => Value::ExternalAddress(ExternalAddress {
+            type_id: ExternalTypeId(kani::any()),
+            token: kani::any(),
+        }),
+        _ => {
+            if kani::any() {
+                Value::FactAddress(FactAddress::dummy())
+            } else {
+                Value::FactAddress(FactAddress::new(
+                    any_fact_id(),
+                    kani::any(),
+                    Timestamp::new(kani::any()),
+                    kani::any(),
+                ))
+            }
+        }
+    }
+}
+
+/// Atoms of different kinds are never structurally equal, whatever their
+/// payloads (e.g. a symbol and the instance name with the same symbol, an
+/// integer and a float with the same bits, void and the dummy fact
+/// address).
+#[kani::proof]
+#[kani::unwind(2)]
+fn value_structural_eq_distinguishes_atom_kinds() {
+    let k1: u8 = kani::any_where(|kind| *kind < 7);
+    let k2: u8 = kani::any_where(|kind| *kind < 7 && *kind != k1);
+    let equal = values_equal(any_atom_of_kind(k1), any_atom_of_kind(k2));
+    assert!(!equal);
+    kani::cover!(k1 == 0 && k2 == 1);
+    kani::cover!(k1 == 2 && k2 == 3);
+    kani::cover!(k1 == 4 && k2 == 6);
+    kani::cover!(k1 == 6 && k2 == 5);
 }
 
 // Part 2: the structural hash ignores exactly what equality ignores. The
@@ -473,16 +523,28 @@ fn assert_untouched_after_exhaustion(
     assert!(fb.ensure_assertion_capacity().is_err());
 }
 
-/// Insert through a symbolically chosen checked entry point.
+/// Insert through a symbolically chosen checked entry point. Before
+/// `try_assert_distinct_fact`, the derived duplicate index is arbitrarily
+/// dropped first, as an earlier `try_assert_fact(_, true)` or a snapshot
+/// restore leaves it (fact.rs:380 documents both); the second component
+/// reports whether it was. (`try_assert_fact(_, false)` with a dropped index
+/// rebuilds it, and that path was still in symbolic execution after ten
+/// minutes, so it is not covered here.)
 fn try_insert_any_way(
     fb: &mut FactBase,
     fact: Fact,
-) -> Result<FactInsertionResult, FactTimestampExhausted> {
+) -> (Result<FactInsertionResult, FactTimestampExhausted>, bool) {
     if kani::any() {
-        fb.try_assert_fact(fact, kani::any())
+        (fb.try_assert_fact(fact, kani::any()), false)
     } else {
-        fb.try_assert_distinct_fact(fact)
-            .map(FactInsertionResult::Inserted)
+        let dropped: bool = kani::any();
+        if dropped {
+            fb.by_structural_fingerprint = None;
+        }
+        let result = fb
+            .try_assert_distinct_fact(fact)
+            .map(FactInsertionResult::Inserted);
+        (result, dropped)
     }
 }
 
@@ -499,8 +561,10 @@ fn exhausted_ordered_assertion_has_no_side_effects() {
         relation: any_symbol(),
         fields: SmallVec::new(),
     });
-    let result = try_insert_any_way(&mut fb, fact);
+    let (result, index_dropped) = try_insert_any_way(&mut fb, fact);
     assert_untouched_after_exhaustion(&fb, result);
+    kani::cover!(index_dropped);
+    kani::cover!(!index_dropped);
     std::mem::forget(fb);
 }
 
@@ -516,8 +580,10 @@ fn exhausted_template_assertion_has_no_side_effects() {
         template_id: any_template_id(),
         slots: Box::new([]),
     });
-    let result = try_insert_any_way(&mut fb, fact);
+    let (result, index_dropped) = try_insert_any_way(&mut fb, fact);
     assert_untouched_after_exhaustion(&fb, result);
+    kani::cover!(index_dropped);
+    kani::cover!(!index_dropped);
     std::mem::forget(fb);
 }
 

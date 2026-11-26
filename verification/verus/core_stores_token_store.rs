@@ -7,10 +7,14 @@
 //!   `validate_consistency` checks (`lemma_wf_implies_validate`): it adds the
 //!   reverse direction of both indexes (every indexed token really carries
 //!   that fact / that parent) and ghost acyclicity data.
-//! * `insert` and `insert_sequence_match` preserve `wf` under the caller
-//!   contract used by the Rete network (fresh id; a parent, if any, is live;
-//!   sequence matches carry a fact), and their `debug_assert!(inserted)`
-//!   checks hold.
+//! * `insert` and `insert_sequence_match` preserve `wf` under a caller
+//!   contract (fresh id; a parent, if any, is live; sequence matches carry a
+//!   fact), and their `debug_assert!(inserted)` checks hold. The contract is
+//!   an assumption: `TokenStore::insert` neither documents nor enforces a
+//!   live parent (inserting a child of a removed parent creates a
+//!   `parent_to_children` entry for a dead key, which
+//!   `validate_consistency` rejects), and that every caller in rete.rs
+//!   respects it is not verified here.
 //! * `remove` preserves `wf` for every id (live or not), returns the token
 //!   exactly when the id was live, removes exactly that token, and leaves
 //!   every other token unchanged.
@@ -31,6 +35,21 @@
 //!   tokens are exactly the live tokens whose live parent chain (including
 //!   the token itself) contains a token holding the retracted fact
 //!   (`lemma_retract_fact`).
+//! * `retraction_roots` (its outer loop over the affected set in any
+//!   hash-set order, with the parent walk as `has_affected_ancestor`)
+//!   returns a duplicate-free enumeration of exactly the affected tokens
+//!   with no affected ancestor (`lemma_retraction_roots`); composed with the
+//!   previous item, `lemma_retract_fact_end_to_end` covers
+//!   `tokens_containing` + `retraction_roots` + cascades for every hash-set
+//!   order of both sets.
+//! * `collect_all_facts(t)` (both loops: the parent walk that pushes every
+//!   visited id, including a dangling one, and the reversed scan) returns
+//!   exactly the facts of the live tokens on the parent chain of `t`, root
+//!   first, skipping pass-through tokens, for any id and any well-formed
+//!   store, including orphans left by non-cascading `remove`
+//!   (`lemma_collect_all_facts` against the independent recursive
+//!   specification `chain_facts`; `lemma_chain_facts_members` gives the
+//!   membership form in terms of `reaches`).
 //!
 //! Trusted base and abstractions:
 //!
@@ -51,16 +70,22 @@
 //!   and an insertion rank; they exist only in the model and express the
 //!   acyclicity that the production store inherits from inserting parents
 //!   before children.
-//! * `Vec` stack / result buffers are `Seq`s. `retraction_roots` returns a
-//!   `Vec` in hash-set order; it is modelled by its result set (`root_set`,
-//!   the affected tokens whose parent walk meets no affected token), and the
-//!   cascade loop takes any duplicate-free enumeration of that set.
+//! * `Vec` / `SmallVec` stack and result buffers are `Seq`s. Iteration over
+//!   a `HashSet` (`for &token_id in affected` in `retraction_roots`) is an
+//!   arbitrary duplicate-free enumeration of the set (`affected_order`);
+//!   `lemma_retract_fact` alone takes any duplicate-free enumeration of
+//!   `root_set` as the roots.
+//! * The `while` parent walks (in `retraction_roots` and
+//!   `collect_all_facts`) are modelled as recursive spec functions that
+//!   follow the loop body branch by branch; they terminate because ranks
+//!   strictly decrease along live parent links.
 //!
-//! Known gaps: `collect_all_facts` is not modelled here (it is checked by
-//! the Kani harness `collect_all_facts_walks_parent_chain`); `clear` is
-//! trivial and not modelled; the rest of `ReteNetwork::retract_fact` (alpha
-//! memories, agenda, negative/NCC bookkeeping) is outside this model. No
-//! TRUSTED glue, `assume`, `admit` or `external_body` is used.
+//! Known gaps: `clear` is trivial and not modelled; the rest of
+//! `ReteNetwork::retract_fact` (alpha memories, agenda, negative/NCC
+//! bookkeeping) is outside this model; whether every `TokenStore::insert`
+//! call in rete.rs satisfies `insert_pre` (fresh id; parent live) is not
+//! verified here. No TRUSTED glue, `assume`, `admit` or `external_body` is
+//! used.
 use vstd::prelude::*;
 
 verus! {
@@ -221,7 +246,8 @@ impl<T, F> StoreModel<T, F> {
     }
 
     /// Caller contract for `insert`: slotmap key freshness, and a parent (if
-    /// any) that is live, as in every `TokenStore::insert` call in rete.rs.
+    /// any) that is live. Assumed, not enforced by the production API (see
+    /// the module documentation).
     pub open spec fn insert_pre(self, token: TokenModel<T, F>, id: T) -> bool {
         &&& !self.issued.contains(id)
         &&& token.parent is Some ==> self.tokens.contains_key(token.parent->0)
@@ -1508,6 +1534,555 @@ impl<T, F> StoreModel<T, F> {
                 assert(self.reaches(t, roots[j]));
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fact-list reconstruction: collect_all_facts
+// ---------------------------------------------------------------------------
+impl<T, F> StoreModel<T, F> {
+    /// Termination measure of the parent walk in `collect_all_facts`:
+    /// `None` < a dead id < a live id (ordered by rank).
+    pub open spec fn walk_measure(self, current: Option<T>) -> nat {
+        match current {
+            None => 0,
+            Some(id) => if self.tokens.contains_key(id) {
+                self.rank[id] + 2
+            } else {
+                1
+            },
+        }
+    }
+
+    /// The first loop of crates/ferric-rules-core/src/token.rs:201
+    /// fn collect_all_facts:
+    /// `while let Some(id) = current { chain.push(id);
+    ///   current = self.tokens.get(id).and_then(|t| t.parent); }`.
+    pub open spec fn collect_chain(self, current: Option<T>, chain: Seq<T>) -> Seq<T>
+        decreases self.walk_measure(current),
+        when self.wf()
+    {
+        match current {
+            None => chain,
+            Some(id) => {
+                let chain2 = chain.push(id);
+                // `self.tokens.get(id).and_then(|t| t.parent)`
+                let next = if self.tokens.contains_key(id) {
+                    self.tokens[id].parent
+                } else {
+                    None
+                };
+                proof {
+                    if self.tokens.contains_key(id) && next is Some && self.tokens.contains_key(
+                        next->0,
+                    ) {
+                        assert(self.rank[next->0] < self.rank[id]);
+                    }
+                }
+                self.collect_chain(next, chain2)
+            },
+        }
+    }
+
+    /// The second loop of crates/ferric-rules-core/src/token.rs:201
+    /// fn collect_all_facts: `for &id in chain.iter().rev()`, pushing the fact
+    /// of every live token that has one.
+    pub open spec fn collect_facts_rev(self, chain: Seq<T>, facts: Seq<F>) -> Seq<F>
+        decreases chain.len(),
+    {
+        if chain.len() == 0 {
+            facts
+        } else {
+            let id = chain.last();
+            // `if let Some(token) = self.tokens.get(id) { if let Some(fact_id) = token.fact`
+            let facts2 = if self.tokens.contains_key(id) && self.tokens[id].fact is Some {
+                facts.push(self.tokens[id].fact->0)
+            } else {
+                facts
+            };
+            self.collect_facts_rev(chain.drop_last(), facts2)
+        }
+    }
+
+    /// Models crates/ferric-rules-core/src/token.rs:201 fn collect_all_facts.
+    pub open spec fn collect_all_facts(self, token_id: T) -> Seq<F> {
+        self.collect_facts_rev(self.collect_chain(Some(token_id), Seq::empty()), Seq::empty())
+    }
+
+    /// Specification (written independently of the two loops): the facts of
+    /// the live tokens on the parent chain of `t`, root first, skipping
+    /// pass-through tokens; the walk ends at the first missing token.
+    pub open spec fn chain_facts(self, t: T) -> Seq<F>
+        decreases self.rank[t],
+        when self.wf()
+    {
+        if !self.tokens.contains_key(t) {
+            Seq::empty()
+        } else {
+            let above = match self.tokens[t].parent {
+                None => Seq::empty(),
+                Some(p) => self.chain_facts(p),
+            };
+            match self.tokens[t].fact {
+                None => above,
+                Some(f) => above.push(f),
+            }
+        }
+    }
+
+    /// The ids the parent walk visits from `current`.
+    pub open spec fn walk_ids(self, current: Option<T>) -> Seq<T>
+        decreases self.walk_measure(current),
+        when self.wf()
+    {
+        match current {
+            None => Seq::empty(),
+            Some(id) => {
+                let next = if self.tokens.contains_key(id) {
+                    self.tokens[id].parent
+                } else {
+                    None
+                };
+                proof {
+                    if self.tokens.contains_key(id) && next is Some && self.tokens.contains_key(
+                        next->0,
+                    ) {
+                        assert(self.rank[next->0] < self.rank[id]);
+                    }
+                }
+                seq![id] + self.walk_ids(next)
+            },
+        }
+    }
+
+    /// The fact contributed by one chain entry.
+    pub open spec fn fact_of(self, id: T) -> Seq<F> {
+        if self.tokens.contains_key(id) && self.tokens[id].fact is Some {
+            seq![self.tokens[id].fact->0]
+        } else {
+            Seq::empty()
+        }
+    }
+
+    /// The facts of a chain, last entry first.
+    pub open spec fn rev_facts(self, chain: Seq<T>) -> Seq<F>
+        decreases chain.len(),
+    {
+        if chain.len() == 0 {
+            Seq::empty()
+        } else {
+            self.fact_of(chain.last()) + self.rev_facts(chain.drop_last())
+        }
+    }
+
+    pub proof fn lemma_collect_chain(self, current: Option<T>, chain: Seq<T>)
+        requires
+            self.wf(),
+        ensures
+            self.collect_chain(current, chain) == chain + self.walk_ids(current),
+        decreases self.walk_measure(current),
+    {
+        match current {
+            None => {
+                assert(chain + Seq::<T>::empty() =~= chain);
+            },
+            Some(id) => {
+                let next = if self.tokens.contains_key(id) {
+                    self.tokens[id].parent
+                } else {
+                    None
+                };
+                if self.tokens.contains_key(id) && next is Some && self.tokens.contains_key(
+                    next->0,
+                ) {
+                    assert(self.rank[next->0] < self.rank[id]);
+                }
+                self.lemma_collect_chain(next, chain.push(id));
+                assert(chain.push(id) + self.walk_ids(next) =~= chain + (seq![id] + self.walk_ids(
+                    next,
+                )));
+            },
+        }
+    }
+
+    pub proof fn lemma_collect_facts_rev(self, chain: Seq<T>, facts: Seq<F>)
+        ensures
+            self.collect_facts_rev(chain, facts) == facts + self.rev_facts(chain),
+        decreases chain.len(),
+    {
+        if chain.len() == 0 {
+            assert(facts + Seq::<F>::empty() =~= facts);
+        } else {
+            let id = chain.last();
+            let facts2 = if self.tokens.contains_key(id) && self.tokens[id].fact is Some {
+                facts.push(self.tokens[id].fact->0)
+            } else {
+                facts
+            };
+            assert(facts2 =~= facts + self.fact_of(id));
+            self.lemma_collect_facts_rev(chain.drop_last(), facts2);
+            assert(facts2 + self.rev_facts(chain.drop_last()) =~= facts + (self.fact_of(id)
+                + self.rev_facts(chain.drop_last())));
+        }
+    }
+
+    /// Prepending an entry appends its fact.
+    pub proof fn lemma_rev_facts_prepend(self, id: T, chain: Seq<T>)
+        ensures
+            self.rev_facts(seq![id] + chain) == self.rev_facts(chain) + self.fact_of(id),
+        decreases chain.len(),
+    {
+        let whole = seq![id] + chain;
+        assert(whole.len() > 0);
+        assert(self.rev_facts(whole) == self.fact_of(whole.last()) + self.rev_facts(
+            whole.drop_last(),
+        ));
+        if chain.len() == 0 {
+            assert(chain =~= Seq::<T>::empty());
+            assert(whole =~= seq![id]);
+            assert(whole.drop_last() =~= Seq::<T>::empty());
+            assert(self.rev_facts(Seq::<T>::empty()) == Seq::<F>::empty());
+            assert(self.fact_of(id) + Seq::<F>::empty() =~= self.fact_of(id));
+            assert(Seq::<F>::empty() + self.fact_of(id) =~= self.fact_of(id));
+        } else {
+            assert(whole.last() == chain.last());
+            assert(whole.drop_last() =~= seq![id] + chain.drop_last());
+            assert(self.rev_facts(chain) == self.fact_of(chain.last()) + self.rev_facts(
+                chain.drop_last(),
+            ));
+            self.lemma_rev_facts_prepend(id, chain.drop_last());
+            assert(self.fact_of(chain.last()) + (self.rev_facts(chain.drop_last()) + self.fact_of(
+                id,
+            )) =~= (self.fact_of(chain.last()) + self.rev_facts(chain.drop_last()))
+                + self.fact_of(id));
+        }
+    }
+
+    pub proof fn lemma_walk_facts(self, t: T)
+        requires
+            self.wf(),
+        ensures
+            self.rev_facts(self.walk_ids(Some(t))) == self.chain_facts(t),
+        decreases self.rank[t],
+    {
+        let next = if self.tokens.contains_key(t) {
+            self.tokens[t].parent
+        } else {
+            None
+        };
+        assert(self.walk_ids(Some(t)) == seq![t] + self.walk_ids(next));
+        self.lemma_rev_facts_prepend(t, self.walk_ids(next));
+        match next {
+            None => {
+                assert(self.walk_ids(next) =~= Seq::<T>::empty());
+                assert(self.rev_facts(Seq::<T>::empty()) =~= Seq::<F>::empty());
+                assert(Seq::<F>::empty() + self.fact_of(t) =~= self.fact_of(t));
+                if self.tokens.contains_key(t) && self.tokens[t].fact is Some {
+                    assert(self.chain_facts(t) =~= seq![self.tokens[t].fact->0]);
+                }
+            },
+            Some(p) => {
+                assert(self.tokens.contains_key(t));
+                if self.tokens.contains_key(p) {
+                    assert(self.rank[p] < self.rank[t]);
+                    self.lemma_walk_facts(p);
+                } else {
+                    assert(self.walk_ids(Some(p)) == seq![p] + self.walk_ids(None));
+                    assert(self.walk_ids(Some(p)) =~= seq![p]);
+                    self.lemma_rev_facts_prepend(p, Seq::<T>::empty());
+                    assert(seq![p] + Seq::<T>::empty() =~= seq![p]);
+                    assert(self.rev_facts(Seq::<T>::empty()) =~= Seq::<F>::empty());
+                    assert(self.fact_of(p) =~= Seq::<F>::empty());
+                    assert(self.rev_facts(seq![p]) =~= Seq::<F>::empty());
+                }
+                match self.tokens[t].fact {
+                    None => {
+                        assert(self.fact_of(t) =~= Seq::<F>::empty());
+                        assert(self.chain_facts(p) + Seq::<F>::empty() =~= self.chain_facts(p));
+                    },
+                    Some(f) => {
+                        assert(self.chain_facts(p) + seq![f] =~= self.chain_facts(p).push(f));
+                    },
+                }
+            },
+        }
+    }
+
+    /// `collect_all_facts` returns exactly the facts of the live tokens on the
+    /// parent chain of `token_id`, root first, skipping pass-through tokens,
+    /// for every id (live or not) and every well-formed store, including
+    /// stores with orphans left by non-cascading `remove`.
+    pub proof fn lemma_collect_all_facts(self, token_id: T)
+        requires
+            self.wf(),
+        ensures
+            self.collect_all_facts(token_id) == self.chain_facts(token_id),
+    {
+        self.lemma_collect_chain(Some(token_id), Seq::empty());
+        assert(Seq::<T>::empty() + self.walk_ids(Some(token_id)) =~= self.walk_ids(
+            Some(token_id),
+        ));
+        self.lemma_collect_facts_rev(self.walk_ids(Some(token_id)), Seq::empty());
+        assert(Seq::<F>::empty() + self.rev_facts(self.walk_ids(Some(token_id))) =~= self.rev_facts(
+            self.walk_ids(Some(token_id)),
+        ));
+        self.lemma_walk_facts(token_id);
+    }
+
+    /// The facts returned are exactly those held by tokens that `token_id`
+    /// reaches along live parent links (membership form of the theorem).
+    pub proof fn lemma_chain_facts_members(self, t: T, f: F)
+        requires
+            self.wf(),
+        ensures
+            self.chain_facts(t).contains(f) <==> exists|a: T| #[trigger]
+                self.reaches(t, a) && self.tokens[a].fact == Some(f),
+        decreases self.rank[t],
+    {
+        if self.tokens.contains_key(t) {
+            let above = match self.tokens[t].parent {
+                None => Seq::<F>::empty(),
+                Some(p) => self.chain_facts(p),
+            };
+            if let Some(p) = self.tokens[t].parent {
+                if self.tokens.contains_key(p) {
+                    assert(self.rank[p] < self.rank[t]);
+                }
+                self.lemma_chain_facts_members(p, f);
+            }
+            if self.chain_facts(t).contains(f) {
+                if self.tokens[t].fact == Some(f) {
+                    assert(self.reaches(t, t));
+                } else {
+                    let i = choose|i: int| 0 <= i < self.chain_facts(t).len() && self.chain_facts(
+                        t,
+                    )[i] == f;
+                    if self.tokens[t].fact is Some {
+                        assert(i < above.len()) by {
+                            if i == above.len() as int {
+                                assert(self.chain_facts(t)[i] == self.tokens[t].fact->0);
+                            }
+                        }
+                    }
+                    assert(above[i] == f);
+                    assert(above.contains(f));
+                    let p = self.tokens[t].parent->0;
+                    let a = choose|a: T| #[trigger] self.reaches(p, a) && self.tokens[a].fact == Some(
+                        f,
+                    );
+                    assert(self.reaches(t, a)) by {
+                        self.lemma_reaches_rank(p, a);
+                    }
+                }
+            }
+            if exists|a: T| #[trigger] self.reaches(t, a) && self.tokens[a].fact == Some(f) {
+                let a = choose|a: T| #[trigger] self.reaches(t, a) && self.tokens[a].fact == Some(f);
+                if a == t {
+                    assert(self.chain_facts(t) == above.push(f));
+                    assert(self.chain_facts(t)[above.len() as int] == f);
+                } else {
+                    let p = self.tokens[t].parent->0;
+                    assert(self.reaches(p, a));
+                    assert(above.contains(f));
+                    let i = choose|i: int| 0 <= i < above.len() && above[i] == f;
+                    match self.tokens[t].fact {
+                        None => {},
+                        Some(g) => {
+                            assert(self.chain_facts(t)[i] == f);
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// retraction_roots: the loop itself
+// ---------------------------------------------------------------------------
+impl<T, F> StoreModel<T, F> {
+    /// The outer loop of crates/ferric-rules-core/src/token.rs:243
+    /// fn retraction_roots, `for &token_id in affected`, visiting the affected
+    /// set in the hash-set order `affected_order`; the inner parent walk is
+    /// `has_affected_ancestor` (`is_root` is its negation).
+    pub open spec fn retraction_roots_loop(
+        self,
+        affected: Set<T>,
+        affected_order: Seq<T>,
+        roots: Seq<T>,
+    ) -> Seq<T>
+        decreases affected_order.len(),
+    {
+        if affected_order.len() == 0 {
+            roots
+        } else {
+            let token_id = affected_order[0];
+            let is_root = !self.has_affected_ancestor(token_id, affected);
+            let roots2 = if is_root {
+                roots.push(token_id)
+            } else {
+                roots
+            };
+            self.retraction_roots_loop(affected, affected_order.drop_first(), roots2)
+        }
+    }
+
+    /// Models crates/ferric-rules-core/src/token.rs:243 fn retraction_roots.
+    pub open spec fn retraction_roots(self, affected: Set<T>, affected_order: Seq<T>) -> Seq<T> {
+        self.retraction_roots_loop(affected, affected_order, Seq::empty())
+    }
+
+    pub proof fn lemma_retraction_roots_loop(
+        self,
+        affected: Set<T>,
+        done: Seq<T>,
+        affected_order: Seq<T>,
+        roots: Seq<T>,
+    )
+        requires
+            self.wf(),
+            (done + affected_order).no_duplicates(),
+            roots.no_duplicates(),
+            forall|x: T| #[trigger]
+                roots.contains(x) <==> done.contains(x) && !self.has_affected_ancestor(
+                    x,
+                    affected,
+                ),
+        ensures
+            ({
+                let result = self.retraction_roots_loop(affected, affected_order, roots);
+                &&& result.no_duplicates()
+                &&& forall|x: T| #[trigger]
+                    result.contains(x) <==> (done + affected_order).contains(x)
+                        && !self.has_affected_ancestor(x, affected)
+            }),
+        decreases affected_order.len(),
+    {
+        if affected_order.len() == 0 {
+            assert(done + affected_order =~= done);
+        } else {
+            let token_id = affected_order[0];
+            let roots2 = if !self.has_affected_ancestor(token_id, affected) {
+                roots.push(token_id)
+            } else {
+                roots
+            };
+            let done2 = done.push(token_id);
+            let rest = affected_order.drop_first();
+            assert(done2 + rest =~= done + affected_order);
+            assert(!done.contains(token_id)) by {
+                if done.contains(token_id) {
+                    let i = choose|i: int| 0 <= i < done.len() && done[i] == token_id;
+                    assert((done + affected_order)[i] == (done + affected_order)[done.len() as int]);
+                }
+            }
+            assert(roots2.no_duplicates()) by {
+                if !self.has_affected_ancestor(token_id, affected) {
+                    assert(!roots.contains(token_id));
+                    assert forall|i: int, j: int|
+                        0 <= i < roots2.len() && 0 <= j < roots2.len() && i != j implies roots2[i]
+                        != roots2[j] by {
+                        if i == roots.len() && roots2[j] == token_id {
+                            assert(roots[j] == token_id);
+                        }
+                        if j == roots.len() && roots2[i] == token_id {
+                            assert(roots[i] == token_id);
+                        }
+                    }
+                }
+            }
+            assert forall|x: T| #[trigger]
+                roots2.contains(x) <==> done2.contains(x) && !self.has_affected_ancestor(
+                    x,
+                    affected,
+                ) by {
+                if roots2.contains(x) && x != token_id {
+                    let i = choose|i: int| 0 <= i < roots2.len() && roots2[i] == x;
+                    assert(roots[i] == x);
+                }
+                if roots.contains(x) {
+                    let i = choose|i: int| 0 <= i < roots.len() && roots[i] == x;
+                    assert(roots2[i] == x);
+                }
+                if done2.contains(x) && x != token_id {
+                    let i = choose|i: int| 0 <= i < done2.len() && done2[i] == x;
+                    assert(done[i] == x);
+                }
+                if done.contains(x) {
+                    let i = choose|i: int| 0 <= i < done.len() && done[i] == x;
+                    assert(done2[i] == x);
+                }
+                if x == token_id {
+                    assert(done2[done.len() as int] == x);
+                    if !self.has_affected_ancestor(token_id, affected) {
+                        assert(roots2[roots.len() as int] == x);
+                    }
+                }
+            }
+            self.lemma_retraction_roots_loop(affected, done2, rest, roots2);
+        }
+    }
+
+    /// `retraction_roots`, for any duplicate-free enumeration of the affected
+    /// set, returns a duplicate-free enumeration of `root_set(affected)`.
+    pub proof fn lemma_retraction_roots(self, affected: Set<T>, affected_order: Seq<T>)
+        requires
+            self.wf(),
+            affected_order.no_duplicates(),
+            affected_order.to_set() == affected,
+        ensures
+            self.retraction_roots(affected, affected_order).no_duplicates(),
+            self.retraction_roots(affected, affected_order).to_set() == self.root_set(affected),
+    {
+        let done = Seq::<T>::empty();
+        assert(done + affected_order =~= affected_order);
+        self.lemma_retraction_roots_loop(affected, done, affected_order, Seq::empty());
+        let result = self.retraction_roots(affected, affected_order);
+        assert(result.to_set() =~= self.root_set(affected)) by {
+            assert forall|x: T| #[trigger] result.to_set().contains(x) <==> self.root_set(affected).contains(
+                x,
+            ) by {
+                assert(affected_order.to_set().contains(x) <==> affected_order.contains(x));
+            }
+        }
+    }
+
+    /// `ReteNetwork::retract_fact` (crates/ferric-rules-core/src/rete.rs:377-386)
+    /// end to end: `tokens_containing` collected into a set, `retraction_roots`
+    /// over any hash-set order of it, then one `remove_cascade` per root.
+    pub proof fn lemma_retract_fact_end_to_end(
+        self,
+        fact: F,
+        affected_order: Seq<T>,
+        order: spec_fn(T, Set<T>) -> Seq<T>,
+    )
+        requires
+            self.wf(),
+            enumerates(order),
+            affected_order.no_duplicates(),
+            affected_order.to_set() == self.tokens_containing(fact),
+        ensures
+            ({
+                let roots = self.retraction_roots(self.tokens_containing(fact), affected_order);
+                let (fin, removed) = self.cascade_all(roots, order);
+                let r = removed.map_values(|e: (T, TokenModel<T, F>)| e.0);
+                &&& self.cascade_all_roots_live(roots, order)
+                &&& fin.wf()
+                &&& r.no_duplicates()
+                &&& forall|i: int|
+                    0 <= i < removed.len() ==> self.tokens.contains_key(#[trigger] removed[i].0)
+                        && removed[i].1 == self.tokens[removed[i].0]
+                &&& forall|t: T| #[trigger]
+                    fin.tokens.contains_key(t) <==> self.tokens.contains_key(t) && !r.contains(t)
+                &&& forall|t: T| #[trigger]
+                    r.contains(t) <==> exists|a: T| #[trigger]
+                        self.tokens_containing(fact).contains(a) && self.reaches(t, a)
+            }),
+    {
+        let affected = self.tokens_containing(fact);
+        self.lemma_retraction_roots(affected, affected_order);
+        let roots = self.retraction_roots(affected, affected_order);
+        self.lemma_retract_fact(fact, roots, order);
     }
 }
 

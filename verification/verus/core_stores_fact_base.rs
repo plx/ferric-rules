@@ -29,6 +29,15 @@
 //!   greater than `after` (any timestamp for `None`), or `None` exactly when
 //!   there is no such fact, whether or not the chronology was initialized
 //!   before; it leaves the facts unchanged and preserves the invariant.
+//! * The lazy rebuild in `ensure_structural_index` itself
+//!   (`lemma_rebuild_refines_model`): the grouping loop over the slot map,
+//!   in any iteration order, followed by `sort_unstable_by_key(timestamp)`
+//!   on every group longer than one (specified only by its documented
+//!   contract: a permutation that is non-decreasing in the key) never hits
+//!   the `expect` in the sort key and yields exactly the abstract
+//!   `rebuilt_index` (per fingerprint, the live ids in timestamp order) that
+//!   the model of `ensure_structural_index` uses; an exact index is unique
+//!   (`lemma_index_exact_unique`).
 //!
 //! Trusted base and abstractions:
 //!
@@ -37,19 +46,27 @@
 //!   equality of `FactModel`s. `structural_fingerprint` is an arbitrary
 //!   function `fp` of the model fact, i.e. equal facts have equal
 //!   fingerprints. That consistency property of the production hash is only
-//!   partly machine-checked: the Kani harnesses `value_structural_eq_*` and
-//!   `fingerprint_ignores_*` in crates/ferric-rules-core/src/fact/kani_proofs.rs
-//!   cover the scalar and fact-address kinds (see that file for the exact
-//!   bounds); strings and multifields are not covered by Kani.
+//!   partly machine-checked: the Kani harnesses `value_structural_eq_*` in
+//!   crates/ferric-rules-core/src/fact/kani_proofs.rs check which components
+//!   `Value::structural_eq` compares for the scalar and fact-address kinds,
+//!   and `fingerprint_ignores_*` check that the hash ignores the one
+//!   component equality ignores (the fact-address public index, with the
+//!   compared components fixed); that the hash of a scalar is a function of
+//!   the compared components rests on inspection of
+//!   `hash_value_structurally`, and strings and multifields are not covered
+//!   by Kani at all.
 //! * `SlotMap<FactId, FactEntry>` is a `Map`; the fresh key returned by
 //!   `insert_with_key` is a parameter `id` with precondition "not live".
 //! * `SymbolMap` / `FxHashMap` / `FxHashSet` / `BTreeMap` are `Map`/`Set`.
 //!   `SymbolMap` itself is checked against a map model by the Kani harness
 //!   `symbol_map_refines_partial_map`.
-//! * `ensure_structural_index`'s rebuild (slot-order grouping followed by
-//!   `sort_unstable_by_key(timestamp)`) is modelled by its result: per
-//!   fingerprint, the live ids in timestamp order (`ids_by_time`); the
-//!   grouping loop and the sort algorithm themselves are not modelled.
+//! * `ensure_structural_index`'s rebuild is used by the operation models
+//!   through its result `rebuilt_index` (per fingerprint, the live ids in
+//!   timestamp order, `ids_by_time`); `lemma_rebuild_refines_model` proves
+//!   that the production grouping loop plus sort produce exactly that
+//!   result. The slot map's iteration order is an arbitrary duplicate-free
+//!   enumeration of the live ids, and `sort_unstable_by_key` is trusted to
+//!   meet its documented contract (its algorithm is not modelled).
 //! * `u64` timestamps are `nat`s bounded by `U64_MAX`; `checked_add(1)` is
 //!   modelled as failing exactly at `U64_MAX`.
 //! * `BTreeMap::range((Excluded(t), Unbounded)).next()` / `first_key_value`
@@ -1677,6 +1694,417 @@ impl<I, R, Tm, C> FactBaseModel<I, R, Tm, C> {
             }),
     {
         self.lemma_insert_indexed(fact, id, fp);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ensure_structural_index: the rebuild itself (grouping loop and sort)
+// ---------------------------------------------------------------------------
+/// The grouping loop of crates/ferric-rules-core/src/fact.rs:456
+/// fn ensure_structural_index,
+/// `for (id, entry) in &self.facts {
+///     index.entry(structural_fingerprint(&entry.fact)).or_default().push(id); }`,
+/// visiting the live ids in the slot map's iteration order `slot_order`.
+pub open spec fn group_loop<I, R, Tm, C>(
+    facts: Map<I, EntryModel<R, Tm, C>>,
+    fp: spec_fn(FactModel<R, Tm, C>) -> u64,
+    slot_order: Seq<I>,
+    index: Map<u64, Seq<I>>,
+) -> Map<u64, Seq<I>>
+    decreases slot_order.len(),
+{
+    if slot_order.len() == 0 {
+        index
+    } else {
+        let id = slot_order[0];
+        let f = fp(facts[id].fact);
+        let index2 = index.insert(
+            f,
+            if index.contains_key(f) {
+                index[f]
+            } else {
+                Seq::empty()
+            }.push(id),
+        );
+        group_loop(facts, fp, slot_order.drop_first(), index2)
+    }
+}
+
+/// Non-decreasing in the sort key `self.facts.get(*id).expect(..).timestamp`.
+pub open spec fn sorted_by_timestamp<I, R, Tm, C>(
+    facts: Map<I, EntryModel<R, Tm, C>>,
+    s: Seq<I>,
+) -> bool {
+    forall|i: int, j: int|
+        0 <= i < j < s.len() ==> facts[#[trigger] s[i]].timestamp <= facts[#[trigger] s[j]].timestamp
+}
+
+/// The second loop of crates/ferric-rules-core/src/fact.rs:456
+/// fn ensure_structural_index,
+/// `for candidates in index.values_mut() { if candidates.len() > 1 {
+///     candidates.sort_unstable_by_key(..) } }`: `sorted` is a possible index
+/// after the loop. `sort_unstable_by_key` is specified by its documented
+/// contract only: the result is a permutation (same multiset) of its input
+/// that is non-decreasing in the key; groups of length at most one are left
+/// untouched.
+pub open spec fn sort_loop_result<I, R, Tm, C>(
+    facts: Map<I, EntryModel<R, Tm, C>>,
+    grouped: Map<u64, Seq<I>>,
+    sorted: Map<u64, Seq<I>>,
+) -> bool {
+    &&& sorted.dom() == grouped.dom()
+    &&& forall|f: u64| #[trigger]
+        grouped.contains_key(f) ==> if grouped[f].len() > 1 {
+            &&& sorted[f].to_multiset() == grouped[f].to_multiset()
+            &&& sorted_by_timestamp(facts, sorted[f])
+        } else {
+            sorted[f] == grouped[f]
+        }
+}
+
+/// The grouping loop's invariant after visiting `done`: every group is
+/// non-empty and duplicate-free and lists exactly the visited ids with its
+/// fingerprint.
+pub open spec fn grouped_exactly<I, R, Tm, C>(
+    facts: Map<I, EntryModel<R, Tm, C>>,
+    fp: spec_fn(FactModel<R, Tm, C>) -> u64,
+    done: Seq<I>,
+    index: Map<u64, Seq<I>>,
+) -> bool {
+    &&& forall|f: u64| #[trigger] index.contains_key(f) ==> index[f].len() > 0
+    &&& forall|f: u64| #[trigger] index.contains_key(f) ==> index[f].no_duplicates()
+    &&& forall|f: u64, i: int|
+        #[trigger] index.contains_key(f) && 0 <= i < index[f].len() ==> done.contains(
+            #[trigger] index[f][i],
+        ) && fp(facts[index[f][i]].fact) == f
+    &&& forall|id: I| #[trigger]
+        done.contains(id) ==> index.contains_key(fp(facts[id].fact)) && index[fp(
+            facts[id].fact,
+        )].contains(id)
+}
+
+pub proof fn lemma_group_loop<I, R, Tm, C>(
+    facts: Map<I, EntryModel<R, Tm, C>>,
+    fp: spec_fn(FactModel<R, Tm, C>) -> u64,
+    done: Seq<I>,
+    rest: Seq<I>,
+    index: Map<u64, Seq<I>>,
+)
+    requires
+        (done + rest).no_duplicates(),
+        grouped_exactly(facts, fp, done, index),
+    ensures
+        grouped_exactly(facts, fp, done + rest, group_loop(facts, fp, rest, index)),
+    decreases rest.len(),
+{
+    if rest.len() == 0 {
+        assert(done + rest =~= done);
+    } else {
+        let id = rest[0];
+        let f = fp(facts[id].fact);
+        let old_group = if index.contains_key(f) {
+            index[f]
+        } else {
+            Seq::<I>::empty()
+        };
+        let index2 = index.insert(f, old_group.push(id));
+        let done2 = done.push(id);
+        assert(done2 + rest.drop_first() =~= done + rest);
+        assert(!done.contains(id)) by {
+            if done.contains(id) {
+                let i = choose|i: int| 0 <= i < done.len() && done[i] == id;
+                assert((done + rest)[i] == (done + rest)[done.len() as int]);
+            }
+        }
+        assert(!old_group.contains(id)) by {
+            if old_group.contains(id) {
+                let i = choose|i: int| 0 <= i < old_group.len() && old_group[i] == id;
+                assert(done.contains(index[f][i]));
+            }
+        }
+        assert forall|g: u64| #[trigger] index2.contains_key(g) implies index2[g].no_duplicates() by {
+            if g == f {
+                assert forall|i: int, j: int|
+                    0 <= i < index2[g].len() && 0 <= j < index2[g].len() && i != j implies index2[g][i]
+                    != index2[g][j] by {
+                    if i == old_group.len() && j < old_group.len() {
+                        assert(old_group[j] == index2[g][j]);
+                    }
+                    if j == old_group.len() && i < old_group.len() {
+                        assert(old_group[i] == index2[g][i]);
+                    }
+                }
+            }
+        }
+        assert forall|g: u64, i: int|
+            #[trigger] index2.contains_key(g) && 0 <= i < index2[g].len() implies done2.contains(
+            #[trigger] index2[g][i],
+        ) && fp(facts[index2[g][i]].fact) == g by {
+            if g == f && i == old_group.len() {
+                assert(done2[done.len() as int] == id);
+            } else {
+                let x = index[g][i];
+                assert(done.contains(x));
+                let k = choose|k: int| 0 <= k < done.len() && done[k] == x;
+                assert(done2[k] == x);
+            }
+        }
+        assert forall|x: I| #[trigger] done2.contains(x) implies index2.contains_key(
+            fp(facts[x].fact),
+        ) && index2[fp(facts[x].fact)].contains(x) by {
+            if x == id {
+                assert(index2[f][old_group.len() as int] == id);
+            } else {
+                let k = choose|k: int| 0 <= k < done2.len() && done2[k] == x;
+                assert(k < done.len());
+                assert(done[k] == x);
+                assert(done.contains(x));
+                let g = fp(facts[x].fact);
+                assert(index.contains_key(g) && index[g].contains(x));
+                let i = choose|i: int| 0 <= i < index[g].len() && index[g][i] == x;
+                if g == f {
+                    assert(old_group == index[f]);
+                    assert(index2[g] == old_group.push(id));
+                }
+                assert(index2[g][i] == x);
+            }
+        }
+        lemma_group_loop(facts, fp, done2, rest.drop_first(), index2);
+    }
+}
+
+/// Two candidate lists of live facts in strictly increasing timestamp order
+/// with the same members are equal.
+pub proof fn lemma_sorted_live_unique<I, R, Tm, C>(
+    facts: Map<I, EntryModel<R, Tm, C>>,
+    x: Seq<I>,
+    y: Seq<I>,
+)
+    requires
+        sorted_live(facts, x),
+        sorted_live(facts, y),
+        forall|z: I| x.contains(z) <==> y.contains(z),
+    ensures
+        x == y,
+    decreases x.len(),
+{
+    if x.len() == 0 {
+        if y.len() > 0 {
+            assert(y.contains(y[0]));
+        }
+        assert(x =~= y);
+    } else {
+        assert(x.contains(x[0]));
+        assert(y.len() > 0);
+        assert(x[0] == y[0]) by {
+            if x[0] != y[0] {
+                assert(y.contains(y[0]));
+                let i = choose|i: int| 0 <= i < x.len() && x[i] == y[0];
+                let j = choose|j: int| 0 <= j < y.len() && y[j] == x[0];
+                assert(i != 0 && j != 0);
+                assert(facts[x[0]].timestamp < facts[x[i]].timestamp);
+                assert(facts[y[0]].timestamp < facts[y[j]].timestamp);
+            }
+        }
+        let xs = x.drop_first();
+        let ys = y.drop_first();
+        assert forall|z: I| xs.contains(z) <==> ys.contains(z) by {
+            if xs.contains(z) {
+                let i = choose|i: int| 0 <= i < xs.len() && xs[i] == z;
+                assert(x[i + 1] == z);
+                assert(z != x[0]) by {
+                    assert(facts[x[0]].timestamp < facts[x[i + 1]].timestamp);
+                }
+                assert(x.contains(z));
+                let j = choose|j: int| 0 <= j < y.len() && y[j] == z;
+                assert(j != 0);
+                assert(ys[j - 1] == z);
+            }
+            if ys.contains(z) {
+                let j = choose|j: int| 0 <= j < ys.len() && ys[j] == z;
+                assert(y[j + 1] == z);
+                assert(z != y[0]) by {
+                    assert(facts[y[0]].timestamp < facts[y[j + 1]].timestamp);
+                }
+                assert(y.contains(z));
+                let i = choose|i: int| 0 <= i < x.len() && x[i] == z;
+                assert(i != 0);
+                assert(xs[i - 1] == z);
+            }
+        }
+        assert(sorted_live(facts, xs)) by {
+            assert forall|i: int, j: int| 0 <= i < j < xs.len() implies facts[#[trigger] xs[i]].timestamp
+                < facts[#[trigger] xs[j]].timestamp by {
+                assert(xs[i] == x[i + 1] && xs[j] == x[j + 1]);
+            }
+            assert forall|i: int| 0 <= i < xs.len() implies facts.contains_key(#[trigger] xs[i]) by {
+                assert(xs[i] == x[i + 1]);
+            }
+        }
+        assert(sorted_live(facts, ys)) by {
+            assert forall|i: int, j: int| 0 <= i < j < ys.len() implies facts[#[trigger] ys[i]].timestamp
+                < facts[#[trigger] ys[j]].timestamp by {
+                assert(ys[i] == y[i + 1] && ys[j] == y[j + 1]);
+            }
+            assert forall|i: int| 0 <= i < ys.len() implies facts.contains_key(#[trigger] ys[i]) by {
+                assert(ys[i] == y[i + 1]);
+            }
+        }
+        lemma_sorted_live_unique(facts, xs, ys);
+        assert(x =~= seq![x[0]] + xs);
+        assert(y =~= seq![y[0]] + ys);
+    }
+}
+
+impl<I, R, Tm, C> FactBaseModel<I, R, Tm, C> {
+    /// An exact fingerprint index is unique: any two coincide.
+    pub proof fn lemma_index_exact_unique(
+        self,
+        a: Map<u64, Seq<I>>,
+        b: Map<u64, Seq<I>>,
+        fp: spec_fn(FactModel<R, Tm, C>) -> u64,
+    )
+        requires
+            self.index_exact(a, fp),
+            self.index_exact(b, fp),
+        ensures
+            a == b,
+    {
+        assert forall|f: u64| #[trigger] a.contains_key(f) implies b.contains_key(f) by {
+            assert(a[f].len() > 0);
+            let id = a[f][0];
+            assert(self.facts.contains_key(id) && fp(self.facts[id].fact) == f);
+        }
+        assert forall|f: u64| #[trigger] b.contains_key(f) implies a.contains_key(f) by {
+            assert(b[f].len() > 0);
+            let id = b[f][0];
+            assert(self.facts.contains_key(id) && fp(self.facts[id].fact) == f);
+        }
+        assert(a.dom() =~= b.dom());
+        assert forall|f: u64| #[trigger] a.contains_key(f) implies a[f] == b[f] by {
+            assert(sorted_live(self.facts, a[f]));
+            assert(sorted_live(self.facts, b[f]));
+            assert forall|z: I| a[f].contains(z) <==> b[f].contains(z) by {
+                if a[f].contains(z) {
+                    let i = choose|i: int| 0 <= i < a[f].len() && a[f][i] == z;
+                    assert(self.facts.contains_key(z) && fp(self.facts[z].fact) == f);
+                }
+                if b[f].contains(z) {
+                    let i = choose|i: int| 0 <= i < b[f].len() && b[f][i] == z;
+                    assert(self.facts.contains_key(z) && fp(self.facts[z].fact) == f);
+                }
+            }
+            lemma_sorted_live_unique(self.facts, a[f], b[f]);
+        }
+        assert(a =~= b);
+    }
+
+    /// The production rebuild (grouping loop over the slot map in any
+    /// iteration order, then `sort_unstable_by_key(timestamp)` on every group
+    /// longer than one, per its documented contract) never hits the
+    /// `expect` in the sort key, and yields exactly the abstract
+    /// `rebuilt_index` used by `ensure_structural_index` above.
+    pub proof fn lemma_rebuild_refines_model(
+        self,
+        fp: spec_fn(FactModel<R, Tm, C>) -> u64,
+        slot_order: Seq<I>,
+        sorted: Map<u64, Seq<I>>,
+    )
+        requires
+            self.timestamps_ok(),
+            slot_order.no_duplicates(),
+            forall|id: I| #[trigger] slot_order.contains(id) <==> self.facts.contains_key(id),
+            sort_loop_result(
+                self.facts,
+                group_loop(self.facts, fp, slot_order, Map::empty()),
+                sorted,
+            ),
+        ensures
+            // the sort key's `expect("structural index only contains active facts")`
+            forall|f: u64, i: int|
+                #[trigger] group_loop(self.facts, fp, slot_order, Map::empty()).contains_key(f)
+                    && 0 <= i < group_loop(self.facts, fp, slot_order, Map::empty())[f].len()
+                    ==> self.facts.contains_key(
+                    #[trigger] group_loop(self.facts, fp, slot_order, Map::empty())[f][i],
+                ),
+            self.index_exact(sorted, fp),
+            sorted == self.rebuilt_index(fp),
+    {
+        broadcast use vstd::seq_lib::group_to_multiset_ensures;
+
+        let grouped = group_loop(self.facts, fp, slot_order, Map::empty());
+        let empty = Seq::<I>::empty();
+        assert(empty + slot_order =~= slot_order);
+        assert(grouped_exactly(self.facts, fp, empty, Map::<u64, Seq<I>>::empty()));
+        lemma_group_loop(self.facts, fp, empty, slot_order, Map::empty());
+        assert(grouped_exactly(self.facts, fp, slot_order, grouped));
+        // Facts about each sorted group.
+        assert forall|f: u64| #[trigger] sorted.contains_key(f) implies {
+            &&& sorted[f].len() == grouped[f].len()
+            &&& forall|z: I| sorted[f].contains(z) <==> grouped[f].contains(z)
+            &&& sorted[f].no_duplicates()
+            &&& sorted_by_timestamp(self.facts, sorted[f])
+        } by {
+            assert(grouped.contains_key(f));
+            if grouped[f].len() > 1 {
+                let s = sorted[f];
+                let g = grouped[f];
+                assert(s.to_multiset() == g.to_multiset());
+                assert(s.len() == s.to_multiset().len());
+                assert(g.len() == g.to_multiset().len());
+                assert forall|z: I| s.contains(z) <==> g.contains(z) by {
+                    assert(s.contains(z) <==> s.to_multiset().count(z) > 0);
+                    assert(g.contains(z) <==> g.to_multiset().count(z) > 0);
+                }
+                g.lemma_multiset_has_no_duplicates();
+                assert forall|z: I| s.to_multiset().contains(z) implies s.to_multiset().count(z)
+                    == 1 by {
+                    assert(g.to_multiset().contains(z));
+                }
+                s.lemma_multiset_has_no_duplicates_conv();
+            } else {
+                assert(sorted_by_timestamp(self.facts, sorted[f]));
+            }
+        }
+        assert(self.index_exact(sorted, fp)) by {
+            assert forall|f: u64, i: int|
+                #[trigger] sorted.contains_key(f) && 0 <= i < sorted[f].len()
+                    implies self.facts.contains_key(#[trigger] sorted[f][i]) && fp(
+                self.facts[sorted[f][i]].fact,
+            ) == f by {
+                let z = sorted[f][i];
+                assert(sorted[f].contains(z));
+                assert(grouped[f].contains(z));
+                let k = choose|k: int| 0 <= k < grouped[f].len() && grouped[f][k] == z;
+                assert(slot_order.contains(grouped[f][k]));
+            }
+            assert forall|f: u64, i: int, j: int|
+                #[trigger] sorted.contains_key(f) && 0 <= i < j < sorted[f].len()
+                    implies self.facts[#[trigger] sorted[f][i]].timestamp
+                    < self.facts[#[trigger] sorted[f][j]].timestamp by {
+                let a = sorted[f][i];
+                let b = sorted[f][j];
+                assert(a != b);
+                assert(self.facts[a].timestamp <= self.facts[b].timestamp);
+                assert(sorted[f].contains(a) && sorted[f].contains(b));
+                assert(grouped[f].contains(a) && grouped[f].contains(b));
+                let ka = choose|k: int| 0 <= k < grouped[f].len() && grouped[f][k] == a;
+                let kb = choose|k: int| 0 <= k < grouped[f].len() && grouped[f][k] == b;
+                assert(slot_order.contains(grouped[f][ka]));
+                assert(slot_order.contains(grouped[f][kb]));
+                assert(self.facts.contains_key(a) && self.facts.contains_key(b));
+            }
+            assert forall|f: u64| #[trigger] sorted.contains_key(f) implies sorted[f].len() > 0 by {
+                assert(grouped.contains_key(f));
+            }
+            assert forall|id: I| #[trigger] self.facts.contains_key(id) implies sorted.contains_key(
+                fp(self.facts[id].fact),
+            ) && sorted[fp(self.facts[id].fact)].contains(id) by {
+                assert(slot_order.contains(id));
+            }
+        }
+        self.lemma_rebuilt_index(fp);
+        self.lemma_index_exact_unique(sorted, self.rebuilt_index(fp), fp);
     }
 }
 

@@ -13,6 +13,16 @@
 //!   `next`/`next_back` (with the exact `ExactSizeIterator::len` before each
 //!   step and `None` from both ends afterwards) agree with the oracle, and
 //!   the table is never allocated.
+//! * The same harness checks (white-box, `assert_canonical`) that the
+//!   initial state and the state after each operation are the canonical
+//!   endpoint representation of the oracle sequence (`first`/`last` are its
+//!   first and last members, no allocation). The first operation ranges over
+//!   every operation that does not promote, so this is the induction step
+//!   (and `default()` the base case) of an argument that every sequence of
+//!   non-promoting operations from the empty set, of any length, refines the
+//!   oracle: such sequences only visit canonical states, and every canonical
+//!   state is one that `build_endpoints` constructs. The induction itself is
+//!   a meta-argument, not checked by Kani.
 //!
 //! Known gaps: the third distinct insertion promotes the set to a hashbrown
 //! table, and every operation on an allocated table is beyond Kani's budget
@@ -102,6 +112,21 @@ fn assert_observations_match(set: &OrderedSet<u8>, model: &SeqModel, probe: u8) 
     assert_eq!(iter.next_back(), None);
 }
 
+/// White-box check that `set` is the canonical endpoint representation of
+/// the oracle sequence: no table allocation, `first`/`last` hold the first and
+/// last members (both `None` when empty). Every endpoint state is determined
+/// by the sequence it represents, so the states built by `build_endpoints`
+/// are all the endpoint states there are.
+fn assert_canonical(set: &OrderedSet<u8>, model: &SeqModel) {
+    assert_eq!(set.entries.capacity(), 0);
+    if model.len == 0 {
+        assert!(set.first.is_none() && set.last.is_none());
+    } else {
+        assert_eq!(set.first, Some(model.items[0]));
+        assert_eq!(set.last, Some(model.items[model.len - 1]));
+    }
+}
+
 /// Build an endpoint-representation set holding the first `n` of `[a, b]`.
 fn build_endpoints(n: usize, a: u8, b: u8) -> (OrderedSet<u8>, SeqModel) {
     let mut set = OrderedSet::<u8>::default();
@@ -131,6 +156,7 @@ fn endpoint_representation_refines_sequence() {
     let mut n = 0;
     while n < 3 {
         let (mut set, mut model) = build_endpoints(n, a, b);
+        assert_canonical(&set, &model);
         // First operation.
         match kani::any::<u8>() {
             0 if n < 2 => {
@@ -158,6 +184,7 @@ fn endpoint_representation_refines_sequence() {
             }
             _ => {}
         }
+        assert_canonical(&set, &model);
         // Second operation: removal (possibly emptying the set) or clear.
         match kani::any::<u8>() {
             0 => {
@@ -171,8 +198,8 @@ fn endpoint_representation_refines_sequence() {
             }
             _ => {}
         }
-        // The endpoint representation never allocates.
-        assert_eq!(set.entries.capacity(), 0);
+        // The endpoint representation never allocates and stays canonical.
+        assert_canonical(&set, &model);
         assert_observations_match(&set, &model, kani::any());
         kani::cover!(n == 2 && model.len == 2);
         kani::cover!(n == 1 && model.len == 2);

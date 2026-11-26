@@ -14,7 +14,10 @@
 //!   parent). The slot map is populated directly; this function reads
 //!   nothing else. Chains of two or more tokens (symbolic or concrete
 //!   shapes) ran out of memory at 7 GB, so the general chain walk is not
-//!   covered.
+//!   covered: a mutant that never follows a parent link
+//!   (`current = None` in the walk) still passes this harness. The full
+//!   walk is proved on the Verus model (`lemma_collect_all_facts` in
+//!   verification/verus/core_stores_token_store.rs).
 //!
 //! `validate_consistency` is not called by these harnesses: with symbolic
 //! store contents its error-message formatting (`format!` with `Debug`)
@@ -31,13 +34,14 @@
 //! execution very expensive; even a single parent/child pair cascaded from
 //! the parent was not attempted to completion (the comparable one-entry
 //! fact-index harness ran for over eleven minutes). Invariant preservation
-//! by `insert`,
-//! `remove` and `remove_cascade` for arbitrary stores, "cascade removes
-//! exactly the descendants", and "fact retraction (`tokens_containing` +
-//! `retraction_roots` + cascades) removes exactly the tokens whose parent
-//! chain holds the fact" are proved unboundedly on a model in
-//! verification/verus/core_stores_token_store.rs. `retraction_roots`,
-//! `sequence_matches` metadata and `clear` are not exercised by Kani.
+//! by `insert`, `remove` and `remove_cascade` for arbitrary stores,
+//! "cascade removes exactly the descendants", "fact retraction
+//! (`tokens_containing` + `retraction_roots` + cascades) removes exactly
+//! the tokens whose parent chain holds the fact", and "`collect_all_facts`
+//! returns the facts of the live parent chain, root first" are proved
+//! unboundedly on a model in verification/verus/core_stores_token_store.rs
+//! (a model, not this code). `retraction_roots`, `sequence_matches`
+//! metadata and `clear` are not exercised by Kani.
 
 use super::*;
 use slotmap::KeyData;
