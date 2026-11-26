@@ -536,11 +536,19 @@ impl ReteCompiler {
     fn validate_conditions(conditions: &[CompilableCondition]) -> Result<(), CompileError> {
         // Inspect iteratively before entering any recursive validation or
         // compilation path. No network state has been installed at this point.
+        // Count every node first so a limit error reports the rule's actual
+        // demand, as `compile_rule` does.
         let mut pending: Vec<_> = conditions.iter().collect();
-        let mut count = 0;
+        let mut count = 0usize;
         while let Some(condition) = pending.pop() {
             count += 1;
-            Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
+            if let CompilableCondition::Ncc(children) = condition {
+                pending.extend(children);
+            }
+        }
+        Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
+        let mut pending: Vec<_> = conditions.iter().collect();
+        while let Some(condition) = pending.pop() {
             match condition {
                 CompilableCondition::Pattern(pattern) => {
                     Self::validate_pattern_tests(pattern)?;
@@ -1691,6 +1699,47 @@ mod tests {
 
         // Should share alpha memory
         assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
+    }
+
+    /// A condition-limit error reports the rule's real node count (nested NCC
+    /// nodes and their members included), not the count at which the scan
+    /// first crossed the limit.
+    #[test]
+    fn plan_conditions_limit_error_reports_actual_demand() {
+        let predicates = |n: u32| {
+            (0..n)
+                .map(|condition_index| CompilableCondition::Predicate { condition_index })
+                .collect::<Vec<_>>()
+        };
+        let compiler = ReteCompiler::new();
+        for (conditions, demand) in [
+            (predicates(64), None),
+            (predicates(65), Some(65)),
+            (predicates(100), Some(100)),
+            (vec![CompilableCondition::Ncc(predicates(99))], Some(100)),
+            (
+                vec![CompilableCondition::Ncc(vec![CompilableCondition::Ncc(
+                    predicates(70),
+                )])],
+                Some(72),
+            ),
+        ] {
+            let result = compiler.plan_conditions(Salience::DEFAULT, conditions);
+            match demand {
+                None => assert!(result.is_ok()),
+                Some(required) => assert!(
+                    matches!(
+                        result,
+                        Err(CompileError::ResourceLimit {
+                            resource: "rule conditions",
+                            required: actual,
+                            limit: MAX_RULE_CONDITIONS,
+                        }) if actual == required
+                    ),
+                    "expected demand {required}"
+                ),
+            }
+        }
     }
 
     #[test]

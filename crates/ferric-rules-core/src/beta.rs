@@ -553,6 +553,11 @@ impl BetaNetwork {
     ///
     /// The root node ID is provided by the caller to coordinate with alpha network
     /// node ID allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `root_node_id` is `NodeId(u32::MAX)`: beta node IDs are
+    /// allocated after the root, so the root must leave room for them.
     #[must_use]
     pub fn new(root_node_id: NodeId) -> Self {
         let mut nodes = HashMap::default();
@@ -566,7 +571,10 @@ impl BetaNetwork {
         );
 
         // Start beta's internal node counter after the root
-        let next_node_id = root_node_id.0 + 1;
+        let next_node_id = root_node_id
+            .0
+            .checked_add(1)
+            .expect("beta root node ID must leave room for beta node IDs");
 
         Self {
             nodes,
@@ -1752,6 +1760,24 @@ impl BetaNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_near_id_limit_allocates_after_root() {
+        let beta = BetaNetwork::new(NodeId(u32::MAX - 1));
+        assert!(beta.ensure_node_capacity(0).is_ok());
+        assert!(beta.ensure_node_capacity(1).is_err());
+
+        let mut beta = BetaNetwork::new(NodeId(u32::MAX - 2));
+        assert!(beta.ensure_node_capacity(1).is_ok());
+        assert!(beta.ensure_node_capacity(2).is_err());
+        assert_eq!(beta.allocate_node_id(), NodeId(u32::MAX - 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "beta root node ID must leave room")]
+    fn new_rejects_maximal_root_id() {
+        let _ = BetaNetwork::new(NodeId(u32::MAX));
+    }
 
     #[test]
     fn ncc_parent_ranks_backfill_late_attachment_and_track_reused_token_slots() {

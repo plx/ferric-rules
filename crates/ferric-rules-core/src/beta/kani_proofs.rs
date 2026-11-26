@@ -28,10 +28,10 @@
 //! Known gaps: nothing that calls `BetaNetwork::new` is covered. Its single
 //! node-map insertion of a `BetaNode` already exhausted CBMC's memory (7 GB
 //! limit): `validate_consistency` on the fresh network after 318 s, and a
-//! harness for the root-ID overflow defect (`BetaNetwork::new(NodeId(u32::MAX))`
-//! computes `root + 1` unchecked; reproduced by ordinary execution instead:
-//! debug builds panic, release builds allocate `NodeId(0)` next, and
-//! `validate_consistency` accepts that network) after 321 s. NCC parent ranks
+//! harness for the root-ID overflow defect after 321 s.
+//! (`BetaNetwork::new(NodeId(u32::MAX))` used to compute `root + 1` unchecked,
+//! so release builds allocated `NodeId(0)` next; it now panics with a
+//! documented message, covered by the unit tests in beta.rs.) NCC parent ranks
 //! are not covered either: a harness inserting a second member into a
 //! one-member ranked memory (two insertions into the rank table) did not
 //! finish within 20 minutes, and neither did a review variant that started

@@ -22,13 +22,13 @@
 //!   and so is `NotEqualSlot` when the first field is an atom (the
 //!   `NotEqualSlot` harness with a `Void`/multifield first field ran out of
 //!   memory); each of
-//!   the five offset tests other than `NotEqualSlotOffset` compares
-//!   `field OP other + offset` with a checked integer sum (overflow fails, as
-//!   documented). `NotEqualSlotOffset` is exactly the complement of
-//!   `EqualSlotOffset` (`not_equal_slot_offset_is_complement_of_equal`),
-//!   which contradicts the documented overflow rule:
-//!   `not_equal_slot_offset_overflow_fails_test` FAILS by design and
-//!   documents that defect.
+//!   the six offset tests compares `field OP other + offset` with a checked
+//!   integer sum (overflow fails, as documented). An undefined comparison
+//!   (non-numeric operand, NaN, overflowing sum) fails every offset test,
+//!   `NotEqualSlotOffset` included, so `NotEqualSlotOffset` is not the
+//!   complement of `EqualSlotOffset` and agrees with the join form
+//!   `NotEqualOffset` (`slot_offset_tests_match_reference_not_equal`,
+//!   `not_equal_slot_offset_overflow_fails_test`).
 //! * `OrderedFieldCount` is exact; entry-type discrimination is exact; `Any`
 //!   fails without its own field (its branch semantics are a known gap).
 //!
@@ -821,8 +821,8 @@ fn slot_offset_tests_match_reference_less_or_equal() {
 /// `NotEqualSlotOffset(y, offset)` passes iff `y + offset` is representable
 /// and differs from `x`.
 ///
-/// EXPECTED TO FAIL (defect): production evaluates `!EqualSlotOffset`, so an
-/// overflowing sum makes the test pass.
+/// (Production once evaluated `!EqualSlotOffset` here, so an overflowing sum
+/// passed; this harness found that defect.)
 #[kani::proof]
 #[kani::unwind(1)]
 fn not_equal_slot_offset_overflow_fails_test() {
@@ -840,25 +840,14 @@ fn not_equal_slot_offset_overflow_fails_test() {
     assert_eq!(actual, expected);
 }
 
-/// Exact characterization of production `NotEqualSlotOffset`: with both
-/// fields present it is the complement of `EqualSlotOffset`, so it passes for
-/// non-numeric operands, NaN and overflowing integer sums.
+/// `NotEqualSlotOffset`: `field != other + offset`, numerically; like the
+/// other five offset tests it fails for a non-numeric operand, NaN or an
+/// overflowing sum, so it is not the complement of `EqualSlotOffset`.
 #[kani::proof]
 #[kani::unwind(1)]
-fn not_equal_slot_offset_is_complement_of_equal() {
-    split_number_or_other(&|other: Value| {
-        let value = any_number_or_other();
-        let offset: i64 = kani::any();
-        let equal = oracle_offset_cmp(Cmp::Eq, &value, &other, offset);
-        let non_numeric = oracle_num(&value).is_none();
-        let actual = on_fields(
-            value,
-            other,
-            ConstantTestType::NotEqualSlotOffset(SECOND, offset),
-        );
-        assert_eq!(actual, !equal);
-        kani::cover!(actual && non_numeric, "passes on a non-numeric field");
-        kani::cover!(!actual, "offset-equal fields fail");
+fn slot_offset_tests_match_reference_not_equal() {
+    check_slot_offset_test(Cmp::Ne, |offset| {
+        ConstantTestType::NotEqualSlotOffset(SECOND, offset)
     });
 }
 

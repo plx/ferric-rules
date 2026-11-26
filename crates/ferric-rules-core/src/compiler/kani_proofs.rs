@@ -76,8 +76,8 @@
 //! These properties are proved without bounds on a model in
 //! verification/verus/core_compiler.rs: `validate_conditions` accepts exactly
 //! the specified condition trees of any shape and size (including the
-//! 64-node limit, reported as demand 65, and acceptance implies every NCC is
-//! non-empty), variable reuse is reported exactly, `maximum_new_beta_nodes`
+//! 64-node limit, reported with the rule's real node count, and acceptance
+//! implies every NCC is non-empty), variable reuse is reported exactly, `maximum_new_beta_nodes`
 //! is exact and bounds every installation, alpha paths and join nodes are
 //! shared exactly when their keys are equal and reused on recompilation, and
 //! the snapshot's alpha-cache and join-cache checks accept every compiled

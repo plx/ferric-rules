@@ -180,3 +180,44 @@ fn lhs_query_pattern_addresses_survive_reset_and_snapshot_continuation() {
         assert!(restored.action_diagnostics().is_empty());
     }
 }
+
+/// `neq`/`<>` against a variable plus an integer offset fail on an undefined
+/// comparison (an overflowing sum or a non-numeric operand) both when the two
+/// variables are bound in one pattern (lowered to an alpha slot test) and when
+/// they are bound in different patterns (lowered to a join test).
+#[test]
+fn offset_inequality_fails_undefined_comparisons_in_alpha_and_join_forms() {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str(
+            r#"
+        (deffacts seed
+            (alpha-overflow 9223372036854775807 0)
+            (alpha-symbol abc 5)
+            (alpha-defined 1 5)
+            (left-overflow 9223372036854775807) (right-overflow 0)
+            (left-symbol abc) (right-symbol 5)
+            (left-defined 1) (right-defined 5))
+        (defrule alpha-overflow (alpha-overflow ?x ?y&:(neq ?y (+ ?x 1))) => (printout t "a1 "))
+        (defrule alpha-symbol (alpha-symbol ?x ?y&:(<> ?y (+ ?x 1))) => (printout t "a2 "))
+        (defrule alpha-defined (alpha-defined ?x ?y&:(neq ?y (+ ?x 1))) => (printout t "a3 "))
+        (defrule join-overflow (left-overflow ?x) (right-overflow ?y&:(neq ?y (+ ?x 1)))
+            => (printout t "j1 "))
+        (defrule join-symbol (left-symbol ?x) (right-symbol ?y&:(<> ?y (+ ?x 1)))
+            => (printout t "j2 "))
+        (defrule join-defined (left-defined ?x) (right-defined ?y&:(neq ?y (+ ?x 1)))
+            => (printout t "j3 "))
+    "#,
+        )
+        .unwrap();
+    engine.reset().unwrap();
+    engine.run(RunLimit::Unlimited).unwrap();
+    let mut fired: Vec<_> = engine
+        .get_output("t")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    fired.sort_unstable();
+    assert_eq!(fired, ["a3", "j3"]);
+}

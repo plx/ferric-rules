@@ -99,9 +99,22 @@ impl Ord for FerricString {
     }
 }
 
+// Hashes exactly like the borrowed `str`, as the `Borrow<str>` contract
+// requires (`x.hash() == x.borrow().hash()`), so maps and sets keyed by
+// `FerricString` can be queried with a `&str`. The hash input depends only on
+// the bytes, so it is consistent with byte equality across both variants.
 impl std::hash::Hash for FerricString {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_bytes().hash(state);
+        match self {
+            Self::Utf8(s) => s.hash(state),
+            Self::Ascii(bytes) => match std::str::from_utf8(bytes) {
+                Ok(s) => s.hash(state),
+                // Only a hand-built `Ascii` value that breaks the ASCII
+                // invariant gets here (it has no `&str` to borrow); hash its
+                // bytes instead of panicking like `as_str`.
+                Err(_) => bytes.hash(state),
+            },
+        }
     }
 }
 
@@ -126,6 +139,23 @@ impl std::borrow::Borrow<str> for FerricString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_set_lookup_by_str_finds_both_encodings() {
+        use std::collections::HashSet;
+
+        let keys: Vec<String> = (0..100).map(|i| format!("k{i}")).collect();
+        for encoding in [StringEncoding::Ascii, StringEncoding::Utf8] {
+            let set: HashSet<FerricString> = keys
+                .iter()
+                .map(|key| FerricString::new(key, encoding).unwrap())
+                .collect();
+            for key in &keys {
+                assert!(set.contains(key.as_str()), "{key} missing for {encoding:?}");
+            }
+            assert!(!set.contains("absent"));
+        }
+    }
 
     #[test]
     fn ascii_mode_accepts_ascii() {

@@ -2,7 +2,10 @@
 //!
 //! Validates pattern restrictions at compile time according to Section 7.7
 //! of the CLIPS specification. Reports stable error codes `E0001`–`E0005`
-//! with source spans for diagnostics.
+//! with source spans for diagnostics. `E0004` is reserved: no validator
+//! currently produces it, because the runtime loader reports an unbound
+//! variable in a `forall` then-clause through its general unbound-variable
+//! diagnostic instead.
 
 use std::fmt;
 
@@ -97,7 +100,10 @@ pub enum PatternViolation {
     ForallConditionNotSinglePattern,
     /// E0003: Nested forall
     NestedForall,
-    /// E0004: Unbound variable in forall <then> clause
+    /// E0004: Unbound variable in forall <then> clause.
+    ///
+    /// Reserved: not produced today. The runtime loader reports such a
+    /// variable with its general unbound-variable diagnostic.
     ForallUnboundVariable {
         /// Name of the unbound variable
         var_name: String,

@@ -7,8 +7,10 @@
 //!   `ABSENT` or the encoding of exactly one timestamp, and the encoding is
 //!   strictly monotone and above `ABSENT`.
 //! - `activation_seq_next_is_successor_below_max`; and
-//!   `activation_seq_next_overflows_at_max` (`should_panic`), which records
-//!   that `ActivationSeq::next` itself is unguarded at `u64::MAX`.
+//!   `activation_seq_next_overflows_at_max` (`should_panic`):
+//!   `ActivationSeq::next` panics at `u64::MAX` instead of wrapping. (It
+//!   used to be an unchecked `+ 1` that wrapped to zero in release builds;
+//!   this harness found that.)
 //! - `build_key_{depth,breadth}_matches_spec` and
 //!   `build_key_{lex,mea}_matches_spec_len_{0..4}`: for two arbitrary
 //!   activations, `build_key(a).cmp(&build_key(b))` equals `spec_fires_first`,
@@ -290,13 +292,16 @@ fn activation_seq_next_is_successor_below_max() {
     kani::cover!(x == u64::MAX - 1);
 }
 
-/// `ActivationSeq::next` is unguarded at `u64::MAX` (overflow panic with
-/// overflow checks, wrap to zero without them). `Agenda::add` never reaches it:
-/// see `add_never_overflows_sequence_counter`.
+/// `ActivationSeq::next` panics at `u64::MAX` (its documented
+/// `checked_add(..).expect(..)`) rather than wrapping to zero, which would make
+/// the newest activation look oldest. `Agenda::add` never reaches it: see
+/// `add_never_overflows_sequence_counter`. The cover after the call must be
+/// reported UNREACHABLE (`should_panic` alone only shows that some check fails).
 #[kani::proof]
 #[kani::should_panic]
 fn activation_seq_next_overflows_at_max() {
-    let _ = ActivationSeq::new(u64::MAX).next();
+    let next = ActivationSeq::new(u64::MAX).next();
+    kani::cover!(next.get() == 0, "wrapped to zero");
 }
 
 // ---------------------------------------------------------------------------

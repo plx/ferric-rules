@@ -10,15 +10,14 @@
 //! * `validate_conditions` (compiler.rs:536) — iterative limit scan and
 //!   structural diagnostics, `theorem_validate_conditions_exact` and the
 //!   postconditions of `validate_conditions` / `validate_conditions_accepts_exactly`:
-//!   - the worklist scan counts every condition node exactly once, nested NCC
-//!     nodes and their contents included (`sizes`). A `ResourceLimit` is
-//!     reported only for rules of more than 64 nodes, always as
-//!     `{ required: 65, limit: 64 }` (never the rule's real size), and every
-//!     rule of more than 64 nodes whose pattern test checks all pass is
-//!     rejected that way. (With more than 64 nodes and a failing pattern test
-//!     check, which of the two errors is reported depends on the worklist
-//!     order; the model does not characterize that case.) At most 64 nodes
-//!     and a failing check always give the pattern-test error;
+//!   - the first worklist pass counts every condition node exactly once,
+//!     nested NCC nodes and their contents included (`sizes`). A
+//!     `ResourceLimit` is reported exactly for rules of more than 64 nodes,
+//!     as `{ required: <the rule's node count>, limit: 64 }`, before any
+//!     pattern test check. (This model found a defect: the limit used to be
+//!     checked inside the scan, so every oversized rule reported
+//!     `required: 65`.) At most 64 nodes and a failing pattern test check
+//!     always give the pattern-test error;
 //!   - it returns `Ok` exactly when the rule has at most 64 nodes, every
 //!     pattern passes its test checks, and the declarative structure
 //!     predicate holds: every top-level NCC is non-empty; inside any NCC,
@@ -595,17 +594,23 @@ fn finish_validation(errors: Vec<ViolationM>) -> (r: Result<(), CompileErrorM>)
 }
 
 /// Models `ReteCompiler::validate_conditions` (compiler.rs:536).
+///
+/// The precondition only says the node count fits in `usize`: every node is
+/// a distinct heap object, so it always holds for in-memory rules.
 fn validate_conditions(conditions: &Vec<CondM>) -> (r: Result<(), CompileErrorM>)
+    requires
+        sizes(conditions@) <= usize::MAX,
     ensures
         r matches Ok(()) ==> sizes(conditions@) <= 64 && all_tests_ok(conditions@) && top_errors(
             conditions@,
         ).len() == 0,
-        r matches Err(CompileErrorM::ResourceLimit { required, limit }) ==> required == 65 && limit
-            == 64 && sizes(conditions@) > 64,
-        all_tests_ok(conditions@) && sizes(conditions@) > 64 ==> r matches Err(
-            CompileErrorM::ResourceLimit { .. },
+        (r matches Err(CompileErrorM::ResourceLimit { .. })) <==> sizes(conditions@) > 64,
+        r matches Err(CompileErrorM::ResourceLimit { required, limit }) ==> required == sizes(
+            conditions@,
+        ) && limit == 64,
+        r matches Err(CompileErrorM::PatternTests) ==> sizes(conditions@) <= 64 && !all_tests_ok(
+            conditions@,
         ),
-        r matches Err(CompileErrorM::PatternTests) ==> !all_tests_ok(conditions@),
         sizes(conditions@) <= 64 && !all_tests_ok(conditions@) ==> r matches Err(
             CompileErrorM::PatternTests,
         ),
@@ -632,12 +637,12 @@ fn validate_conditions(conditions: &Vec<CondM>) -> (r: Result<(), CompileErrorM>
     proof {
         assert(conditions@.take(conditions.len() as int) =~= conditions@);
     }
+    // Pass 1: count every node (nested NCC nodes and their members).
     let mut count: usize = 0;
     while pending.len() > 0
         invariant
-            count <= MAX_RULE_CONDITIONS,
             count + sizes(dv(pending@)) == sizes(conditions@),
-            all_tests_ok(conditions@) == all_tests_ok(dv(pending@)),
+            sizes(conditions@) <= usize::MAX,
         decreases sizes(dv(pending@)),
     {
         let ghost before = dv(pending@);
@@ -646,12 +651,67 @@ fn validate_conditions(conditions: &Vec<CondM>) -> (r: Result<(), CompileErrorM>
             assert(before.drop_last() =~= dv(pending@));
             assert(before.last() == *condition);
             assert(sizes(before) == sizes(dv(pending@)) + size(*condition));
-            assert(all_tests_ok(before) == (all_tests_ok(dv(pending@)) && tests_ok(*condition)));
         }
         count += 1;
-        // `check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?`
-        if count > MAX_RULE_CONDITIONS {
-            return Err(CompileErrorM::ResourceLimit { required: count, limit: MAX_RULE_CONDITIONS });
+        if let CondM::Ncc(children) = condition {
+            let ghost rest = dv(pending@);
+            let mut j: usize = 0;
+            while j < children.len()
+                invariant
+                    j <= children.len(),
+                    dv(pending@) == rest + children@.take(j as int),
+                decreases children.len() - j,
+            {
+                pending.push(&children[j]);
+                j += 1;
+                proof {
+                    assert(rest + children@.take(j as int) =~= (rest + children@.take(j - 1)).push(
+                        children@[j - 1],
+                    ));
+                }
+            }
+            proof {
+                assert(children@.take(children.len() as int) =~= children@);
+                lemma_append(rest, children@);
+            }
+        }
+    }
+    // `check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?`
+    if count > MAX_RULE_CONDITIONS {
+        return Err(CompileErrorM::ResourceLimit { required: count, limit: MAX_RULE_CONDITIONS });
+    }
+    // Pass 2: the pattern test checks, over a fresh worklist.
+    let mut pending: Vec<&CondM> = Vec::new();
+    let mut i: usize = 0;
+    while i < conditions.len()
+        invariant
+            i <= conditions.len(),
+            dv(pending@) == conditions@.take(i as int),
+        decreases conditions.len() - i,
+    {
+        pending.push(&conditions[i]);
+        i += 1;
+        proof {
+            assert(conditions@.take(i as int) =~= conditions@.take(i - 1).push(conditions@[i - 1]));
+        }
+    }
+    proof {
+        assert(conditions@.take(conditions.len() as int) =~= conditions@);
+    }
+    while pending.len() > 0
+        invariant
+            sizes(conditions@) <= 64,
+            all_tests_ok(conditions@) == all_tests_ok(dv(pending@)),
+        decreases sizes(dv(pending@)),
+    {
+
+        let ghost before = dv(pending@);
+        let condition = pending.pop().unwrap();
+        proof {
+            assert(before.drop_last() =~= dv(pending@));
+            assert(before.last() == *condition);
+            assert(sizes(before) == sizes(dv(pending@)) + size(*condition));
+            assert(all_tests_ok(before) == (all_tests_ok(dv(pending@)) && tests_ok(*condition)));
         }
         match condition {
             CondM::Pattern(pattern) => {
@@ -918,6 +978,8 @@ proof fn theorem_validate_conditions_exact(conditions: Seq<CondM>, accepted: boo
 
 /// Exec-level wrapper: the result of the modeled `validate_conditions`.
 fn validate_conditions_accepts_exactly(conditions: &Vec<CondM>) -> (r: Result<(), CompileErrorM>)
+    requires
+        sizes(conditions@) <= usize::MAX,
     ensures
         r is Ok == (sizes(conditions@) <= 64 && all_tests_ok(conditions@) && forall|i: int|
             0 <= i < conditions@.len() ==> top_member_ok(#[trigger] conditions@[i])),
@@ -1208,6 +1270,8 @@ fn compile_conditions_nodes(beta: &mut BetaM, conditions: &Vec<CondM>, hits: &Ve
 /// the modeled installation never reaches the node-ID `expect` panic,
 /// whatever the join cache hits are, and allocates at most the demand.
 fn compile_conditions(beta: &mut BetaM, conditions: &Vec<CondM>, hits: &Vec<bool>) -> (installed: bool)
+    requires
+        sizes(conditions@) <= usize::MAX,
     ensures
         installed ==> final(beta).next_node_id as int - old(beta).next_node_id as int <= 1 + sizes(
             conditions@,

@@ -895,10 +895,13 @@ fn evaluate_field_test_inner<'v>(
                 })
             })
         }
+        // Like the join form `JoinTestType::NotEqualOffset`, this is not the
+        // complement of `EqualSlotOffset`: an undefined comparison (a
+        // non-numeric operand, NaN, or an integer sum outside `i64`) fails.
         (ConstantTestType::NotEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(field, *other_slot, |other_value| {
-                !compare_offset(slot_value, other_value, *offset, |ord| {
-                    matches!(ord, Ordering::Equal)
+                compare_offset(slot_value, other_value, *offset, |ord| {
+                    !matches!(ord, Ordering::Equal)
                 })
             })
         }
@@ -1685,6 +1688,35 @@ mod tests {
         };
 
         assert!(evaluate_test(&fact, &test));
+    }
+
+    /// `NotEqualSlotOffset` passes only for a defined numeric comparison, like
+    /// the join form `NotEqualOffset`: an overflowing sum, a non-numeric
+    /// operand or NaN fails the test instead of counting as "not equal".
+    #[test]
+    fn constant_test_not_equal_slot_offset_fails_undefined_comparisons() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("pair", StringEncoding::Ascii).unwrap();
+        let word = table.intern_symbol("abc", StringEncoding::Ascii).unwrap();
+        let passes = |first: Value, second: Value| {
+            let fact = Fact::Ordered(OrderedFact {
+                relation: rel,
+                fields: smallvec![first, second],
+            });
+            let test = ConstantTest {
+                slot: SlotIndex::Ordered(1),
+                test_type: ConstantTestType::NotEqualSlotOffset(SlotIndex::Ordered(0), 1),
+            };
+            evaluate_test(&fact, &test)
+        };
+
+        assert!(passes(Value::Integer(7), Value::Integer(9)));
+        assert!(!passes(Value::Integer(7), Value::Integer(8)));
+        assert!(passes(Value::Integer(7), Value::Float(8.5)));
+        assert!(!passes(Value::Integer(i64::MAX), Value::Integer(0)));
+        assert!(!passes(Value::Symbol(word), Value::Integer(5)));
+        assert!(!passes(Value::Integer(5), Value::Symbol(word)));
+        assert!(!passes(Value::Integer(5), Value::Float(f64::NAN)));
     }
 
     #[test]

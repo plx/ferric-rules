@@ -33,10 +33,11 @@
 //!   even when numerically equal; INSTANCE-NAME never equals SYMBOL); a
 //!   STRING key never equals an INTEGER or SYMBOL key.
 //! - `atom_key_hash_consistent_with_eq`, `..._strings`: for every
-//!   non-STRING shape and for two-byte raw strings, equal `AtomKey`s make
+//!   non-STRING shape, and for any two-byte string content in the raw
+//!   `Ascii` and the `Utf8` representations, equal `AtomKey`s make
 //!   identical `Hasher` call sequences, hence equal hashes under any
-//!   deterministic hasher (string hashing across representations:
-//!   string/kani_proofs.rs `hash_input_is_exactly_byte_content`).
+//!   deterministic hasher (more string lengths and pairs:
+//!   string/kani_proofs.rs `hash_input_is_exactly_byte_content_*`).
 //! - `atom_key_roundtrip_scalars`, `..._fact_addresses`,
 //!   `..._empty_strings`, `..._one_byte_strings`, `..._two_byte_strings`:
 //!   `from_value` succeeds on every atom with the matching variant
@@ -256,15 +257,20 @@ fn spec_type_name(tag: u8) -> &'static str {
     }
 }
 
-/// A `Hasher` that records every call made to it, tagged by method, so two
-/// values with equal recordings produce equal hashes under every
-/// deterministic `Hasher` that implements the stable `Hasher` methods.
+/// A `Hasher` that records every call made to it, so two values with equal
+/// recordings produce equal hashes under every deterministic `Hasher` that
+/// implements the stable `Hasher` methods. Each call becomes one `u128`
+/// entry: the method tag in the top byte and the argument below it. A
+/// `write` entry also carries the slice length and its first eight bytes;
+/// any further bytes follow, eight per entry. The length fixes how many
+/// entries follow, so the encoding is injective, and short logs keep the
+/// comparison loop (and so the harnesses' unwinding bounds) small.
 #[derive(Default, Debug)]
 struct RecordingHasher {
-    calls: Vec<u64>,
+    calls: Vec<u128>,
 }
 
-/// Element-wise comparison of the logs (the derived `Vec<u64>` equality uses
+/// Element-wise comparison of the logs (the derived `Vec` equality uses
 /// `memcmp`, whose byte loop needs a much larger unwinding bound).
 impl PartialEq for RecordingHasher {
     fn eq(&self, other: &Self) -> bool {
@@ -283,9 +289,9 @@ impl PartialEq for RecordingHasher {
 }
 
 impl RecordingHasher {
-    fn record(&mut self, tag: u64, value: u64) {
-        self.calls.push(tag);
-        self.calls.push(value);
+    fn record(&mut self, tag: u8, value: u64) {
+        self.calls
+            .push((u128::from(tag) << 120) | u128::from(value));
     }
 }
 
@@ -295,10 +301,18 @@ impl Hasher for RecordingHasher {
         0
     }
     fn write(&mut self, bytes: &[u8]) {
-        self.record(0, bytes.len() as u64);
+        let mut entry = (bytes.len() as u128) << 64;
+        let mut shift = 0;
         for &b in bytes {
-            self.calls.push(u64::from(b));
+            if shift == 64 {
+                self.calls.push(entry);
+                entry = 0xff << 120;
+                shift = 0;
+            }
+            entry |= u128::from(b) << shift;
+            shift += 8;
         }
+        self.calls.push(entry);
     }
     fn write_u8(&mut self, i: u8) {
         self.record(1, u64::from(i));
@@ -753,7 +767,7 @@ fn check_hash_pair(s: (u8, usize, bool)) -> (AtomDesc, AtomDesc, bool) {
 /// `a == b => hash(a) == hash(b)`), including fact addresses that differ
 /// only in their public index. Keys of different kinds are never equal
 /// (`structural_eq_distinguishes_kinds`); equal strings in the two
-/// representations hash identically by `hash_input_is_exactly_byte_content`
+/// representations hash identically by `hash_input_is_exactly_byte_content_*`
 /// in string/kani_proofs.rs.
 #[kani::proof]
 #[kani::unwind(12)]
@@ -766,14 +780,32 @@ fn atom_key_hash_consistent_with_eq() {
     }; 0, 1, 2, 3, 4, 5, 12, 13, 14);
 }
 
-/// As `atom_key_hash_consistent_with_eq`, for two-byte strings in the raw
-/// `Ascii` representation (arbitrary bytes).
+/// As `atom_key_hash_consistent_with_eq`, for STRING keys across the two
+/// representations: any two-byte content as the raw `Ascii` variant
+/// (arbitrary bytes) and the same content as the `Utf8` variant when it is
+/// valid UTF-8 (otherwise a second raw `Ascii` copy) give equal keys with
+/// identical hash input. (Hashing validates `Ascii` content as UTF-8 so that
+/// it matches `str`; two independent symbolic strings exceeded the solver's
+/// memory, and unequal pairs never reach the assertion anyway.)
 #[kani::proof]
-#[kani::unwind(12)]
+#[kani::unwind(4)]
 fn atom_key_hash_consistent_with_eq_strings() {
-    let (da, _, equal) = check_hash_pair(shape(10));
-    kani::cover!(equal && da.bytes[1] >= 0x80);
-    kani::cover!(!equal);
+    let bytes: [u8; 2] = kani::any();
+    let valid = std::str::from_utf8(&bytes).is_ok();
+    let raw = Value::String(FerricString::Ascii(bytes.as_slice().into()));
+    let other = match std::str::from_utf8(&bytes) {
+        Ok(text) => Value::String(FerricString::Utf8(text.into())),
+        Err(_) => Value::String(FerricString::Ascii(bytes.as_slice().into())),
+    };
+    let ka = AtomKey::from_value(&raw).unwrap();
+    let kb = AtomKey::from_value(&other).unwrap();
+    leak(raw);
+    leak(other);
+    assert!(ka == kb);
+    assert!(hash_record(&ka) == hash_record(&kb));
+    kani::cover!(valid && bytes[0] >= 0x80, "two-byte UTF-8 character");
+    kani::cover!(valid && bytes[0] < 0x80, "ASCII content");
+    kani::cover!(!valid, "invalid UTF-8 in the raw Ascii variant");
 }
 
 /// Float and integer handling exactly as documented: float identity is the

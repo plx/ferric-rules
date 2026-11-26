@@ -42,9 +42,16 @@ impl ActivationSeq {
         self.0
     }
 
+    /// # Panics
+    /// Panics when no subsequent sequence number is representable. The agenda
+    /// rebases its sequence numbers before that can happen.
     #[must_use]
     pub fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("activation sequence capacity exhausted"),
+        )
     }
 }
 

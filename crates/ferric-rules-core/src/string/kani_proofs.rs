@@ -18,10 +18,12 @@
 //!   `NonAsciiString(input)` [every `&str` of <= 3 bytes in `Ascii` mode,
 //!   <= 4 bytes in the other two modes]. `as_str` etc. on the `Ascii`
 //!   variant: `ascii_variant_as_str_is_exact_on_utf8_content`.
-//! - `hash_input_is_exactly_byte_content`: the exact sequence of `Hasher`
-//!   calls made by `hash` is equal iff the byte contents are equal, so
-//!   `a == b => hash(a) == hash(b)` for every deterministic hasher, across
-//!   representations [pairs, length <= 3, either representation].
+//! - `hash_input_is_exactly_byte_content_{A}_{B}`: the exact sequence of
+//!   `Hasher` calls made by `hash` is equal iff the byte contents are equal,
+//!   so `a == b => hash(a) == hash(b)` for every deterministic hasher, across
+//!   representations [pairs of every length combination <= 2, either
+//!   representation; lengths are concrete per harness because `hash`
+//!   validates `Ascii` content as UTF-8].
 //! - `cmp_is_a_total_order`: reflexive, antisymmetric, transitive [triples,
 //!   length <= 2, either representation].
 //! - `utf8_byte_order_is_scalar_value_order`: the doc claim that byte order
@@ -37,11 +39,13 @@
 //!   [content of exactly 2 bytes]. The `should_panic` harness ends with a
 //!   cover after the call that must be reported UNREACHABLE: Kani's
 //!   `should_panic` alone only shows that *some* input panics.
-//! - DEFECT, expected to FAIL: `borrow_str_hash_agrees_with_owned`. The
-//!   `Borrow<str>` contract requires `hash(x) == hash(x.borrow())`, but
-//!   `FerricString` hashes as `[u8]` (`write_usize(len)`, then
-//!   `write(bytes)`) while `str` hashes via `write_str` (`write(bytes)`, then
-//!   `write_u8(0xff)`). Concrete failure: `FerricString::new("a", Utf8)`.
+//! - `borrow_str_hash_agrees_with_owned_len{0..3}`: the `Hash` part of the
+//!   `Borrow<str>` contract, `hash(x) == hash(x.borrow())`, holds for both
+//!   variants [values from `new`, ASCII content of each length 0..=3]. This
+//!   harness found a defect: `FerricString` used to hash as `[u8]`
+//!   (`write_usize(len)`, then `write(bytes)`) while `str` hashes via
+//!   `write_str` (`write(bytes)`, then `write_u8(0xff)`), so a lookup by
+//!   `&str` missed present keys.
 //!
 //! Hashing is observed with `RecordingHasher`, which logs every stable
 //! `Hasher` method call with its argument; equal logs imply equal hashes for
@@ -136,15 +140,20 @@ fn any_ferric_string(bytes: &[u8]) -> FerricString {
     }
 }
 
-/// A `Hasher` that records every call made to it, tagged by method, so two
-/// values with equal recordings produce equal hashes under every
-/// deterministic `Hasher` that implements the stable `Hasher` methods.
+/// A `Hasher` that records every call made to it, so two values with equal
+/// recordings produce equal hashes under every deterministic `Hasher` that
+/// implements the stable `Hasher` methods. Each call becomes one `u128`
+/// entry: the method tag in the top byte and the argument below it. A
+/// `write` entry also carries the slice length and its first eight bytes;
+/// any further bytes follow, eight per entry. The length fixes how many
+/// entries follow, so the encoding is injective, and short logs keep the
+/// comparison loop (and so the harnesses' unwinding bounds) small.
 #[derive(Default, Debug)]
 struct RecordingHasher {
-    calls: Vec<u64>,
+    calls: Vec<u128>,
 }
 
-/// Element-wise comparison of the logs (the derived `Vec<u64>` equality uses
+/// Element-wise comparison of the logs (the derived `Vec` equality uses
 /// `memcmp`, whose byte loop needs a much larger unwinding bound).
 impl PartialEq for RecordingHasher {
     fn eq(&self, other: &Self) -> bool {
@@ -163,21 +172,30 @@ impl PartialEq for RecordingHasher {
 }
 
 impl RecordingHasher {
-    fn record(&mut self, tag: u64, value: u64) {
-        self.calls.push(tag);
-        self.calls.push(value);
+    fn record(&mut self, tag: u8, value: u64) {
+        self.calls
+            .push((u128::from(tag) << 120) | u128::from(value));
     }
 }
 
+#[allow(clippy::cast_sign_loss)]
 impl Hasher for RecordingHasher {
     fn finish(&self) -> u64 {
         0
     }
     fn write(&mut self, bytes: &[u8]) {
-        self.record(0, bytes.len() as u64);
+        let mut entry = (bytes.len() as u128) << 64;
+        let mut shift = 0;
         for &b in bytes {
-            self.calls.push(u64::from(b));
+            if shift == 64 {
+                self.calls.push(entry);
+                entry = 0xff << 120;
+                shift = 0;
+            }
+            entry |= u128::from(b) << shift;
+            shift += 8;
         }
+        self.calls.push(entry);
     }
     fn write_u8(&mut self, i: u8) {
         self.record(1, u64::from(i));
@@ -346,13 +364,16 @@ fn check_content(value: &FerricString, s: &str) {
 /// (independent of representation) and is injective on byte content:
 /// equal strings feed identical call sequences to any `Hasher` and unequal
 /// strings feed different ones. In particular `a == b => hash(a) == hash(b)`.
-#[kani::proof]
-#[kani::unwind(8)]
-fn hash_input_is_exactly_byte_content() {
-    let (abuf, alen) = any_bytes::<MAX>();
-    let (bbuf, blen) = any_bytes::<MAX>();
-    let fa = any_ferric_string(&abuf[..alen]);
-    let fb = any_ferric_string(&bbuf[..blen]);
+///
+/// `hash` validates the UTF-8 of `Ascii` content (to hash exactly like the
+/// borrowed `str`); with symbolic lengths that validation exceeded the
+/// solver's memory, so each harness below fixes the two lengths. Together
+/// they cover every pair of lengths <= 2 (the property is symmetric).
+fn check_hash_input<const A: usize, const B: usize>() {
+    let abuf: [u8; A] = kani::any();
+    let bbuf: [u8; B] = kani::any();
+    let fa = any_ferric_string(&abuf);
+    let fb = any_ferric_string(&bbuf);
 
     let same_record = hash_record(&fa) == hash_record(&fb);
     assert_eq!(fa == fb, same_record);
@@ -360,8 +381,28 @@ fn hash_input_is_exactly_byte_content() {
     kani::cover!(
         same_record && matches!(fa, FerricString::Ascii(_)) && matches!(fb, FerricString::Utf8(_))
     );
-    kani::cover!(!same_record && alen == blen && alen > 0);
-    kani::cover!(same_record && alen == MAX);
+    if A == B && A > 0 {
+        kani::cover!(!same_record);
+    }
+}
+
+macro_rules! hash_input_harnesses {
+    ($($name:ident: $a:literal, $b:literal;)*) => {$(
+        #[kani::proof]
+        #[kani::unwind(4)]
+        fn $name() {
+            check_hash_input::<$a, $b>();
+        }
+    )*};
+}
+
+hash_input_harnesses! {
+    hash_input_is_exactly_byte_content_0_0: 0, 0;
+    hash_input_is_exactly_byte_content_0_1: 0, 1;
+    hash_input_is_exactly_byte_content_0_2: 0, 2;
+    hash_input_is_exactly_byte_content_1_1: 1, 1;
+    hash_input_is_exactly_byte_content_1_2: 1, 2;
+    hash_input_is_exactly_byte_content_2_2: 2, 2;
 }
 
 /// `Ord` on `FerricString` is a total order: reflexive, antisymmetric
@@ -445,19 +486,43 @@ fn borrow_str_eq_agrees_with_owned() {
     kani::cover!(!owned_eq && abuf[0] == bbuf[0]);
 }
 
-/// DEFECT (expected to FAIL): the `Borrow<str>` contract also requires
-/// `hash(x) == hash(x.borrow())`. `FerricString` hashes its content as a
-/// byte slice (`[u8]::hash`: a length prefix, then the bytes) while `str`
-/// hashes via `Hasher::write_str` (the bytes, then a `0xff` terminator), so
-/// the call sequences differ; for "a": `[write_usize(1), write([0x61])]`
-/// versus `[write([0x61]), write_u8(0xff)]`. Consequence: a
-/// `HashSet<FerricString>`/`HashMap<FerricString, _>` lookup by `&str`
-/// (which `Borrow<str>` advertises) misses present keys.
-#[kani::proof]
-fn borrow_str_hash_agrees_with_owned() {
-    let owned = FerricString::new("a", StringEncoding::Utf8).unwrap();
+/// The `Borrow<str>` contract also requires `hash(x) == hash(x.borrow())`,
+/// so that a `HashSet<FerricString>`/`HashMap<FerricString, _>` can be
+/// queried with a `&str`. Checked for both variants, built by `new` from any
+/// ASCII content of a fixed length (one harness per length 0..=3; see
+/// `check_hash_input` for why lengths are concrete). The hasher records the
+/// full call sequence, so equal records mean equal hashes for every hasher.
+fn check_borrow_hash<const N: usize>() {
+    let bytes: [u8; N] = kani::any();
+    kani::assume(bytes.is_ascii());
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let encoding = if kani::any() {
+        StringEncoding::Ascii
+    } else {
+        StringEncoding::Utf8
+    };
+    let owned = FerricString::new(text, encoding).unwrap();
     let borrowed: &str = Borrow::borrow(&owned);
     assert!(hash_record(&owned) == hash_record(borrowed));
+    kani::cover!(matches!(owned, FerricString::Ascii(_)));
+    kani::cover!(matches!(owned, FerricString::Utf8(_)));
+}
+
+macro_rules! borrow_hash_harnesses {
+    ($($name:ident: $n:literal;)*) => {$(
+        #[kani::proof]
+        #[kani::unwind(4)]
+        fn $name() {
+            check_borrow_hash::<$n>();
+        }
+    )*};
+}
+
+borrow_hash_harnesses! {
+    borrow_str_hash_agrees_with_owned_len0: 0;
+    borrow_str_hash_agrees_with_owned_len1: 1;
+    borrow_str_hash_agrees_with_owned_len2: 2;
+    borrow_str_hash_agrees_with_owned_len3: 3;
 }
 
 /// `as_str` on the public `Ascii` variant does not depend on the

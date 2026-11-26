@@ -3067,3 +3067,6 @@ pub unsafe extern "C" fn ferric_bytes_free(data: *mut u8, len: usize) {
     let slice_ptr = std::ptr::slice_from_raw_parts_mut(data, len);
     drop(Box::from_raw(slice_ptr));
 }
+
+#[cfg(kani)]
+mod kani_proofs;
