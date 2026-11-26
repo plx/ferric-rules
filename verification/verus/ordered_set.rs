@@ -37,6 +37,8 @@
 //!     filters the key out, clear empties).
 //!   - `decode` (snapshot `Deserialize`): accepts exactly the duplicate-free
 //!     sequences, and then the view equals the decoded sequence.
+//!     `snapshot_round_trip`: decoding what `Serialize` emits always
+//!     succeeds and reproduces the view.
 //! * Panic freedom of the modeled control flow: every production `unwrap()`
 //!   (crates/ferric-rules-core/src/ordered_set.rs:49, 50, 84, 113, 118) is applied to
 //!   `Some`; the `?` early returns of `next`/`next_back` (lines 174, 185, 188, 203, 212,
@@ -73,7 +75,9 @@
 //!   and capacity unchanged).
 //! * `entries.entry(key)` + `VacantEntry::insert` is `contains_key` followed
 //!   by `insert`, with one capacity change (the `reserve(1)` inside `entry`
-//!   and the insertion).
+//!   and the insertion). On a present key the model changes no capacity;
+//!   this matches hashbrown, whose `rustc_entry` calls `reserve(1)` only on
+//!   the vacant path.
 //! * `get_key_value(&k)` returns the stored key, which for `u64` is `k`; the
 //!   model returns the probe key and only reads the links.
 //! * `usize::from(bool)` is written `if b { 1 } else { 0 }`; the iterator
@@ -93,8 +97,11 @@
 //! * This is a hand transcription: fidelity to the production source rests
 //!   on line-by-line comparison (each function cites its counterpart), not on
 //!   compiling the production code. `ordered_set/kani_refinement.rs` checks
-//!   the production code itself against the same specification on bounded
-//!   traces.
+//!   the production code itself against the same specification, but only
+//!   partly: every header-only state and non-promoting operation (arbitrary
+//!   distinct `u8` keys), promotion, and single lookups/removals/`clear` on
+//!   the promoted `[10, 20, 30]`. It checks no insertion into an allocated
+//!   table, no multi-operation table-mode trace, and no decoding.
 //! * Hashbrown internals (probing, tombstones, rehashing, SIMD groups) are
 //!   abstracted by vstd's map specification and the capacity contract above.
 //! * Only `K = u64`; allocation retention ("promoted sets retain their
@@ -1534,28 +1541,29 @@ pub fn run_trace(ops: &Vec<Op>, caps: &Vec<Caps>) -> (out: (OrderedSet, Vec<bool
 // ---------------------------------------------------------------------------
 /// Models `Deserialize for OrderedSet` (crates/ferric-rules-core/src/ordered_set.rs:240
 /// fn deserialize) after the `Vec<K>` has been decoded: `None` stands for the "duplicate
-/// ordered membership" error. `caps[i]` are the free capacity inputs for the `i`-th
-/// `insert`. Decoding accepts exactly the duplicate-free sequences and then reproduces
-/// them as the view.
+/// ordered membership" error. `caps[0]` is the free capacity input of `Self::default()`
+/// and `caps[i + 1]` those of the `i`-th `insert`, so the theorem holds for every
+/// capacity behavior. Decoding accepts exactly the duplicate-free sequences and then
+/// reproduces them as the view.
 pub fn decode(values: &Vec<u64>, caps: &Vec<Caps>) -> (r: Option<OrderedSet>)
     requires
-        caps.len() == values.len(),
+        caps.len() == values.len() + 1,
     ensures
         r is Some <==> values@.no_duplicates(),
         r matches Some(s) ==> s.inv() && s@ == values@,
 {
-    let mut set = OrderedSet::new(Caps { c0: 0, c1: 0, c2: 0, c3: 0 });
+    let mut set = OrderedSet::new(caps[0]);
     let mut i: usize = 0;
     while i < values.len()
         invariant
-            caps.len() == values.len(),
+            caps.len() == values.len() + 1,
             0 <= i <= values.len(),
             set.inv(),
             set@ == values@.subrange(0, i as int),
             values@.subrange(0, i as int).no_duplicates(),
         decreases values.len() - i,
     {
-        if !set.insert(values[i], caps[i]) {
+        if !set.insert(values[i], caps[i + 1]) {
             proof {
                 let prefix = values@.subrange(0, i as int);
                 let j = choose|j: int| 0 <= j < i && prefix[j] == values@[i as int];
@@ -1572,6 +1580,21 @@ pub fn decode(values: &Vec<u64>, caps: &Vec<Caps>) -> (r: Option<OrderedSet>)
     }
     assert(values@.subrange(0, i as int) =~= values@);
     Some(set)
+}
+
+/// Snapshot round trip: decoding what `Serialize`
+/// (crates/ferric-rules-core/src/ordered_set.rs:233 fn serialize, i.e.
+/// `collect_forward`) emits never hits the duplicate error and reproduces the
+/// view, for every valid set and every capacity behavior of the decoder.
+pub fn snapshot_round_trip(set: &OrderedSet, caps: &Vec<Caps>) -> (r: Option<OrderedSet>)
+    requires
+        set.inv(),
+        caps.len() == set@.len() + 1,
+    ensures
+        r matches Some(s) && s.inv() && s@ == set@,
+{
+    let values = collect_forward(set);
+    decode(&values, caps)
 }
 
 /// Facts about `Seq::remove` at index `i`, phrased with `at`.

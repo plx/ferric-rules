@@ -41,7 +41,10 @@
 //!   yields the head, `next_back` the tail, both cursors land on the
 //!   middle), `linked_contains_*` (a hit and a miss), `linked_remove_absent_*`
 //!   (a table miss), `linked_remove_head_*` / `linked_remove_tail_*` (removal
-//!   with one `get_mut(..).unwrap()` relink), and `linked_clear_*` (`clear`
+//!   with one `get_mut(..).unwrap()` relink, whose rewritten links are then
+//!   read back with one `get` and compared with the oracle),
+//!   `linked_remove_middle_*` (removal with two relinks; both `unwrap`s hit,
+//!   the rewritten links are not read back), and `linked_clear_*` (`clear`
 //!   keeps capacity and resets the endpoints). After a mutation they check
 //!   the lookup-free part of the invariant (`assert_linked_fields`: allocated
 //!   table, table length, `len`, `is_empty`, `first`, `last`).
@@ -51,22 +54,24 @@
 //! loops stop after the first group, so each lookup unrolls them to the
 //! unwind bound, and the bound cannot drop below 5 because a
 //! `ptr::swap_nonoverlapping` chunk loop on the promotion path runs four
-//! iterations. Measured here (one cbmc at a time, 7 GB address-space limit):
-//! promotion alone took 146 s of symbolic execution; promotion plus three
-//! `get`s 500 s (669 s in total); promotion plus three iterator lookups ran
-//! out of memory in the SAT back end; and every harness that called `insert`
-//! on an allocated table (re-inserting a member, or inserting after `clear`)
-//! was still in symbolic execution at the 20-minute limit, because symbolic
-//! execution cannot tell whether the `entry` lookup hits and so also explores
-//! `reserve(1)` and rehashing. So the following are not checked by Kani:
-//! any insertion into an allocated table (`Entry::Occupied`, and the linked
-//! append with or without a tail); removal of an interior member (two
-//! relinks); reading rewritten links back after a removal; removal of the
-//! last member of an allocated table; symbolic keys, symbolic operation
-//! choices or traces longer than one operation in table mode; growth beyond
-//! the first 4-bucket table; and the allocated-but-zero-capacity state that
-//! tombstone-heavy removal can leave (it needs a full probe group of
-//! colliding entries; see the unit test
+//! iterations. Measured here (7 GB address-space limit, alongside other
+//! agents' cbmc runs): promotion alone took 146 s of symbolic execution;
+//! promotion plus three `get`s 500 s (669 s in total); a removal plus its
+//! relink plus one read-back `get` 766 s (about 1030 s in total); promotion
+//! plus three iterator lookups, and a removal followed by a walk of the whole
+//! table (`HashMap::iter`), ran out of memory in the solver back end; and
+//! every harness that called `insert` on an allocated table (re-inserting a
+//! member, or inserting after `clear`) was still in symbolic execution at the
+//! 20-minute limit, because symbolic execution cannot tell whether the
+//! `entry` lookup hits and so also explores `reserve(1)` and rehashing. So
+//! the following are not checked by Kani: any insertion into an allocated
+//! table (`Entry::Occupied`, and the linked append with or without a tail);
+//! the links rewritten by an interior removal, and the links of the members
+//! a removal did not touch; removal of the last member of an allocated
+//! table; symbolic keys, symbolic operation choices or traces longer than one
+//! operation in table mode; growth beyond the first 4-bucket table; and the
+//! allocated-but-zero-capacity state that tombstone-heavy removal can leave
+//! (it needs a full probe group of colliding entries; see the unit test
 //! `full_collision_table_survives_emptying_and_small_reuse`). Snapshot
 //! decoding (`Deserialize`, `serde` feature) is not checked either: decoding
 //! two arbitrary keys through `serde::de::value::SeqDeserializer` was still
@@ -260,6 +265,8 @@ fn header_only_step_refines_spec() {
         }
         assert_eq!(set.entries.capacity(), 0);
         assert_rep(&set, &spec);
+        kani::cover!(size == 0 && choice == 0, "first member");
+        kani::cover!(size == 2 && choice == 5, "absent removal from two");
         kani::cover!(size == 2 && choice == 3, "remove first of two");
         kani::cover!(size == 2 && choice == 4, "remove last of two");
         kani::cover!(size == 1 && choice == 2, "second member");
@@ -293,6 +300,16 @@ fn assert_linked_fields(set: &OrderedSet<u8>, spec: &SpecSeq) {
     assert_eq!(set.is_empty(), spec.len == 0);
     assert!(set.first == spec.at(0));
     assert!(set.last == spec.at(spec.len as isize - 1));
+}
+
+/// Mirrors one conjunct of the Verus `linked_rep`: `key` is in the table
+/// and carries the links of its oracle position (`links_at`). One table
+/// lookup, used to read back a link that an operation rewrote.
+fn assert_member_links(set: &OrderedSet<u8>, spec: &SpecSeq, key: u8) {
+    let index = spec.position(key).unwrap() as isize;
+    let links = set.entries.get(&key).unwrap();
+    assert!(links.previous == spec.at(index - 1));
+    assert!(links.next == spec.at(index + 1));
 }
 
 /// Promotion: the third distinct insertion moves the endpoints into the
@@ -354,23 +371,40 @@ fn linked_remove_absent_refines_spec() {
 }
 
 /// Linked head removal: the successor's `previous` is cleared through
-/// `get_mut(..).unwrap()` and `first` moves to it.
+/// `get_mut(..).unwrap()` and `first` moves to it. The rewritten links of
+/// the new head are read back and match the oracle.
 #[kani::proof]
 #[kani::unwind(5)]
 fn linked_remove_head_refines_spec() {
     let (mut set, mut spec) = build_promoted();
     assert_eq!(set.remove(&10), spec.remove(10));
     assert_linked_fields(&set, &spec);
+    assert_member_links(&set, &spec, 20);
+}
+
+/// Linked interior removal: both neighbours are relinked through
+/// `get_mut(..).unwrap()` (both lookups hit, so neither `unwrap` panics) and
+/// the endpoints stay. The rewritten links are not read back: that needs two
+/// more lookups, and one read-back after a single relink already takes about
+/// 1030 s, so it was not attempted.
+#[kani::proof]
+#[kani::unwind(5)]
+fn linked_remove_middle_refines_spec() {
+    let (mut set, mut spec) = build_promoted();
+    assert_eq!(set.remove(&20), spec.remove(20));
+    assert_linked_fields(&set, &spec);
 }
 
 /// Linked tail removal: the predecessor's `next` is cleared through
-/// `get_mut(..).unwrap()` and `last` moves to it.
+/// `get_mut(..).unwrap()` and `last` moves to it. The rewritten links of
+/// the new tail are read back and match the oracle.
 #[kani::proof]
 #[kani::unwind(5)]
 fn linked_remove_tail_refines_spec() {
     let (mut set, mut spec) = build_promoted();
     assert_eq!(set.remove(&30), spec.remove(30));
     assert_linked_fields(&set, &spec);
+    assert_member_links(&set, &spec, 20);
 }
 
 /// Linked `clear`: the cleared table keeps reporting capacity (so later
