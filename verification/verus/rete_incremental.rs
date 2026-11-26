@@ -16,19 +16,24 @@
 //!
 //! * `theorem_incremental_equals_declarative`: starting from the state after
 //!   `seed_root_token`, after any sequence of assertions and retractions:
+//!   - the working memory is the one the operation sequence defines
+//!     (`wm_run`, a network-independent map semantics), so no operation can
+//!     silently be dropped;
 //!   - for every level `k <= n`, the fact tuples (`collect_all_facts`) of the
 //!     tokens in beta memory `k` are exactly the declarative matches of the
-//!     first `k` patterns over the current working memory: tuples `x` of
+//!     first `k` patterns over that working memory: tuples `x` of
 //!     present facts where each `x[j]` passes the alpha predicate of join
 //!     `j+1` and its join test against the data of `x[..j]`
 //!     (`beta_tuples == matches_k`); no two tokens in one memory have the same
 //!     tuple; every token in memory `k >= 1` has its parent in memory `k-1`;
+//!     every token's bindings (`Tok.data`) are the data of its tuple's facts;
 //!   - with a negative node (`declarative_neg_ok`): its memory holds exactly
 //!     one pass-through per full-chain match that no present fact blocks
 //!     (`neg_tuples == neg_matches`), each pass-through's parent is in memory
-//!     `n`; every parent in memory `n` is `blocked` iff some fact blocks it,
-//!     and then its blocker set is exactly the set of blocking facts, and is
-//!     `unblocked` iff none does. Without one, memory `n + 1` stays empty.
+//!     `n` and it carries that parent's bindings; every parent in memory `n`
+//!     is `blocked` iff some fact blocks it, and then its blocker set is
+//!     exactly the set of blocking facts, and is `unblocked` iff none does.
+//!     Without one, memory `n + 1` stays empty.
 //! * `theorem_assert_delta`: an assertion keeps every existing join token
 //!   (same id, contents and tuple) and the new join tokens are exactly those
 //!   whose tuple mentions the asserted fact.
@@ -39,18 +44,24 @@
 //! * The invariant `inv` (alpha memories exact; join tokens form a
 //!   level-indexed tree; each token locally sound; siblings have distinct
 //!   facts; every (token, matching fact) pair has a child; negative memory
-//!   exact) holds after every operation (`lemma_step`), and every
-//!   intermediate state reached inside left/right activation satisfies
-//!   `inv_core` (`grows`). Covered subtleties: a token created during an
-//!   assertion joining the asserted fact itself through a shared alpha
-//!   memory; the pre-propagation capture of right-activation parents that
-//!   prevents joining the same pair twice; a fact that both extends the
-//!   chain and blocks at the negative node.
+//!   exact) holds after every operation (`lemma_step`). Inside an assertion,
+//!   the state after every `join_fact`, every left/right-loop iteration and
+//!   every negative left activation satisfies `inv_core` (`grows`); the
+//!   transient state between inserting a level-`n` token and its
+//!   `negative_left_activate`, and the retraction state before unblocking,
+//!   satisfy it with those parents untracked (`inv_neg_except`). Covered
+//!   subtleties: a token created during an assertion joining the asserted
+//!   fact itself through a shared alpha memory; the pre-propagation capture
+//!   of right-activation parents that prevents joining the same pair twice;
+//!   a fact that both extends the chain and blocks at the negative node.
 //! * Non-vacuity: `lemma_sched_satisfiable` exhibits oracles meeting the
 //!   scheduler hypothesis; from the main theorem, `example_shared_alpha_self_join`
-//!   derives that `(a ?x) (a ?y)` holds `[7, 7]` after asserting `7`, and
+//!   derives that `(a ?x) (a ?y)` holds `[7, 7]` exactly once, with bindings
+//!   `[v, v]`, after asserting `7`;
 //!   `example_negation` that `(a ?x) (not (a ?y&:(= ?y (+ ?x 1))))` over
-//!   facts `10`, `11` passes `[11]` and blocks `[10]` by exactly fact `11`.
+//!   facts `10`, `11` passes `[11]` and blocks `[10]` by exactly fact `11`;
+//!   and `example_negation_retract` that retracting `11` again unblocks
+//!   `[10]` and leaves no token for `[11]`.
 //!
 //! Abstractions and simplifications (fidelity gaps):
 //!
@@ -79,8 +90,12 @@
 //!   descendants, including pass-throughs of removed parents); its stack loop
 //!   and the reverse indexes `fact_to_tokens`, `parent_to_children` and
 //!   `fact_to_blocked` are modelled by the sets they index, not as data.
-//!   Retraction is modelled by its final state; the negative node's
-//!   per-parent loops are modelled by their aggregate effect (they touch
+//!   At this level the ancestor filter of `retraction_roots` is not load
+//!   bearing (cascading from every affected token removes the same set), so
+//!   the model does not check that production never cascades from a token
+//!   an earlier cascade already removed (the `debug_assert!` at
+//!   token.rs:169). Retraction is modelled by its final state; the negative
+//!   node's per-parent loops are modelled by their aggregate effect (they touch
 //!   distinct parents independently). Block-order chronology (primary
 //!   blockers, `allocate_block_order`) is not modelled: it orders
 //!   transitions and activations but does not change memory contents.
@@ -2431,6 +2446,12 @@ pub open spec fn declarative_ok<V>(net: Net<V>, s: St<V>) -> bool {
     &&& forall|k: nat, t: TokenId|
         1 <= k <= net.n && #[trigger] s.mem[k].contains(t) ==> s.tokens[t].parent is Some
             && s.mem[(k - 1) as nat].contains(s.tokens[t].parent->0)
+    // every token's bindings are those of the facts of its tuple
+    &&& forall|k: nat, t: TokenId|
+        k <= net.n && #[trigger] s.mem[k].contains(t) ==> s.tokens[t].data == data_of(
+            s.wm,
+            tuple(s.tokens, t),
+        )
 }
 
 pub proof fn lemma_is_match_push<V>(net: Net<V>, wm: Map<FactId, V>, x: Seq<FactId>, g: FactId)
@@ -2599,6 +2620,10 @@ pub proof fn lemma_declarative<V>(net: Net<V>, s: St<V>)
         && s.mem[(k - 1) as nat].contains(s.tokens[t].parent->0) by {
         lemma_parent(net, s, t);
     }
+    assert forall|k: nat, t: TokenId| k <= net.n && #[trigger] s.mem[k].contains(t) implies s.tokens[t].data
+        == data_of(s.wm, tuple(s.tokens, t)) by {
+        lemma_sound(net, s, t);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2664,6 +2689,29 @@ pub open spec fn run<V>(net: Net<V>, sc: Sched, s: St<V>, ops: Seq<Op<V>>) -> St
     }
 }
 
+/// Reference semantics of the working memory, independent of the network:
+/// an assertion adds a fresh fact, a retraction removes it.
+pub open spec fn wm_step<V>(wm: Map<FactId, V>, op: Op<V>) -> Map<FactId, V> {
+    match op {
+        Op::Assert(f, v) => if wm.contains_key(f) {
+            wm
+        } else {
+            wm.insert(f, v)
+        },
+        Op::Retract(f) => wm.remove(f),
+    }
+}
+
+pub open spec fn wm_run<V>(wm: Map<FactId, V>, ops: Seq<Op<V>>) -> Map<FactId, V>
+    decreases ops.len(),
+{
+    if ops.len() == 0 {
+        wm
+    } else {
+        wm_run(wm_step(wm, ops[0]), ops.drop_first())
+    }
+}
+
 pub proof fn lemma_init<V>(net: Net<V>, root: TokenId)
     requires
         net_wf(net),
@@ -2696,6 +2744,7 @@ pub proof fn lemma_step<V>(net: Net<V>, sc: Sched, s: St<V>, op: Op<V>)
         inv(net, s),
     ensures
         inv(net, step(net, sc, s, op)),
+        step(net, sc, s, op).wm == wm_step(s.wm, op),
 {
     match op {
         Op::Assert(f, v) => {
@@ -2706,6 +2755,8 @@ pub proof fn lemma_step<V>(net: Net<V>, sc: Sched, s: St<V>, op: Op<V>)
         Op::Retract(f) => {
             if s.wm.contains_key(f) {
                 lemma_retract_fact(net, sc, s, f);
+            } else {
+                assert(s.wm.remove(f) =~= s.wm);
             }
         },
     }
@@ -2718,6 +2769,7 @@ pub proof fn lemma_run<V>(net: Net<V>, sc: Sched, s: St<V>, ops: Seq<Op<V>>)
         inv(net, s),
     ensures
         inv(net, run(net, sc, s, ops)),
+        run(net, sc, s, ops).wm == wm_run(s.wm, ops),
     decreases ops.len(),
 {
     if ops.len() > 0 {
@@ -2727,8 +2779,10 @@ pub proof fn lemma_run<V>(net: Net<V>, sc: Sched, s: St<V>, ops: Seq<Op<V>>)
 }
 
 /// Main theorem: after any finite sequence of assertions and retractions,
-/// every beta memory of the chain holds exactly one token per declarative
-/// match of its prefix, and every token's parent is in the previous memory.
+/// the working memory is the one the operations define (`wm_run`), every
+/// beta memory of the chain holds exactly one token per declarative match of
+/// its prefix over that working memory, with the bindings of the match, and
+/// every token's parent is in the previous memory.
 pub proof fn theorem_incremental_equals_declarative<V>(
     net: Net<V>,
     sc: Sched,
@@ -2739,6 +2793,7 @@ pub proof fn theorem_incremental_equals_declarative<V>(
         net_wf(net),
         sched_ok(sc),
     ensures
+        run(net, sc, init(net, root), ops).wm == wm_run(Map::<FactId, V>::empty(), ops),
         declarative_ok(net, run(net, sc, init(net, root), ops)),
         declarative_neg_ok(net, run(net, sc, init(net, root), ops)),
 {
@@ -2781,6 +2836,10 @@ pub open spec fn declarative_neg_ok<V>(net: Net<V>, s: St<V>) -> bool {
         &&& forall|pt: TokenId| #[trigger]
             s.mem[net.n + 1].contains(pt) ==> s.pts[pt].fact is None && s.pts[pt].parent is Some
                 && s.mem[net.n].contains(s.pts[pt].parent->0)
+        // ... carrying the bindings of their parent's tuple
+        &&& forall|pt: TokenId| #[trigger]
+            s.mem[net.n + 1].contains(pt) ==> s.pts[pt].owner == net.n + 1 && s.pts[pt].data
+                == data_of(s.wm, tuple(s.tokens, s.pts[pt].parent->0))
         // every parent's blocker set is exactly the set of facts blocking it
         &&& forall|p: TokenId| #[trigger]
             s.mem[net.n].contains(p) ==> {
@@ -2835,6 +2894,12 @@ pub proof fn lemma_declarative_neg<V>(net: Net<V>, s: St<V>)
         assert forall|pt: TokenId| #[trigger] s.mem[n + 1].contains(pt) implies s.pts[pt].fact is None
             && s.pts[pt].parent is Some && s.mem[n].contains(s.pts[pt].parent->0) by {
             assert(s.unblocked.contains_key(s.pts[pt].parent->0));
+        }
+        assert forall|pt: TokenId| #[trigger] s.mem[n + 1].contains(pt) implies s.pts[pt].owner == n
+            + 1 && s.pts[pt].data == data_of(s.wm, tuple(s.tokens, s.pts[pt].parent->0)) by {
+            let p = s.pts[pt].parent->0;
+            assert(s.unblocked.contains_key(p));
+            lemma_sound(net, s, p);
         }
         assert forall|p: TokenId| #[trigger] s.mem[n].contains(p) implies {
             let d = data_of(s.wm, tuple(s.tokens, p));
@@ -3051,6 +3116,11 @@ pub proof fn example_shared_alpha_self_join<V>(root: TokenId, v: V) {
     assert(beta_tuples(s, 2).contains(x));
     let t = choose|t: TokenId| #[trigger] s.mem[2].contains(t) && tuple(s.tokens, t) == x;
     assert(s.mem[2].contains(t) && tuple(s.tokens, t) == x);
+    // ... exactly once, with bindings [v, v]
+    assert forall|t2: TokenId| #[trigger]
+        s.mem[2].contains(t2) && tuple(s.tokens, t2) == x implies t2 == t by {}
+    assert(data_of(s.wm, x) =~= seq![v, v]);
+    assert(s.tokens[t].data == seq![v, v]);
 }
 
 /// `(a ?x) (not (a ?y&:(= ?y (+ ?x 1))))` after asserting facts `1 -> 10`
@@ -3111,6 +3181,55 @@ pub proof fn example_negation(root: TokenId) {
             assert(g == 1 || g == 2);
         }
     }
+}
+
+/// The same network after asserting `1 -> 10`, `2 -> 11` and retracting fact
+/// `2`: retracting the only blocker of `[1]` unblocks it (its pass-through
+/// is back in the negative node's memory), and no token mentions fact `2`.
+/// This exercises the retraction cascade and `apply_negative_retraction`.
+pub proof fn example_negation_retract(root: TokenId) {
+    let sc = lemma_sched_satisfiable();
+    let net = Net::<int> {
+        n: 1,
+        alphas: Set::<nat>::empty().insert(0),
+        alpha_of: |k: nat| 0nat,
+        alpha: |a: nat, d: int| true,
+        test: |k: nat, d: Seq<int>, e: int| true,
+        neg: true,
+        neg_alpha: 0,
+        neg_test: |d: Seq<int>, e: int| e == d[0] + 1,
+    };
+    let ops = seq![Op::Assert(1nat, 10int), Op::Assert(2nat, 11int), Op::Retract(2nat)];
+    theorem_incremental_equals_declarative(net, sc, root, ops);
+    let s = run(net, sc, init(net, root), ops);
+    reveal_with_fuel(wm_run, 4);
+    assert(ops.drop_first().drop_first().drop_first() =~= Seq::<Op<int>>::empty());
+    let wm = Map::<FactId, int>::empty().insert(1nat, 10int);
+    assert(wm_run(Map::<FactId, int>::empty(), ops) =~= wm);
+    assert(s.wm == wm);
+    let x1 = seq![1nat];
+    let x2 = seq![2nat];
+    assert(x1.take(0) =~= Seq::<FactId>::empty());
+    assert(data_of(wm, x1) =~= seq![10int]);
+    assert(is_match(net, wm, x1));
+    assert(!is_match(net, wm, x2)) by {
+        assert(!wm.contains_key(x2[0]));
+    }
+    assert(no_blocker(net, wm, data_of(wm, x1))) by {
+        assert forall|g: FactId| !#[trigger] nmatch(net, wm, data_of(wm, x1), g) by {
+            if wm.contains_key(g) {
+                assert(g == 1);
+            }
+        }
+    }
+    // [1] passes the negative node again; [2] is gone from memory 1.
+    assert(neg_matches(net, wm).contains(x1));
+    assert(neg_tuples(net, s).contains(x1));
+    assert(!matches_k(net, wm, 1).contains(x2));
+    assert(!beta_tuples(s, 1).contains(x2));
+    assert(beta_tuples(s, 1).contains(x1));
+    let t = choose|t: TokenId| #[trigger] s.mem[1].contains(t) && tuple(s.tokens, t) == x1;
+    assert(s.unblocked.contains_key(t) && !s.blocked.contains_key(t));
 }
 
 } // verus!
