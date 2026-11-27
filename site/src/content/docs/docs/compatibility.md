@@ -1,122 +1,52 @@
 ---
 title: CLIPS compatibility
-description: Supported CLIPS language areas, explicit differences, and validation evidence.
+description: Supported CLIPS 6.30 features, out-of-scope constructs, intentional differences, and differential testing.
 ---
 
-Ferric implements a defined subset of the CLIPS rule language. Check the
-[full compatibility contract](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md)
-before migrating an existing rule set; an implemented feature is not a promise
-of equivalence for every program.
+`ferric-rules` aims for close semantic compatibility with the core rule and procedural language of CLIPS 6.30 (roughly the surface of the _CLIPS Basic Programming Guide_), so that straightforward rule sets run as expected without silent surprises. Because it is an independent implementation with strict UTF-8 and memory-safety invariants, compatibility covers a defined subset rather than every corner of CLIPS.
 
-## Validation and evidence
+For the exhaustive construct-by-construct specification, see [`docs/compatibility.md`](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md) in the repository.
 
-The [granular corpus](https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/README.md)
-declares 1,269 programs: 1,245 conformance cases and 24 active characterizations
-of differences. The conformance count includes 232 cases that reproduce an
-expected CLIPS load or execution error. Eligible programs also run through
-incremental rule loading and JSON/CBOR snapshot replays.
+## How compatibility is tested
 
-These are coverage counts. Verification is reported separately for the actual
-revision, selected cases, Ferric run, and pinned CLIPS 6.30 reference run. Missing,
-filtered, stale, or failed evidence does not establish a fully verified result.
-The [assessment reports](https://github.com/plx/ferric-rules/blob/main/docs/compatibility-assessment.md)
-distinguish fixed gaps from added coverage, changed scenarios or goldens, and
-removed cases. Unexecuted legacy files remain inventory, not compatibility
-results.
+Day-to-day verification relies on differential testing against a pinned CLIPS 6.30 reference container:
 
-A separate reviewed semantic policy requires equivalent observations for all
-57 scenarios, including the repaired LEX/MEA cases. Generated harnesses and
-binding tests provide additional coverage. These checks are evidence for their
-cases, not proof of complete language equivalence.
+- **Granular golden corpus ([`tests/clips_compat/corpus/`](https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/README.md)):** Roughly 1,270 small `.clp` programs paired with exact CLIPS 6.30 output goldens. Around 1,245 conforming programs (including ~230 expected load or runtime error cases) must match CLIPS 6.30 output byte-for-byte on normal execution, and again after a CBOR and JSON snapshot round-trip.
+- **Pinned gap characterizations:** Roughly 24 corpus cases exercise known behavioral differences or stricter load-time boundaries. Each records `ferric-rules`'s exact current output or located load error so behavior cannot drift in either direction without an explicit review.
+- **Multi-step scenario checks:** A separate suite of 57 multi-step scenarios compares working-memory and execution observations directly against the CLIPS 6.30 container on every pull request.
 
-## Implemented features
+Passing these suites gives good regression coverage for the paths they exercise, though any existing CLIPS rule set being ported should still be checked against the exclusions and boundaries below.
 
-| Area             | Implemented features                                                                                                                                                         |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Facts            | Ordered and template facts, slot constraints and defaults, `deffacts`, and `initial-fact` on reset.                                                                          |
-| Rules            | `defrule`, definition-time salience, auto-focus, `test`, `not`, `exists`, `forall`, negated conjunction, and field constraints `~`, `\|`, `&`, within the documented limits. |
-| Functions        | `deffunction`, `defgeneric`, `defmethod`, globals, and expression-position fact effects.                                                                                     |
-| Modules          | Modules, construct visibility, and focus stacks.                                                                                                                             |
-| Standard library | A subset of CLIPS math, string, multifield, predicate, query, and I/O functions.                                                                                             |
+## Supported language surface
 
-`format` writes its completed string to its channel and returns the string;
-`nil` suppresses routing. Functions and methods can assert, retract, modify,
-and duplicate facts. Earlier effects remain visible if a later expression
-fails. Engine mutation is rejected during rule matching.
+| Area                     | Implemented features                                                                                                                                                                                                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Facts**                | Ordered positional facts and `deftemplate` slot/multislot facts; static and dynamic defaults; type, allowed-values, range, and cardinality constraints; `deffacts`; protected `(initial-fact)` on `(reset)`; configurable fact-duplication policy.                                          |
+| **Rules & patterns**     | `defrule` with ordered and template patterns, `?f <-` fact-address bindings, single/multifield wildcards and captures (`?`, `?x`, `$?`, `$?xs`), field connectives (`~`, `&`, `\|`), `(test ...)`, `(not ...)`, `(exists ...)`, `(forall ...)`, and `(not (and ...))` negated conjunctions. |
+| **Agenda & strategies**  | Definition-time integer and expression `salience` (`-10000` to `10000`), `auto-focus`, and the `depth` (default), `breadth`, `lex`, and `mea` conflict-resolution strategies.                                                                                                               |
+| **Procedural & queries** | `deffunction`, `defgeneric` / `defmethod` dispatch, `defglobal`, `if`/`then`/`else`, `switch`, `while`, `loop-for-count`, `progn$` / `foreach`, `break`, and fact-query forms (`any-factp`, `find-fact`, `find-all-facts`, `do-for-fact`, `do-for-all-facts`, `delayed-do-for-all-facts`).  |
+| **Modules & stdlib**     | `defmodule` with `import`/`export` visibility, explicit `focus` and focus stacks, plus core CLIPS math, string, multifield, predicate, construct-inspection, and channel I/O functions.                                                                                                     |
 
-CLIPS fact addresses use a distinct `FACT-ADDRESS` value, printed as `<Fact-N>`
-or `<Dummy Fact>`. They are not integers. Host fact handles have a separate
-engine-ownership contract; see [Embedding API](../embedding/).
+## Excluded and unimplemented features
 
-## Conflict resolution
+These CLIPS features are not supported and fail explicitly with load or runtime errors rather than being ignored:
 
-Depth, breadth, LEX, and MEA are supported. Salience takes precedence in every
-strategy. `(get-strategy)` reads the strategy; `(set-strategy breadth)` changes
-it and reorders pending activations.
+- **COOL (CLIPS Object-Oriented Language):** Classes (`defclass`), instances (`definstances`, `make-instance`), and message-handlers (`defmessage-handler`) are out of scope. Bracketed `[name]` literals exist only as scalar `INSTANCE-NAME` values.
+- **Logical dependencies (`logical` CE):** Truth maintenance is not supported; rules containing `(logical ...)` are rejected at load time.
+- **Dynamic salience & minor strategies:** `when-activated` and `every-cycle` salience evaluation (`set-salience-evaluation`, `refresh-agenda`) and the `simplicity`, `complexity`, and `random` conflict strategies are unsupported.
 
-| Strategy | Ordering within equal salience                                                    |
-| -------- | --------------------------------------------------------------------------------- |
-| Depth    | Most recent activation first.                                                     |
-| Breadth  | Oldest activation first.                                                          |
-| LEX      | Fact recencies sorted newest first, then rule specificity, then older activation. |
-| MEA      | First outer condition's recency, then the full LEX comparison.                    |
+## Intentional and known behavioral differences
 
-Absent conditions contribute recency entries older than every fact.
-Equal-salience ties in network topologies the corpus does not cover are not
-guaranteed to match CLIPS. Known cases, including LEX/MEA specificity and basis
-cases, are tracked in [#448](https://github.com/plx/ferric-rules/issues/448), [#478](https://github.com/plx/ferric-rules/issues/478), [#479](https://github.com/plx/ferric-rules/issues/479),
-[#480](https://github.com/plx/ferric-rules/issues/480), and [#485](https://github.com/plx/ferric-rules/issues/485)–[#487](https://github.com/plx/ferric-rules/issues/487). Use salience or focus when an
-application requires explicit precedence.
-
-## Explicit compatibility differences
-
-The corpus retains exact observations for these boundaries:
-
-- Four UTF-8 and malformed-`format` differences are accepted permanent behavior,
-  decided in [#394](https://github.com/plx/ferric-rules/issues/394). Ferric
-  keeps valid UTF-8, holding U+FFFD where CLIPS emits invalid bytes, and reports
-  a format error for malformed directives such as `%5-3d`, which CLIPS passes to
-  libc. Ferric also refuses source and fact files that are not valid UTF-8. See
-  the [UTF-8 and format decision](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#accepted-utf-8-and-format-divergences).
-- Five equal-salience cases concern separately compiled identical negative/NCC
-  joins, independent multi-pattern `exists` support ordering, or a transient
-  nested NCC refire on a shared subnetwork entry, tracked in
-  [#479](https://github.com/plx/ferric-rules/issues/479).
-- Four auto-focus cases retain a different focus history: three rules installed
-  after their facts, and one test CE cancelled by NCC completion, tracked in
-  [#480](https://github.com/plx/ferric-rules/issues/480).
-- Nine CLIPS-valid programs exercise the explicit conditional-element nesting or
-  operand limits from [#405](https://github.com/plx/ferric-rules/issues/405)
-  and are rejected with located load errors; lifting them is tracked in
-  [#483](https://github.com/plx/ferric-rules/issues/483).
-- Two CLIPS-valid programs hold the located load error for the negated-constraint
-  boundary below.
-
-CLIPS-valid general predicate and return-value expressions in directly negated
-patterns are explicitly rejected at load, the boundary decided in
-[#300](https://github.com/plx/ferric-rules/issues/300). This covers ordered
-fields, template slots, each `|` alternative, and the `forall` requirement.
-Comparisons of the field variable against a literal or bound variable, with
-integer offsets, and `str-compare` are lowered and work (their mixed-type and
-overflow differences are tracked in [#499](https://github.com/plx/ferric-rules/issues/499));
-an arbitrary expression such as `(not (data ?x&:(> (* ?x ?x) 10)))` is rejected. An explicit
-`(not (and (P) (test ...)))` evaluates such a check at match time. A
-single-pattern `exists` has a related load boundary, tracked in
-[#446](https://github.com/plx/ferric-rules/issues/446). See
-[the constraint boundary](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#predicate-and-return-value-constraints)
-for the supported subset and workarounds.
-
-## Exclusions and bounds
-
-The COOL object system is out of scope. `logical` conditional elements (truth
-maintenance) are not supported; every `logical` CE is rejected at load (see
-[Logical support](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#logical-support)).
-Simplicity, complexity, and random conflict strategies are not implemented.
-
-Source patterns allow up to four combined `not`/`exists`/`forall` levels;
-triple and four-deep negation work. Compiled condition budgets still apply.
-Nested `forall` and `forall` beneath `not` or `exists` remain unsupported. `forall` requires one fact
-condition and one fact or test-only requirement. Pure-test wrappers have their
-own supported normalization; these are not blanket bans on nested expressions.
-See the [source and compiled limits](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#source-and-compiled-network-limits)
-and [pattern nesting restrictions](https://github.com/plx/ferric-rules/blob/main/docs/compatibility.md#pattern-nesting-restrictions).
+1. **UTF-8 text and checked `format` directives:**
+   `ferric-rules` uses UTF-8 strings throughout its parser, runtime, C ABI, and bindings. Source and fact files must be valid UTF-8; byte operations that emit raw non-UTF-8 bytes in CLIPS 6.30 produce `U+FFFD` instead. Similarly, malformed `format` directives such as `%5-3d` (which CLIPS passes through to the platform's `libc` `printf`) fail with an explicit format error.
+2. **Load-time bounds on complex constraints inside direct negations:**
+   Directly negated patterns (`(not (data ...))` and the second operand of `forall`) lower field predicates (`:`) and return-value constraints (`=`) into indexed join checks. Comparisons against literals or earlier variables (including integer `+`/`-` offsets and binary `str-compare`) work directly, while arbitrary non-linear expressions such as `(not (data ?x&:(> (* ?x ?x) 10)))` are rejected at load time. Write those explicitly as a negated conjunction with a `test` condition:
+   ```lisp
+   (not (and (data ?x)
+             (test (> (* ?x ?x) 10))))
+   ```
+   Single-pattern `(exists ...)` has a similar load boundary; adding a `(test ...)` condition inside `exists` works around it.
+3. **Quantifier nesting limits:**
+   Patterns support up to four nested levels of `not` / `exists` / `forall` (including triple and quadruple negation), within compiled condition budgets. Nesting `forall` inside another `forall`, `not`, or `exists` is rejected at load time.
+4. **Equal-salience tie-breaking and transient `auto-focus` edge cases:**
+   CLIPS shares identical negative and negated-conjunction joins across rules; `ferric-rules` currently shares positive beta joins across rules and compiles negative/NCC subnetworks per rule. When multiple activations share the same salience (and, under `lex`/`mea`, the same recency vector and specificity), tie-breaking order can differ from CLIPS 6.30, as can focus-stack history in a handful of late-installed `auto-focus` + NCC combinations. Rule sets that depend on relative firing order should express precedence with `salience`, `focus`, or phase facts.

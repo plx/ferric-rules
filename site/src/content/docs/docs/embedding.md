@@ -1,90 +1,64 @@
 ---
-title: Embedding API
-description: Engine lifecycle, thread ownership, output, and language bindings.
+title: Embedding & FFI
+description: Per-engine state isolation, checked host handles, CBOR snapshots, the C ABI, and language bindings.
 ---
 
-Use `Engine` from `ferric_rules::runtime`. The `ferric-rules` facade crate
-re-exports the runtime, parser, and core types; most Rust applications need only
-this dependency.
+`ferric-rules` is structured around embedding: rules run inside an application-owned `Engine` value with explicit execution budgets, buffered I/O, and checked handles across FFI.
 
-## Ownership and threads
+## State isolation and threading
 
-Each engine owns its rules, facts, agenda, modules, and output buffers. Engines
-share no runtime state. An `Engine` is `Send + Sync`: ownership can move between
-threads, and shared references may be read concurrently. Mutation requires
-exclusive access; use a mutex when multiple threads operate on one engine.
-Separate workers can also each own an engine.
+Each `Engine` owns its construct definitions, Rete memories, agenda, globals, and output buffers. Engines share no mutable globals, so an application can keep independent rule sets or per-session engines in the same process without coordination.
 
-## Load and reuse
+In Rust, `Engine` implements `Send + Sync`:
 
-`Engine::with_rules(source)` compiles CLIPS source and resets the engine. For
-configuration, use `Engine::with_rules_config(source, config)` with an
-`EngineConfig`.
+- Ownership of an `Engine` can move freely across threads (for example, into a worker pool or async task).
+- Shared `&Engine` references support concurrent read-only inspection.
+- Mutating operations (`assert_*`, `retract`, `run`, `reset`, `load_str`) take `&mut self` and require exclusive access.
 
-The host `reset()` method clears facts, activations, channel buffers, and action
-diagnostics; it restores globals and the focus stack, then reasserts initial
-facts. Compiled rules and templates remain available. The host `clear()` method
-also removes rules and other registered constructs. Both preserve pending
-deliveries in an enabled output-event journal.
+Over the C ABI, a `FerricEngine*` handle follows a serialized-call contract: one handle may move between OS threads when idle, while concurrent calls on the same handle must be synchronized by the caller. Higher-level bindings build idiomatic concurrency wrappers on top of that rule (such as worker-thread handles and pools in Node.js, and a serial-queue actor/async wrapper in Swift).
 
-The [getting-started example](../getting-started/) shows the load, assert, run,
-and read sequence. Reuse an engine with `reset()` when successive inputs use the
-same rules. Source `(reset)` and `(clear)` have additional rules for preserving
-active execution and output; see the
-[lifecycle contract](https://github.com/plx/ferric-rules/blob/main/docs/migration.md#expression-effects-and-source-lifecycle).
+## Host values and checked fact handles
 
-## Run results and errors
+Inside the Rete network, symbols and facts live in compact arena tables. Exposing raw arena indices across an embedding or FFI boundary makes it too easy to pass a retracted handle or a symbol interned in Engine A into Engine B.
 
-`run(RunLimit::Count(n))` permits at most `n` rule firings. Its `RunResult` contains
-`rules_fired` and `halt_reason`:
+To prevent silent cross-engine bugs, the host API separates external handles from internal Rete keys:
 
-| Halt reason     | Meaning                                                    |
-| --------------- | ---------------------------------------------------------- |
-| `AgendaEmpty`   | No activation is runnable on the current focus stack.      |
-| `LimitReached`  | The firing limit was reached.                              |
-| `HaltRequested` | Execution was stopped by a halt request.                   |
-| `ActionError`   | An action failed; the rest of that activation was skipped. |
+- **`SymbolHandle` and `HostValue`:** Primitive integers (`i64`), floats (`f64`), and UTF-8 strings convert directly into `HostValue`. Symbols are interned through `engine.symbol_value("name")?` and carry their owning engine's identity; passing a foreign symbol (even nested inside a multifield) returns an error instead of resolving the wrong entry.
+- **`FactHandle`:** Asserting a fact from host code returns a process-unique 64-bit `FactHandle`. The engine validates ownership and liveness on lookup or retraction, rejecting stale handles after retraction, `reset()`, `clear()`, or snapshot restore.
+- **Rule-level `FACT-ADDRESS` vs. host IDs:** Inside CLIPS rules, `?f <- (pattern)` binds a `FACT-ADDRESS` value (printed as `<Fact-N>`). Those addresses belong to rule evaluation and are intentionally not interchangeable with host `FactHandle` integers. When your application needs durable correlation across resets or snapshots, store your own application ID in a fact field or template slot.
 
-A successful Rust `Result` from `run` does not imply that every action succeeded.
-For `ActionError`, inspect `action_diagnostics()` before calling `run`, `step`,
-or `reset` again: these calls clear the diagnostics. Earlier actions keep their
-effects, and later activations remain available for another run.
+See the repository's [host API notes](https://github.com/plx/ferric-rules/blob/main/docs/host-api.md) for full details.
 
-## Read results
+## Run limits, errors, and buffered I/O
 
-Use `find_facts` to select ordered facts by relation, or `facts()` to iterate user
-facts, including template facts. Host fact handles belong to one engine and
-must not be reused after retraction, reset, or clear. Keep durable application
-identifiers in fact fields. CLIPS `FACT-ADDRESS` values are a distinct runtime
-type; they are not integer host handles.
+`engine.run(RunLimit::Count(n))` caps execution at `n` rule firings (`RunLimit::Unlimited` runs until the agenda empties). It returns a `RunResult` with `rules_fired` and a `HaltReason`:
 
-Use `get_output("t")` to read a captured channel. Output is buffered in the engine;
-it is not automatically written to the host's stdout. For ordered delivery across
-channels, call `enable_output_events()` before evaluation and consume
-`drain_output_events()`. Draining consumes the events and clears the captured
-channel buffers.
-The event journal is a transient host observer and is not stored in snapshots.
+| `HaltReason`    | Meaning                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------- |
+| `AgendaEmpty`   | No runnable activations remain on the current module focus stack.                                   |
+| `LimitReached`  | Execution paused after reaching the requested firing limit; pending activations remain queued.      |
+| `HaltRequested` | A rule action or host call requested `(halt)`.                                                      |
+| `ActionError`   | An expression on a rule's right-hand side failed; the remainder of that rule's actions was skipped. |
 
-## Other languages
+Matching CLIPS behavior, a runtime error inside one rule's actions (such as dividing by zero) records diagnostics and halts the run as `Ok(RunResult { halt_reason: HaltReason::ActionError, .. })` rather than discarding earlier side effects. Inspect `engine.action_diagnostics()` before the next `run`, `step`, or `reset` call (which clear the buffer).
 
-TypeScript, Python, and Swift are primary embedding interfaces alongside Rust.
-Go and the C ABI retain maintenance support. Follow each binding's source-build
-instructions; these links do not imply that packages have been published.
+Output from `printout` and `format` accumulates in named per-engine string buffers (`engine.get_output("t")`). Callers that need interleaved chronological ordering across multiple channels can opt into `enable_output_events()` and consume `drain_output_events()`.
 
-| Interface            | Source and documentation                                                                                                                                                                                    |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| TypeScript / Node.js | [`packages/ferric`](https://github.com/plx/ferric-rules/tree/main/packages/ferric), [API reference](https://github.com/plx/ferric-rules/blob/main/docs/typescript-binding-api.md)                           |
-| Python               | [`ferric-rules-python`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules-python), [source-build guide](https://github.com/plx/ferric-rules/blob/main/crates/ferric-rules-python/README.md) |
-| Swift                | [Swift package and build guide](https://github.com/plx/ferric-rules/blob/main/bindings/swift/README.md)                                                                                                     |
-| C ABI                | [`ferric-rules-ffi`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules-ffi), [host contract](https://github.com/plx/ferric-rules/blob/main/docs/host-api.md)                                |
-| Go                   | [`bindings/go`](https://github.com/plx/ferric-rules/tree/main/bindings/go)                                                                                                                                  |
+## Engine snapshots
 
-The Swift 6 package supports macOS 15 and iOS 18 through a local XCFramework
-build. Engine operations run on a serial queue; task cancellation cooperates
-between rule-firing chunks, `halt()` requests a stop synchronously, and closing
-an engine stops active work before releasing it. Its public values are owned
-and `Sendable`.
+Enabling the Cargo `serde` feature (`ferric-rules = { ..., features = ["serde"] }`) adds snapshot serialization via versioned CBOR (`SerializationFormat::Cbor`), along with JSON for debugging and inspection.
 
-For configuration and versioned CBOR snapshots, see the
-[Rust user guide](https://github.com/plx/ferric-rules/blob/main/docs/users-guide.md)
-and [snapshot contract](https://github.com/plx/ferric-rules/blob/main/docs/snapshots.md).
+A snapshot captures the full state needed to resume execution identically—compiled constructs, facts, internal Rete tokens, blocker chronology for `not`/`exists`/negated conjunctions, refraction history, module focus, and pending agenda activations—without executing code or installing callbacks during decode. Because Rete state is tightly coupled to compiler invariants, snapshots use an explicit schema version (currently `13`) with checksum and structural validation on restore; older schema versions are rejected rather than auto-migrated. See [`docs/snapshots.md`](https://github.com/plx/ferric-rules/blob/main/docs/snapshots.md).
+
+## C ABI and language bindings
+
+None of these packages are published to external registries yet; each builds from a local checkout of the repository. A shared language-neutral conformance suite (`just bindings-conformance`) exercises the same rule, fact, error, and snapshot scenarios across the language adapters.
+
+| Target                | Location & documentation                                                                                                                                                      | Current scope                                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Rust**              | [`crates/ferric-rules`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules), [User's guide](https://github.com/plx/ferric-rules/blob/main/docs/users-guide.md) | Native facade crate exposing runtime, parser, and core APIs.                                                                                                             |
+| **C ABI**             | [`crates/ferric-rules-ffi`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules-ffi) (`ferric.h`)                                                               | Static/dynamic C library. Every `extern "C"` entry point is wrapped in proc-macro panic containment and tested under C, AddressSanitizer, and ThreadSanitizer harnesses. |
+| **TypeScript / Node** | [`packages/ferric`](https://github.com/plx/ferric-rules/tree/main/packages/ferric), [API docs](https://github.com/plx/ferric-rules/blob/main/docs/typescript-binding-api.md)  | `napi-rs` native addon with synchronous `Engine`, worker-thread `EngineHandle`, and `EnginePool`.                                                                        |
+| **Python**            | [`crates/ferric-rules-python`](https://github.com/plx/ferric-rules/tree/main/crates/ferric-rules-python)                                                                      | PyO3 extension targeting CPython's `abi3` stable ABI (Python 3.9+), built locally with `maturin`.                                                                        |
+| **Swift**             | [`bindings/swift`](https://github.com/plx/ferric-rules/blob/main/bindings/swift/README.md)                                                                                    | Local Swift 6 package over an XCFramework build (macOS 15 / iOS 18) with `Sendable` value types, serial-queue isolation, and cooperative task cancellation.              |
+| **Go**                | [`bindings/go`](https://github.com/plx/ferric-rules/tree/main/bindings/go)                                                                                                    | `cgo` binding over the C ABI; kept building and passing conformance tests in maintenance mode.                                                                           |
