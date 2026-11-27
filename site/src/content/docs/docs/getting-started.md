@@ -1,92 +1,109 @@
 ---
 title: Getting started
-description: Run a small Rust program with one rule and one fact.
+description: Add ferric-rules from Git, walk through a small forward-chaining program, or try the interactive REPL.
 ---
 
-This example loads a rule, asserts a temperature reading, and checks the output.
+Because `ferric-rules` is pre-1.0 and not published to crates.io yet, Rust projects depend on the public `ferric-rules` facade crate directly from GitHub.
 
-## Install
+## Add the Git dependency
 
-The crates are not published to crates.io yet. In a Rust binary project, add
-the public facade from GitHub:
+In an existing Cargo binary project:
 
 ```sh
 cargo add --git https://github.com/plx/ferric-rules ferric-rules
 ```
 
-Or use the equivalent dependency declaration:
+Or add it directly in `Cargo.toml`:
 
 ```toml
 [dependencies]
 ferric-rules = { git = "https://github.com/plx/ferric-rules" }
 ```
 
-Commit your application's `Cargo.lock` to retain the resolved revision. Add a
-`rev` to the dependency when you need an explicit source pin. The Cargo package
-is `ferric-rules`; Rust imports use `ferric_rules`.
+Commit your project's `Cargo.lock` (or specify `rev = "..."` in `Cargo.toml`) if you want builds pinned to a specific revision while the repository evolves. Cargo package names use hyphens (`ferric-rules`), while Rust imports use underscores (`ferric_rules`).
 
-The `ferric-rules` crate and its workspace dependencies declare Rust 1.75 as
-their minimum version (the unpublished Python binding needs 1.83), and CI checks
-that against the committed lockfile. A new project resolves newer dependency
-releases that may need a newer compiler. To build on an older toolchain, set
-`rust-version` in your package and generate the lockfile with Cargo 1.84 or
-newer:
-
-```sh
-cargo generate-lockfile --config 'resolver.incompatible-rust-versions="fallback"'
-```
-
-## Minimal rule set
+## Write a small rule set
 
 Save this as `src/rules.clp`:
 
-```text
-(defrule high-temperature
-  (temperature ?t)
-  (test (> ?t 75))
+```lisp
+(defrule flag-faulty-sensor
+  (declare (salience 10))
+  (sensor-error ?id)
   =>
-  (printout t "High temperature" crlf))
+  (assert (suppressed ?id)))
+
+(defrule high-temp-alert
+  (reading ?id ?temp)
+  (test (> ?temp 75))
+  (not (suppressed ?id))
+  =>
+  (assert (alert ?id high-temperature))
+  (printout t "Alert on " ?id ": " ?temp "C" crlf))
 ```
 
-`(temperature ?t)` matches an ordered fact with one field. The `test` condition
-checks its value. Everything after `=>` runs when the rule fires.
+Two rules interact here through working memory:
 
-## Rust host code
+1. `flag-faulty-sensor` declares higher salience (`10` vs. the default `0`), so if `(sensor-error ?id)` is present, it fires first and derives `(suppressed ?id)`.
+2. `high-temp-alert` matches any `(reading ?id ?temp)` above `75` only when no matching `(suppressed ?id)` fact exists. When it fires, it both asserts a structured `(alert ...)` fact and writes a line to the standard CLIPS output channel `t`.
 
-Save this as `src/main.rs`:
+## Drive the engine from Rust
+
+Save this as `src/main.rs` and run `cargo run`:
 
 ```rust
 use ferric_rules::runtime::{Engine, HaltReason, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::with_rules(include_str!("rules.clp"))?;
-    engine.assert_ordered("temperature", 80_i64)?;
+
+    // Pass 1: healthy sensor reports 82C -> high-temp-alert fires.
+    let kiln_1 = engine.symbol_value("kiln-1")?;
+    engine.assert_ordered("reading", vec![kiln_1, 82_i64.into()])?;
 
     let result = engine.run(RunLimit::Count(100))?;
     assert_eq!(result.rules_fired, 1);
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
-    assert_eq!(engine.get_output("t"), Some("High temperature\n"));
+    assert_eq!(engine.find_facts("alert")?.len(), 1);
+    assert_eq!(engine.get_output("t"), Some("Alert on kiln-1: 82C\n"));
+
+    // Pass 2: reuse the compiled network with a faulty sensor -> suppressed.
+    engine.reset()?;
+    engine.assert_ordered_symbol("sensor-error", "kiln-2")?;
+    let kiln_2 = engine.symbol_value("kiln-2")?;
+    engine.assert_ordered("reading", vec![kiln_2, 90_i64.into()])?;
+
+    let result = engine.run(RunLimit::Count(100))?;
+    assert_eq!(result.rules_fired, 1);
+    assert!(engine.find_facts("alert")?.is_empty());
+    assert_eq!(engine.get_output("t"), None);
+
     Ok(())
 }
 ```
 
-Run it with `cargo run`. The program exits without printing anything:
-`printout` writes to an engine buffer, which the host reads with `get_output`.
-Change `80_i64` to `70_i64` and the rule no longer matches, so the assertions fail.
+Note that `(printout t ...)` does not write directly to the host process's stdout: `ferric-rules` buffers output per named channel inside the engine so embedded callers can inspect or route it without global I/O side effects.
 
-## Engine lifecycle
+## Typical engine lifecycle
 
-1. `Engine::with_rules` parses and compiles the source, then resets the engine
-   to assert `initial-fact` and any `deffacts`.
-2. Assert the facts for the current input.
-3. Call `run` and check `halt_reason`. Reaching a firing limit is different from
-   completing the work available on the focus stack.
-4. Read the resulting facts or output. `find_facts` selects ordered facts by
-   relation; `facts()` iterates user facts, including template facts.
-5. Call the host `reset()` method to reuse the compiled rules with new input.
-   It clears current facts and channel buffers, restores globals, and reasserts
-   the initial facts. An enabled output-event journal retains pending deliveries.
+1. **Compile once:** `Engine::with_rules` parses the CLIPS source, compiles constructs into the Rete network, and performs an initial `(reset)` so `(initial-fact)` and any `deffacts` are ready.
+2. **Assert input facts:** Use `assert_ordered`, `assert_ordered_symbol`, or `assert_template_slots` to describe the current request, session, or domain snapshot.
+3. **Run with a budget:** `engine.run(RunLimit::Count(n))` bounds how many rules may fire in one call; inspect `result.halt_reason` to distinguish a drained agenda (`AgendaEmpty`) from hitting the step cap (`LimitReached`) or a mid-rule error (`ActionError`).
+4. **Read outputs:** Query derived facts in working memory (`find_facts`, `facts`, `get_fact`) or read buffered router output (`get_output`).
+5. **Reset and reuse:** Calling `engine.reset()` clears transient facts, activations, and channel buffers while keeping the compiled Rete network intact for the next run.
 
-See [Embedding API](../embedding/) for thread ownership and error handling, or the
-[worked examples](https://github.com/plx/ferric-rules/tree/main/examples/users-guide)
-for templates, priorities, modules, and snapshots.
+## Trying rules from the CLI
+
+If you want to experiment with `.clp` files directly without writing host code first, clone the repository and run the `ferric` CLI crate:
+
+```sh
+cargo run -p ferric-rules-cli -- repl
+cargo run -p ferric-rules-cli -- run examples/embedding/launch-selection.clp
+cargo run -p ferric-rules-cli -- check examples/embedding/launch-selection.clp
+```
+
+## Toolchain and MSRV note
+
+The Rust workspace crates declare a minimum supported Rust version (MSRV) of **1.75** (the Python binding crate requires **1.83** for PyO3). On current stable Rust toolchains, `cargo build` works out of the box. If you specifically need to resolve a fresh lockfile for an older compiler near 1.75, set `rust-version` in your `Cargo.toml` and generate the lockfile with Cargo's MSRV-aware resolver (`cargo generate-lockfile --config 'resolver.incompatible-rust-versions="fallback"'`).
+
+Next, see [Embedding & FFI](../embedding/) for thread ownership, host handles, snapshots, and non-Rust bindings, or browse the [worked examples](https://github.com/plx/ferric-rules/tree/main/examples/users-guide) in the repository.

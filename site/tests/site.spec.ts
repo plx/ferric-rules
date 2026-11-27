@@ -11,48 +11,42 @@ type DocsPage = {
 const origin = "http://127.0.0.1:4321";
 const projectTitle = "ferric-rules";
 const projectDescription =
-  "A mostly CLIPS-compatible forward-chaining rules engine for embedding in applications. Each engine instance owns its state.";
+  "An experimental forward-chaining Rete rules engine in Rust, modeled on CLIPS 6.30 and built for isolated per-engine state, C FFI embedding, and predictable matching.";
 const basePath: string = "/ferric-rules";
 const normalizedBasePath = basePath === "/" ? "" : basePath;
 // prettier-ignore
 const docsPages: DocsPage[] = [
-    {
-      "title": "Overview",
-      "description": "How the engine works and where to start.",
-      "slug": "docs",
-      "href": "docs/"
-    },
-    {
-      "title": "Getting started",
-      "description": "Run a small Rust program with one rule and one fact.",
-      "slug": "docs/getting-started",
-      "href": "docs/getting-started/"
-    },
-    {
-      "title": "CLIPS compatibility",
-      "description": "Implemented features, exclusions, and known differences from CLIPS.",
-      "slug": "docs/compatibility",
-      "href": "docs/compatibility/"
-    },
-    {
-      "title": "Embedding API",
-      "description": "Engine lifecycle, thread ownership, output, and language bindings.",
-      "slug": "docs/embedding",
-      "href": "docs/embedding/"
-    },
-    {
-      "title": "Performance",
-      "description": "Run the benchmarks and scaling checks.",
-      "slug": "docs/performance",
-      "href": "docs/performance/"
-    },
-    {
-      "title": "Internals",
-      "description": "The main crates and the path from source to rule execution.",
-      "slug": "docs/internals",
-      "href": "docs/internals/"
-    }
-  ];
+  {
+    "title": "Overview",
+    "description": "Why ferric-rules exists, what is in the repository today, and what to expect from an experimental prototype.",
+    "slug": "docs",
+    "href": "docs/"
+  },
+  {
+    "title": "Getting started",
+    "description": "Add ferric-rules from Git, walk through a small forward-chaining program, or try the interactive REPL.",
+    "slug": "docs/getting-started",
+    "href": "docs/getting-started/"
+  },
+  {
+    "title": "Embedding & FFI",
+    "description": "Per-engine state isolation, checked host handles, CBOR snapshots, the C ABI, and language bindings.",
+    "slug": "docs/embedding",
+    "href": "docs/embedding/"
+  },
+  {
+    "title": "CLIPS compatibility",
+    "description": "Supported CLIPS 6.30 features, out-of-scope constructs, intentional differences, and differential testing.",
+    "slug": "docs/compatibility",
+    "href": "docs/compatibility/"
+  },
+  {
+    "title": "Architecture & performance",
+    "description": "Workspace crate layout, Rete indexing and safety boundaries, Criterion benchmarks, and scaling checks.",
+    "slug": "docs/architecture",
+    "href": "docs/architecture/"
+  }
+];
 const pagesToCheck = ["/", ...docsPages.map((page) => page.href)];
 const pagesToAudit = ["/", docsPages[0]?.href].filter(Boolean);
 
@@ -89,18 +83,14 @@ test.describe("rendered site", () => {
     await expect(page.locator(".skip-link")).toHaveAttribute("href", "#main");
   });
 
-  test("links source installation, Swift, and corpus evidence", async ({
+  test("renders landing example, source installation, and key documentation links", async ({
     page,
   }) => {
     const installCommand =
       "cargo add --git https://github.com/plx/ferric-rules ferric-rules";
     await page.goto(sitePath("/"));
-    await expect(page.locator("[data-copy-text]")).toHaveAttribute(
-      "data-copy-text",
-      installCommand,
-    );
     const codeExamples = page.locator(".code-panel__body");
-    await expect(codeExamples.nth(0)).toContainText("(test (> ?t 75))");
+    await expect(codeExamples.nth(0)).toContainText("(not (suppressed ?id))");
     await expect(codeExamples.nth(1)).toContainText(
       "use ferric_rules::runtime::{Engine, RunLimit};",
     );
@@ -108,18 +98,20 @@ test.describe("rendered site", () => {
     await expect(page.getByRole("main")).toContainText(installCommand);
     await page.goto(sitePath("docs/embedding/"));
     await expect(
-      page.getByRole("link", { name: "Swift package and build guide" }),
+      page.getByRole("link", { name: "bindings/swift" }),
     ).toHaveAttribute(
       "href",
       "https://github.com/plx/ferric-rules/blob/main/bindings/swift/README.md",
     );
     await page.goto(sitePath("docs/compatibility/"));
     await expect(
-      page.getByRole("link", { name: "granular corpus" }),
+      page.getByRole("link", { name: "tests/clips_compat/corpus/" }),
     ).toHaveAttribute(
       "href",
       "https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/README.md",
     );
+    await page.goto(sitePath("docs/architecture/"));
+    await expect(page.getByRole("main")).toContainText("just scaling-check");
   });
 
   test("keeps primary pages inside the viewport", async ({ page }) => {

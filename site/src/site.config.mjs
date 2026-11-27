@@ -12,9 +12,8 @@ export const siteConfig = {
     "title": "ferric-rules",
     "packageName": "ferric-rules-site",
     "category": "Rust rules engine",
-    "tagline": "CLIPS-style rules in Rust.",
-    "description": "A mostly CLIPS-compatible forward-chaining rules engine for embedding in applications. Each engine instance owns its state.",
-    "installCommand": "cargo add --git https://github.com/plx/ferric-rules ferric-rules"
+    "tagline": "An experimental, mostly CLIPS-compatible rules engine in Rust.",
+    "description": "An experimental forward-chaining Rete rules engine in Rust, modeled on CLIPS 6.30 and built for isolated per-engine state, C FFI embedding, and predictable matching."
   },
   "site": {
     "host": "https://plx.github.io",
@@ -34,8 +33,12 @@ export const siteConfig = {
   "landing": {
     "nav": [
       {
-        "label": "Documentation",
+        "label": "Overview",
         "href": "docs/"
+      },
+      {
+        "label": "Embedding & FFI",
+        "href": "docs/embedding/"
       },
       {
         "label": "Compatibility",
@@ -43,7 +46,7 @@ export const siteConfig = {
       },
       {
         "label": "Example",
-        "href": "#syntax"
+        "href": "#example"
       }
     ],
     "footerLinks": [
@@ -69,12 +72,12 @@ export const siteConfig = {
       }
     ],
     "primaryCta": {
-      "label": "Getting started",
-      "href": "docs/getting-started/"
+      "label": "Read the documentation",
+      "href": "docs/"
     },
     "secondaryCta": {
-      "label": "Read the docs",
-      "href": "docs/"
+      "label": "View on GitHub",
+      "href": "https://github.com/plx/ferric-rules"
     }
   },
   "docs": {
@@ -91,20 +94,16 @@ export const siteConfig = {
             "slug": "docs/getting-started"
           },
           {
+            "label": "Embedding & FFI",
+            "slug": "docs/embedding"
+          },
+          {
             "label": "CLIPS compatibility",
             "slug": "docs/compatibility"
           },
           {
-            "label": "Embedding API",
-            "slug": "docs/embedding"
-          },
-          {
-            "label": "Performance",
-            "slug": "docs/performance"
-          },
-          {
-            "label": "Internals",
-            "slug": "docs/internals"
+            "label": "Architecture & performance",
+            "slug": "docs/architecture"
           }
         ]
       }
@@ -112,39 +111,33 @@ export const siteConfig = {
     "pages": [
       {
         "title": "Overview",
-        "description": "How the engine works and where to start.",
+        "description": "Why ferric-rules exists, what is in the repository today, and what to expect from an experimental prototype.",
         "slug": "docs",
         "href": "docs/"
       },
       {
         "title": "Getting started",
-        "description": "Run a small Rust program with one rule and one fact.",
+        "description": "Add ferric-rules from Git, walk through a small forward-chaining program, or try the interactive REPL.",
         "slug": "docs/getting-started",
         "href": "docs/getting-started/"
       },
       {
-        "title": "CLIPS compatibility",
-        "description": "Implemented features, exclusions, and known differences from CLIPS.",
-        "slug": "docs/compatibility",
-        "href": "docs/compatibility/"
-      },
-      {
-        "title": "Embedding API",
-        "description": "Engine lifecycle, thread ownership, output, and language bindings.",
+        "title": "Embedding & FFI",
+        "description": "Per-engine state isolation, checked host handles, CBOR snapshots, the C ABI, and language bindings.",
         "slug": "docs/embedding",
         "href": "docs/embedding/"
       },
       {
-        "title": "Performance",
-        "description": "Run the benchmarks and scaling checks.",
-        "slug": "docs/performance",
-        "href": "docs/performance/"
+        "title": "CLIPS compatibility",
+        "description": "Supported CLIPS 6.30 features, out-of-scope constructs, intentional differences, and differential testing.",
+        "slug": "docs/compatibility",
+        "href": "docs/compatibility/"
       },
       {
-        "title": "Internals",
-        "description": "The main crates and the path from source to rule execution.",
-        "slug": "docs/internals",
-        "href": "docs/internals/"
+        "title": "Architecture & performance",
+        "description": "Workspace crate layout, Rete indexing and safety boundaries, Criterion benchmarks, and scaling checks.",
+        "slug": "docs/architecture",
+        "href": "docs/architecture/"
       }
     ]
   }
